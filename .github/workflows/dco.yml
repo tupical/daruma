@@ -1,0 +1,50 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-dco:
+    name: Check sign-off on every commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR commits
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify Signed-off-by trailers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            # Bot-authored merge commits don't need a sign-off, but human
+            # commits do. We rely on `git interpret-trailers` to read the
+            # trailer block.
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$sha" | grep -q '@'; then
+              author=$(git log -1 --format='%an <%ae>' "$sha")
+              subject=$(git log -1 --format='%s' "$sha")
+              echo "::error::Commit ${sha:0:12} (${author}) is missing Signed-off-by: ${subject}"
+              missing=$((missing + 1))
+            fi
+          done < <(git log --format='%H' "${BASE_SHA}..${HEAD_SHA}")
+          if [ "$missing" -gt 0 ]; then
+            echo
+            echo "${missing} commit(s) missing DCO sign-off."
+            echo "Rebase with --signoff and force-push to fix:"
+            echo "  git rebase --signoff ${BASE_SHA}"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "All commits carry a Signed-off-by trailer."

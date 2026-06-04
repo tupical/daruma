@@ -1,0 +1,55 @@
+[package]
+name = "taskagent-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "taskagent_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "taskagent-server"
+path = "src/main.rs"
+
+[dependencies]
+taskagent-shared  = { workspace = true }
+taskagent-domain  = { workspace = true }
+taskagent-events  = { workspace = true, features = ["runtime"] }
+taskagent-storage = { workspace = true }
+taskagent-core    = { workspace = true }
+taskagent-sync    = { workspace = true }
+taskagent-ai      = { workspace = true }
+taskagent-auth    = { workspace = true }
+taskagent-webhooks = { workspace = true }
+taskagent-api-dto = { workspace = true }
+taskagent-mcp     = { workspace = true }
+reqwest      = { workspace = true }
+tokio       = { workspace = true }
+axum        = { workspace = true }
+tower       = { workspace = true }
+tower-http  = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sqlx        = { workspace = true }
+chrono      = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow      = { workspace = true }
+futures     = { workspace = true }
+uuid        = { workspace = true }
+sha2        = { workspace = true }
+hmac        = { workspace = true }
+hex         = { workspace = true }
+
+[features]
+## When enabled every dispatch() call derives the actor from the bearer token,
+## ignoring any client-supplied actor override.  Default is off so legacy
+## clients that send an explicit Actor::User are still accepted.
+actor_strict = []
+
+[dev-dependencies]
+tokio-tungstenite = { workspace = true }
+tower      = { workspace = true }
+url        = "2"

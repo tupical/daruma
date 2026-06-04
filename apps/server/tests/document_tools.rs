@@ -1,0 +1,266 @@
+//! MCP tool integration tests for document tools (PR1 §9).
+//!
+//! Covers the spec scenarios end-to-end through the MCP dispatcher:
+//!   1. `taskagent_project_create` auto-seeds two documents (Interview + HumanLog).
+//!   2. `taskagent_doc_append` → `taskagent_doc_get` reflects the appended chunk.
+//!   3. `taskagent_doc_create(kind=Interview)` allows duplicate kinds.
+//!   4. `taskagent_doc_list(project_id, kind=HumanLog)` returns exactly one.
+//!   5. `taskagent_doc_archive` hides the doc from `taskagent_doc_list`
+//!      until `include_archived=true`.
+
+use serde_json::{json, Value};
+use taskagent_mcp::{dispatch_request, ApiClient, JsonRpcRequest};
+
+mod common;
+use common::{spawn_server, test_app};
+
+async fn spawn_taskagent_inline() -> (std::net::SocketAddr, String) {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    (addr, app.admin_token)
+}
+
+fn req(method: &str, params: Value) -> JsonRpcRequest {
+    JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: Some(json!(1)),
+        method: method.into(),
+        params: Some(params),
+    }
+}
+
+async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> Value {
+    let resp = dispatch_request(
+        client,
+        req(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(resp.error.is_none(), "tool {name} failed: {:?}", resp.error);
+    let text = resp.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    serde_json::from_str(&text).unwrap()
+}
+
+async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
+    let resp = call_tool(
+        client,
+        "taskagent_project_create",
+        json!({ "title": title }),
+    )
+    .await;
+    resp["project_id"]
+        .as_str()
+        .expect("project_id must be a string in response")
+        .to_owned()
+}
+
+/// Project creation auto-seeds two documents: one `interview` and one
+/// `human_log`. Both must be visible via `taskagent_doc_list`, share the
+/// project_id, and the HumanLog body must include the rendered "_Created"
+/// stamp added by the handler.
+#[tokio::test]
+async fn project_create_seeds_interview_and_human_log() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+
+    let docs = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let arr = docs.as_array().expect("doc list must be array");
+    assert_eq!(arr.len(), 2, "two default docs: {arr:?}");
+
+    let mut kinds: Vec<String> = arr
+        .iter()
+        .map(|d| d["kind"].as_str().unwrap().to_string())
+        .collect();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        vec!["human_log".to_string(), "interview".to_string()],
+        "both default kinds present"
+    );
+
+    for d in arr {
+        assert_eq!(
+            d["project_id"].as_str().unwrap(),
+            pid,
+            "doc must belong to project"
+        );
+        assert!(d["archived_at"].is_null(), "seeded doc not archived: {d:?}");
+    }
+    let human_log = arr
+        .iter()
+        .find(|d| d["kind"] == "human_log")
+        .expect("HumanLog present");
+    let body = human_log["content"].as_str().unwrap();
+    assert!(
+        body.starts_with("# Human Log") && body.contains("_Created "),
+        "HumanLog body has header + created stamp: {body:?}"
+    );
+}
+
+/// Appending a chunk via `taskagent_doc_append` must show up in
+/// `taskagent_doc_get` immediately.
+#[tokio::test]
+async fn doc_append_reflected_in_doc_get() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+    let docs = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let interview_id = docs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["kind"] == "interview")
+        .and_then(|d| d["id"].as_str())
+        .expect("Interview id")
+        .to_owned();
+
+    let appended_snippet = "appended-chunk-marker";
+    let append_resp = call_tool(
+        &client,
+        "taskagent_doc_append",
+        json!({ "document_id": interview_id, "content": appended_snippet }),
+    )
+    .await;
+    assert_eq!(
+        append_resp["success"], true,
+        "append must succeed: {append_resp}"
+    );
+
+    let got = call_tool(
+        &client,
+        "taskagent_doc_get",
+        json!({ "document_id": interview_id }),
+    )
+    .await;
+    let body = got["document"]["content"].as_str().unwrap();
+    assert!(
+        body.contains(appended_snippet),
+        "appended snippet must be in body: {body:?}"
+    );
+}
+
+/// `taskagent_doc_create(kind=interview)` must succeed even when an Interview
+/// document already exists — kind is not unique per project.
+#[tokio::test]
+async fn doc_create_allows_duplicate_kind() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+
+    let resp = call_tool(
+        &client,
+        "taskagent_doc_create",
+        json!({
+            "project_id": pid,
+            "kind": "interview",
+            "title": "Second Interview",
+        }),
+    )
+    .await;
+    assert_eq!(
+        resp["success"], true,
+        "second Interview create must succeed: {resp}"
+    );
+    assert!(
+        resp["document_id"].is_string(),
+        "doc_create must surface document_id for agents: {resp}"
+    );
+
+    let docs = call_tool(
+        &client,
+        "taskagent_doc_list",
+        json!({ "project_id": pid, "kind": "interview" }),
+    )
+    .await;
+    let arr = docs.as_array().expect("doc list array");
+    assert_eq!(arr.len(), 2, "two Interview docs now exist: {arr:?}");
+}
+
+/// `taskagent_doc_list` with `kind` filter must return only docs of that kind.
+#[tokio::test]
+async fn doc_list_filters_by_kind() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+
+    let only_log = call_tool(
+        &client,
+        "taskagent_doc_list",
+        json!({ "project_id": pid, "kind": "human_log" }),
+    )
+    .await;
+    let arr = only_log.as_array().expect("doc list array");
+    assert_eq!(arr.len(), 1, "exactly one HumanLog: {arr:?}");
+    assert_eq!(arr[0]["kind"], "human_log");
+}
+
+/// `taskagent_doc_archive` must remove the doc from the default `doc_list`
+/// view, but the doc must reappear when `include_archived=true`.
+#[tokio::test]
+async fn doc_archive_hides_from_default_list() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+    let docs = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let interview_id = docs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["kind"] == "interview")
+        .and_then(|d| d["id"].as_str())
+        .expect("Interview id")
+        .to_owned();
+
+    let archive_resp = call_tool(
+        &client,
+        "taskagent_doc_archive",
+        json!({ "document_id": interview_id }),
+    )
+    .await;
+    assert_eq!(
+        archive_resp["success"], true,
+        "archive must succeed: {archive_resp}"
+    );
+
+    // Default list (include_archived=false) hides the doc.
+    let default_list = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let default_arr = default_list.as_array().expect("default list array");
+    assert!(
+        default_arr.iter().all(|d| d["id"] != interview_id),
+        "archived doc must be hidden from default list: {default_arr:?}"
+    );
+    assert_eq!(
+        default_arr.len(),
+        1,
+        "only HumanLog remains in default view"
+    );
+
+    // include_archived=true brings it back.
+    let with_archived = call_tool(
+        &client,
+        "taskagent_doc_list",
+        json!({ "project_id": pid, "include_archived": true }),
+    )
+    .await;
+    let with_arr = with_archived.as_array().expect("with-archived array");
+    let revived = with_arr
+        .iter()
+        .find(|d| d["id"] == interview_id)
+        .expect("archived doc visible with include_archived=true");
+    assert!(
+        !revived["archived_at"].is_null(),
+        "archived_at must be set: {revived:?}"
+    );
+}

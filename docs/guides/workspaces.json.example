@@ -1,0 +1,5 @@
+{
+  "workspaces": {
+    "/absolute/path/to/your/workspace": "project-uuid-from-taskagent"
+  }
+}

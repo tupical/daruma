@@ -1,0 +1,70 @@
+name: Audit imports
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  audit-grep:
+    name: Core must not depend on apps/*
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Grep for forbidden app imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §3.4 W4.1 — the core layer (crates/{shared,domain,events,core,
+          # storage,auth} and apps/server/src/) must not depend on any
+          # app crate. Apps depend on core, never the reverse.
+          PATTERN='use[[:space:]]\+\(taskagent_desktop\|taskagent_cli\|taskagent_mcp_bin\|taskagent_web\)::'
+          CORE_PATHS=(
+            crates/shared
+            crates/domain
+            crates/events
+            crates/core
+            crates/storage
+            crates/auth
+            apps/server/src
+          )
+          violations=0
+          for path in "${CORE_PATHS[@]}"; do
+            [ -d "$path" ] || continue
+            if grep -rEn --include='*.rs' "$PATTERN" "$path"; then
+              violations=$((violations + 1))
+            fi
+          done
+          if [ "$violations" -gt 0 ]; then
+            echo
+            echo "::error::Core code must not import from app crates. See docs/MODULE_CONTRACT.md."
+            exit 1
+          fi
+          echo "OK: no app-crate imports in the core layer."
+
+      - name: Embed-mode clients reach for runtime only via taskagent_core::embed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §3.4 W2.1 — apps/desktop is the canonical embed client and must
+          # not import directly from internal runtime crates. Other embed
+          # clients added in the future should follow the same rule.
+          PATTERN='use[[:space:]]\+\(taskagent_storage\|taskagent_events\)::'
+          EMBED_PATHS=(apps/desktop/src)
+          violations=0
+          for path in "${EMBED_PATHS[@]}"; do
+            [ -d "$path" ] || continue
+            if grep -rEn --include='*.rs' "$PATTERN" "$path"; then
+              violations=$((violations + 1))
+            fi
+          done
+          if [ "$violations" -gt 0 ]; then
+            echo
+            echo "::error::Embed-mode clients must reach for the runtime via taskagent_core::embed::*, not internal crates. See docs/MODULE_CONTRACT.md#embed-mode."
+            exit 1
+          fi
+          echo "OK: no direct runtime-internal imports in embed clients."

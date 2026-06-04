@@ -1,0 +1,28 @@
+# Prompt: decompose — task body → split_task call with 2–6 sub-tasks
+#
+# Variants:
+#   default   — bare prompt (used pre-§3.8.4 and when no hint is supplied)
+#   with_hint — appends an "Additional guidance" block
+#
+# Variables:
+#   task_context — task title + (optional) description
+#   hint         — free-form guidance (only used by with_hint)
+
+[meta]
+name = "decompose"
+description = "Decompose a task into 2–6 concrete, actionable sub-tasks via split_task."
+
+[variants.default]
+template = """You are a project-management assistant. Decompose the following task into 2–6 concrete, actionable sub-tasks. Call split_task with the result.
+
+Task:
+{ task_context }"""
+
+[variants.with_hint]
+template = """You are a project-management assistant. Decompose the following task into 2–6 concrete, actionable sub-tasks. Call split_task with the result.
+
+Task:
+{ task_context }
+
+Additional guidance:
+{ hint }"""

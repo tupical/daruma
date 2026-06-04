@@ -1,0 +1,112 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shared",
+    "crates/domain",
+    "crates/events",
+    "crates/storage",
+    "crates/core",
+    "crates/sync",
+    "crates/ai",
+    "crates/auth",
+    "crates/webhooks",
+    "crates/mcp",
+    "crates/api-dto",
+    "apps/server",
+    "apps/desktop",
+    "apps/mcp",
+    "apps/cli",
+    "apps/mobile",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0 WITH Commons-Clause"
+authors = ["TaskAgent contributors"]
+repository = "https://github.com/tupical/taskagent"
+
+[workspace.dependencies]
+# Internal crates
+taskagent-shared  = { path = "crates/shared" }
+taskagent-domain  = { path = "crates/domain" }
+taskagent-events  = { path = "crates/events" }
+taskagent-storage = { path = "crates/storage" }
+taskagent-core    = { path = "crates/core" }
+taskagent-sync    = { path = "crates/sync" }
+taskagent-ai      = { path = "crates/ai" }
+taskagent-auth    = { path = "crates/auth" }
+taskagent-webhooks = { path = "crates/webhooks" }
+taskagent-mcp     = { path = "crates/mcp" }
+taskagent-api-dto = { path = "crates/api-dto" }
+
+# Async runtime
+tokio    = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal", "io-util"] }
+futures  = "0.3"
+async-trait = "0.1"
+
+# Errors / logging
+thiserror = "2.0"
+anyhow    = "1.0"
+tracing   = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Serde
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# IDs / time
+uuid   = { version = "1.10", features = ["v4", "v7", "serde", "js"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+
+# Storage
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+fastbloom = "0.7"
+
+# Concurrent map (used by sync hub for per-subscriber WS fanout — §3.9.4)
+dashmap = "6"
+
+# HTTP / WS
+axum       = { version = "0.8", features = ["ws", "macros"] }
+tower      = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+reqwest    = { version = "0.13", features = ["json", "stream"] }
+tokio-tungstenite = "0.29"
+
+# Auth / crypto
+argon2 = "0.5"
+rand   = "0.8"
+base64 = "0.22"
+hmac   = "0.12"
+sha2   = "0.10"
+hex    = "0.4"
+biscuit-auth = "6.0"
+
+# AI prompt registry (§3.8.5)
+toml         = { version = "0.8", default-features = false, features = ["parse"] }
+tinytemplate = "1.2"
+once_cell    = "1.20"
+
+[package]
+name = "taskagent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+taskagent-auth = { workspace = true, optional = true }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1

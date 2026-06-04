@@ -1,0 +1,120 @@
+{
+  "$schema": "/schemas/plugin.v1.json",
+  "schemaVersion": "1",
+  "id": "taskagent-cursor",
+  "name": "taskagent",
+  "title": "TaskAgent for Cursor",
+  "summary": "MCP-сервер для управления проектами, задачами и AI-декомпозицией прямо из Cursor. По умолчанию становится единственным трекером и перехватывает планы у oh-my-claudecode.",
+  "description": "Подключает MCP-сервер tupical/taskagent в Cursor и раскладывает alwaysApply-правила, делающие taskagent дефолтным трекером задач и планов. Если в проекте есть oh-my-claudecode (.omc/), плагин дописывает managed-блок в .omc/AGENTS.md, чтобы OMC-скиллы (`/plan`, `/ralph`, `/ultrawork`, `/ultragoal`, `/autopilot`) не создавали файлы под .omc/plans/, а брали план из taskagent.",
+  "version": "0.3.0",
+  "license": "MIT",
+  "author": { "name": "tupical", "url": "https://github.com/tupical" },
+  "vendor": { "name": "taskagent", "url": "" },
+  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/cursor-plugin#readme",
+  "repository": "https://github.com/tupical/taskagent",
+  "issues": "https://github.com/tupical/taskagent/issues",
+  "tags": ["taskagent", "tasks", "planning", "mcp", "stdio", "rust", "cursor"],
+  "categories": ["productivity", "agents", "task-management"],
+  "targets": ["cursor"],
+  "requirements": {
+    "node": ">=20",
+    "cursor": ">=0.40",
+    "binariesOnPath": ["taskagent-mcp"],
+    "services": [
+      {
+        "name": "taskagent-server",
+        "url": "http://localhost:8080",
+        "healthcheck": "/v1/healthz"
+      }
+    ]
+  },
+  "install": {
+    "primary": "cursor-deeplink",
+    "cursorDeeplink": "cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D",
+    "cursorHttpsUrl": "https://cursor.com/install-mcp?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D",
+    "npm": {
+      "package": "taskagent-cursor",
+      "bin": "taskagent-cursor",
+      "globalInstall": "npm i -g taskagent-cursor",
+      "postInstall": "taskagent-cursor install --global"
+    },
+    "manual": {
+      "mcpJsonExample": "cursor/mcp.example.json"
+    },
+    "verify": "taskagent-cursor doctor"
+  },
+  "mcp": {
+    "name": "taskagent",
+    "transport": "stdio",
+    "server": {
+      "type": "stdio",
+      "command": "taskagent-mcp",
+      "env": {
+        "TASKAGENT_API_URL": "http://localhost:8080"
+      }
+    },
+    "envHints": [
+      {
+        "key": "TASKAGENT_API_URL",
+        "default": "http://localhost:8080",
+        "description": "URL HTTP API. При локальном запуске сервер слушает http://localhost:8080."
+      },
+      {
+        "key": "TASKAGENT_TOKEN",
+        "default": null,
+        "description": "Опциональный bearer-токен. Сервер пишет первый токен в <data>/bootstrap.token."
+      }
+    ]
+  },
+  "rules": [
+    {
+      "path": "cursor/rules/taskagent-policy.mdc",
+      "target": ".cursor/rules/taskagent-policy.mdc",
+      "alwaysApply": true,
+      "description": "Политика workspace: taskagent — единственный трекер; запрет писать в .omc/plans/, .omc/ultragoal/; OMC-триггеры роутятся через taskagent_plan_*."
+    },
+    {
+      "path": "cursor/rules/taskagent.mdc",
+      "target": ".cursor/rules/taskagent.mdc",
+      "alwaysApply": false,
+      "description": "Контракт для Cursor-агента: когда и как звать taskagent_* инструменты."
+    }
+  ],
+  "commands": [
+    {
+      "path": "cursor/commands/taskagent-tasks.md",
+      "target": ".cursor/commands/taskagent-tasks.md",
+      "slash": "taskagent-tasks",
+      "description": "Список открытых задач taskagent в виде компактной markdown-таблицы."
+    },
+    {
+      "path": "cursor/commands/taskagent-plan.md",
+      "target": ".cursor/commands/taskagent-plan.md",
+      "slash": "taskagent-plan",
+      "description": "Чек-лист активного плана с прогресс-баром."
+    },
+    {
+      "path": "cursor/commands/taskagent-next.md",
+      "target": ".cursor/commands/taskagent-next.md",
+      "slash": "taskagent-next",
+      "description": "Захватить следующую готовую задачу и вывести бриф."
+    },
+    {
+      "path": "cursor/commands/taskagent-mine.md",
+      "target": ".cursor/commands/taskagent-mine.md",
+      "slash": "taskagent-mine",
+      "description": "Задачи, захваченные текущей сессией."
+    }
+  ],
+  "omcGuard": {
+    "path": ".omc/AGENTS.md",
+    "managedBlock": true,
+    "description": "Managed-блок в .omc/AGENTS.md (если проект использует OMC): запрещает создание .omc/plans/, .omc/ultragoal/ и направляет OMC-скиллы к taskagent."
+  },
+  "docs": {
+    "readme": "README.md",
+    "readmeRu": "README.ru.md",
+    "license": "LICENSE"
+  },
+  "screenshots": []
+}

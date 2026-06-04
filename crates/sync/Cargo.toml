@@ -1,0 +1,21 @@
+[package]
+name = "taskagent-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+taskagent-shared  = { workspace = true }
+taskagent-domain  = { workspace = true }
+taskagent-events  = { workspace = true, features = ["runtime"] }
+taskagent-core    = { workspace = true }
+taskagent-api-dto = { workspace = true }
+tokio   = { workspace = true }
+serde   = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+uuid    = { workspace = true }

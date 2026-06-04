@@ -1,0 +1,4 @@
+Checking MCP server health…
+
+other-server: /usr/local/bin/other-mcp - ✓ Connected
+yet-another: /opt/yet-another-mcp - ✓ Connected

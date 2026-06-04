@@ -1,0 +1,286 @@
+use serde::{Deserialize, Serialize};
+use taskagent_shared::{time, EventId, ProjectId, TaskId, Timestamp};
+
+use crate::agent::Actor;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    #[default]
+    Inbox,
+    Todo,
+    InProgress,
+    /// Work is staged for review/QA but not yet accepted. Non-terminal —
+    /// the next transition is typically back to `InProgress` (rework) or
+    /// forward to `Done`.
+    InReview,
+    Done,
+    /// Terminal: the work was abandoned (e.g. a `Duplicates` relation
+    /// auto-cancels the duplicate side per §3.2/§3.7.2). Distinct from
+    /// `Done` so completion metrics don't conflate "shipped" with
+    /// "won't do".
+    Cancelled,
+}
+
+impl Status {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Status::Done | Status::Cancelled)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Inbox => "inbox",
+            Status::Todo => "todo",
+            Status::InProgress => "in_progress",
+            Status::InReview => "in_review",
+            Status::Done => "done",
+            Status::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    /// Urgent.
+    P0,
+    /// High.
+    P1,
+    /// Medium (default).
+    #[default]
+    P2,
+    /// Low.
+    P3,
+}
+
+impl Priority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Priority::P0 => "p0",
+            Priority::P1 => "p1",
+            Priority::P2 => "p2",
+            Priority::P3 => "p3",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageState {
+    #[default]
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+impl TriageState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TriageState::Pending => "pending",
+            TriageState::Accepted => "accepted",
+            TriageState::Rejected => "rejected",
+        }
+    }
+}
+
+/// Canonical task entity — a projection of the event log.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    pub id: TaskId,
+    pub project_id: Option<ProjectId>,
+    pub title: String,
+    pub description: String,
+    pub status: Status,
+    pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_state: Option<TriageState>,
+    pub due_at: Option<Timestamp>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    /// Set on the first non-terminal-to-`InProgress` transition. Stays set
+    /// across subsequent reopens (records the original start moment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<Timestamp>,
+    /// Set on terminal transition (`TaskClosed`), cleared on `TaskReopened`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<Timestamp>,
+    /// Actor who created this task (from `TaskCreated` envelope).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Actor>,
+    /// Actor who last completed/closed this task (from `TaskCompleted`/`TaskClosed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_by: Option<Actor>,
+    /// Actor from the last event that changed this task projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<Actor>,
+    /// Source event id for the last event that changed this task projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_event_id: Option<EventId>,
+    /// Global event sequence for the last event that changed this task projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_event_seq: Option<u64>,
+    /// §3.8.10 provenance: id of the upstream event that produced this
+    /// task (e.g. the `PlanCreated` event for a plan-derived task, or
+    /// an AI-tool envelope). Opaque blob; the producer chooses what to
+    /// store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_event_id: Option<EventId>,
+}
+
+impl Task {
+    /// Build a [`Task`] from a [`NewTask`], filling defaults.
+    pub fn from_new(input: NewTask) -> Self {
+        let now = time::now();
+        Self {
+            id: input.id.unwrap_or_default(),
+            project_id: input.project_id,
+            title: input.title,
+            description: input.description.unwrap_or_default(),
+            status: input.status.unwrap_or_default(),
+            priority: input.priority.unwrap_or_default(),
+            triage_state: input.triage_state,
+            due_at: input.due_at,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            completed_at: None,
+            created_by: None,
+            completed_by: None,
+            updated_by: None,
+            updated_event_id: None,
+            updated_event_seq: None,
+            source_event_id: None,
+        }
+    }
+}
+
+/// Input for creating a task. Most fields optional.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NewTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<Status>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_state: Option<TriageState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<Timestamp>,
+}
+
+impl NewTask {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            project_id: None,
+            title: title.into(),
+            description: None,
+            status: None,
+            priority: None,
+            triage_state: None,
+            due_at: None,
+        }
+    }
+}
+
+/// Sparse update for an existing task.
+///
+/// Field semantics:
+/// - `None` outer = no change.
+/// - `Some(Some(v))` = set to v.
+/// - `Some(None)` (for nullable fields) = clear.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<Status>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triage_state: Option<Option<TriageState>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<Option<Timestamp>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Option<ProjectId>>,
+}
+
+impl TaskPatch {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.description.is_none()
+            && self.status.is_none()
+            && self.priority.is_none()
+            && self.triage_state.is_none()
+            && self.due_at.is_none()
+            && self.project_id.is_none()
+    }
+
+    pub fn apply(self, task: &mut Task) {
+        if let Some(t) = self.title {
+            task.title = t;
+        }
+        if let Some(d) = self.description {
+            task.description = d;
+        }
+        if let Some(s) = self.status {
+            task.status = s;
+        }
+        if let Some(p) = self.priority {
+            task.priority = p;
+        }
+        if let Some(t) = self.triage_state {
+            task.triage_state = t;
+        }
+        if let Some(d) = self.due_at {
+            task.due_at = d;
+        }
+        if let Some(p) = self.project_id {
+            task.project_id = p;
+        }
+        task.updated_at = time::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_terminal_covers_done_and_cancelled() {
+        // The resolver and relation enforcement rely on this set being
+        // exactly {Done, Cancelled}. If you add a new terminal Status,
+        // update this test deliberately.
+        assert!(!Status::Inbox.is_terminal());
+        assert!(!Status::Todo.is_terminal());
+        assert!(!Status::InProgress.is_terminal());
+        assert!(!Status::InReview.is_terminal());
+        assert!(Status::Done.is_terminal());
+        assert!(Status::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn status_serde_uses_snake_case() {
+        // Wire-format contract: serde_json renders snake_case, which is
+        // what the storage parse_status and the AI parse_status expect.
+        let pairs = [
+            (Status::Inbox, "\"inbox\""),
+            (Status::Todo, "\"todo\""),
+            (Status::InProgress, "\"in_progress\""),
+            (Status::InReview, "\"in_review\""),
+            (Status::Done, "\"done\""),
+            (Status::Cancelled, "\"cancelled\""),
+        ];
+        for (status, expected) in pairs {
+            assert_eq!(serde_json::to_string(&status).unwrap(), expected);
+        }
+    }
+}

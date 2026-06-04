@@ -1,0 +1,94 @@
+{
+  "name": "taskagent-cursor-extension",
+  "version": "0.1.0",
+  "description": "Native Cursor/VSCode sidebar for TaskAgent projects, plans, and tasks.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tupical/taskagent.git",
+    "directory": "clients/cursor-extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=20"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:taskagent.tasks",
+    "onCommand:taskagent.refresh"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "taskagent",
+          "title": "TaskAgent",
+          "icon": "media/taskagent.svg"
+        }
+      ]
+    },
+    "views": {
+      "taskagent": [
+        {
+          "id": "taskagent.tasks",
+          "name": "Tasks"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "taskagent.refresh",
+        "title": "TaskAgent: Refresh"
+      },
+      {
+        "command": "taskagent.completeTask",
+        "title": "TaskAgent: Complete Task"
+      },
+      {
+        "command": "taskagent.openPlan",
+        "title": "TaskAgent: Open Plan"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "taskagent.openPlan",
+          "when": "view == taskagent.tasks && viewItem == taskagent.plan",
+          "group": "inline"
+        },
+        {
+          "command": "taskagent.completeTask",
+          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TaskAgent",
+      "properties": {
+        "taskagent.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "TaskAgent server base URL."
+        },
+        "taskagent.token": {
+          "type": "string",
+          "default": "",
+          "description": "TaskAgent bearer token."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test tests/**/*.test.mjs",
+    "package": "npx --yes @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.6.0"
+  }
+}

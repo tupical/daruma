@@ -1,0 +1,27 @@
+services:
+  # ----------------------------------------------------------------------
+  # Optional parity/runtime server image. Day-to-day Rust development runs
+  # natively on the host; see Justfile.
+  # ----------------------------------------------------------------------
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: taskagent-server:dev
+    container_name: taskagent-server
+    restart: unless-stopped
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      TASKAGENT_DATA_DIR: /app/data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+    ports:
+      # Bind to loopback only: external access goes through host nginx.
+      # On VPS deploys, host nginx proxies https://<domain> → 127.0.0.1:<TASKAGENT_PORT>.
+      - "127.0.0.1:${TASKAGENT_PORT:-8080}:8080"
+    volumes:
+      - taskagent-data:/app/data
+
+volumes:
+  taskagent-data:

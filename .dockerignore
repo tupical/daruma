@@ -1,0 +1,42 @@
+target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# SQLite local databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Web / node
+node_modules/
+dist/
+.parcel-cache/
+.cache/
+
+# OMC / docs / git
+.omc/
+.git/
+.gitignore
+*.md
+!README.md
+
+# Docker meta
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.yaml
+compose.yml
+compose.yaml

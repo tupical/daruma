@@ -1,0 +1,7 @@
+node_modules/
+.claude/settings.local.json
+.omc/
+.ouroboros/
+.serena/
+*.log
+.DS_Store

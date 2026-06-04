@@ -1,0 +1,58 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# SQLite local databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.local.*
+
+# MCP config — contains bearer tokens. Use .mcp.json.example as template.
+.mcp.json
+
+# Codex local MCP config — contains local paths and bearer tokens.
+.codex/config.toml
+
+# Local deploy logs.
+.deploy-logs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Claude Code harness — local worktrees + per-session state.
+.claude/
+
+# Web companion
+node_modules/
+dist/
+.parcel-cache/
+.cache/
+
+# Local agent/orchestration state and project-specific instructions.
+.omc/
+.codegraph/
+
+.serena/
+**/.vite/
+
+# Local server data dir (SQLite + bootstrap token)
+/data/
+/.local-data/
+
+.cursor/
+
+# MCP client local state (default ~/.agents/taskagent/; may appear in-repo if misconfigured)
+.agents/taskagent/

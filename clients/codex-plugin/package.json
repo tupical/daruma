@@ -1,0 +1,35 @@
+{
+  "name": "taskagent-codex-plugin",
+  "version": "0.1.0",
+  "description": "Codex plugin for tupical/taskagent. Ships taskagent command prompts and skills for parse/decompose/plan/execute workflows.",
+  "keywords": [
+    "codex",
+    "codex-plugin",
+    "taskagent",
+    "mcp",
+    "planning",
+    "multi-agent"
+  ],
+  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/codex-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/tupical/taskagent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tupical/taskagent.git",
+    "directory": "clients/codex-plugin"
+  },
+  "author": "tupical",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "commands/",
+    "skills/",
+    ".codex-plugin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,18 @@
+[module]
+name         = "taskagent-mobile"
+kind         = "client"
+status       = "wip"
+owner        = "clients"
+contract     = "/v1/*"
+contract_min = "v1"
+repo_path    = "apps/mobile"
+runtime      = "Rust/Tauri 2 (scaffold — HTTP probe binary today)"
+
+[capabilities]
+needs = [
+  "TaskRead",
+]
+
+[build]
+tool    = "cargo"
+profile = "release"

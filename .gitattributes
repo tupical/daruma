@@ -1,0 +1,62 @@
+# Force LF line endings for all text files on checkout, regardless of platform
+# core.autocrlf setting. Critical for:
+#   * crates/storage/migrations/*.sql — sqlx::migrate!() embeds SHA-256
+#     checksums at build time; CRLF mismatch with the persisted
+#     _sqlx_migrations table refuses server start.
+#   * deploy/*.sh — must be LF for bash heredoc and remote SSH execution.
+#   * Cargo.lock / Cargo.toml — diffs noisy without normalization.
+#
+# Run `git add --renormalize .` once after adding this file to convert the
+# existing working tree (a single large commit that affects line endings only).
+* text=auto eol=lf
+
+# Shell + bash heredoc — strict LF
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# Rust workspace
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.lock  text eol=lf
+
+# SQL migrations — must match VPS-applied checksums (see sqlx::migrate!)
+*.sql   text eol=lf
+
+# Docs + config
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.jsonc text eol=lf
+
+# Docker
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+*.dockerfile    text eol=lf
+
+# Web companion
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.ts    text eol=lf
+
+# Explicit binary — never touched by text conversion
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.svg   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.pdf   binary
+*.zip   binary
+*.tar   binary
+*.gz    binary
+*.tgz   binary
+*.wasm  binary
+*.sqlite        binary
+*.sqlite-shm    binary
+*.sqlite-wal    binary

@@ -1,0 +1,13 @@
+{
+  "name": "taskagent",
+  "version": "0.1.0",
+  "description": "Taskagent workflows for Codex: task/task-plan orchestration commands plus reusable skills for setup/start/doctor, branch tasks, and lessons.",
+  "author": {
+    "name": "tupical"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/codex-plugin",
+  "repository": "https://github.com/tupical/taskagent",
+  "commands": "./commands/",
+  "skills": "./skills/"
+}

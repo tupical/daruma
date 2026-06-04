@@ -1,0 +1,362 @@
+//! `taskagent-server` entry-point — wires storage, core, sync, AI and Axum.
+
+use std::sync::Arc;
+
+use taskagent_ai::{AiConfig, OpenAiClient};
+use taskagent_auth::{generate, NewTokenSpec, TokenKind, TokenScope, TokenStore};
+use taskagent_core::{search::FtsSearchProvider, CommandBus, CommandHandler};
+use taskagent_events::{EventBus, EventStore};
+use taskagent_shared::AgentId;
+use taskagent_storage::{
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, Db, DocumentRepo, EntityVersionRepo,
+    ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
+    SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
+    WebhookEnrichment, WebhookRepo, WorkspaceGraphRepo,
+};
+use taskagent_sync::Hub;
+use taskagent_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};
+use tracing_subscriber::EnvFilter;
+
+use taskagent_server::{
+    cors, mcp_downloads::McpDownloads, middleware::rate_limit::RateLimiter, routes,
+    state::AppState, workspace_graph,
+};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // ── Tracing ───────────────────────────────────────────────────────────────
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // ── Data directory ────────────────────────────────────────────────────────
+    let data_path = taskagent_mcp::paths::data_dir();
+    tokio::fs::create_dir_all(&data_path).await?;
+
+    let db_path = data_path.join("taskagent.sqlite");
+    let db_str = db_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("DB path contains non-UTF-8 characters"))?;
+
+    // ── Database ──────────────────────────────────────────────────────────────
+    tracing::info!(path = db_str, "opening database");
+    let db = Db::open(db_str)
+        .await
+        .map_err(|e| anyhow::anyhow!("DB open failed: {e}"))?;
+    db.migrate()
+        .await
+        .map_err(|e| anyhow::anyhow!("migration failed: {e}"))?;
+
+    // ── WorkspaceGraph sidecar ────────────────────────────────────────────────
+    let graph_db_path = data_path.join("workspacegraph.sqlite");
+    let graph_db_str = graph_db_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("workspace graph DB path contains non-UTF-8 characters"))?;
+    tracing::info!(path = graph_db_str, "opening workspace graph sidecar");
+    let graph_db = Db::open(graph_db_str)
+        .await
+        .map_err(|e| anyhow::anyhow!("workspace graph DB open failed: {e}"))?;
+    let workspace_graph = Arc::new(WorkspaceGraphRepo::new(graph_db.pool().clone()));
+    workspace_graph
+        .ensure_schema()
+        .await
+        .map_err(|e| anyhow::anyhow!("workspace graph schema failed: {e}"))?;
+
+    // ── Storage layer ─────────────────────────────────────────────────────────
+    let pool = db.pool().clone();
+    let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(pool.clone()));
+    let tasks = Arc::new(TaskRepo::new(pool.clone()));
+    let projects = Arc::new(ProjectRepo::new(pool.clone()));
+    let comments = Arc::new(CommentRepo::new(pool.clone()));
+    let tokens = Arc::new(TokenRepo::new(pool.clone()));
+    let inbox = Arc::new(AgentInboxRepo::new(pool.clone()));
+    let webhooks = Arc::new(WebhookRepo::new(pool.clone()));
+    let activity = Arc::new(ActivityRepo::new(pool.clone()));
+    let plans = Arc::new(PlanRepo::new(pool.clone()));
+    let runs = Arc::new(RunRepo::new(pool.clone()));
+    let run_notes = Arc::new(RunNoteRepo::new(pool.clone()));
+    let sessions = Arc::new(SessionRepo::new(pool.clone()));
+    let claims = Arc::new(AgentClaimRepo::new(pool.clone()));
+    let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
+    let documents = Arc::new(DocumentRepo::new(pool.clone()));
+    let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
+    let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
+    let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
+    let tenant_quotas = Arc::new(TenantQuotaRepo::new(pool.clone()));
+    // Seed the bloom filter from existing rows so lookups on restart take the
+    // fast path immediately rather than after the first re-seen command.
+    idempotency
+        .warm()
+        .await
+        .map_err(|e| anyhow::anyhow!("idempotency bloom warm failed: {e}"))?;
+    let relations = Arc::new(RelationRepo::new(pool));
+    let auth_store: Arc<dyn TokenStore> = tokens.clone();
+    let webhook_store: Arc<dyn WebhookStore> = webhooks.clone();
+
+    // ── Bootstrap token (first run only) ──────────────────────────────────────
+    bootstrap_admin_token(auth_store.as_ref(), &data_path).await?;
+
+    // ── Activity backfill (idempotent; must run before dispatcher) ────────────
+    let backfilled = activity
+        .backfill_from_events(&*store)
+        .await
+        .map_err(|e| anyhow::anyhow!("activity backfill failed: {e}"))?;
+    tracing::info!(rows = backfilled, "activity backfill complete");
+
+    // ── WorkspaceGraph catch-up (idempotent) ──────────────────────────────────
+    let graph_caught_up = workspace_graph::catch_up_from_events(&workspace_graph, &*store)
+        .await
+        .map_err(|e| anyhow::anyhow!("workspace graph catch-up failed: {e}"))?;
+    tracing::info!(
+        events = graph_caught_up,
+        "workspace graph catch-up complete"
+    );
+
+    // ── Core layer ────────────────────────────────────────────────────────────
+    let bus = EventBus::new(2048);
+    let handler = Arc::new(
+        CommandHandler::new(
+            store.clone(),
+            tasks.clone(),
+            projects.clone(),
+            comments.clone(),
+            activity.clone(),
+            bus.clone(),
+        )
+        .with_plans(plans.clone())
+        .with_runs(runs.clone())
+        .with_run_notes(run_notes.clone())
+        .with_sessions(sessions.clone())
+        .with_claims(claims.clone())
+        .with_external_refs(external_refs.clone())
+        .with_tenant_quotas(tenant_quotas.clone())
+        .with_documents(documents.clone())
+        .with_relations(relations.clone())
+        .with_search_provider(Arc::new(FtsSearchProvider::new(
+            tasks.clone(),
+            comments.clone(),
+            plans.clone(),
+        ))),
+    );
+    let command_bus = CommandBus::new(handler.clone());
+
+    // ── Sync layer ────────────────────────────────────────────────────────────
+    let hub = Arc::new(Hub::new(bus.clone(), Arc::new(command_bus.clone())));
+
+    // ── Webhook dispatcher ────────────────────────────────────────────────────
+    let http = reqwest::Client::builder()
+        .user_agent(format!("taskagent/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| anyhow::anyhow!("reqwest client: {e}"))?;
+    let enrichment: Arc<dyn EnrichmentSource> =
+        WebhookEnrichment::new(tasks.clone(), plans.clone(), projects.clone()).into_arc();
+    let _dispatcher = spawn_dispatcher(bus.subscribe(), webhook_store.clone(), http, enrichment);
+    // `_dispatcher` lives for the lifetime of the process; binding it
+    // keeps the JoinHandle alive (Drop aborts the task).
+    std::mem::forget(_dispatcher);
+
+    workspace_graph::spawn_subscriber(workspace_graph.clone(), bus.clone());
+
+    // ── AI (optional) ─────────────────────────────────────────────────────────
+    let ai: Option<OpenAiClient> = match AiConfig::from_env() {
+        Ok(cfg) => {
+            tracing::info!(model = %cfg.model, "AI client configured");
+            Some(OpenAiClient::new(cfg))
+        }
+        Err(_) => {
+            tracing::info!("OPENAI_API_KEY not set — AI endpoints will return 502");
+            None
+        }
+    };
+
+    // ── App state ─────────────────────────────────────────────────────────────
+    let mcp_downloads = McpDownloads::discover();
+    if mcp_downloads.linux.is_some() {
+        tracing::info!("taskagent-mcp linux download available");
+    }
+    if mcp_downloads.windows.is_some() {
+        tracing::info!("taskagent-mcp windows download available");
+    }
+
+    let state = AppState {
+        store,
+        tasks,
+        projects,
+        comments,
+        activity,
+        tokens,
+        auth_store,
+        inbox,
+        webhooks,
+        webhook_store,
+        commands: command_bus.clone(),
+        hub,
+        ai,
+        plans,
+        runs,
+        run_notes,
+        sessions,
+        claims: claims.clone(),
+        external_refs,
+        idempotency: idempotency.clone(),
+        tenant_quotas,
+        relations,
+        documents,
+        entity_versions,
+        complexity_hints,
+        workspace_graph,
+        mcp_downloads,
+        rate_limiter: RateLimiter::default(),
+    };
+
+    // ── Background: claim TTL sweep (every 30 s) ──────────────────────────────
+    {
+        let claims_bg = claims;
+        let bus_bg = command_bus;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                match claims_bg.sweep_expired().await {
+                    Ok(released) => {
+                        for (agent_id, task_id) in released {
+                            let _ = bus_bg
+                                .dispatch(
+                                    taskagent_core::Command::ReleaseClaim { agent_id, task_id },
+                                    taskagent_domain::Actor::user(),
+                                )
+                                .await;
+                        }
+                    }
+                    Err(e) => tracing::warn!(err = %e, "claim TTL sweep failed"),
+                }
+            }
+        });
+    }
+
+    // ── Background: idempotency cleanup (every hour) ──────────────────────────
+    {
+        let idempotency_bg = idempotency;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                match idempotency_bg
+                    .cleanup_older_than(chrono::Duration::days(7))
+                    .await
+                {
+                    Ok(n) => tracing::info!(rows = n, "idempotency cleanup complete"),
+                    Err(e) => tracing::warn!(err = %e, "idempotency cleanup failed"),
+                }
+            }
+        });
+    }
+
+    // ── Background: §3.7.4 liveness watchdog (every 10 s) ─────────────────────
+    {
+        let liveness_ack: u64 = std::env::var("TASKAGENT_LIVENESS_ACK_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        let liveness_idle: u64 = std::env::var("TASKAGENT_LIVENESS_IDLE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1800);
+        let handler_bg = handler.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+            loop {
+                tick.tick().await;
+                if let Err(e) = handler_bg
+                    .tick_liveness(chrono::Utc::now(), liveness_ack, liveness_idle)
+                    .await
+                {
+                    tracing::warn!(err = %e, "liveness watchdog tick failed");
+                }
+            }
+        });
+    }
+
+    // ── Router ────────────────────────────────────────────────────────────────
+    let app = routes::router(state).layer(cors::cors_layer());
+
+    // ── Bind and serve ────────────────────────────────────────────────────────
+    let port: u16 = std::env::var("TASKAGENT_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    tracing::info!(%addr, "listening");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+/// On the very first run (no active tokens in the DB), generate a
+/// long-lived `svc` admin token, persist it, and write the plaintext to
+/// `<data_dir>/bootstrap.token` + log it once to stderr.
+///
+/// On subsequent runs this is a no-op.
+async fn bootstrap_admin_token(
+    store: &dyn TokenStore,
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let active = store
+        .count_active()
+        .await
+        .map_err(|e| anyhow::anyhow!("count tokens: {e}"))?;
+    if active > 0 {
+        tracing::info!(
+            active_tokens = active,
+            "skipping bootstrap — tokens already exist"
+        );
+        return Ok(());
+    }
+
+    let secret = generate(NewTokenSpec {
+        kind: TokenKind::Svc,
+        agent_id: AgentId::new(),
+        scope: TokenScope::admin(),
+        rate_limit_per_min: 300,
+        expired_at: None,
+    })
+    .map_err(|e| anyhow::anyhow!("token generate: {e}"))?;
+
+    store
+        .insert(secret.record.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("token insert: {e}"))?;
+
+    let bootstrap_path = data_dir.join("bootstrap.token");
+    tokio::fs::write(&bootstrap_path, &secret.plaintext).await?;
+
+    // Restrict file mode on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = tokio::fs::metadata(&bootstrap_path).await {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = tokio::fs::set_permissions(&bootstrap_path, perms).await;
+        }
+    }
+
+    eprintln!("┌────────────────────────────────────────────────────────────────────┐");
+    eprintln!("│ TASKAGENT BOOTSTRAP ADMIN TOKEN                                    │");
+    eprintln!("│ ------------------------------------------------------------------ │");
+    eprintln!("│ This token is shown only once. Save it now.                        │");
+    eprintln!("│ Also written to: {}", bootstrap_path.display());
+    eprintln!("│                                                                    │");
+    eprintln!("│   {}", secret.plaintext);
+    eprintln!("│                                                                    │");
+    eprintln!("└────────────────────────────────────────────────────────────────────┘");
+
+    tracing::info!(
+        token_id = %secret.record.id,
+        prefix = %secret.record.prefix,
+        path = %bootstrap_path.display(),
+        "wrote bootstrap admin token"
+    );
+
+    Ok(())
+}

@@ -1,0 +1,17 @@
+# Prompt: analyze_complexity — batch complexity scoring (§3.8.3)
+#
+# The tasks block is rendered into `tasks_list` by the call site; the
+# template only stitches the framing around it.
+#
+# Variables:
+#   tasks_list — formatted list of tasks (one per item, indented description)
+
+[meta]
+name = "analyze_complexity"
+description = "Score every task in a plan for decomposition complexity in one batch call."
+
+[variants.default]
+template = """You are a project-management assistant. For each task below, estimate decomposition complexity on a 1-10 scale (1 = trivial single action, 10 = multi-phase epic). Then propose `recommended_subtasks` (the fan-out the task should be split into; 0 if it does not need decomposition) and a short `expansion_hint` (one imperative sentence describing how to break it down). Provide a brief `reasoning`. Call `report_complexity` with one entry per task, preserving the input `task_id`.
+
+Tasks:
+{ tasks_list }"""

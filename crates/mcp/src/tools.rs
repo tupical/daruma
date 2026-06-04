@@ -1,0 +1,2990 @@
+//! MCP tool catalogue + dispatch.
+//!
+//! Every tool is a thin shim over a `taskagent-server` HTTP endpoint —
+//! the inputs come in as JSON arguments from the MCP client and the
+//! outputs are forwarded as JSON `content` text frames.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Map, Value};
+
+use crate::client::ApiClient;
+use crate::session_metadata;
+use crate::workspace;
+
+/// In-memory store of one-time confirm tokens used by `taskagent_project_delete`.
+///
+/// `token → (project_id, issued_at)`.  Tokens expire after [`CONFIRM_TTL`].
+/// Cleared on MCP process restart — that is by design: the agent must
+/// regenerate the token within the same session.
+fn confirm_store() -> &'static Mutex<HashMap<String, (String, Instant)>> {
+    static STORE: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const CONFIRM_TTL: Duration = Duration::from_secs(300);
+
+enum ProjectFilter {
+    All,
+    Project(String),
+    None,
+}
+
+fn random_confirm_token() -> String {
+    // 128-bit random token, formatted as a UUID.
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn issue_confirm_token(project_id: &str) -> String {
+    let token = random_confirm_token();
+    let now = Instant::now();
+    let mut guard = confirm_store().lock().expect("confirm_store poisoned");
+    // Sweep expired tokens opportunistically to keep the map small.
+    guard.retain(|_, (_, ts)| now.duration_since(*ts) < CONFIRM_TTL);
+    guard.insert(token.clone(), (project_id.to_string(), now));
+    token
+}
+
+/// Consume `token`. Returns `Ok(())` if it exists, matches `project_id`, and
+/// has not expired; otherwise `Err(reason)`.  The token is removed from the
+/// store on every call so a leaked one cannot be replayed.
+fn consume_confirm_token(token: &str, project_id: &str) -> std::result::Result<(), &'static str> {
+    let mut guard = confirm_store().lock().expect("confirm_store poisoned");
+    let (pid, issued_at) = guard.remove(token).ok_or("confirm_token_unknown_or_used")?;
+    if Instant::now().duration_since(issued_at) >= CONFIRM_TTL {
+        return Err("confirm_token_expired");
+    }
+    if pid != project_id {
+        return Err("confirm_token_project_mismatch");
+    }
+    Ok(())
+}
+
+/// Static description of a tool, returned by `tools/list`.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ToolDefinition {
+    pub name: &'static str,
+    pub description: &'static str,
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
+}
+
+/// Full catalogue of tools the MCP server advertises. AC-7 requires ≥10
+/// tools including `taskagent_subscribe_project`, `taskagent_inbox_pull`,
+/// `taskagent_comment`, and `taskagent_reopen`.
+pub fn tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "taskagent_create",
+            description: "Create a new task. `title` is required; everything else is optional.",
+            input_schema: schema_create(),
+        },
+        ToolDefinition {
+            name: "taskagent_capture",
+            description: "Quick-capture a fleeting idea as an inbox task (priority p3). Uses the resolved repo project when unambiguous; pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Pass `project_id: null` for a project-less inbox task.",
+            input_schema: schema_capture(),
+        },
+        ToolDefinition {
+            name: "taskagent_capture_batch",
+            description: "Capture multiple inbox tasks in one call. Each string becomes a separate task (priority p3).",
+            input_schema: schema_capture_batch(),
+        },
+        ToolDefinition {
+            name: "taskagent_get",
+            description: "Fetch a single task by its identifier.",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_update",
+            description: "Update a task's title, description, or due date. The change is dispatched as `update_task`, so it is recorded in the task event/activity log.",
+            input_schema: schema_update(),
+        },
+        ToolDefinition {
+            name: "taskagent_list",
+            description: "List tasks. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `status` narrows the result by status: pass a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, or the shortcut `active` (alias for all non-terminal statuses).",
+            input_schema: schema_list(),
+        },
+        ToolDefinition {
+            name: "taskagent_search",
+            description: "Search tasks, comments, and plans by text. Scope defaults to all three; project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
+            input_schema: schema_search(),
+        },
+        ToolDefinition {
+            name: "taskagent_lesson_recall",
+            description: "Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix.",
+            input_schema: schema_lesson_recall(),
+        },
+        ToolDefinition {
+            name: "taskagent_project_list",
+            description: "List every project (id, title, description).",
+            input_schema: empty_schema(),
+        },
+        ToolDefinition {
+            name: "taskagent_project_create",
+            description: "Create a new project.",
+            input_schema: schema_project_create(),
+        },
+        ToolDefinition {
+            name: "taskagent_project_use",
+            description: "Bind a workspace/repo scope to a taskagent project. When MCP is running in a folder that contains multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
+            input_schema: schema_project_use(),
+        },
+        ToolDefinition {
+            name: "taskagent_project_delete",
+            description: "Delete a project. Two-step, destructive: (1) call with only `id` to receive a one-time `confirm_token` (TTL 5 min) plus an emptiness/contents summary; (2) call again with the same `id`, the issued `confirm_token`, AND `confirm` set to the project's exact title. The server still refuses unless the project has 0 tasks and 0 plans.",
+            input_schema: schema_project_delete(),
+        },
+        ToolDefinition {
+            name: "taskagent_workspace_info",
+            description: "Show this MCP session's workspace key, inferred project, inference error, and known repo scopes.",
+            input_schema: empty_schema(),
+        },
+        ToolDefinition {
+            name: "taskagent_set_status",
+            description: "Set a task's status (inbox / todo / in_progress / done).",
+            input_schema: schema_set_status(),
+        },
+        ToolDefinition {
+            name: "taskagent_set_priority",
+            description: "Set a task's priority (p0 / p1 / p2 / p3).",
+            input_schema: schema_set_priority(),
+        },
+        ToolDefinition {
+            name: "taskagent_move_project",
+            description: "Move a task to another project while preserving its id, comments, relations, and event history. Pass `project_id`, `project_scope`, or `scope_path`.",
+            input_schema: schema_move_project(),
+        },
+        ToolDefinition {
+            name: "taskagent_complete",
+            description: "Mark a task as completed.",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_delete",
+            description: "Delete a task.",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_split",
+            description: "Split a parent task into 2+ subtasks.",
+            input_schema: schema_split(),
+        },
+        // ── Bulk task ops (§3.7.7 / LIN B.7) ──────────────────────────────
+        ToolDefinition {
+            name: "taskagent_bulk_set_status",
+            description: "Atomically set the same status on up to 50 tasks. Duplicate ids are deduped; fail-fast if any id is missing.",
+            input_schema: schema_bulk_set_status(),
+        },
+        ToolDefinition {
+            name: "taskagent_bulk_attach_to_plan",
+            description: "Atomically attach up to 50 tasks to a single plan. Already-attached tasks are skipped (idempotent); fail-fast if any task or the plan is missing.",
+            input_schema: schema_bulk_attach_to_plan(),
+        },
+        ToolDefinition {
+            name: "taskagent_ai_parse",
+            description: "Have the AI parse free-form text into a Command.",
+            input_schema: schema_ai_parse(),
+        },
+        ToolDefinition {
+            name: "taskagent_ai_decompose",
+            description: "Have the AI decompose a task into subtasks. Optional `hint` (free-form string, typically an `expansion_hint` from `taskagent_ai_analyze_complexity`) is appended to the prompt as additional guidance.",
+            input_schema: schema_ai_decompose(),
+        },
+        ToolDefinition {
+            name: "taskagent_ai_analyze_complexity",
+            description: "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `taskagent_ai_decompose { hint }` to chain analyze → decompose.",
+            input_schema: schema_ai_analyze_complexity(),
+        },
+        ToolDefinition {
+            name: "taskagent_ai_scope",
+            description: "Rewrite a task's title + description at a broader (`up`) or narrower (`down`) scope. Returns the proposed `Command::UpdateTask` JSON; the caller decides whether to dispatch.",
+            input_schema: schema_ai_scope(),
+        },
+        ToolDefinition {
+            name: "taskagent_research",
+            description: "Run a free-form research query against the AI provider, optionally grounded in the bodies of one or more existing tasks (`context_task_ids`). When `save_to_task_id` is set, the answer is also persisted as a Research comment on that task.",
+            input_schema: schema_ai_research(),
+        },
+        ToolDefinition {
+            name: "taskagent_comment",
+            description: "Add a comment to a task.",
+            input_schema: schema_comment(),
+        },
+        ToolDefinition {
+            name: "taskagent_reopen",
+            description: "Reopen a completed task (sets status back to `todo`).",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_inbox_pull",
+            description: "Poll a single agent's inbox; optionally long-poll up to 60 s.",
+            input_schema: schema_inbox_pull(),
+        },
+        ToolDefinition {
+            name: "taskagent_subscribe_project",
+            description: "One-shot snapshot of events for a project (the streaming form lives on /v1/ws).",
+            input_schema: schema_subscribe_project(),
+        },
+        ToolDefinition {
+            name: "taskagent_events_since",
+            description: "Load events with `seq > since`, capped at `limit` (default 100).",
+            input_schema: schema_events_since(),
+        },
+        ToolDefinition {
+            name: "taskagent_healthz",
+            description: "Server health check — no auth required.",
+            input_schema: empty_schema(),
+        },
+        // ── Plan tools (W3.2) ─────────────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_plan_create",
+            description: "Create a new execution plan for a project.",
+            input_schema: schema_plan_create(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_update",
+            description: "Update a plan's title, description, goal, success criteria, or parent. Pass null for parent_plan_id to unparent (move to root); omit the field to leave the parent unchanged.",
+            input_schema: schema_plan_update(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_get",
+            description: "Fetch a plan by id, including progress metrics.",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_list",
+            description: "List plans. `project_id` uses the resolved repo project when unambiguous. Pass `all` to query across projects, or pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Optional `status` filters by plan status.",
+            input_schema: schema_plan_list(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_add_task",
+            description: "Attach a task to a plan at an optional position with optional dependencies.",
+            input_schema: schema_plan_add_task(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_remove_task",
+            description: "Detach a task from a plan. Aborts any in-progress step atomically.",
+            input_schema: schema_plan_task_ref(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_reorder",
+            description: "Replace the full task order within a plan.",
+            input_schema: schema_plan_reorder(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_archive",
+            description: "Archive a plan and atomically abort all active runs.",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_set_status",
+            description: "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
+            input_schema: schema_plan_set_status(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_next_task",
+            description: "Return the first eligible task in a plan for a given run, respecting dependencies.",
+            input_schema: schema_plan_next_task(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_progress",
+            description: "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
+            input_schema: schema_with_id("plan_id"),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_drain_next",
+            description: "Atomically resolve the next eligible plan task and acquire a claim for this MCP session's agent.",
+            input_schema: schema_plan_drain_next(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_graph",
+            description: "Read a plan's execution DAG: task nodes plus depends_on and blocks edges.",
+            input_schema: schema_with_plan_id(),
+        },
+        ToolDefinition {
+            name: "taskagent_plan_fanout",
+            description: "Return parallel execution waves for a plan, respecting depends_on and active Blocks relations.",
+            input_schema: schema_with_plan_id(),
+        },
+        ToolDefinition {
+            name: "taskagent_can_start",
+            description: "Check whether a task is ready to start, returning active blockers with title and status.",
+            input_schema: schema_can_start(),
+        },
+        // ── WorkspaceGraph tools (P3) ─────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_workspacegraph_status",
+            description: "WorkspaceGraph index health: schema version, node/edge counts, event lag, and last error.",
+            input_schema: empty_schema(),
+        },
+        ToolDefinition {
+            name: "taskagent_workspacegraph_context",
+            description: "Immediate neighborhood of a graph node (incoming/outgoing edges plus ranked neighbors).",
+            input_schema: schema_workspacegraph_context(),
+        },
+        ToolDefinition {
+            name: "taskagent_workspacegraph_related",
+            description: "Breadth-first related nodes around a graph node, capped by depth and limit.",
+            input_schema: schema_workspacegraph_related(),
+        },
+        ToolDefinition {
+            name: "taskagent_workspacegraph_search",
+            description: "Full-text search over WorkspaceGraph nodes. project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
+            input_schema: schema_workspacegraph_search(),
+        },
+        ToolDefinition {
+            name: "taskagent_workspacegraph_impact",
+            description: "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges.",
+            input_schema: schema_workspacegraph_impact(),
+        },
+        // ── Run tools (W3.2) ──────────────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_run_start",
+            description: "Start a new agent run of a plan.",
+            input_schema: schema_run_start(),
+        },
+        ToolDefinition {
+            name: "taskagent_run_start_step",
+            description: "Mark the beginning of a task step within a run.",
+            input_schema: schema_run_step(),
+        },
+        ToolDefinition {
+            name: "taskagent_run_finish_step",
+            description: "Mark the completion of a task step with an outcome.",
+            input_schema: schema_run_finish_step(),
+        },
+        ToolDefinition {
+            name: "taskagent_run_complete",
+            description: "Terminate a run successfully.",
+            input_schema: schema_with_id("run_id"),
+        },
+        ToolDefinition {
+            name: "taskagent_run_abort",
+            description: "Abort a run with a reason (e.g. plan archived or explicit stop).",
+            input_schema: schema_run_abort(),
+        },
+        // ── Run note tools (§3.8.2) ───────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_run_note_append",
+            description: "Append a free-form journal note to an active run. The actor is taken from the MCP session token; body is required (≤ 4 KiB).",
+            input_schema: schema_run_note_append(),
+        },
+        ToolDefinition {
+            name: "taskagent_run_log",
+            description: "Append a leveled progress log entry to an active run. Uses the run notes stream with body formatted as `[level] message`.",
+            input_schema: schema_run_log(),
+        },
+        ToolDefinition {
+            name: "taskagent_run_notes_list",
+            description: "List journal notes for a run in chronological order. Optional `limit` (default 50, max 500) and `after` (cursor = id of last note from previous page).",
+            input_schema: schema_run_notes_list(),
+        },
+        // ── Claim tools (W3.2) ────────────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_claim",
+            description: "Acquire an optimistic claim on a task for a given TTL in seconds.",
+            input_schema: schema_claim(),
+        },
+        ToolDefinition {
+            name: "taskagent_release",
+            description: "Release a previously-acquired task claim.",
+            input_schema: schema_release(),
+        },
+        // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
+        ToolDefinition {
+            name: "taskagent_session_start",
+            description: "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
+            input_schema: schema_session_start(),
+        },
+        ToolDefinition {
+            name: "taskagent_session_get",
+            description: "Fetch an agent session by id (includes metadata: client, model, chat_id, transcript_path).",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_session_list",
+            description: "List agent sessions for an agent id (defaults to this MCP process).",
+            input_schema: schema_session_list(),
+        },
+        ToolDefinition {
+            name: "taskagent_session_end",
+            description: "End an agent session.",
+            input_schema: schema_with_id("id"),
+        },
+        ToolDefinition {
+            name: "taskagent_session_set_plan",
+            description: "Replace the session's plan-steps list (max 100 steps). Linear B.1.",
+            input_schema: schema_session_set_plan(),
+        },
+        ToolDefinition {
+            name: "taskagent_session_artifact",
+            description: "Attach a file/url/diff artifact reference to an agent session.",
+            input_schema: schema_session_artifact(),
+        },
+        ToolDefinition {
+            name: "taskagent_session_artifacts_list",
+            description: "List artifact references attached to an agent session.",
+            input_schema: schema_with_id("id"),
+        },
+        // ── Signal tools (W3.2 / Linear B.5) ─────────────────────────────
+        ToolDefinition {
+            name: "taskagent_signal_send",
+            description: "Send a typed signal to a run (stop / elicit / auth_required).",
+            input_schema: schema_signal_send(),
+        },
+        ToolDefinition {
+            name: "taskagent_signal_respond",
+            description: "Human responds to an elicitation request on a run.",
+            input_schema: schema_signal_respond(),
+        },
+        // ── Relation tools (§3.2 W3.2) ───────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_link",
+            description: "Create a typed relation (blocks / relates_to / duplicates) between two tasks. Idempotent via `client_command_id`.",
+            input_schema: schema_link(),
+        },
+        ToolDefinition {
+            name: "taskagent_unlink",
+            description: "Delete a relation by its id.",
+            input_schema: schema_unlink(),
+        },
+        ToolDefinition {
+            name: "taskagent_relations",
+            description: "Read 5-group relations projection for a task (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
+            input_schema: schema_relations(),
+        },
+        // ── Document tools (PR1 §7) ───────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_doc_create",
+            description: "Create a markdown document for a project. `kind` is `interview` or `human_log`; multiple docs of the same kind are allowed.",
+            input_schema: schema_doc_create(),
+        },
+        ToolDefinition {
+            name: "taskagent_doc_get",
+            description: "Fetch a document by id, including its full markdown body.",
+            input_schema: schema_with_id("document_id"),
+        },
+        ToolDefinition {
+            name: "taskagent_doc_append",
+            description: "Append markdown to a document. A blank-line separator is inserted by the server when the existing body is non-empty.",
+            input_schema: schema_doc_append(),
+        },
+        ToolDefinition {
+            name: "taskagent_doc_replace",
+            description: "Replace a document's entire markdown body.",
+            input_schema: schema_doc_replace(),
+        },
+        ToolDefinition {
+            name: "taskagent_doc_rename",
+            description: "Rename a document (title only; body is unchanged).",
+            input_schema: schema_doc_rename(),
+        },
+        ToolDefinition {
+            name: "taskagent_doc_archive",
+            description: "Soft-archive a document. It remains queryable via `taskagent_doc_list` when `include_archived=true`.",
+            input_schema: schema_with_id("document_id"),
+        },
+        ToolDefinition {
+            name: "taskagent_doc_list",
+            description: "List documents for a project. `project_id` uses the resolved repo project when unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `kind` filter; archived docs are hidden unless `include_archived=true`.",
+            input_schema: schema_doc_list(),
+        },
+        // ── Version-history tools ─────────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_history_list",
+            description: "List immutable version records for one task or document, newest first.",
+            input_schema: schema_history_entity(),
+        },
+        ToolDefinition {
+            name: "taskagent_history_get",
+            description: "Fetch one immutable version record by version id.",
+            input_schema: schema_with_id("version_id"),
+        },
+        ToolDefinition {
+            name: "taskagent_history_compare",
+            description: "Compare two version numbers for the same task or document.",
+            input_schema: schema_history_compare(),
+        },
+        ToolDefinition {
+            name: "taskagent_history_latest",
+            description: "List latest task/document version records visible to this token.",
+            input_schema: schema_history_latest(),
+        },
+        ToolDefinition {
+            name: "taskagent_history_summary",
+            description: "Return a compact agent-readable summary timeline for one task or document.",
+            input_schema: schema_history_entity(),
+        },
+        ToolDefinition {
+            name: "taskagent_history_rollback",
+            description: "Restore a task or document to a selected immutable version by creating a new rollback version.",
+            input_schema: schema_with_id("version_id"),
+        },
+    ]
+}
+
+/// Dispatch a single tool call by name. The MCP client passes `arguments`
+/// as a JSON object; this function returns the JSON body the server
+/// should embed in `content[0].text`.
+pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyhow::Result<Value> {
+    let args = arguments.as_object().cloned().unwrap_or_default();
+
+    match name {
+        "taskagent_create" => {
+            let mut task = args.get("task").cloned().unwrap_or_else(|| json!({}));
+            // Inject the workspace default project if the task didn't
+            // specify one explicitly. Use `"project_id": null` in the
+            // arguments to opt out and create an inbox-only task.
+            if let Some(t) = task.as_object_mut() {
+                if !t.contains_key("project_id") {
+                    match resolve_project_filter(&args, false, true, true)? {
+                        ProjectFilter::Project(pid) => {
+                            t.insert("project_id".to_string(), Value::String(pid));
+                        }
+                        ProjectFilter::None => {}
+                        ProjectFilter::All => unreachable!("allow_all=false"),
+                    }
+                }
+                // Normalize explicit nulls to absent.
+                if let Some(v) = t.get("project_id") {
+                    if v.is_null() {
+                        t.remove("project_id");
+                    }
+                }
+            }
+            client
+                .post_command(json!({"type":"create_task","task": task}))
+                .await
+        }
+        "taskagent_capture" => {
+            let text = required_string(&args, "text")?;
+            create_captured_task(client, &text, &args).await
+        }
+        "taskagent_capture_batch" => {
+            let texts = args
+                .get("texts")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("`texts` (array of strings) is required"))?;
+            if texts.is_empty() {
+                return Err(anyhow::anyhow!("`texts` must contain at least one item"));
+            }
+            let mut tasks = Vec::with_capacity(texts.len());
+            for item in texts {
+                let text = item
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("each entry in `texts` must be a string"))?;
+                let resp = create_captured_task(client, text, &args).await?;
+                tasks.push(resp);
+            }
+            Ok(json!({ "count": tasks.len(), "tasks": tasks }))
+        }
+        "taskagent_get" => {
+            let id = required_string(&args, "id")?;
+            client.get_json(&format!("/v1/tasks/{id}")).await
+        }
+        "taskagent_update" => {
+            let id = required_string(&args, "id")?;
+            let mut patch = Map::new();
+            if let Some(title) = args.get("title") {
+                let title = title
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("`title` must be a string"))?;
+                patch.insert("title".to_string(), Value::String(title.to_string()));
+            }
+            if let Some(description) = args.get("description") {
+                let description = description
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("`description` must be a string"))?;
+                patch.insert(
+                    "description".to_string(),
+                    Value::String(description.to_string()),
+                );
+            }
+            if let Some(due_at) = args.get("due_at") {
+                if due_at.is_null() {
+                    patch.insert("due_at".to_string(), Value::Null);
+                } else {
+                    let due_at = due_at
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("`due_at` must be a string or null"))?;
+                    patch.insert("due_at".to_string(), Value::String(due_at.to_string()));
+                }
+            }
+            if patch.is_empty() {
+                anyhow::bail!("at least one of `title`, `description`, or `due_at` is required");
+            }
+            client
+                .post_command(json!({"type":"update_task","id": id, "patch": patch}))
+                .await
+        }
+        "taskagent_list" => {
+            let status = args.get("status").and_then(|v| v.as_str());
+            let mut params: Vec<(&str, String)> = Vec::with_capacity(2);
+            match resolve_project_filter(&args, true, false, true)? {
+                ProjectFilter::All | ProjectFilter::None => {}
+                ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
+            }
+            if let Some(s) = status {
+                let s = s.trim();
+                if !s.is_empty() {
+                    params.push(("status", urlencode(s)));
+                }
+            }
+            let path = if params.is_empty() {
+                "/v1/tasks".to_string()
+            } else {
+                let qs = params
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("&");
+                format!("/v1/tasks?{qs}")
+            };
+            client.get_json(&path).await
+        }
+        "taskagent_search" => {
+            let query = required_string(&args, "query")?;
+            let scope = args.get("scope").and_then(|v| v.as_str());
+            let limit = args.get("limit").and_then(|v| v.as_u64());
+            let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
+            if let Some(s) = scope {
+                let s = s.trim();
+                if !s.is_empty() {
+                    params.push(("scope", urlencode(s)));
+                }
+            }
+            match resolve_project_filter(&args, true, false, false)? {
+                ProjectFilter::All => params.push(("project_id", "all".to_string())),
+                ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
+                ProjectFilter::None => {}
+            }
+            if let Some(limit) = limit {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client.get_json(&format!("/v1/search?{qs}")).await
+        }
+        "taskagent_lesson_recall" => {
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let limit = args.get("limit").and_then(|v| v.as_u64());
+            let lesson_query = if query.trim().is_empty() {
+                "lesson:".to_string()
+            } else {
+                format!("lesson: {}", query.trim())
+            };
+            let mut params: Vec<(&str, String)> = vec![
+                ("query", urlencode(&lesson_query)),
+                ("scope", "comments".to_string()),
+            ];
+            match resolve_project_filter(&args, true, false, false)? {
+                ProjectFilter::All => params.push(("project_id", "all".to_string())),
+                ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
+                ProjectFilter::None => {}
+            }
+            if let Some(limit) = limit {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client.get_json(&format!("/v1/search?{qs}")).await
+        }
+        "taskagent_project_list" => client.get_json("/v1/projects").await,
+        "taskagent_project_create" => {
+            let title = required_string(&args, "title")?;
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let resp = client
+                .post_command(
+                    json!({"type":"create_project","title": title, "description": description}),
+                )
+                .await?;
+            // Server returns MutationResponse; surface the new project_id
+            // up-front for convenience.
+            let project_id = resp["data"].as_array().and_then(|arr| {
+                arr.iter().find_map(|env| {
+                    env.pointer("/payload/project/id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+            });
+            Ok(json!({ "project_id": project_id, "events": resp }))
+        }
+        "taskagent_project_delete" => {
+            let id = required_string(&args, "id")?;
+            let confirm_token = args.get("confirm_token").and_then(|v| v.as_str());
+            let confirm = args.get("confirm").and_then(|v| v.as_str());
+
+            // Look up the project so we can match `confirm` against its title
+            // and surface a summary regardless of which call this is.
+            let projects = client.get_json("/v1/projects").await?;
+            let project = projects
+                .as_array()
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+                })
+                .ok_or_else(|| anyhow::anyhow!("project_not_found: {id}"))?
+                .clone();
+            let title = project
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Counts for the summary; we hit the server fresh so the agent
+            // sees the same state the route handler will gate on.
+            let tasks = client
+                .get_json(&format!("/v1/tasks?project_id={}", urlencode(&id)))
+                .await?;
+            let tasks_count = tasks.as_array().map(|a| a.len()).unwrap_or(0);
+            let plans = client
+                .get_json(&format!("/v1/plans?project_id={}", urlencode(&id)))
+                .await?;
+            let plans_count = plans.as_array().map(|a| a.len()).unwrap_or(0);
+
+            // ── Step 1: no token yet → issue one and return preview. ─────
+            if confirm_token.is_none() && confirm.is_none() {
+                let token = issue_confirm_token(&id);
+                return Ok(json!({
+                    "status": "confirmation_required",
+                    "project_id": id,
+                    "project_title": title,
+                    "tasks_count": tasks_count,
+                    "plans_count": plans_count,
+                    "empty": tasks_count == 0 && plans_count == 0,
+                    "confirm_token": token,
+                    "ttl_seconds": CONFIRM_TTL.as_secs(),
+                    "instructions": "To delete, call again with the same `id`, this `confirm_token`, and `confirm` set to the project's exact title.",
+                }));
+            }
+
+            // ── Step 2: both fields must be present, no partial calls. ───
+            let token = confirm_token
+                .ok_or_else(|| anyhow::anyhow!("`confirm_token` is required on the second call"))?;
+            let confirm = confirm.ok_or_else(|| {
+                anyhow::anyhow!("`confirm` is required and must equal the project title")
+            })?;
+            if confirm != title {
+                anyhow::bail!(
+                    "confirm_mismatch: expected exact title `{}`, got `{}`",
+                    title,
+                    confirm
+                );
+            }
+            consume_confirm_token(token, &id).map_err(|reason| anyhow::anyhow!(reason))?;
+
+            // Final guard before the wire call.  The server enforces this
+            // again — we surface it early for a more useful error message.
+            if tasks_count > 0 || plans_count > 0 {
+                anyhow::bail!("project_not_empty: tasks={tasks_count}, plans={plans_count}");
+            }
+
+            let resp = client
+                .delete_json(&format!("/v1/projects/{}", urlencode(&id)))
+                .await?;
+            Ok(json!({
+                "status": "deleted",
+                "project_id": id,
+                "project_title": title,
+                "response": resp,
+            }))
+        }
+        "taskagent_project_use" => {
+            let ws = workspace::global()
+                .ok_or_else(|| anyhow::anyhow!("workspace state not initialised"))?;
+            let scope_path = args.get("scope_path").and_then(|v| v.as_str());
+            match args.get("project_id") {
+                Some(v) if v.is_null() => {
+                    let scope = ws.set_default_project("", scope_path)?;
+                    Ok(json!({"workspace": ws.key(), "scope": scope, "project_id": Value::Null}))
+                }
+                Some(v) => {
+                    let pid = v
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("`project_id` must be a string or null"))?;
+                    let scope = ws.set_default_project(pid, scope_path)?;
+                    Ok(json!({"workspace": ws.key(), "scope": scope, "project_id": pid}))
+                }
+                None => anyhow::bail!("`project_id` is required (use null to clear)"),
+            }
+        }
+        "taskagent_workspace_info" => {
+            let ws = workspace::global();
+            let inferred = ws.map(|w| w.inferred_project());
+            let (inferred_project, inferred_project_error) = match inferred {
+                Some(Ok(project_id)) => (project_id, None),
+                Some(Err(err)) => (None, Some(err.to_string())),
+                None => (None, None),
+            };
+            Ok(json!({
+                "workspace": ws.map(|w| w.key().to_string()),
+                "mcp_agent_id": client.agent_id(),
+                "default_project": inferred_project.clone(),
+                "inferred_project": inferred_project,
+                "inferred_project_error": inferred_project_error,
+                "scopes": ws.map(|w| {
+                    w.scopes()
+                        .into_iter()
+                        .map(|(scope, project_id)| json!({
+                            "scope": scope,
+                            "name": std::path::Path::new(&scope)
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&scope),
+                            "project_id": project_id,
+                        }))
+                        .collect::<Vec<_>>()
+                }).unwrap_or_default(),
+            }))
+        }
+        "taskagent_set_status" => {
+            let id = required_string(&args, "id")?;
+            let status = required_string(&args, "status")?;
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            client
+                .post_command(
+                    json!({"type":"set_status","id": id, "status": status, "force": force}),
+                )
+                .await
+        }
+        "taskagent_set_priority" => {
+            let id = required_string(&args, "id")?;
+            let priority = required_string(&args, "priority")?;
+            client
+                .post_command(json!({"type":"set_priority","id": id, "priority": priority}))
+                .await
+        }
+        "taskagent_move_project" => {
+            let id = required_string(&args, "id")?;
+            let project_id = match resolve_project_filter(&args, false, false, true)? {
+                ProjectFilter::Project(pid) => pid,
+                ProjectFilter::None => {
+                    anyhow::bail!("`project_id`, `project_scope`, or `scope_path` is required")
+                }
+                ProjectFilter::All => unreachable!("allow_all=false"),
+            };
+            client
+                .post_command(json!({
+                    "type":"update_task",
+                    "id": id,
+                    "patch": {
+                        "project_id": project_id
+                    }
+                }))
+                .await
+        }
+        "taskagent_complete" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_command(json!({"type":"complete_task","id": id}))
+                .await
+        }
+        "taskagent_delete" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_command(json!({"type":"delete_task","id": id}))
+                .await
+        }
+        "taskagent_split" => {
+            let parent = required_string(&args, "parent")?;
+            let subtasks = args
+                .get("subtasks")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`subtasks` (array) is required"))?;
+            client
+                .post_command(json!({"type":"split_task","parent": parent, "subtasks": subtasks}))
+                .await
+        }
+        "taskagent_bulk_set_status" => {
+            let ids = args
+                .get("ids")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`ids` (array of task ids) is required"))?;
+            let status = required_string(&args, "status")?;
+            client
+                .post_command(json!({"type":"bulk_set_status","ids": ids, "status": status}))
+                .await
+        }
+        "taskagent_bulk_attach_to_plan" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let task_ids = args
+                .get("ids")
+                .or_else(|| args.get("task_ids"))
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`ids` (array of task ids) is required"))?;
+            client
+                .post_command(json!({
+                    "type":"bulk_attach_to_plan",
+                    "plan_id": plan_id,
+                    "task_ids": task_ids,
+                }))
+                .await
+        }
+        "taskagent_ai_parse" => {
+            let input = required_string(&args, "input")?;
+            let mut body = json!({"input": input});
+            // §3.8.13: forward use_research_provider transparently.
+            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
+                body["use_research_provider"] = json!(flag);
+            }
+            client.post_json("/v1/ai/parse", body).await
+        }
+        "taskagent_ai_decompose" => {
+            let task_id = required_string(&args, "task_id")?;
+            let mut body = json!({});
+            if let Some(hint) = args.get("hint").and_then(|v| v.as_str()) {
+                body["hint"] = json!(hint);
+            }
+            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
+                body["use_research_provider"] = json!(flag);
+            }
+            client
+                .post_json(&format!("/v1/ai/decompose/{task_id}"), body)
+                .await
+        }
+        "taskagent_ai_analyze_complexity" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let mut body = json!({});
+            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
+                body["use_research_provider"] = json!(flag);
+            }
+            client
+                .post_json(&format!("/v1/ai/analyze-complexity/{plan_id}"), body)
+                .await
+        }
+        "taskagent_ai_scope" => {
+            let task_id = required_string(&args, "task_id")?;
+            let direction = required_string(&args, "direction")?;
+            let mut body = json!({"direction": direction});
+            if let Some(s) = args.get("strength").and_then(|v| v.as_str()) {
+                body["strength"] = json!(s);
+            }
+            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
+                body["use_research_provider"] = json!(flag);
+            }
+            client
+                .post_json(&format!("/v1/ai/scope/{task_id}"), body)
+                .await
+        }
+        "taskagent_research" => {
+            let query = required_string(&args, "query")?;
+            let mut body = json!({"query": query});
+            if let Some(ids) = args.get("context_task_ids").and_then(|v| v.as_array()) {
+                body["context_task_ids"] =
+                    json!(ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
+            }
+            if let Some(save) = args.get("save_to_task_id").and_then(|v| v.as_str()) {
+                body["save_to_task_id"] = json!(save);
+            }
+            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
+                body["use_research_provider"] = json!(flag);
+            }
+            client.post_json("/v1/ai/research", body).await
+        }
+        "taskagent_comment" => {
+            let task_id = required_string(&args, "task_id")?;
+            let body_text = required_string(&args, "body")?;
+            // §3.8.8: optional semantic classification. We validate locally
+            // against the canonical set so MCP callers get an immediate
+            // error rather than a server-side 400. The authoritative parser
+            // lives in `taskagent_domain::CommentKind::FromStr`, mirrored
+            // here so the mcp crate doesn't need a domain dependency.
+            let mut body_json = json!({"body": body_text});
+            if let Some(kind_raw) = args.get("kind").and_then(|v| v.as_str()) {
+                let normalised = normalise_comment_kind(kind_raw)?;
+                body_json["kind"] = json!(normalised);
+            }
+            client
+                .post_json(&format!("/v1/tasks/{task_id}/comments"), body_json)
+                .await
+        }
+        "taskagent_reopen" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_command(json!({"type":"set_status","id": id, "status": "todo"}))
+                .await
+        }
+        "taskagent_inbox_pull" => {
+            let agent_id = required_string(&args, "agent_id")?;
+            let long_poll = args
+                .get("long_poll_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let max = args.get("max").and_then(|v| v.as_u64()).unwrap_or(100);
+            client
+                .get_json(&format!(
+                    "/v1/agents/{agent_id}/inbox?long_poll={long_poll}&max={max}"
+                ))
+                .await
+        }
+        "taskagent_subscribe_project" => {
+            // One-shot polling form: deliver any events whose target_project
+            // matches the requested project. The streaming form lives on
+            // `/v1/ws` (subscribe with `projects: [...]`). For MVP, we just
+            // return the snapshot of recent events.
+            let since = args.get("since_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
+            client
+                .get_json(&format!("/v1/events?since={since}&limit={limit}"))
+                .await
+        }
+        "taskagent_events_since" => {
+            let since = args.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
+            client
+                .get_json(&format!("/v1/events?since={since}&limit={limit}"))
+                .await
+        }
+        "taskagent_healthz" => client.get_json("/v1/healthz").await,
+
+        // ── Plan tools (W3.2) ─────────────────────────────────────────────
+        "taskagent_plan_create" => {
+            let title = required_string(&args, "title")?;
+            let project_id = required_string(&args, "project_id")?;
+            // Server expects {plan: NewPlan, external_ref?}; NewPlan requires
+            // an `owner: Actor` (we default to {kind: "user"}, matching the
+            // /v1/plans e2e tests). Other fields are optional.
+            let mut plan = json!({
+                "title": title,
+                "project_id": project_id,
+                "owner": {"kind": "user"},
+            });
+            if let Some(desc) = args.get("description").and_then(|v| v.as_str()) {
+                plan["description"] = json!(desc);
+            }
+            if let Some(goal) = args.get("goal").and_then(|v| v.as_str()) {
+                plan["goal"] = json!(goal);
+            }
+            if let Some(parent) = args.get("parent_plan_id").and_then(|v| v.as_str()) {
+                plan["parent_plan_id"] = json!(parent);
+            }
+            if let Some(criteria) = args.get("success_criteria") {
+                plan["success_criteria"] = criteria.clone();
+            }
+            client.post_json("/v1/plans", json!({ "plan": plan })).await
+        }
+        "taskagent_plan_update" => {
+            let id = required_string(&args, "id")?;
+            let patch = args
+                .get("patch")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`patch` (object) is required"))?;
+            // Server expects {patch: PlanPatch}; wrap the patch payload.
+            client
+                .patch_json(&format!("/v1/plans/{id}"), json!({ "patch": patch }))
+                .await
+        }
+        "taskagent_plan_get" => {
+            let id = required_string(&args, "id")?;
+            client.get_json(&format!("/v1/plans/{id}")).await
+        }
+        "taskagent_plan_list" => {
+            // Same default-project policy as `taskagent_list`: inject the
+            // workspace default unless the agent explicitly passes `all`.
+            let mut qs = String::new();
+            match resolve_project_filter(&args, true, false, true)? {
+                ProjectFilter::All | ProjectFilter::None => {}
+                ProjectFilter::Project(pid) => {
+                    qs.push_str(&format!("project_id={}&", urlencode(&pid)));
+                }
+            }
+            if let Some(status) = args.get("status").and_then(|v| v.as_str()) {
+                qs.push_str(&format!("status={}&", urlencode(status)));
+            }
+            let path = if qs.is_empty() {
+                "/v1/plans".to_string()
+            } else {
+                format!("/v1/plans?{}", qs.trim_end_matches('&'))
+            };
+            client.get_json(&path).await
+        }
+        "taskagent_plan_add_task" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            let mut body = json!({"task_id": task_id});
+            if let Some(pos) = args.get("position").and_then(|v| v.as_u64()) {
+                body["position"] = json!(pos);
+            }
+            if let Some(deps) = args.get("depends_on").cloned() {
+                body["depends_on"] = deps;
+            }
+            client
+                .post_json(&format!("/v1/plans/{plan_id}/tasks"), body)
+                .await
+        }
+        "taskagent_plan_remove_task" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .delete_json(&format!("/v1/plans/{plan_id}/tasks/{task_id}"))
+                .await
+        }
+        "taskagent_plan_reorder" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let order = args
+                .get("order")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`order` (array of task ids) is required"))?;
+            client
+                .post_json(
+                    &format!("/v1/plans/{plan_id}/reorder"),
+                    json!({"order": order}),
+                )
+                .await
+        }
+        "taskagent_plan_archive" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_json(&format!("/v1/plans/{id}/archive"), json!({}))
+                .await
+        }
+        "taskagent_plan_set_status" => {
+            let id = required_string(&args, "plan_id")?;
+            let status = required_string(&args, "status")?;
+            client
+                .post_json(
+                    &format!("/v1/plans/{id}/status"),
+                    json!({ "status": status }),
+                )
+                .await
+        }
+        "taskagent_plan_next_task" => {
+            let id = required_string(&args, "id")?;
+            let run_id = required_string(&args, "run_id")?;
+            let ttl = args
+                .get("claim_ttl_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            client
+                .get_json(&format!(
+                    "/v1/plans/{id}/next-task?run_id={run_id}&claim_ttl_secs={ttl}"
+                ))
+                .await
+        }
+        "taskagent_plan_progress" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            client
+                .get_json(&format!("/v1/plans/{plan_id}/progress"))
+                .await
+        }
+        "taskagent_plan_drain_next" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let mut body = json!({});
+            if let Some(run_id) = args.get("run_id").and_then(|v| v.as_str()) {
+                body["run_id"] = json!(run_id);
+            }
+            if let Some(ttl) = args.get("claim_ttl_secs").and_then(|v| v.as_u64()) {
+                body["claim_ttl_secs"] = json!(ttl);
+            }
+            client
+                .post_json(&format!("/v1/plans/{plan_id}/drain-next"), body)
+                .await
+        }
+        "taskagent_plan_graph" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            client.get_json(&format!("/v1/plans/{plan_id}/graph")).await
+        }
+        "taskagent_plan_fanout" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            client
+                .get_json(&format!("/v1/plans/{plan_id}/fanout"))
+                .await
+        }
+        "taskagent_can_start" => {
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .get_json(&format!("/v1/tasks/{task_id}/can_start"))
+                .await
+        }
+
+        // ── WorkspaceGraph tools (P3) ─────────────────────────────────────
+        "taskagent_workspacegraph_status" => client.get_json("/v1/workspacegraph/status").await,
+        "taskagent_workspacegraph_context" => {
+            let node_id = required_string(&args, "node_id")?;
+            let mut params: Vec<(&str, String)> = vec![("node_id", urlencode(&node_id))];
+            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .get_json(&format!("/v1/workspacegraph/context?{qs}"))
+                .await
+        }
+        "taskagent_workspacegraph_related" => {
+            let node_id = required_string(&args, "node_id")?;
+            let mut params: Vec<(&str, String)> = vec![("node_id", urlencode(&node_id))];
+            if let Some(depth) = args.get("depth").and_then(|v| v.as_u64()) {
+                params.push(("depth", depth.to_string()));
+            }
+            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .get_json(&format!("/v1/workspacegraph/related?{qs}"))
+                .await
+        }
+        "taskagent_workspacegraph_search" => {
+            let query = required_string(&args, "query")?;
+            let limit = args.get("limit").and_then(|v| v.as_u64());
+            let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
+            match resolve_project_filter(&args, true, false, true)? {
+                ProjectFilter::All => params.push(("project_id", "all".to_string())),
+                ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
+                ProjectFilter::None => {}
+            }
+            if let Some(limit) = limit {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .get_json(&format!("/v1/workspacegraph/search?{qs}"))
+                .await
+        }
+        "taskagent_workspacegraph_impact" => {
+            let node_id = required_string(&args, "node_id")?;
+            let mut params: Vec<(&str, String)> = vec![("node_id", urlencode(&node_id))];
+            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .get_json(&format!("/v1/workspacegraph/impact?{qs}"))
+                .await
+        }
+
+        // ── Run tools (W3.2) ──────────────────────────────────────────────
+        "taskagent_run_start" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let agent_id = required_string(&args, "agent_id")?;
+            let mut body = json!({"plan_id": plan_id, "agent_id": agent_id});
+            if let Some(parent) = args.get("parent_run_id").and_then(|v| v.as_str()) {
+                body["parent_run_id"] = json!(parent);
+            }
+            client.post_json("/v1/runs", body).await
+        }
+        "taskagent_run_start_step" => {
+            let run_id = required_string(&args, "run_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .post_json(
+                    &format!("/v1/runs/{run_id}/step/start"),
+                    json!({"task_id": task_id}),
+                )
+                .await
+        }
+        "taskagent_run_finish_step" => {
+            let run_id = required_string(&args, "run_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            let outcome = args.get("outcome").cloned().ok_or_else(|| {
+                anyhow::anyhow!("`outcome` (object with `kind` field) is required")
+            })?;
+            client
+                .post_json(
+                    &format!("/v1/runs/{run_id}/step/finish"),
+                    json!({"task_id": task_id, "outcome": outcome}),
+                )
+                .await
+        }
+        "taskagent_run_complete" => {
+            let run_id = required_string(&args, "run_id")?;
+            client
+                .post_json(&format!("/v1/runs/{run_id}/complete"), json!({}))
+                .await
+        }
+        "taskagent_run_abort" => {
+            let run_id = required_string(&args, "run_id")?;
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("user_requested")
+                .to_string();
+            client
+                .post_json(
+                    &format!("/v1/runs/{run_id}/abort"),
+                    json!({"reason": reason}),
+                )
+                .await
+        }
+
+        // ── Run note tools (§3.8.2) ───────────────────────────────────────
+        "taskagent_run_note_append" => {
+            let run_id = required_string(&args, "run_id")?;
+            let body = required_string(&args, "body")?;
+            client
+                .post_json(&format!("/v1/runs/{run_id}/notes"), json!({"body": body}))
+                .await
+        }
+        "taskagent_run_log" => {
+            let run_id = required_string(&args, "run_id")?;
+            let level = args
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("info")
+                .trim()
+                .to_ascii_lowercase();
+            let level = match level.as_str() {
+                "debug" | "info" | "warn" | "error" => level,
+                _ => "info".to_string(),
+            };
+            let body = required_string(&args, "body")?;
+            client
+                .post_json(
+                    &format!("/v1/runs/{run_id}/notes"),
+                    json!({"body": format!("[{level}] {body}")}),
+                )
+                .await
+        }
+        "taskagent_run_notes_list" => {
+            let run_id = required_string(&args, "run_id")?;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+            let mut path = format!("/v1/runs/{run_id}/notes?limit={limit}");
+            if let Some(after) = args.get("after").and_then(|v| v.as_str()) {
+                path.push_str("&after=");
+                path.push_str(after);
+            }
+            client.get_json(&path).await
+        }
+
+        // ── Claim tools (W3.2) ────────────────────────────────────────────
+        "taskagent_claim" => {
+            let agent_id = required_string(&args, "agent_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            let ttl_secs = args.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(300);
+            client
+                .post_json(
+                    "/v1/claims",
+                    json!({"agent_id": agent_id, "task_id": task_id, "ttl_secs": ttl_secs}),
+                )
+                .await
+        }
+        "taskagent_release" => {
+            let agent_id = required_string(&args, "agent_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .delete_json(&format!("/v1/claims/{agent_id}/{task_id}"))
+                .await
+        }
+
+        // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
+        "taskagent_session_start" => {
+            let agent_id = args
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| client.agent_id());
+            let mut body = json!({"agent_id": agent_id});
+            if let Some(parent) = args.get("parent_agent_id").and_then(|v| v.as_str()) {
+                body["parent_agent_id"] = json!(parent);
+            }
+            let metadata = args.get("metadata").cloned().unwrap_or_else(|| json!({}));
+            body["metadata"] = session_metadata::merge_defaults(metadata);
+            client.post_json("/v1/sessions", body).await
+        }
+        "taskagent_session_get" => {
+            let id = required_string(&args, "id")?;
+            client.get_json(&format!("/v1/sessions/{id}")).await
+        }
+        "taskagent_session_list" => {
+            let agent_id = args
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| client.agent_id());
+            client
+                .get_json(&format!("/v1/sessions?agent_id={agent_id}"))
+                .await
+        }
+        "taskagent_session_end" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_json(&format!("/v1/sessions/{id}/end"), json!({}))
+                .await
+        }
+        "taskagent_session_set_plan" => {
+            let id = required_string(&args, "id")?;
+            let steps = args
+                .get("steps")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`steps` (array, max 100) is required"))?;
+            client
+                .post_json(&format!("/v1/sessions/{id}/plan"), json!({"steps": steps}))
+                .await
+        }
+        "taskagent_session_artifact" => {
+            let session_id = required_string(&args, "session_id")?;
+            let kind = required_string(&args, "kind")?;
+            let reference = required_string(&args, "ref")?;
+            let mut body = json!({"kind": kind, "ref": reference});
+            if let Some(metadata) = args.get("metadata").cloned() {
+                body["metadata"] = metadata;
+            }
+            client
+                .post_json(&format!("/v1/sessions/{session_id}/artifacts"), body)
+                .await
+        }
+        "taskagent_session_artifacts_list" => {
+            let id = required_string(&args, "id")?;
+            client
+                .get_json(&format!("/v1/sessions/{id}/artifacts"))
+                .await
+        }
+
+        // ── Signal tools (W3.2 / Linear B.5) ─────────────────────────────
+        "taskagent_signal_send" => {
+            let run_id = required_string(&args, "run_id")?;
+            let kind = args
+                .get("kind")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`kind` (signal object) is required"))?;
+            client
+                .post_json(&format!("/v1/runs/{run_id}/signals"), json!({"kind": kind}))
+                .await
+        }
+        "taskagent_signal_respond" => {
+            let run_id = required_string(&args, "run_id")?;
+            let choice = required_string(&args, "choice")?;
+            client
+                .post_json(
+                    &format!("/v1/runs/{run_id}/signals/respond"),
+                    json!({"choice": choice}),
+                )
+                .await
+        }
+
+        // ── Relation tools (§3.2 W3.2) ───────────────────────────────────
+        "taskagent_link" => {
+            let from = required_string(&args, "from")?;
+            let to = required_string(&args, "to")?;
+            let kind = required_string(&args, "kind")?;
+            let mut body = serde_json::json!({"from": from, "to": to, "kind": kind});
+            if let Some(ccid) = args.get("client_command_id").and_then(|v| v.as_str()) {
+                body["client_command_id"] = serde_json::json!(ccid);
+            }
+            client.post_json("/v1/relations", body).await
+        }
+        "taskagent_unlink" => {
+            let relation_id = required_string(&args, "relation_id")?;
+            client
+                .delete_json(&format!("/v1/relations/{relation_id}"))
+                .await
+        }
+        "taskagent_relations" => {
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .get_json(&format!("/v1/tasks/{task_id}/relations"))
+                .await
+        }
+
+        // ── Document tools (PR1 §7) ───────────────────────────────────────
+        "taskagent_doc_create" => {
+            let project_id = required_string(&args, "project_id")?;
+            let kind = required_string(&args, "kind")?;
+            let title = required_string(&args, "title")?;
+            let mut new_doc = json!({
+                "project_id": project_id,
+                "kind": kind,
+                "title": title,
+            });
+            if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
+                new_doc["content"] = json!(content);
+            }
+            client
+                .post_json("/v1/documents", json!({ "new_doc": new_doc }))
+                .await
+        }
+        "taskagent_doc_get" => {
+            let id = required_string(&args, "document_id")?;
+            client.get_json(&format!("/v1/documents/{id}")).await
+        }
+        "taskagent_doc_append" => {
+            let id = required_string(&args, "document_id")?;
+            let content = required_string(&args, "content")?;
+            client
+                .post_json(
+                    &format!("/v1/documents/{id}/append"),
+                    json!({ "content": content }),
+                )
+                .await
+        }
+        "taskagent_doc_replace" => {
+            let id = required_string(&args, "document_id")?;
+            let content = required_string(&args, "content")?;
+            client
+                .patch_json(
+                    &format!("/v1/documents/{id}"),
+                    json!({ "content": content }),
+                )
+                .await
+        }
+        "taskagent_doc_rename" => {
+            let id = required_string(&args, "document_id")?;
+            let title = required_string(&args, "title")?;
+            client
+                .patch_json(&format!("/v1/documents/{id}"), json!({ "title": title }))
+                .await
+        }
+        "taskagent_doc_archive" => {
+            let id = required_string(&args, "document_id")?;
+            client
+                .post_json(&format!("/v1/documents/{id}/archive"), json!({}))
+                .await
+        }
+        "taskagent_doc_list" => {
+            // `project_id` falls back to the workspace default. The URL
+            // path requires a project id, so we bail with a friendly error
+            // if neither is set instead of producing a malformed URL.
+            let project_id = match resolve_project_filter(&args, false, false, true)? {
+                ProjectFilter::Project(pid) => pid,
+                ProjectFilter::None => {
+                    anyhow::bail!(
+                        "`project_id`, `project_scope`, or `scope_path` is required and no taskagent scope is resolved"
+                    )
+                }
+                ProjectFilter::All => unreachable!("allow_all=false"),
+            };
+            let mut qs = String::new();
+            if let Some(kind) = args.get("kind").and_then(|v| v.as_str()) {
+                qs.push_str(&format!("kind={}&", urlencode(kind)));
+            }
+            let include_archived = args
+                .get("include_archived")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            qs.push_str(&format!("include_archived={include_archived}"));
+            client
+                .get_json(&format!("/v1/projects/{project_id}/documents?{qs}"))
+                .await
+        }
+
+        // ── Version-history tools ─────────────────────────────────────────
+        "taskagent_history_list" => {
+            let entity_type = required_string(&args, "entity_type")?;
+            let entity_id = required_string(&args, "entity_id")?;
+            let limit = optional_u32(&args, "limit").unwrap_or(50);
+            client
+                .get_json(&format!(
+                    "/v1/history?entity_type={}&entity_id={}&limit={limit}",
+                    urlencode(&entity_type),
+                    urlencode(&entity_id)
+                ))
+                .await
+        }
+        "taskagent_history_get" => {
+            let id = required_string(&args, "version_id")?;
+            client.get_json(&format!("/v1/history/{id}")).await
+        }
+        "taskagent_history_compare" => {
+            let entity_type = required_string(&args, "entity_type")?;
+            let entity_id = required_string(&args, "entity_id")?;
+            let from = required_i64(&args, "from")?;
+            let to = required_i64(&args, "to")?;
+            client
+                .get_json(&format!(
+                    "/v1/history/compare?entity_type={}&entity_id={}&from={from}&to={to}",
+                    urlencode(&entity_type),
+                    urlencode(&entity_id)
+                ))
+                .await
+        }
+        "taskagent_history_latest" => {
+            let limit = optional_u32(&args, "limit").unwrap_or(50);
+            client
+                .get_json(&format!("/v1/history/latest?limit={limit}"))
+                .await
+        }
+        "taskagent_history_summary" => {
+            let entity_type = required_string(&args, "entity_type")?;
+            let entity_id = required_string(&args, "entity_id")?;
+            let limit = optional_u32(&args, "limit").unwrap_or(50);
+            client
+                .get_json(&format!(
+                    "/v1/history/summary?entity_type={}&entity_id={}&limit={limit}",
+                    urlencode(&entity_type),
+                    urlencode(&entity_id)
+                ))
+                .await
+        }
+        "taskagent_history_rollback" => {
+            let id = required_string(&args, "version_id")?;
+            client
+                .post_json(&format!("/v1/history/{id}/rollback"), json!({}))
+                .await
+        }
+
+        other => anyhow::bail!("unknown tool: {other}"),
+    }
+}
+
+// ── schema builders ──────────────────────────────────────────────────────────
+
+fn empty_schema() -> Value {
+    json!({"type":"object","properties":{}})
+}
+
+fn schema_with_id(field: &str) -> Value {
+    json!({
+        "type":"object",
+        "properties": {field: {"type":"string","description":"Task identifier"}},
+        "required": [field]
+    })
+}
+
+fn schema_with_plan_id() -> Value {
+    json!({
+        "type":"object",
+        "properties": {"plan_id": {"type":"string","description":"Plan identifier"}},
+        "required": ["plan_id"]
+    })
+}
+
+fn schema_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task": {
+                "type":"object",
+                "properties": {
+                    "title": {"type":"string"},
+                    "description": {"type":"string"},
+                    "status": {"type":"string","enum":["inbox","todo","in_progress","done"]},
+                    "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
+                    "project_id": {"type":"string"}
+                },
+                "required":["title"]
+            },
+            "scope": {
+                "type":"string",
+                "description":"Named taskagent scope (usually repo folder name) used when task.project_id is omitted."
+            },
+            "project_scope": {
+                "type":"string",
+                "description":"Named taskagent scope (alias-safe form; preferred when a tool already has a `scope` option)."
+            },
+            "scope_path": {
+                "type":"string",
+                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+            }
+        },
+        "required":["task"]
+    })
+}
+
+fn schema_update() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string", "description":"Task identifier"},
+            "title": {"type":"string"},
+            "description": {"type":"string"},
+            "due_at": {
+                "description":"RFC3339 timestamp to set, or null to clear.",
+                "anyOf": [{"type":"string"}, {"type":"null"}]
+            }
+        },
+        "required":["id"]
+    })
+}
+
+fn schema_capture() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "text": {"type":"string", "description":"Task title (the captured idea)."},
+            "project_id": {
+                "description":"Optional project scope. Omitted uses the resolved repo project when unambiguous; null means inbox-only.",
+                "anyOf": [{"type":"string"}, {"type":"null"}]
+            },
+            "scope": {"type":"string", "description":"Named taskagent scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named taskagent scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured taskagent scope."}
+        },
+        "required":["text"]
+    })
+}
+
+fn schema_capture_batch() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "texts": {
+                "type":"array",
+                "items": {"type":"string"},
+                "minItems": 1,
+                "description":"Each string becomes a separate inbox task."
+            },
+            "project_id": {
+                "description":"Optional project scope. Omitted uses the resolved repo project when unambiguous; null means inbox-only.",
+                "anyOf": [{"type":"string"}, {"type":"null"}]
+            },
+            "scope": {"type":"string", "description":"Named taskagent scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named taskagent scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured taskagent scope."}
+        },
+        "required":["texts"]
+    })
+}
+
+fn schema_set_status() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string"},
+            "status": {"type":"string","enum":["inbox","todo","in_progress","in_review","done","cancelled"]},
+            "force": {
+                "type":"boolean",
+                "description":"When setting in_progress, suppress the soft can_start warning for actively blocked tasks."
+            }
+        },
+        "required":["id","status"]
+    })
+}
+
+fn schema_set_priority() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string"},
+            "priority": {"type":"string","enum":["p0","p1","p2","p3"]}
+        },
+        "required":["id","priority"]
+    })
+}
+
+fn schema_move_project() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string", "description":"Task id to move."},
+            "project_id": {"type":"string", "description":"Destination project id."},
+            "scope": {"type":"string", "description":"Destination taskagent scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Destination taskagent scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the destination taskagent scope."}
+        },
+        "required":["id"]
+    })
+}
+
+fn schema_split() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "parent": {"type":"string"},
+            "subtasks": {"type":"array","items":{"type":"object"}}
+        },
+        "required":["parent","subtasks"]
+    })
+}
+
+fn schema_bulk_set_status() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "ids": {
+                "type":"array",
+                "items":{"type":"string"},
+                "minItems":1,
+                "maxItems":50
+            },
+            "status": {
+                "type":"string",
+                "enum":["inbox","todo","in_progress","in_review","done","cancelled"]
+            }
+        },
+        "required":["ids","status"]
+    })
+}
+
+fn schema_bulk_attach_to_plan() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string"},
+            "ids": {
+                "type":"array",
+                "items":{"type":"string"},
+                "minItems":1,
+                "maxItems":50,
+                "description":"Task ids to attach. Aliased as `task_ids` for backward symmetry."
+            }
+        },
+        "required":["plan_id","ids"]
+    })
+}
+
+/// §3.8.13: per-tool `use_research_provider` flag. Currently silently
+/// ignored by the server (single provider); kept in the public schema
+/// so callers can author against the final shape ahead of §3.8.9.
+fn use_research_provider_property() -> Value {
+    json!({
+        "type": "boolean",
+        "description": "Opt into a future research-capable provider for this call. Currently a no-op (single provider); accepted for forward-compat with §3.8.9."
+    })
+}
+
+fn schema_ai_parse() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "input": {"type":"string"},
+            "use_research_provider": use_research_provider_property(),
+        },
+        "required":["input"]
+    })
+}
+
+fn schema_ai_analyze_complexity() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {
+                "type":"string",
+                "description":"Plan whose tasks should be scored. Every task in the plan is included in one batch LLM call."
+            },
+            "use_research_provider": use_research_provider_property(),
+        },
+        "required":["plan_id"]
+    })
+}
+
+fn schema_ai_decompose() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string","description":"Task identifier"},
+            "hint": {
+                "type":"string",
+                "description":"Optional free-form guidance appended to the prompt (e.g. `expansion_hint` from `taskagent_ai_analyze_complexity`)."
+            },
+            "use_research_provider": use_research_provider_property(),
+        },
+        "required":["task_id"]
+    })
+}
+
+fn schema_ai_research() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "query": {"type":"string", "description":"Free-form research question."},
+            "context_task_ids": {
+                "type":"array",
+                "items": {"type":"string"},
+                "description":"Optional list of task ids whose title+description are added to the prompt as grounding context."
+            },
+            "save_to_task_id": {
+                "type":"string",
+                "description":"When set, the answer is also persisted as a Research comment on this task (uses §3.8.8 CommentKind)."
+            },
+            "use_research_provider": use_research_provider_property(),
+        },
+        "required":["query"]
+    })
+}
+
+fn schema_ai_scope() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string", "description":"Task identifier"},
+            "direction": {
+                "type":"string",
+                "enum": ["up", "down", "broaden", "narrow"],
+                "description":"`up`/`broaden` widens the task into an epic-style framing; `down`/`narrow` collapses it into a single concrete action."
+            },
+            "strength": {
+                "type":"string",
+                "enum": ["light", "regular", "heavy"],
+                "description":"Reserved for §3.8.7a — currently accepted but ignored by the server."
+            },
+            "use_research_provider": use_research_provider_property(),
+        },
+        "required":["task_id", "direction"]
+    })
+}
+
+fn schema_comment() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string"},
+            "body": {"type":"string"},
+            // §3.8.8: optional semantic classification. Canonical form is
+            // snake_case; the server is lenient about case.
+            "kind": {
+                "type":"string",
+                "enum":[
+                    "intent","progress","outcome","blocker","research",
+                    "Intent","Progress","Outcome","Blocker","Research"
+                ],
+                "description":"Optional semantic kind (Intent/Progress/Outcome/Blocker/Research)."
+            }
+        },
+        "required":["task_id","body"]
+    })
+}
+
+fn schema_inbox_pull() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id": {"type":"string"},
+            "long_poll_secs": {"type":"integer","minimum":0,"maximum":60},
+            "max": {"type":"integer","minimum":1,"maximum":1000}
+        },
+        "required":["agent_id"]
+    })
+}
+
+fn schema_subscribe_project() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string"},
+            "since_seq": {"type":"integer","minimum":0},
+            "limit": {"type":"integer","minimum":1,"maximum":1000}
+        }
+    })
+}
+
+fn schema_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {
+                "type":"string",
+                "description": "Either a project id, `inbox` for tasks with no project, or `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous."
+            },
+            "scope": {
+                "type":"string",
+                "description":"Named taskagent scope (usually repo folder name)."
+            },
+            "project_scope": {
+                "type":"string",
+                "description":"Named taskagent scope (alias-safe form)."
+            },
+            "scope_path": {
+                "type":"string",
+                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+            },
+            "status": {
+                "type":"string",
+                "description": "Status filter. Accepts a single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list (e.g. `todo,in_progress`), or the shortcut `active` for all non-terminal statuses. Omit to return tasks of every status."
+            }
+        }
+    })
+}
+
+fn schema_search() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "query": {"type":"string"},
+            "scope": {
+                "type":"string",
+                "description":"Comma-separated subset of `tasks`, `comments`, `plans`. Omit for all."
+            },
+            "project_id": {
+                "type":"string",
+                "description":"Project id, or `all` for every project. Omitted uses the resolved repo project when unambiguous."
+            },
+            "project_scope": {
+                "type":"string",
+                "description":"Named taskagent scope (use this instead of `scope`, which filters search domains)."
+            },
+            "scope_path": {
+                "type":"string",
+                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+            },
+            "limit": {
+                "type":"integer",
+                "minimum":1,
+                "maximum":100,
+                "default":20
+            }
+        },
+        "required":["query"]
+    })
+}
+
+fn schema_lesson_recall() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "query": {
+                "type":"string",
+                "description":"Optional text immediately after the `lesson:` comment prefix."
+            },
+            "project_id": {
+                "type":"string",
+                "description":"Project id, or `all` for every project. Omitted uses the resolved repo project when unambiguous."
+            },
+            "project_scope": {
+                "type":"string",
+                "description":"Named taskagent scope."
+            },
+            "scope_path": {
+                "type":"string",
+                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+            },
+            "limit": {
+                "type":"integer",
+                "minimum":1,
+                "maximum":100,
+                "default":20
+            }
+        }
+    })
+}
+
+fn schema_project_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "title": {"type":"string"},
+            "description": {"type":"string"}
+        },
+        "required":["title"]
+    })
+}
+
+fn schema_project_delete() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "Project id to delete."
+            },
+            "confirm": {
+                "type": "string",
+                "description": "Must match the project's exact title (case-sensitive). Required on the second call."
+            },
+            "confirm_token": {
+                "type": "string",
+                "description": "One-time token issued by the first call. Required on the second call."
+            }
+        },
+        "required": ["id"]
+    })
+}
+
+fn schema_project_use() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {
+                "type": ["string", "null"],
+                "description": "Project id, or null to clear the selected workspace/repo scope."
+            },
+            "scope_path": {
+                "type": "string",
+                "description": "Workspace or repository path to bind. Relative paths are resolved from TASKAGENT_WORKSPACE / process CWD. Omit only when MCP is running inside the repository scope."
+            }
+        },
+        "required":["project_id"]
+    })
+}
+
+fn urlencode(raw: &str) -> String {
+    // Tiny percent-encoder — adequate for our id alphabet (UUIDs, prefixed
+    // hex, the literal `inbox`/`all`). Avoids pulling in a full url crate.
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn schema_events_since() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "seq":   {"type":"integer","minimum":0},
+            "limit": {"type":"integer","minimum":1,"maximum":1000}
+        }
+    })
+}
+
+// ── Plan schemas (W3.2) ──────────────────────────────────────────────────────
+
+fn schema_plan_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "title":            {"type":"string"},
+            "project_id":       {"type":"string"},
+            "description":      {"type":"string"},
+            "goal":             {"type":"string"},
+            "parent_plan_id":   {"type":"string"},
+            "success_criteria": {"type":"array","items":{"type":"string"}}
+        },
+        "required":["title","project_id"]
+    })
+}
+
+fn schema_plan_update() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string"},
+            "patch": {
+                "type":"object",
+                "properties": {
+                    "title":            {"type":"string"},
+                    "description":      {"type":"string"},
+                    "goal":             {"type":"string"},
+                    "success_criteria": {"type":"array","items":{"type":"string"}},
+                    "parent_plan_id": {
+                        "type": ["string", "null"],
+                        "description": "Set parent plan id; null to unparent (drop to root); omit to keep current."
+                    }
+                }
+            }
+        },
+        "required":["id","patch"]
+    })
+}
+
+fn schema_plan_set_status() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string"},
+            "status":  {"type":"string","enum":["draft","active","completed","abandoned"]}
+        },
+        "required":["plan_id","status"]
+    })
+}
+
+fn schema_plan_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {
+                "type":"string",
+                "description":"Project id, or `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous."
+            },
+            "scope": {
+                "type":"string",
+                "description":"Named taskagent scope (usually repo folder name)."
+            },
+            "project_scope": {
+                "type":"string",
+                "description":"Named taskagent scope (alias-safe form)."
+            },
+            "scope_path": {
+                "type":"string",
+                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+            },
+            "status": {
+                "type":"string",
+                "enum":["draft","active","paused","completed","archived"]
+            }
+        }
+    })
+}
+
+fn schema_plan_add_task() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id":  {"type":"string"},
+            "task_id":  {"type":"string"},
+            "position": {"type":"integer","minimum":0},
+            "depends_on": {"type":"array","items":{"type":"string"}}
+        },
+        "required":["plan_id","task_id"]
+    })
+}
+
+fn schema_plan_task_ref() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string"},
+            "task_id": {"type":"string"}
+        },
+        "required":["plan_id","task_id"]
+    })
+}
+
+fn schema_plan_reorder() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string"},
+            "order":   {"type":"array","items":{"type":"string"}}
+        },
+        "required":["plan_id","order"]
+    })
+}
+
+fn schema_plan_next_task() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id":             {"type":"string","description":"Plan id"},
+            "run_id":         {"type":"string"},
+            "claim_ttl_secs": {"type":"integer","minimum":0}
+        },
+        "required":["id","run_id"]
+    })
+}
+
+fn schema_plan_drain_next() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string","description":"Plan id"},
+            "run_id": {"type":"string","description":"Optional run id; omitted creates an ephemeral id server-side."},
+            "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL in seconds; defaults to 300."}
+        },
+        "required":["plan_id"]
+    })
+}
+
+fn schema_can_start() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string","description":"Task id to check for active blockers"}
+        },
+        "required":["task_id"]
+    })
+}
+
+fn schema_workspacegraph_context() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "node_id": {"type":"string","description":"Graph node id (e.g. `task:<uuid>`, `plan:<uuid>`)"},
+            "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
+        },
+        "required":["node_id"]
+    })
+}
+
+fn schema_workspacegraph_related() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "node_id": {"type":"string","description":"Graph node id to expand from"},
+            "depth": {"type":"integer","minimum":1,"maximum":5,"default":2},
+            "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
+        },
+        "required":["node_id"]
+    })
+}
+
+fn schema_workspacegraph_search() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "query": {"type":"string"},
+            "project_id": {
+                "type":"string",
+                "description":"Project id, or `all` for every project. Omitted uses the resolved repo project when unambiguous."
+            },
+            "scope": {
+                "type":"string",
+                "description":"Named taskagent scope (usually repo folder name)."
+            },
+            "project_scope": {
+                "type":"string",
+                "description":"Named taskagent scope (alias-safe form)."
+            },
+            "scope_path": {
+                "type":"string",
+                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+            },
+            "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
+        },
+        "required":["query"]
+    })
+}
+
+fn schema_workspacegraph_impact() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "node_id": {"type":"string","description":"Graph node id to analyze downstream impact from"},
+            "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
+        },
+        "required":["node_id"]
+    })
+}
+
+// ── Run schemas (W3.2) ───────────────────────────────────────────────────────
+
+fn schema_run_start() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id":       {"type":"string"},
+            "agent_id":      {"type":"string"},
+            "parent_run_id": {"type":"string"}
+        },
+        "required":["plan_id","agent_id"]
+    })
+}
+
+fn schema_run_step() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id":  {"type":"string"},
+            "task_id": {"type":"string"}
+        },
+        "required":["run_id","task_id"]
+    })
+}
+
+fn schema_run_finish_step() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id":  {"type":"string"},
+            "task_id": {"type":"string"},
+            "outcome": {
+                "type":"object",
+                "properties": {
+                    "kind": {
+                        "type":"string",
+                        "enum":["done","skipped","failed","superseded"]
+                    }
+                },
+                "required":["kind"]
+            }
+        },
+        "required":["run_id","task_id","outcome"]
+    })
+}
+
+fn schema_run_abort() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id": {"type":"string"},
+            "reason": {"type":"string"}
+        },
+        "required":["run_id"]
+    })
+}
+
+// ── Run-note schemas (§3.8.2) ────────────────────────────────────────────────
+
+fn schema_run_note_append() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id": {"type":"string"},
+            "body":   {"type":"string","maxLength":4096,"minLength":1}
+        },
+        "required":["run_id","body"]
+    })
+}
+
+fn schema_run_log() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id": {"type":"string"},
+            "level": {
+                "type":"string",
+                "enum":["debug","info","warn","error"],
+                "default":"info"
+            },
+            "body": {"type":"string","maxLength":4096,"minLength":1}
+        },
+        "required":["run_id","body"]
+    })
+}
+
+fn schema_run_notes_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id": {"type":"string"},
+            "limit":  {"type":"integer","minimum":1,"maximum":500},
+            "after":  {"type":"string","description":"Cursor: id of last note from previous page"}
+        },
+        "required":["run_id"]
+    })
+}
+
+// ── Claim schemas (W3.2) ─────────────────────────────────────────────────────
+
+fn schema_claim() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id": {"type":"string"},
+            "task_id":  {"type":"string"},
+            "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
+        },
+        "required":["agent_id","task_id"]
+    })
+}
+
+fn schema_release() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id": {"type":"string"},
+            "task_id":  {"type":"string"}
+        },
+        "required":["agent_id","task_id"]
+    })
+}
+
+// ── Session schemas (W3.2 / Linear B.1) ─────────────────────────────────────
+
+fn schema_session_start() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id":        {
+                "type":"string",
+                "description":"Defaults to this MCP process agent id (see taskagent_workspace_info.mcp_agent_id)."
+            },
+            "parent_agent_id": {"type":"string"},
+            "metadata":        {
+                "type":"object",
+                "description":"Traceability payload. Recommended keys: client, model, chat_id, transcript_path, workspace_path. Env defaults: TASKAGENT_CLIENT, TASKAGENT_MODEL, TASKAGENT_CHAT_ID, TASKAGENT_TRANSCRIPT_PATH.",
+                "properties": {
+                    "client": {"type":"string", "description":"IDE client, e.g. cursor, codex, claude-code"},
+                    "model": {"type":"string", "description":"Model display name or id"},
+                    "chat_id": {"type":"string", "description":"Opaque conversation id in the client"},
+                    "transcript_path": {"type":"string", "description":"Absolute path to chat transcript jsonl if known"},
+                    "workspace_path": {"type":"string", "description":"Repo or workspace root"}
+                }
+            }
+        },
+        "required":[]
+    })
+}
+
+fn schema_session_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id": {
+                "type":"string",
+                "description":"Defaults to this MCP process agent id."
+            }
+        },
+        "required":[]
+    })
+}
+
+fn schema_session_set_plan() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string","description":"Session id"},
+            "steps": {
+                "type":"array",
+                "items": {
+                    "type":"object",
+                    "properties": {
+                        "label":  {"type":"string"},
+                        "status": {"type":"string","enum":["pending","in_progress","done","skipped"]}
+                    },
+                    "required":["label"]
+                },
+                "maxItems": 100
+            }
+        },
+        "required":["id","steps"]
+    })
+}
+
+fn schema_session_artifact() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "session_id": {"type":"string","description":"Agent session id"},
+            "kind": {"type":"string","enum":["file","url","diff"]},
+            "ref": {"type":"string","minLength":1,"description":"File path, URL, or diff reference"},
+            "metadata": {"type":"object"}
+        },
+        "required":["session_id","kind","ref"]
+    })
+}
+
+// ── Relation schemas (§3.2 W3.2) ────────────────────────────────────────────
+
+fn schema_link() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "from": {"type":"string","description":"Source task id"},
+            "to":   {"type":"string","description":"Target task id"},
+            "kind": {
+                "type":"string",
+                "enum":["blocks","relates_to","duplicates"],
+                "description":"Relation kind"
+            },
+            "client_command_id": {
+                "type":"string",
+                "description":"Optional idempotency key (UUID)"
+            }
+        },
+        "required":["from","to","kind"]
+    })
+}
+
+fn schema_unlink() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "relation_id": {"type":"string","description":"Relation id to delete"}
+        },
+        "required":["relation_id"]
+    })
+}
+
+fn schema_relations() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string","description":"Task id to fetch relations for"}
+        },
+        "required":["task_id"]
+    })
+}
+
+// ── Signal schemas (W3.2 / Linear B.5) ──────────────────────────────────────
+
+fn schema_signal_send() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id": {"type":"string"},
+            "kind": {
+                "type":"object",
+                "description":"Signal payload — e.g. {\"type\":\"stop\"} or {\"type\":\"elicit\",\"prompt\":\"...\"}",
+                "properties": {
+                    "type": {"type":"string","enum":["stop","elicit","auth_required","intervention_accepted"]}
+                },
+                "required":["type"]
+            }
+        },
+        "required":["run_id","kind"]
+    })
+}
+
+fn schema_signal_respond() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "run_id": {"type":"string"},
+            "choice": {"type":"string","description":"Human's response to the elicitation prompt"}
+        },
+        "required":["run_id","choice"]
+    })
+}
+
+// ── Document schemas (PR1 §7) ────────────────────────────────────────────────
+
+fn schema_doc_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string"},
+            "kind":       {"type":"string","enum":["interview","human_log"]},
+            "title":      {"type":"string"},
+            "content":    {"type":"string","description":"Initial markdown body. Defaults to empty when omitted."}
+        },
+        "required":["project_id","kind","title"]
+    })
+}
+
+fn schema_doc_append() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "document_id": {"type":"string"},
+            "content":     {"type":"string","description":"Markdown chunk to append."}
+        },
+        "required":["document_id","content"]
+    })
+}
+
+fn schema_doc_replace() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "document_id": {"type":"string"},
+            "content":     {"type":"string","description":"Full markdown body replacing the existing content."}
+        },
+        "required":["document_id","content"]
+    })
+}
+
+fn schema_doc_rename() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "document_id": {"type":"string"},
+            "title":       {"type":"string"}
+        },
+        "required":["document_id","title"]
+    })
+}
+
+fn schema_doc_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id":       {
+                "type":"string",
+                "description":"Project id. When omitted, the resolved repo project is used only if unambiguous."
+            },
+            "scope": {"type":"string", "description":"Named taskagent scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named taskagent scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured taskagent scope."},
+            "kind":             {"type":"string","enum":["interview","human_log"]},
+            "include_archived": {"type":"boolean","default":false}
+        }
+    })
+}
+
+fn schema_history_entity() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "entity_type": {"type":"string","enum":["task","document"]},
+            "entity_id":   {"type":"string"},
+            "limit":       {"type":"integer","minimum":1,"maximum":200,"default":50}
+        },
+        "required":["entity_type","entity_id"]
+    })
+}
+
+fn schema_history_compare() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "entity_type": {"type":"string","enum":["task","document"]},
+            "entity_id":   {"type":"string"},
+            "from":        {"type":"integer","minimum":1},
+            "to":          {"type":"integer","minimum":1}
+        },
+        "required":["entity_type","entity_id","from","to"]
+    })
+}
+
+fn schema_history_latest() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "limit": {"type":"integer","minimum":1,"maximum":200,"default":50}
+        }
+    })
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+fn resolve_project_filter(
+    args: &Map<String, Value>,
+    allow_all: bool,
+    allow_null_inbox: bool,
+    allow_scope_alias: bool,
+) -> anyhow::Result<ProjectFilter> {
+    if let Some(value) = args.get("project_id") {
+        return match value {
+            Value::Null if allow_null_inbox => Ok(ProjectFilter::None),
+            Value::Null => anyhow::bail!("`project_id` cannot be null for this tool"),
+            Value::String(pid) if pid == "all" && allow_all => Ok(ProjectFilter::All),
+            Value::String(pid) if pid == "all" => {
+                anyhow::bail!("`project_id: all` is not valid for this tool")
+            }
+            Value::String(pid) => Ok(ProjectFilter::Project(pid.clone())),
+            other => anyhow::bail!("`project_id` must be a string or null, got {other}"),
+        };
+    }
+
+    let ws = match workspace::global() {
+        Some(ws) => ws,
+        None => return Ok(ProjectFilter::None),
+    };
+
+    if let Some(project_scope) = args.get("project_scope").and_then(|v| v.as_str()) {
+        return resolve_named_scope(ws, project_scope);
+    }
+    if allow_scope_alias {
+        if let Some(scope) = args.get("scope").and_then(|v| v.as_str()) {
+            return resolve_named_scope(ws, scope);
+        }
+    }
+    if let Some(scope_path) = args.get("scope_path").and_then(|v| v.as_str()) {
+        return ws
+            .project_for_path(scope_path)
+            .map(ProjectFilter::Project)
+            .ok_or_else(|| {
+                anyhow::anyhow!("no taskagent scope configured for path `{scope_path}`")
+            });
+    }
+
+    ws.inferred_project().map(|p| match p {
+        Some(project_id) => ProjectFilter::Project(project_id),
+        None => ProjectFilter::None,
+    })
+}
+
+fn resolve_named_scope(ws: &workspace::Workspace, scope: &str) -> anyhow::Result<ProjectFilter> {
+    ws.project_for_scope(scope)?
+        .map(ProjectFilter::Project)
+        .ok_or_else(|| anyhow::anyhow!("unknown taskagent scope `{scope}`"))
+}
+
+async fn create_captured_task(
+    client: &ApiClient,
+    text: &str,
+    args: &Map<String, Value>,
+) -> anyhow::Result<Value> {
+    let mut task = json!({
+        "title": text,
+        "status": "inbox",
+        "priority": "p3"
+    });
+    if let Some(t) = task.as_object_mut() {
+        match resolve_project_filter(args, false, true, true)? {
+            ProjectFilter::Project(pid) => {
+                t.insert("project_id".to_string(), Value::String(pid));
+            }
+            ProjectFilter::None => {}
+            ProjectFilter::All => unreachable!("allow_all=false"),
+        }
+    }
+    client
+        .post_command(json!({"type":"create_task","task": task}))
+        .await
+}
+
+fn required_string(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required"))
+}
+
+fn required_i64(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::Result<i64> {
+    args.get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow::anyhow!("`{key}` is required and must be an integer"))
+}
+
+fn optional_u32(args: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
+    args.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+/// Canonical snake_case form for a `CommentKind` (§3.8.8).
+///
+/// Mirrors `taskagent_domain::CommentKind::FromStr`: accepts the
+/// snake_case canonical form (`"research"`), the PascalCase Rust
+/// variant name (`"Research"`), and tolerates surrounding whitespace
+/// and case. The mcp crate doesn't depend on `taskagent-domain`, so
+/// we inline the closed variant list here.
+fn normalise_comment_kind(raw: &str) -> anyhow::Result<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "intent" => Ok("intent"),
+        "progress" => Ok("progress"),
+        "outcome" => Ok("outcome"),
+        "blocker" => Ok("blocker"),
+        "research" => Ok("research"),
+        other => Err(anyhow::anyhow!(
+            "unknown comment kind: {other:?} (expected one of: intent, progress, outcome, blocker, research)"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── §3.8.8: comment kind normalisation ──────────────────────────────────
+
+    #[test]
+    fn normalise_comment_kind_accepts_snake_case() {
+        for canonical in ["intent", "progress", "outcome", "blocker", "research"] {
+            assert_eq!(normalise_comment_kind(canonical).unwrap(), canonical);
+        }
+    }
+
+    #[test]
+    fn normalise_comment_kind_accepts_pascal_case_and_uppercase() {
+        // Task spec calls the tool with kind="Research".
+        assert_eq!(normalise_comment_kind("Research").unwrap(), "research");
+        assert_eq!(normalise_comment_kind("BLOCKER").unwrap(), "blocker");
+        assert_eq!(normalise_comment_kind("  intent  ").unwrap(), "intent");
+    }
+
+    #[test]
+    fn normalise_comment_kind_rejects_unknown() {
+        let err = normalise_comment_kind("bogus").unwrap_err().to_string();
+        assert!(err.contains("unknown comment kind"));
+    }
+
+    #[test]
+    fn schema_comment_advertises_kind_field() {
+        let schema = schema_comment();
+        let props = schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("properties");
+        assert!(props.contains_key("kind"), "schema must expose `kind`");
+        // `kind` must NOT be required.
+        let required = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("required");
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("kind")),
+            "`kind` must remain optional"
+        );
+    }
+
+    #[test]
+    fn catalogue_includes_required_tools() {
+        let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
+        assert!(
+            names.len() >= 10,
+            "AC-7: must expose ≥10 tools (got {})",
+            names.len()
+        );
+        for required in [
+            "taskagent_subscribe_project",
+            "taskagent_inbox_pull",
+            "taskagent_comment",
+            "taskagent_reopen",
+            "taskagent_project_list",
+            "taskagent_project_create",
+            "taskagent_project_use",
+            "taskagent_move_project",
+        ] {
+            assert!(
+                names.contains(&required),
+                "missing required tool: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalogue_includes_plan_run_tools() {
+        let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
+        assert!(
+            names.len() >= 44,
+            "W3.2: catalogue must have ≥44 tools (got {})",
+            names.len()
+        );
+        for required in [
+            // Plan tools
+            "taskagent_plan_create",
+            "taskagent_plan_update",
+            "taskagent_plan_get",
+            "taskagent_plan_list",
+            "taskagent_plan_add_task",
+            "taskagent_plan_remove_task",
+            "taskagent_plan_reorder",
+            "taskagent_plan_archive",
+            "taskagent_plan_next_task",
+            // Run tools
+            "taskagent_run_start",
+            "taskagent_run_start_step",
+            "taskagent_run_finish_step",
+            "taskagent_run_complete",
+            "taskagent_run_abort",
+            // Claim tools
+            "taskagent_claim",
+            "taskagent_release",
+            // Session tools (Linear B.1)
+            "taskagent_session_start",
+            "taskagent_session_get",
+            "taskagent_session_list",
+            "taskagent_session_end",
+            "taskagent_session_set_plan",
+            "taskagent_session_artifact",
+            "taskagent_session_artifacts_list",
+            // Signal tools (Linear B.5)
+            "taskagent_signal_send",
+            "taskagent_signal_respond",
+            // Relation tools (§3.2 W3.2 / AC-9)
+            "taskagent_link",
+            "taskagent_unlink",
+            "taskagent_relations",
+        ] {
+            assert!(names.contains(&required), "missing W3.2 tool: {required}");
+        }
+    }
+
+    #[test]
+    fn catalogue_includes_document_tools() {
+        let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
+        for required in [
+            "taskagent_doc_create",
+            "taskagent_doc_get",
+            "taskagent_doc_append",
+            "taskagent_doc_replace",
+            "taskagent_doc_rename",
+            "taskagent_doc_archive",
+            "taskagent_doc_list",
+        ] {
+            assert!(names.contains(&required), "missing PR1 tool: {required}");
+        }
+    }
+
+    #[test]
+    fn catalogue_includes_ai_analyze_complexity() {
+        let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
+        assert!(
+            names.contains(&"taskagent_ai_analyze_complexity"),
+            "§3.8.3: missing tool taskagent_ai_analyze_complexity in {names:?}"
+        );
+    }
+
+    #[test]
+    fn schemas_are_valid_json() {
+        for tool in tool_definitions() {
+            let s = serde_json::to_string(&tool.input_schema).unwrap();
+            let _: Value = serde_json::from_str(&s).unwrap();
+        }
+    }
+}

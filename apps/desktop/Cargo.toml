@@ -1,0 +1,44 @@
+[package]
+name = "taskagent-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "taskagent-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# §3.4 W2.1: embed clients reach for runtime types via `taskagent_core::embed`
+# only (not `taskagent-storage` / `taskagent-events` directly). Pure-types
+# crates (`taskagent-shared`, `taskagent-domain`) remain direct deps as
+# they have no I/O surface. `taskagent-sync` is unused by the CLI today
+# but kept opt-in for the upcoming GPUI client.
+taskagent-shared  = { workspace = true }
+taskagent-domain  = { workspace = true }
+taskagent-core    = { workspace = true }
+taskagent-sync    = { workspace = true }
+taskagent-ai      = { workspace = true }
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sqlx        = { workspace = true }
+reqwest     = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow      = { workspace = true }
+chrono      = { workspace = true }
+futures     = { workspace = true }
+async-trait = { workspace = true }
+# GPUI — Zed's GPU-accelerated UI framework.
+#
+# Intentionally disabled in workspace builds: GPUI is a git-only dependency
+# that drags the entire Zed monorepo and only links on a graphical host
+# (X11/Wayland/macOS/Win32). The server build (Linux container) does not
+# need it. To enable the GPUI desktop client locally:
+#   1. Uncomment the line below.
+#   2. Pin to a specific commit rev for reproducibility.
+#   3. Build on the host:  cargo run -p taskagent-desktop
+#
+# gpui = { git = "https://github.com/zed-industries/zed", branch = "main" }

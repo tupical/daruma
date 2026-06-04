@@ -1,0 +1,4 @@
+Checking MCP server health…
+
+taskagent: /home/user/.cargo/bin/taskagent-mcp - ✗ Failed to connect
+other-server: /usr/local/bin/other-mcp - ✓ Connected

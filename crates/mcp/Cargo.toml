@@ -1,0 +1,25 @@
+[package]
+name = "taskagent-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+taskagent-shared = { workspace = true }
+
+# HTTP client to taskagent-server (HTTP-hop architecture for W3.2 MVP).
+reqwest = { workspace = true }
+
+# Async / serde
+tokio       = { workspace = true, features = ["io-util", "io-std", "rt", "rt-multi-thread", "macros", "sync"] }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+uuid        = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+axum  = { workspace = true }

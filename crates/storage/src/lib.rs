@@ -1,0 +1,69 @@
+//! SQLite-backed persistence for TaskAgent.
+//!
+//! # Quick start
+//!
+//! ```rust,no_run
+//! use taskagent_storage::{Db, SqliteEventStore, TaskRepo, ProjectRepo};
+//!
+//! # async fn example() -> taskagent_shared::Result<()> {
+//! let db = Db::open("taskagent.db").await?;
+//! db.migrate().await?;
+//!
+//! let pool = db.pool().clone();
+//! let store   = SqliteEventStore::new(pool.clone());
+//! let tasks   = TaskRepo::new(pool.clone());
+//! let projects = ProjectRepo::new(pool);
+//! # Ok(())
+//! # }
+//! ```
+
+pub mod activity_repo;
+pub mod agent_inbox_repo;
+pub mod claim_repo;
+pub mod comment_repo;
+pub mod db;
+pub mod document_repo;
+mod entity_version;
+pub mod event_store;
+pub mod external_ref_repo;
+pub mod idempotency_repo;
+pub mod plan_repo;
+pub mod project_repo;
+pub mod relation_repo;
+pub mod run_note_repo;
+pub mod run_repo;
+pub mod session_repo;
+pub mod task_complexity_repo;
+pub mod task_repo;
+pub mod tenant_quota_repo;
+pub mod token_repo;
+pub mod webhook_enrichment;
+pub mod webhook_repo;
+pub mod workspace_graph_repo;
+
+pub use activity_repo::ActivityRepo;
+pub use agent_inbox_repo::AgentInboxRepo;
+pub use claim_repo::AgentClaimRepo;
+pub use comment_repo::CommentRepo;
+pub use db::Db;
+pub use document_repo::DocumentRepo;
+pub use entity_version::{EntityVersion, EntityVersionRepo};
+pub use event_store::SqliteEventStore;
+pub use external_ref_repo::ExternalRefRepo;
+pub use idempotency_repo::IdempotencyRepo;
+pub use plan_repo::PlanRepo;
+pub use project_repo::ProjectRepo;
+pub use relation_repo::RelationRepo;
+pub use run_note_repo::RunNoteRepo;
+pub use run_repo::RunRepo;
+pub use session_repo::SessionRepo;
+pub use task_complexity_repo::TaskComplexityRepo;
+pub use task_repo::TaskRepo;
+pub use tenant_quota_repo::TenantQuotaRepo;
+pub use token_repo::TokenRepo;
+pub use webhook_enrichment::WebhookEnrichment;
+pub use webhook_repo::WebhookRepo;
+pub use workspace_graph_repo::{
+    GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode, GraphSearchHit,
+    GraphStatus, WorkspaceGraphRepo,
+};

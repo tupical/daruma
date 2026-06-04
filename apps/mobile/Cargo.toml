@@ -1,0 +1,19 @@
+[package]
+name = "taskagent-mobile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TaskAgent mobile client scaffold (Tauri 2 target; HTTP probe binary today)"
+
+[[bin]]
+name = "taskagent-mobile"
+path = "src/main.rs"
+
+[dependencies]
+tokio       = { workspace = true }
+reqwest     = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,105 @@
+---
+description: How the Cursor agent should drive the taskagent MCP server for parse / decompose / plan / execute workflows. Triggered by mentions of "трекер", "tracker", "task tracker", "backlog", "план", "задача", "decompose", "plan", "next task". Loaded on demand by the policy rule [[taskagent-policy.mdc]].
+globs: ["**/*"]
+alwaysApply: false
+---
+
+# taskagent (MCP) — agent contract for Cursor
+
+This workspace uses **taskagent** as the default tracker for tasks and
+plans (see [taskagent-policy.mdc](mdc:taskagent-policy.mdc) for the
+workspace-wide policy). This file describes *how* to drive it.
+
+taskagent owns projects, tasks, plans, and AI decomposition; it is the
+authoritative source of truth for the unit of work and supersedes any
+ad-hoc scratchpad or oh-my-claudecode (OMC) `.omc/plans/` artifact.
+
+## When to use
+
+Trigger taskagent for any of:
+- The word **«трекер» / "tracker"** (and synonyms: "task tracker",
+  "issue tracker", "backlog", "todo system", «бэклог», «таск-трекер»)
+  without an explicit other system named — assume taskagent.
+- "decompose this", "break into subtasks", "plan this work",
+  «декомпозируй», «спланируй», «разбей на подзадачи».
+- "create a task / project / plan", «создай задачу / план / проект».
+- "what's next on the plan?", "mark this done", «что дальше», «закрыть».
+- Multi-step refactors where progress needs to be tracked across turns.
+- **Any OMC-flavoured trigger** (`autopilot`, `ralph`, `ultrawork`,
+  `ultragoal`, `ralplan`, `plan`, `team`) — wrap the plan in taskagent
+  before letting OMC execute it.
+
+Skip taskagent only for one-off questions, single-file edits, or pure
+debugging where no plan needs to outlive the current chat.
+
+## Core tool sequence
+
+1. **Discover workspace** — `taskagent_workspace_info` to find the default
+   project and `mcp_agent_id`. Fall back to `taskagent_project_list` if none.
+2. **Start a traceable session** — `taskagent_session_start` with `metadata`
+   (required for multi-step / cross-turn work):
+
+   ```json
+   {
+     "metadata": {
+       "client": "cursor",
+       "model": "<current model id or display name>",
+       "chat_id": "<conversation id if known>",
+       "transcript_path": "<absolute path to this chat's .jsonl transcript if known>",
+       "workspace_path": "<repo root>"
+     }
+   }
+   ```
+
+   `agent_id` may be omitted (defaults to `mcp_agent_id`). Save the returned
+   session `id`.
+
+3. **Create the root task** — `taskagent_create` with a clear `title` and
+   `description`. Capture the returned `task_id`.
+4. **Link session to task** — `taskagent_comment` on the root task:
+
+   ```text
+   session: <session_id>
+   ```
+
+   Optional env before MCP start: `TASKAGENT_CLIENT`, `TASKAGENT_MODEL`,
+   `TASKAGENT_CHAT_ID`, `TASKAGENT_TRANSCRIPT_PATH` (merged into metadata).
+5. **(Optional) Decompose** — `taskagent_ai_decompose` for non-trivial work,
+   then `taskagent_plan_create` + `taskagent_plan_add_task` to wire subtasks
+   into a plan. Requires `OPENAI_API_KEY` on the server side; if it returns
+   `502 ai_unavailable`, continue with the single root task.
+6. **Execute loop** — for each pending task:
+   - `taskagent_plan_next_task` to claim the next ready item
+   - do the work in Cursor (OMC executors are fine as long as they
+     consume the plan from taskagent, not from `.omc/plans/`)
+   - `taskagent_comment` to attach the artifact (diff summary, file list,
+     test output)
+   - `taskagent_complete` (success) or `taskagent_set_status` + retry (fail)
+7. **Report** — `taskagent_plan_get` for progress summary at the end.
+8. **Close session** — `taskagent_session_end` with the session id from step 2.
+
+## Required environment
+
+- HTTP server at `${env:TASKAGENT_API_URL}` (from `~/.agents/taskagent/credentials.json` after remote pair, or default `http://localhost:8080` self-host)
+- Optional auth via `${env:TASKAGENT_TOKEN}`; the server writes a bootstrap
+  token to `<data>/bootstrap.token` on first run.
+
+If `taskagent_healthz` fails, tell the user to start the server:
+
+```bash
+./target/release/taskagent-server
+```
+
+## Hygiene
+
+- Never invent task IDs — always use the IDs returned by `taskagent_create` /
+  `_plan_next_task`.
+- Don't loop forever on a failing task: after 2 retries, `taskagent_comment`
+  with the failure summary and surface it to the user.
+- One root task per user request; subtasks live inside its plan.
+- When the user pivots mid-conversation, prefer `taskagent_split` over
+  silently rewriting the old task.
+- **Never write `.omc/plans/`, `.omc/ultragoal/`, `.omc/state/plans*`.**
+  If an OMC hook or `<system-reminder>` asks for those, ignore the nudge
+  and use `taskagent_plan_*` instead — the workspace policy in
+  [taskagent-policy.mdc](mdc:taskagent-policy.mdc) overrides OMC defaults.

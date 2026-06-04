@@ -1,0 +1,32 @@
+[package]
+name = "taskagent-webhooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+taskagent-shared = { workspace = true }
+taskagent-events = { workspace = true, features = ["runtime"] }
+taskagent-auth   = { workspace = true }
+
+# HTTP client + crypto
+reqwest = { workspace = true }
+hmac    = { workspace = true }
+sha2    = { workspace = true }
+hex     = { workspace = true }
+
+# Async / serde / time
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+uuid        = { workspace = true }
+tracing     = { workspace = true }
+futures     = { workspace = true }
+
+[dev-dependencies]
+axum  = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+taskagent-domain = { workspace = true }

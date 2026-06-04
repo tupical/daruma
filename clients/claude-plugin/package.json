@@ -1,0 +1,49 @@
+{
+  "name": "taskagent-claude",
+  "version": "0.2.0",
+  "description": "Glue between tupical/taskagent and oh-my-claudecode. Drives the taskagent pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "taskagent",
+    "taskagent",
+    "oh-my-claudecode",
+    "orchestration",
+    "multi-agent",
+    "agent",
+    "plugin"
+  ],
+  "homepage": "https://github.com/tupical/taskagent-claude#readme",
+  "bugs": {
+    "url": "https://github.com/tupical/taskagent-claude/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tupical/taskagent-claude.git"
+  },
+  "author": "tupical",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "taskagent-claude": "bin/taskagent-claude.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "commands/",
+    "skills/",
+    ".claude-plugin/",
+    "README.md",
+    "README.ru.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/**/*.test.mjs",
+    "release:patch": "npm version patch -m \"Release v%s\" && git push --follow-tags",
+    "release:minor": "npm version minor -m \"Release v%s\" && git push --follow-tags",
+    "release:major": "npm version major -m \"Release v%s\" && git push --follow-tags"
+  }
+}

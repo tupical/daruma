@@ -1,0 +1,13 @@
+# Prompt: parse — natural-language task description → Command::CreateTask
+#
+# Variables:
+#   input — the raw user text
+
+[meta]
+name = "parse"
+description = "Map a natural-language task description onto the create_task tool call."
+
+[variants.default]
+template = """Parse the following task description and call create_task with the appropriate fields. Be concise.
+
+{ input }"""

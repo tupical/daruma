@@ -1,0 +1,64 @@
+---
+description: WorkspaceGraph MCP tools — gather context before editing, explore related items, analyze downstream impact, and search the workspace graph. Triggered by "workspace graph", "what's related", "impact analysis", "graph search", "context for this task/plan", «граф», «связанное», «влияние».
+globs: ["**/*"]
+alwaysApply: false
+---
+
+# WorkspaceGraph (MCP) — agent contract for Cursor
+
+WorkspaceGraph is a **derived read index** over tasks, plans, documents,
+comments, and their relations. It improves retrieval and impact analysis
+without replacing taskagent as the source of truth for mutations.
+
+See [adr/workspacegraph.md](mdc:docs/adr/workspacegraph.md) for node/edge
+taxonomy and non-goals.
+
+## When to use
+
+Reach for `taskagent_workspacegraph_*` when you need graph-shaped context
+that plain `taskagent_list` / `taskagent_search` does not expose:
+
+- **Before editing** a task, plan, or document — load immediate neighbors
+  (`taskagent_workspacegraph_context`) so you see blockers, plan membership,
+  and mention edges you might otherwise miss.
+- **Exploring scope** — breadth-first related items
+  (`taskagent_workspacegraph_related`) when the user asks what else touches
+  this work or when decomposing a large refactor.
+- **Impact analysis** — downstream tasks/plans affected by a change
+  (`taskagent_workspacegraph_impact`) before closing, reprioritizing, or
+  rewriting blockers.
+- **Graph search** — find nodes by title/body across the indexed workspace
+  (`taskagent_workspacegraph_search`); pass `project_id: "all"` to search
+  globally, or omit to use the workspace default project (same as
+  `taskagent_search`).
+- **Health check** — `taskagent_workspacegraph_status` when graph queries
+  return empty/stale results or after a server restart.
+
+Skip WorkspaceGraph for one-off file edits, pure code explanation, or when
+`taskagent_relations` / `taskagent_plan_graph` already answer the question.
+
+## Core tool sequence
+
+1. **Resolve the node id** — graph ids are prefixed: `task:<id>`,
+   `plan:<id>`, `document:<id>`, `comment:<id>`, `project:<id>`. Use ids
+   returned by taskagent tools; do not invent them.
+2. **Context first** — `taskagent_workspacegraph_context` with a sensible
+   `limit` (default 20) before mutating linked items.
+3. **Widen if needed** — `taskagent_workspacegraph_related` with low `depth`
+   (1–2) when the neighborhood is too small.
+4. **Impact before destructive changes** — `taskagent_workspacegraph_impact`
+   when completing, cancelling, or re-blocking a task that may unblock others.
+5. **Discovery** — `taskagent_workspacegraph_search` when the user describes
+   work by keyword rather than id.
+
+## Hygiene
+
+- WorkspaceGraph is read-only via MCP — create/update/delete still go through
+  `taskagent_*` mutation tools.
+- Prefer `taskagent_can_start` for execution readiness; use impact/context
+  for *why* and *what else* is touched.
+- If `taskagent_workspacegraph_status` shows lag or errors, tell the user the
+  index may be rebuilding; fall back to canonical `taskagent_relations` and
+  `taskagent_get` rather than guessing graph state.
+
+For task/plan tracking workflows, see [taskagent.mdc](mdc:taskagent.mdc).
