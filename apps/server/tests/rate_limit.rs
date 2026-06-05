@@ -45,7 +45,7 @@ async fn get_tasks(app: &common::TestApp, token: &str) -> StatusCode {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/v1/tasks")
+                .uri("/v1/tasks?status=all")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -67,7 +67,7 @@ async fn returns_429_with_retry_after_when_token_bucket_is_empty() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/v1/tasks")
+                .uri("/v1/tasks?status=all")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),

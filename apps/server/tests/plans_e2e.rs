@@ -3,7 +3,7 @@
 //! Covers:
 //!   POST   /v1/plans               → 201 + MutationResponse (success, event_id, event_seq)
 //!   GET    /v1/plans/{id}          → 200 + {plan, progress}
-//!   GET    /v1/plans?project_id=   → 200 array; 400 when project_id absent
+//!   GET    /v1/plans?project_id=&status= → 200 array; 400 when project_id or status absent
 //!   PATCH  /v1/plans/{id}          → 200 + MutationResponse
 //!   Capability gating: PlanWrite / PlanRead enforced
 
@@ -127,7 +127,7 @@ async fn plans_get_returns_plan_and_progress() {
     let (ls, list) = get_json(
         &h.router,
         &h.admin_token,
-        &format!("/v1/plans?project_id={pid}"),
+        &format!("/v1/plans?project_id={pid}&status=all"),
     )
     .await;
     assert_eq!(ls, StatusCode::OK, "list plans failed: {list}");
@@ -158,7 +158,7 @@ async fn plans_get_accepts_stable_slug_url_after_rename() {
     let (_, list) = get_json(
         &h.router,
         &h.admin_token,
-        &format!("/v1/plans?project_id={pid}"),
+        &format!("/v1/plans?project_id={pid}&status=all"),
     )
     .await;
     let plan_id = list.as_array().unwrap()[0]["id"]
@@ -201,6 +201,20 @@ async fn plans_list_without_project_id_returns_400() {
 }
 
 #[tokio::test]
+async fn plans_list_without_status_returns_400() {
+    let h = test_app().await;
+    let pid = create_project(&h.router, &h.admin_token).await;
+
+    let (s, _resp) = get_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans?project_id={pid}"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "status is required");
+}
+
+#[tokio::test]
 async fn plans_list_by_project_returns_created_plan() {
     let h = test_app().await;
     let pid = create_project(&h.router, &h.admin_token).await;
@@ -213,7 +227,7 @@ async fn plans_list_by_project_returns_created_plan() {
     let (ls, list) = get_json(
         &h.router,
         &h.admin_token,
-        &format!("/v1/plans?project_id={pid}"),
+        &format!("/v1/plans?project_id={pid}&status=all"),
     )
     .await;
     assert_eq!(ls, StatusCode::OK);
@@ -237,7 +251,7 @@ async fn plans_update_title() {
     let (_, list) = get_json(
         &h.router,
         &h.admin_token,
-        &format!("/v1/plans?project_id={pid}"),
+        &format!("/v1/plans?project_id={pid}&status=all"),
     )
     .await;
     let plan_id = list.as_array().unwrap()[0]["id"]
@@ -294,7 +308,7 @@ async fn plans_get_requires_plan_read_capability() {
     let (_, list) = get_json(
         &h.router,
         &h.admin_token,
-        &format!("/v1/plans?project_id={pid}"),
+        &format!("/v1/plans?project_id={pid}&status=all"),
     )
     .await;
     let plan_id = list.as_array().unwrap()[0]["id"]

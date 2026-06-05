@@ -12,7 +12,7 @@ test("listTasks adds project filter and bearer header", async () => {
   const tasks = await client.listTasks("prj_1");
 
   assert.equal(tasks[0].title, "One");
-  assert.equal(seen[0].url, "http://taskagent.local/v1/tasks?project_id=prj_1");
+  assert.equal(seen[0].url, "http://taskagent.local/v1/tasks?status=active&project_id=prj_1");
   assert.equal(seen[0].init.headers.authorization, "Bearer ta_svc_test");
 });
 

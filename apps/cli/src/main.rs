@@ -8,7 +8,7 @@
 //!   * `taskagent next`            — pick the next claim-ready task
 //!   * `taskagent show <id>`       — task + comments
 //!   * `taskagent done <id>`       — mark a task done
-//!   * `taskagent list [--status]` — filter & list
+//!   * `taskagent list --status <filter>` — list with required status filter
 //!   * `taskagent history task <id>` — version timeline
 //!
 //! Environment:
@@ -81,14 +81,14 @@ enum Cmd {
         /// Task id.
         id: String,
     },
-    /// List tasks (optionally filter by status).
+    /// List tasks (requires an explicit status filter).
     List {
         /// Project id (defaults to env / workspace). Pass `all` to ignore the default.
         #[arg(long, env = "TASKAGENT_PROJECT_ID")]
         project_id: Option<String>,
-        /// Filter by status (`inbox`, `todo`, `in_progress`, `done`).
+        /// Required status filter (`active`, `all`, `todo`, `in_progress`, `done`, …).
         #[arg(long)]
-        status: Option<String>,
+        status: String,
     },
     /// Show version history for a task or document.
     History {
@@ -157,7 +157,10 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Next { project_id } => cmd_next(&client, project_id, cli.json).await,
         Cmd::Show { id } => cmd_show(&client, &id, cli.json).await,
         Cmd::Done { id } => cmd_done(&client, &id, cli.json).await,
-        Cmd::List { project_id, status } => cmd_list(&client, project_id, status, cli.json).await,
+        Cmd::List {
+            project_id,
+            status,
+        } => cmd_list(&client, project_id, &status, cli.json).await,
         Cmd::History {
             entity_type,
             entity_id,
@@ -290,12 +293,21 @@ async fn cmd_next(
     as_json: bool,
 ) -> anyhow::Result<()> {
     let pid = resolve_project(project_id);
-    let path = match pid.as_deref() {
-        Some("all") => "/v1/tasks".to_string(),
-        Some(p) => format!("/v1/tasks?project_id={}", urlencode(p)),
-        None => "/v1/tasks".to_string(),
-    };
-    let tasks = client.get_json(&path).await.context("GET tasks failed")?;
+    let mut params = vec![("status", "active".to_string())];
+    match pid.as_deref() {
+        Some("all") => {}
+        Some(p) => params.push(("project_id", urlencode(p))),
+        None => {}
+    }
+    let qs = params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let tasks = client
+        .get_json(&format!("/v1/tasks?{qs}"))
+        .await
+        .context("GET tasks failed")?;
     let arr = tasks.as_array().cloned().unwrap_or_default();
     let next = format::pick_next(&arr);
     match next {
@@ -359,20 +371,26 @@ async fn cmd_done(client: &ApiClient, id: &str, as_json: bool) -> anyhow::Result
 async fn cmd_list(
     client: &ApiClient,
     project_id: Option<String>,
-    status: Option<String>,
+    status: &str,
     as_json: bool,
 ) -> anyhow::Result<()> {
     let pid = resolve_project(project_id);
-    let path = match pid.as_deref() {
-        Some("all") => "/v1/tasks".to_string(),
-        Some(p) => format!("/v1/tasks?project_id={}", urlencode(p)),
-        None => "/v1/tasks".to_string(),
-    };
-    let tasks = client.get_json(&path).await.context("GET tasks failed")?;
-    let mut arr = tasks.as_array().cloned().unwrap_or_default();
-    if let Some(ref s) = status {
-        arr.retain(|t| t.get("status").and_then(|v| v.as_str()) == Some(s.as_str()));
+    let mut params = vec![("status", urlencode(status.trim()))];
+    match pid.as_deref() {
+        Some("all") => {}
+        Some(p) => params.push(("project_id", urlencode(p))),
+        None => {}
     }
+    let qs = params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let tasks = client
+        .get_json(&format!("/v1/tasks?{qs}"))
+        .await
+        .context("GET tasks failed")?;
+    let arr = tasks.as_array().cloned().unwrap_or_default();
     if as_json {
         print_json(&Value::Array(arr));
     } else if arr.is_empty() {

@@ -36,20 +36,9 @@ impl PlanRepo {
     pub async fn list_by_project(
         &self,
         project_id: ProjectId,
-        status_filter: Option<PlanStatus>,
+        status_filter: Option<&[PlanStatus]>,
     ) -> Result<Vec<Plan>> {
         let rows = match status_filter {
-            Some(s) => {
-                sqlx::query(
-                    "SELECT id, project_id, parent_plan_id, title, description, goal, \
-                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
-                     FROM plans WHERE project_id = ? AND status = ? ORDER BY created_at ASC",
-                )
-                .bind(project_id.to_string())
-                .bind(plan_status_str(s))
-                .fetch_all(&self.pool)
-                .await
-            }
             None => {
                 sqlx::query(
                     "SELECT id, project_id, parent_plan_id, title, description, goal, \
@@ -59,6 +48,38 @@ impl PlanRepo {
                 .bind(project_id.to_string())
                 .fetch_all(&self.pool)
                 .await
+            }
+            Some([]) => {
+                return Err(CoreError::validation(
+                    "plan status filter must not be empty",
+                ));
+            }
+            Some([single]) => {
+                sqlx::query(
+                    "SELECT id, project_id, parent_plan_id, title, description, goal, \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     FROM plans WHERE project_id = ? AND status = ? ORDER BY created_at ASC",
+                )
+                .bind(project_id.to_string())
+                .bind(plan_status_str(*single))
+                .fetch_all(&self.pool)
+                .await
+            }
+            Some(many) => {
+                let placeholders = std::iter::repeat("?")
+                    .take(many.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT id, project_id, parent_plan_id, title, description, goal, \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     FROM plans WHERE project_id = ? AND status IN ({placeholders}) ORDER BY created_at ASC"
+                );
+                let mut q = sqlx::query(&sql).bind(project_id.to_string());
+                for s in many {
+                    q = q.bind(plan_status_str(*s));
+                }
+                q.fetch_all(&self.pool).await
             }
         }
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -615,7 +636,7 @@ mod tests {
         repo.insert(&p2).await.unwrap();
 
         let active = repo
-            .list_by_project(project_id, Some(PlanStatus::Active))
+            .list_by_project(project_id, Some(&[PlanStatus::Active]))
             .await
             .unwrap();
         assert_eq!(active.len(), 1);

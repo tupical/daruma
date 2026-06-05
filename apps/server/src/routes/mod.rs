@@ -347,10 +347,8 @@ struct ListTasksQuery {
     /// `<uuid>` filters to that project; `inbox` filters to tasks with no
     /// project; absent returns every task.
     project_id: Option<String>,
-    /// Comma-separated list of statuses to include (e.g. `todo,in_progress`).
-    /// The shortcut `active` expands to every non-terminal status
-    /// (`inbox`, `todo`, `in_progress`, `in_review`) — the most common
-    /// case for agents asking for "remaining" tasks. Absent = no filter.
+    /// **Required.** Comma-separated statuses (`todo,in_progress`), the
+    /// shortcut `active` (all non-terminal), or `all` (every status).
     status: Option<String>,
 }
 
@@ -468,20 +466,31 @@ fn parse_search_project(raw: Option<&str>) -> Result<Option<ProjectId>, ApiError
     }
 }
 
-/// Parse the `status` query parameter into a list of `Status` values.
+/// Parse the required `status` query parameter into a list of `Status` values.
 ///
-/// Returns `Ok(None)` when the parameter is absent, `Ok(Some(vec))` when
-/// it parses, and `Err` (400) on unknown tokens or an empty list after
-/// trimming. The shortcut `active` expands to all non-terminal statuses.
+/// Returns `Ok(None)` for `all` (no SQL status predicate), `Ok(Some(vec))`
+/// for explicit filters, and `Err` (400) when absent, empty, or unknown.
+/// The shortcut `active` expands to all non-terminal statuses.
 fn parse_status_filter(
     raw: Option<&str>,
 ) -> Result<Option<Vec<taskagent_domain::Status>>, ApiError> {
     use taskagent_domain::Status;
     let Some(raw) = raw else {
-        return Ok(None);
+        return Err(ApiError::from(CoreError::validation(
+            "status is required (e.g. status=active, status=todo,in_progress, or status=all)",
+        )));
     };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "status is required (e.g. status=active, status=todo,in_progress, or status=all)",
+        )));
+    }
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     let mut out: Vec<Status> = Vec::new();
-    for token in raw.split(',') {
+    for token in trimmed.split(',') {
         let t = token.trim();
         if t.is_empty() {
             continue;
@@ -2755,7 +2764,59 @@ async fn list_task_plans(
 #[derive(Deserialize, Default)]
 struct ListPlansQuery {
     project_id: Option<String>,
+    /// **Required.** Single status, comma-separated list, or `all`.
     status: Option<String>,
+}
+
+/// Parse the required plan `status` query parameter.
+///
+/// `all` → `Ok(None)` (no status predicate). Otherwise returns the parsed
+/// statuses for an `IN (...)` filter.
+fn parse_plan_status_filter(
+    raw: Option<&str>,
+) -> Result<Option<Vec<PlanStatus>>, ApiError> {
+    let Some(raw) = raw else {
+        return Err(ApiError::from(CoreError::validation(
+            "status is required (e.g. status=active, status=draft,active, or status=all)",
+        )));
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "status is required (e.g. status=active, status=draft,active, or status=all)",
+        )));
+    }
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+
+    let mut out: Vec<PlanStatus> = Vec::new();
+    for token in trimmed.split(',') {
+        let t = token.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let parsed = match t {
+            "draft" => PlanStatus::Draft,
+            "active" => PlanStatus::Active,
+            "completed" => PlanStatus::Completed,
+            "abandoned" => PlanStatus::Abandoned,
+            other => {
+                return Err(ApiError::from(CoreError::validation(format!(
+                    "unknown plan status: {other}"
+                ))))
+            }
+        };
+        if !out.contains(&parsed) {
+            out.push(parsed);
+        }
+    }
+    if out.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "status filter is empty after trimming",
+        )));
+    }
+    Ok(Some(out))
 }
 
 async fn list_plans(
@@ -2766,15 +2827,7 @@ async fn list_plans(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
 
-    let status_filter: Option<PlanStatus> = q
-        .status
-        .as_deref()
-        .map(|s| {
-            serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|_| {
-                ApiError::from(CoreError::validation(format!("unknown plan status: {s}")))
-            })
-        })
-        .transpose()?;
+    let status_filter = parse_plan_status_filter(q.status.as_deref())?;
 
     let plans = match q.project_id.as_deref() {
         Some(pid) => {
@@ -2783,7 +2836,7 @@ async fn list_plans(
             })?;
             state
                 .plans
-                .list_by_project(project_id, status_filter)
+                .list_by_project(project_id, status_filter.as_deref())
                 .await
                 .map_err(ApiError::from)?
         }

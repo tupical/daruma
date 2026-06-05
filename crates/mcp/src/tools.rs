@@ -103,7 +103,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_list",
-            description: "List tasks. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `status` narrows the result by status: pass a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, or the shortcut `active` (alias for all non-terminal statuses).",
+            description: "List tasks. **Required `status`:** single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list, shortcut `active` (non-terminal), or `all`. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`.",
             input_schema: schema_list(),
         },
         ToolDefinition {
@@ -255,7 +255,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_plan_list",
-            description: "List plans. `project_id` uses the resolved repo project when unambiguous. Pass `all` to query across projects, or pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Optional `status` filters by plan status.",
+            description: "List plans. **Required `status`:** `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. `project_id` uses the resolved repo project when unambiguous. Pass `all` as `project_id` to query across projects, or pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders.",
             input_schema: schema_plan_list(),
         },
         ToolDefinition {
@@ -620,29 +620,18 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "taskagent_list" => {
-            let status = args.get("status").and_then(|v| v.as_str());
-            let mut params: Vec<(&str, String)> = Vec::with_capacity(2);
+            let status = required_string(&args, "status")?;
+            let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
             }
-            if let Some(s) = status {
-                let s = s.trim();
-                if !s.is_empty() {
-                    params.push(("status", urlencode(s)));
-                }
-            }
-            let path = if params.is_empty() {
-                "/v1/tasks".to_string()
-            } else {
-                let qs = params
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join("&");
-                format!("/v1/tasks?{qs}")
-            };
-            client.get_json(&path).await
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client.get_json(&format!("/v1/tasks?{qs}")).await
         }
         "taskagent_search" => {
             let query = required_string(&args, "query")?;
@@ -746,11 +735,17 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             // Counts for the summary; we hit the server fresh so the agent
             // sees the same state the route handler will gate on.
             let tasks = client
-                .get_json(&format!("/v1/tasks?project_id={}", urlencode(&id)))
+                .get_json(&format!(
+                    "/v1/tasks?project_id={}&status=all",
+                    urlencode(&id)
+                ))
                 .await?;
             let tasks_count = tasks.as_array().map(|a| a.len()).unwrap_or(0);
             let plans = client
-                .get_json(&format!("/v1/plans?project_id={}", urlencode(&id)))
+                .get_json(&format!(
+                    "/v1/plans?project_id={}&status=all",
+                    urlencode(&id)
+                ))
                 .await?;
             let plans_count = plans.as_array().map(|a| a.len()).unwrap_or(0);
 
@@ -1091,24 +1086,20 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&format!("/v1/plans/{id}")).await
         }
         "taskagent_plan_list" => {
-            // Same default-project policy as `taskagent_list`: inject the
-            // workspace default unless the agent explicitly passes `all`.
-            let mut qs = String::new();
+            let status = required_string(&args, "status")?;
+            let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
-                    qs.push_str(&format!("project_id={}&", urlencode(&pid)));
+                    params.push(("project_id", urlencode(&pid)));
                 }
             }
-            if let Some(status) = args.get("status").and_then(|v| v.as_str()) {
-                qs.push_str(&format!("status={}&", urlencode(status)));
-            }
-            let path = if qs.is_empty() {
-                "/v1/plans".to_string()
-            } else {
-                format!("/v1/plans?{}", qs.trim_end_matches('&'))
-            };
-            client.get_json(&path).await
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client.get_json(&format!("/v1/plans?{qs}")).await
         }
         "taskagent_plan_add_task" => {
             let plan_id = required_string(&args, "plan_id")?;
@@ -1997,9 +1988,10 @@ fn schema_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Status filter. Accepts a single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list (e.g. `todo,in_progress`), or the shortcut `active` for all non-terminal statuses. Omit to return tasks of every status."
+                "description": "Required. Single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list (e.g. `todo,in_progress`), shortcut `active` (non-terminal), or `all`."
             }
-        }
+        },
+        "required": ["status"]
     })
 }
 
@@ -2212,9 +2204,10 @@ fn schema_plan_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "enum":["draft","active","paused","completed","archived"]
+                "description": "Required. `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`."
             }
-        }
+        },
+        "required": ["status"]
     })
 }
 

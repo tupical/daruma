@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let base =
         std::env::var("TASKAGENT_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
     let token = std::env::var("TASKAGENT_TOKEN").unwrap_or_default();
-    let url = format!("{}/v1/tasks", base.trim_end_matches('/'));
+    let url = format!("{}/v1/tasks?status=active", base.trim_end_matches('/'));
 
     let http = reqwest::Client::builder()
         .user_agent(format!("taskagent-mobile/{}", env!("CARGO_PKG_VERSION")))

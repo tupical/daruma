@@ -78,7 +78,7 @@ async fn first_plan_id(client: &ApiClient, project_id: &str) -> String {
     let list = call_tool(
         client,
         "taskagent_plan_list",
-        json!({ "project_id": project_id }),
+        json!({ "project_id": project_id, "status": "all" }),
     )
     .await;
     list.as_array()

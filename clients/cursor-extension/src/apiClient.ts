@@ -57,14 +57,20 @@ export class TaskagentApiClient {
     return this.getJson<Project[]>("/v1/projects");
   }
 
-  async listTasks(projectId?: string): Promise<Task[]> {
-    const path = projectId ? `/v1/tasks?project_id=${encodeURIComponent(projectId)}` : "/v1/tasks";
-    return this.getJson<Task[]>(path);
+  async listTasks(projectId?: string, status = "active"): Promise<Task[]> {
+    const params = new URLSearchParams({ status });
+    if (projectId) {
+      params.set("project_id", projectId);
+    }
+    return this.getJson<Task[]>(`/v1/tasks?${params.toString()}`);
   }
 
-  async listPlans(projectId?: string): Promise<Plan[]> {
-    const path = projectId ? `/v1/plans?project_id=${encodeURIComponent(projectId)}` : "/v1/plans";
-    return this.getJson<Plan[]>(path);
+  async listPlans(projectId?: string, status = "active"): Promise<Plan[]> {
+    const params = new URLSearchParams({ status });
+    if (projectId) {
+      params.set("project_id", projectId);
+    }
+    return this.getJson<Plan[]>(`/v1/plans?${params.toString()}`);
   }
 
   async getPlan(id: string): Promise<PlanDetail> {

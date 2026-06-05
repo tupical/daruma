@@ -36,7 +36,7 @@ async fn ac5_no_bearer_returns_401_on_v1_tasks() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/v1/tasks")
+        .uri("/v1/tasks?status=all")
         .body(Body::empty())
         .unwrap();
     let res = h.router.oneshot(req).await.unwrap();
@@ -52,7 +52,7 @@ async fn ac5_garbage_bearer_returns_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/v1/tasks")
+        .uri("/v1/tasks?status=all")
         .header("authorization", "Bearer not_a_real_token_at_all")
         .body(Body::empty())
         .unwrap();
@@ -130,7 +130,7 @@ async fn ac6_token_without_task_write_cannot_create_task() {
 }
 
 #[tokio::test]
-async fn ac6_token_with_task_read_can_list_tasks() {
+async fn ac6_tasks_list_without_status_returns_400() {
     let h = test_app().await;
     let (token, _) = mint_pat(
         &h.auth_store(),
@@ -142,6 +142,26 @@ async fn ac6_token_with_task_read_can_list_tasks() {
     let req = Request::builder()
         .method(Method::GET)
         .uri("/v1/tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = h.router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ac6_token_with_task_read_can_list_tasks() {
+    let h = test_app().await;
+    let (token, _) = mint_pat(
+        &h.auth_store(),
+        [Capability::TaskRead].into(),
+        ProjectFilter::All,
+    )
+    .await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/tasks?status=all")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -167,7 +187,7 @@ async fn ac6_revoked_token_is_rejected_with_401() {
 
     let req = Request::builder()
         .method(Method::GET)
-        .uri("/v1/tasks")
+        .uri("/v1/tasks?status=all")
         .header("authorization", format!("Bearer {}", secret.plaintext))
         .body(Body::empty())
         .unwrap();

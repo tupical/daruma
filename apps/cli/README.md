@@ -75,15 +75,18 @@ taskagent show 019e351b-3f3a-7850-a0bd-85135c0b24d0
 # Mark a task done.
 taskagent done 019e351b-3f3a-7850-a0bd-85135c0b24d0
 
-# List every task in the current project.
-taskagent list
+# List open tasks in the current project (status filter is required).
+taskagent list --status active
 
-# Filter list by status.
+# Filter by a specific status.
 taskagent list --status todo
 taskagent list --status in_progress
 
-# Ignore the workspace default project (return everything).
-taskagent list --project-id all
+# Full archive (including done/cancelled).
+taskagent list --status all
+
+# Ignore the workspace default project scope.
+taskagent list --status active --project-id all
 
 # Show version history for a task or document.
 taskagent history task 019e351b-3f3a-7850-a0bd-85135c0b24d0
