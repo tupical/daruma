@@ -103,7 +103,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_list",
-            description: "List tasks. **This is the default tool for \"what's open / inventory / audit / close what's done\"** — `status=active` already excludes done/cancelled; do NOT substitute `taskagent_search` or `taskagent_workspacegraph_search` to enumerate open work. **Required `status`:** single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list, shortcut `active` (non-terminal), or `all`. **Agent safety:** do not call with `status=all` unless the user explicitly confirmed in this turn — `all` returns the full archive and can produce a very large response that fills the context window; prefer `active` or a narrow status filter. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`.",
+            description: "List tasks. **This is the default tool for \"what's open / inventory / audit / close what's done\"** — `status=active` already excludes done/cancelled; do NOT substitute `taskagent_search` or `taskagent_workspacegraph_search` to enumerate open work. **Required `status`:** single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list, shortcut `active` (non-terminal), or `all`. **Agent safety:** do not call with `status=all` unless the user explicitly confirmed in this turn — `all` returns the full archive and can produce a very large response that fills the context window; prefer `active` or a narrow status filter. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to explicitly query every project. When omitted, the resolved repo project is used only if unambiguous; if no project is resolved, the tool returns a compact project-selection response instead of listing tasks from every project. Select one with `taskagent_project_use` to persist the default for later calls.",
             input_schema: schema_list(),
         },
         ToolDefinition {
@@ -623,7 +623,10 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let status = required_string(&args, "status")?;
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
-                ProjectFilter::All | ProjectFilter::None => {}
+                ProjectFilter::All => {}
+                ProjectFilter::None => {
+                    return project_selection_response(client, status.trim()).await;
+                }
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
             }
             let qs = params
@@ -2764,6 +2767,40 @@ fn resolve_named_scope(ws: &workspace::Workspace, scope: &str) -> anyhow::Result
     ws.project_for_scope(scope)?
         .map(ProjectFilter::Project)
         .ok_or_else(|| anyhow::anyhow!("unknown taskagent scope `{scope}`"))
+}
+
+async fn project_selection_response(
+    client: &ApiClient,
+    requested_status: &str,
+) -> anyhow::Result<Value> {
+    let projects = client.get_json("/v1/projects").await?;
+    let projects = projects
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|project| {
+                    json!({
+                        "id": project.get("id").cloned().unwrap_or(Value::Null),
+                        "title": project.get("title").cloned().unwrap_or(Value::Null),
+                        "slug": project.get("slug").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "needs_project_selection": true,
+        "reason": "No default TaskAgent project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
+        "requested_status": requested_status,
+        "projects": projects,
+        "next_step": "Ask the user which project to use, then call taskagent_project_use with that project_id. After that, retry taskagent_list with the same status; the saved default project will be reused by later calls.",
+        "next_tool": {
+            "name": "taskagent_project_use",
+            "arguments": {
+                "project_id": "<selected_project_id>"
+            }
+        }
+    }))
 }
 
 async fn create_captured_task(

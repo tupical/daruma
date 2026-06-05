@@ -100,6 +100,12 @@ Supported launch modes:
   there is no default project. Calls that need a project must pass `project_id`,
   `project_scope`, or `scope_path`; `taskagent_workspace_info` returns every
   known repo scope and the inference error.
+- When `taskagent_list` is called without a resolvable project, it does not
+  fall back to listing tasks from every project. It returns a compact
+  `needs_project_selection` response with project ids/titles/slugs. Ask the
+  user which project to use, call `taskagent_project_use` with that
+  `project_id`, then retry `taskagent_list`; the selected project is persisted
+  in `workspaces.json` for later calls.
 - The same `workspaces.json` works in both modes. To bind projects while running
   from a parent folder, call `taskagent_project_use` with `scope_path`
   (relative paths are resolved from `TASKAGENT_WORKSPACE` / process CWD).
