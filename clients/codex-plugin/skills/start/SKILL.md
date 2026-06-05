@@ -1,6 +1,6 @@
 ---
 name: start
-description: Run taskagent-claude's full pipeline: parse the task, optionally decompose via AI, execute each subtask through omc team, write artifacts as taskagent comments. Triggered by /taskagent-claude:start "<task>" or taskagent-claude start "<task>" from the shell.
+description: "Run taskagent-claude's full pipeline: parse the task, optionally decompose via AI, execute each subtask through omc team, write artifacts as taskagent comments. Triggered by /taskagent-claude:start \"<task>\" or taskagent-claude start \"<task>\" from the shell."
 ---
 
 # taskagent-claude: start
