@@ -1,6 +1,6 @@
 {
   "name": "taskagent-claude",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Glue between tupical/taskagent and oh-my-claudecode. Drives the taskagent pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
   "keywords": [
     "claude-code",
@@ -13,13 +13,14 @@
     "agent",
     "plugin"
   ],
-  "homepage": "https://github.com/tupical/taskagent-claude#readme",
+  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/claude-plugin#readme",
   "bugs": {
-    "url": "https://github.com/tupical/taskagent-claude/issues"
+    "url": "https://github.com/tupical/taskagent/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tupical/taskagent-claude.git"
+    "url": "git+https://github.com/tupical/taskagent.git",
+    "directory": "clients/claude-plugin"
   },
   "author": "tupical",
   "license": "MIT",

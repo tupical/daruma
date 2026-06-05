@@ -1,10 +1,10 @@
 {
   "name": "taskagent-claude",
   "description": "Glue plugin: drives tupical/taskagent (parse / decompose / plan / execute) and uses oh-my-claudecode /team as the executor. Ships /taskagent-claude:{tasks,plan,next,mine,branch-tasks,start,doctor,setup} and a project-init that makes taskagent the default tracker (overrides .omc/plans/).",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": { "name": "taskagent-claude contributors" },
   "license": "MIT",
-  "homepage": "https://github.com/tupical/taskagent-claude",
+  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/claude-plugin",
   "keywords": ["taskagent", "taskagent", "oh-my-claudecode", "orchestration", "multi-agent", "claude-code-plugin"],
   "commands": "./commands/",
   "skills": "./skills/"
