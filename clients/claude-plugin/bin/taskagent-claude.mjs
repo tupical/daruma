@@ -35,6 +35,7 @@ import {
   installLatest,
   isNewer,
 } from "../lib/update.mjs";
+import { createCliUi } from "../lib/cli-ui.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -138,16 +139,19 @@ async function cmdDoctor(rest = []) {
 }
 
 async function cmdSetup() {
+  const ui = createCliUi({ title: "TaskAgent Claude Setup" });
+  ui.header();
   const report = await detectAll();
   if (report.ready) {
-    process.stdout.write("Both dependencies present. Nothing to install.\n");
+    ui.success("Both dependencies present. Nothing to install.");
     process.stdout.write(formatReport(report) + "\n");
     return;
   }
-  process.stdout.write("Install the missing dependencies below, then re-run `taskagent-claude doctor`.\n\n");
+  ui.warn("Install the missing dependencies below, then re-run `taskagent-claude doctor`.");
   for (const tool of [report.omc, report.taskagent]) {
     if (tool.installed) continue;
-    process.stdout.write(`# ${tool.name}\n${tool.installHint}\n\n`);
+    ui.section(tool.name);
+    process.stdout.write(`${tool.installHint}\n`);
   }
 }
 
@@ -172,6 +176,16 @@ const OMC_VERB = {
   missing: "Nothing to remove at",
 };
 
+function actionKind(action) {
+  if (action === "installed" || action === "updated" || action === "appended" || action === "removed-block" || action === "removed-file") {
+    return "ok";
+  }
+  if (action === "unchanged" || action === "skipped-no-omc" || action === "missing") {
+    return "warn";
+  }
+  return "dot";
+}
+
 function parseInitFlags(rest) {
   const opts = { projectDir: undefined, noPolicy: false, noOmcGuard: false };
   for (let i = 0; i < rest.length; i++) {
@@ -195,6 +209,7 @@ function parseInitFlags(rest) {
 }
 
 async function cmdInit(rest = []) {
+  const ui = createCliUi({ title: "TaskAgent Claude Initializer" });
   let opts;
   try {
     opts = parseInitFlags(rest);
@@ -203,30 +218,37 @@ async function cmdInit(rest = []) {
     process.exit(2);
   }
   const dir = opts.projectDir ?? process.cwd();
+  ui.header();
 
   if (!opts.noPolicy) {
-    const result = await installPolicy({ projectDir: dir });
+    const result = await ui.task(
+      "Installing Claude project policy...",
+      () => installPolicy({ projectDir: dir }),
+      "Claude project policy ready",
+    );
     const verb = POLICY_VERB[result.action] ?? result.action;
-    process.stdout.write(`${verb} ${result.path}\n`);
+    ui.item(`${verb} ${result.path}`, { kind: actionKind(result.action) });
   }
 
   if (!opts.noOmcGuard) {
-    const result = await installOmcGuard({ projectDir: dir });
+    const result = await ui.task(
+      "Refreshing OMC guard...",
+      () => installOmcGuard({ projectDir: dir }),
+      "OMC guard checked",
+    );
     const verb = OMC_VERB[result.action] ?? result.action;
-    process.stdout.write(`OMC guard: ${verb} ${result.path}\n`);
+    ui.item(`OMC guard: ${verb} ${result.path}`, { kind: actionKind(result.action) });
     if (result.action === "skipped-no-omc") {
-      process.stdout.write(
-        "  (no oh-my-claudecode artifacts in this project — nothing to override)\n",
-      );
+      ui.detail("  no oh-my-claudecode artifacts in this project; nothing to override");
     }
   }
 
-  process.stdout.write(
-    "\nProject is now defaulted to taskagent. Open Claude Code in this directory to pick it up.\n",
-  );
+  ui.success("Project is now defaulted to taskagent.");
+  ui.detail("  Open Claude Code in this directory to pick it up.");
 }
 
 async function cmdUninit(rest = []) {
+  const ui = createCliUi({ title: "TaskAgent Claude Uninitializer" });
   let opts;
   try {
     opts = parseInitFlags(rest);
@@ -235,12 +257,25 @@ async function cmdUninit(rest = []) {
     process.exit(2);
   }
   const dir = opts.projectDir ?? process.cwd();
+  ui.header();
 
-  const policy = await removePolicy({ projectDir: dir });
-  process.stdout.write(`${POLICY_VERB[policy.action] ?? policy.action} ${policy.path}\n`);
+  const policy = await ui.task(
+    "Removing Claude project policy...",
+    () => removePolicy({ projectDir: dir }),
+    "Claude project policy checked",
+  );
+  ui.item(`${POLICY_VERB[policy.action] ?? policy.action} ${policy.path}`, {
+    kind: actionKind(policy.action),
+  });
 
-  const guard = await removeOmcGuard({ projectDir: dir });
-  process.stdout.write(`OMC guard: ${OMC_VERB[guard.action] ?? guard.action} ${guard.path}\n`);
+  const guard = await ui.task(
+    "Removing managed OMC guard...",
+    () => removeOmcGuard({ projectDir: dir }),
+    "OMC guard checked",
+  );
+  ui.item(`OMC guard: ${OMC_VERB[guard.action] ?? guard.action} ${guard.path}`, {
+    kind: actionKind(guard.action),
+  });
 }
 
 async function cmdPlatform() {
@@ -255,36 +290,37 @@ async function cmdPlatform() {
 // Print one component's update status. If `upgradeFn` is provided and an
 // update is available, runs it; otherwise prints `manualHint` for the user.
 async function processComponent({ label, current, latest, upgradeFn, manualHint }) {
+  const ui = createCliUi();
   if (!current) {
-    process.stdout.write(`[?] ${label}: could not parse local version\n`);
-    if (manualHint) process.stdout.write(`    install/upgrade: ${manualHint}\n`);
+    ui.warn(`${label}: could not parse local version`);
+    if (manualHint) ui.detail(`  install/upgrade: ${manualHint}`);
     return false;
   }
   if (!latest) {
-    process.stdout.write(`[?] ${label}: could not reach registry\n`);
+    ui.warn(`${label}: could not reach registry`);
     return false;
   }
   if (current === latest) {
-    process.stdout.write(`[ok] ${label}: ${current} (latest)\n`);
+    ui.success(`${label}: ${current} (latest)`);
     return true;
   }
   if (!isNewer(latest, current)) {
-    process.stdout.write(`[?] ${label}: local ${current} > registry ${latest}, skipping\n`);
+    ui.warn(`${label}: local ${current} > registry ${latest}, skipping`);
     return true;
   }
-  process.stdout.write(`[update] ${label}: ${current} -> ${latest}\n`);
+  ui.step(`${label}: ${current} -> ${latest}`);
   if (upgradeFn) {
     try {
       await upgradeFn();
-      process.stdout.write(`         done.\n`);
+      ui.success(`${label}: updated`);
       return true;
     } catch (err) {
-      process.stdout.write(`         FAILED: ${err.message}\n`);
-      if (manualHint) process.stdout.write(`         try manually: ${manualHint}\n`);
+      ui.error(`${label}: ${err.message}`);
+      if (manualHint) ui.detail(`  try manually: ${manualHint}`);
       return false;
     }
   }
-  if (manualHint) process.stdout.write(`         run:  ${manualHint}\n`);
+  if (manualHint) ui.detail(`  run: ${manualHint}`);
   return true;
 }
 
@@ -294,9 +330,14 @@ async function tryFetchNpm(pkgName) {
 }
 
 async function cmdUpdate() {
+  const ui = createCliUi({ title: "TaskAgent Claude Updater" });
+  ui.header();
   // 1. taskagent-claude (self) — npm.
-  process.stdout.write(`Checking taskagent-claude...\n`);
-  const selfLatest = await tryFetchNpm("taskagent-claude");
+  const selfLatest = await ui.task(
+    "Checking taskagent-claude...",
+    () => tryFetchNpm("taskagent-claude"),
+    "Checked taskagent-claude",
+  );
   await processComponent({
     label: "taskagent-claude",
     current: pkg.version,
@@ -306,12 +347,19 @@ async function cmdUpdate() {
   });
 
   // 2. omc (oh-my-claude-sisyphus) — npm.
-  process.stdout.write(`\nChecking oh-my-claudecode (omc)...\n`);
-  const omc = await detectOMC();
+  const omc = await ui.task(
+    "Checking oh-my-claudecode (omc)...",
+    () => detectOMC(),
+    "Checked oh-my-claudecode (omc)",
+  );
   if (!omc.installed) {
-    process.stdout.write(`[skip] oh-my-claudecode not installed\n`);
+    ui.warn("oh-my-claudecode not installed");
   } else {
-    const omcLatest = await tryFetchNpm("oh-my-claude-sisyphus");
+    const omcLatest = await ui.task(
+      "Checking oh-my-claudecode registry version...",
+      () => tryFetchNpm("oh-my-claude-sisyphus"),
+      "Checked oh-my-claudecode registry version",
+    );
     const omcCurrent = parseSemver(omc.cli) ?? parseSemver(omc.npmVersion);
     await processComponent({
       label: "oh-my-claudecode (omc)",
@@ -324,15 +372,18 @@ async function cmdUpdate() {
 
   // 3. taskagent — built from source, no registry to query. Just print the
   // canonical manual upgrade hint pulled from detect.mjs.
-  process.stdout.write(`\nChecking taskagent...\n`);
-  const taskagent = await detectTaskagent();
+  const taskagent = await ui.task(
+    "Checking taskagent...",
+    () => detectTaskagent(),
+    "Checked taskagent",
+  );
   if (!taskagent.installed) {
-    process.stdout.write(`[skip] taskagent not installed\n`);
-    process.stdout.write(`       install: ${taskagent.installHint.split("\n")[0]}\n`);
+    ui.warn("taskagent not installed");
+    ui.detail(`  install: ${taskagent.installHint.split("\n")[0]}`);
   } else {
     const current = parseSemver(taskagent.cli) ?? parseSemver(taskagent.http?.version);
-    process.stdout.write(`[manual] taskagent${current ? `: ${current}` : ""} — built from source\n`);
-    process.stdout.write(`         run:  ${taskagent.updateHint}\n`);
+    ui.warn(`taskagent${current ? `: ${current}` : ""} — built from source`);
+    ui.detail(`  run: ${taskagent.updateHint}`);
   }
 }
 

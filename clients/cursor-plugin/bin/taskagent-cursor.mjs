@@ -46,6 +46,7 @@ import {
 import { installRules } from "../lib/rules.mjs";
 import { installCommands } from "../lib/commands.mjs";
 import { installOmcGuard, removeOmcGuard } from "../lib/omc-guard.mjs";
+import { createCliUi } from "../lib/cli-ui.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
@@ -223,73 +224,115 @@ function installEnvOpts(opts) {
   };
 }
 
+function actionKind(action) {
+  if (action === "installed" || action === "overwritten" || action === "added" || action === "replaced" || action === "removed") {
+    return "ok";
+  }
+  if (action === "unchanged" || action === "skipped-exists" || action === "skipped-no-omc" || action === "missing") {
+    return "warn";
+  }
+  return "dot";
+}
+
 async function cmdInstall(rest) {
+  const ui = createCliUi({ title: "TaskAgent Cursor Installer" });
   const opts = parseScopeFlags(rest);
+  ui.header();
+
   const path = resolveMcpPath({ scope: opts.scope, projectDir: opts.projectDir });
-  const entry = await defaultTaskagentConfig(installEnvOpts(opts));
-  const result = await upsertServer(path, opts.name, entry);
+  const { entry, result } = await ui.task(
+    "Registering Cursor MCP server...",
+    async () => {
+      const entry = await defaultTaskagentConfig(installEnvOpts(opts));
+      const result = await upsertServer(path, opts.name, entry);
+      return { entry, result };
+    },
+    "Cursor MCP server registered",
+  );
   const verb = {
     added: "Added",
     replaced: "Replaced",
     unchanged: "Already present (unchanged)",
   }[result.action] ?? result.action;
-  process.stdout.write(`${verb} ${opts.name} in ${result.path}\n`);
-  process.stdout.write(JSON.stringify(entry, null, 2) + "\n");
+  ui.detail(`  ${verb} ${opts.name} in ${result.path}`);
+  ui.detail(JSON.stringify(entry, null, 2).split("\n").map((ln) => `  ${ln}`).join("\n"));
 
   const rulesDir = resolveRulesDir(opts);
 
   if (!opts.noRules) {
-    const rulesResults = await installRules({
-      projectDir: rulesDir,
-      overwrite: opts.force,
-    });
-    process.stdout.write("\nCursor rules (default-tracker policy):\n");
+    const rulesResults = await ui.task(
+      "Installing Cursor rules...",
+      () => installRules({
+        projectDir: rulesDir,
+        overwrite: opts.force,
+      }),
+      "Cursor rules ready",
+    );
+    ui.section("Cursor rules");
     for (const r of rulesResults) {
       const v = RULES_VERB[r.action] ?? r.action;
-      process.stdout.write(`  ${v}: ${r.path}\n`);
+      ui.item(`${v}: ${r.path}`, { kind: actionKind(r.action) });
     }
   }
 
   if (!opts.noCommands) {
-    const cmdResults = await installCommands({
-      projectDir: rulesDir,
-      overwrite: opts.force,
-    });
-    process.stdout.write("\nCursor slash commands:\n");
+    const cmdResults = await ui.task(
+      "Installing Cursor slash commands...",
+      () => installCommands({
+        projectDir: rulesDir,
+        overwrite: opts.force,
+      }),
+      "Cursor slash commands ready",
+    );
+    ui.section("Cursor slash commands");
     for (const r of cmdResults) {
       const v = COMMANDS_VERB[r.action] ?? r.action;
-      process.stdout.write(`  ${v}: ${r.path}\n`);
+      ui.item(`${v}: ${r.path}`, { kind: actionKind(r.action) });
     }
   }
 
   if (!opts.noOmcGuard) {
-    const guard = await installOmcGuard({ projectDir: rulesDir });
+    const guard = await ui.task(
+      "Refreshing OMC guard...",
+      () => installOmcGuard({ projectDir: rulesDir }),
+      "OMC guard checked",
+    );
     const v = OMC_VERB[guard.action] ?? guard.action;
-    process.stdout.write(`\nOMC guard: ${v} ${guard.path}\n`);
+    ui.section("OMC guard");
+    ui.item(`${v} ${guard.path}`, { kind: actionKind(guard.action) });
     if (guard.action === "skipped-no-omc") {
-      process.stdout.write(
-        "  (no oh-my-claudecode artifacts in this project — nothing to override)\n",
-      );
+      ui.detail("  no oh-my-claudecode artifacts in this project; nothing to override");
     }
   }
 
-  process.stdout.write("\nRestart Cursor (or reload the MCP panel) to pick up the change.\n");
+  ui.success("Installation complete");
+  ui.detail("  Restart Cursor or reload the MCP panel to pick up the change.");
 }
 
 async function cmdUninstall(rest) {
+  const ui = createCliUi({ title: "TaskAgent Cursor Uninstaller" });
   const opts = parseScopeFlags(rest);
+  ui.header();
   const path = resolveMcpPath({ scope: opts.scope, projectDir: opts.projectDir });
-  const result = await removeServer(path, opts.name);
+  const result = await ui.task(
+    "Removing Cursor MCP server...",
+    () => removeServer(path, opts.name),
+    "Cursor MCP config checked",
+  );
   if (result.action === "removed") {
-    process.stdout.write(`Removed ${opts.name} from ${result.path}\n`);
+    ui.success(`Removed ${opts.name} from ${result.path}`);
   } else {
-    process.stdout.write(`No ${opts.name} entry in ${result.path}\n`);
+    ui.warn(`No ${opts.name} entry in ${result.path}`);
   }
   if (opts.purge) {
     const rulesDir = resolveRulesDir(opts);
-    const guard = await removeOmcGuard({ projectDir: rulesDir });
+    const guard = await ui.task(
+      "Removing managed OMC guard...",
+      () => removeOmcGuard({ projectDir: rulesDir }),
+      "OMC guard checked",
+    );
     const v = OMC_VERB[guard.action] ?? guard.action;
-    process.stdout.write(`OMC guard: ${v} ${guard.path}\n`);
+    ui.item(`${v} ${guard.path}`, { kind: actionKind(guard.action) });
   }
 }
 
@@ -310,31 +353,49 @@ async function cmdDeeplink(rest) {
 }
 
 async function cmdRules(rest) {
+  const ui = createCliUi({ title: "TaskAgent Cursor Rules" });
   const opts = parseScopeFlags(rest);
+  ui.header();
   const dir = resolveRulesDir(opts);
-  const results = await installRules({ projectDir: dir, overwrite: opts.force });
+  const results = await ui.task(
+    "Installing Cursor rules...",
+    () => installRules({ projectDir: dir, overwrite: opts.force }),
+    "Cursor rules ready",
+  );
   for (const r of results) {
     const verb = RULES_VERB[r.action] ?? r.action;
-    process.stdout.write(`${verb}: ${r.path}\n`);
+    ui.item(`${verb}: ${r.path}`, { kind: actionKind(r.action) });
   }
 }
 
 async function cmdCommands(rest) {
+  const ui = createCliUi({ title: "TaskAgent Cursor Commands" });
   const opts = parseScopeFlags(rest);
+  ui.header();
   const dir = resolveRulesDir(opts);
-  const results = await installCommands({ projectDir: dir, overwrite: opts.force });
+  const results = await ui.task(
+    "Installing Cursor slash commands...",
+    () => installCommands({ projectDir: dir, overwrite: opts.force }),
+    "Cursor slash commands ready",
+  );
   for (const r of results) {
     const verb = COMMANDS_VERB[r.action] ?? r.action;
-    process.stdout.write(`${verb}: ${r.path}\n`);
+    ui.item(`${verb}: ${r.path}`, { kind: actionKind(r.action) });
   }
 }
 
 async function cmdOmcGuard(rest) {
+  const ui = createCliUi({ title: "TaskAgent OMC Guard" });
   const opts = parseScopeFlags(rest);
+  ui.header();
   const dir = resolveRulesDir(opts);
-  const result = await installOmcGuard({ projectDir: dir });
+  const result = await ui.task(
+    "Refreshing OMC guard...",
+    () => installOmcGuard({ projectDir: dir }),
+    "OMC guard checked",
+  );
   const verb = OMC_VERB[result.action] ?? result.action;
-  process.stdout.write(`${verb}: ${result.path}\n`);
+  ui.item(`${verb}: ${result.path}`, { kind: actionKind(result.action) });
 }
 
 async function cmdDoctor(rest) {
@@ -365,17 +426,21 @@ async function cmdDoctor(rest) {
 }
 
 async function cmdSetup() {
+  const ui = createCliUi({ title: "TaskAgent Cursor Setup" });
+  ui.header();
   const report = await detectAll();
   if (report.ready) {
-    process.stdout.write("Cursor + taskagent are ready. Nothing to install.\n");
+    ui.success("Cursor + taskagent are ready. Nothing to install.");
     process.stdout.write(formatReport(report) + "\n");
     return;
   }
-  process.stdout.write("Install the missing pieces below, then re-run `taskagent-cursor doctor`.\n\n");
+  ui.warn("Install the missing pieces below, then re-run `taskagent-cursor doctor`.");
+  process.stdout.write("\n");
   for (const tool of [report.cursor, report.taskagent]) {
     if (tool.installed && tool.mcpReady !== false) continue;
     const hint = tool.installed ? tool.mcpHint : tool.installHint;
-    process.stdout.write(`# ${tool.name}\n${hint}\n\n`);
+    ui.section(tool.name);
+    process.stdout.write(`${hint}\n`);
   }
 }
 
