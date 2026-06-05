@@ -13,6 +13,13 @@ without replacing taskagent as the source of truth for mutations.
 See [adr/workspacegraph.md](mdc:docs/adr/workspacegraph.md) for node/edge
 taxonomy and non-goals.
 
+> **Never use `taskagent_workspacegraph_search` to list open tasks or take
+> inventory.** That is `taskagent_list { status: "active", project_scope }`'s
+> job — one scoped call instead of a multi-KB graph dump. WorkspaceGraph is
+> for the relations/impact *around a node you already have*, not for
+> discovering "what exists". Reaching for a graph search to answer "what's
+> open" is the single most expensive mistake here.
+
 ## When to use
 
 Reach for `taskagent_workspacegraph_*` when you need graph-shaped context
@@ -27,15 +34,17 @@ that plain `taskagent_list` / `taskagent_search` does not expose:
 - **Impact analysis** — downstream tasks/plans affected by a change
   (`taskagent_workspacegraph_impact`) before closing, reprioritizing, or
   rewriting blockers.
-- **Graph search** — find nodes by title/body across the indexed workspace
-  (`taskagent_workspacegraph_search`); pass `project_id: "all"` to search
-  globally, or omit to use the workspace default project (same as
-  `taskagent_search`).
+- **Graph search** — find a node by title/body **only when you already know
+  it exists and need its graph neighborhood** (`taskagent_workspacegraph_search`);
+  pass `project_id: "all"` to search globally. This is **not** a way to list
+  open work or take inventory — that is `taskagent_list status=active`.
 - **Health check** — `taskagent_workspacegraph_status` when graph queries
   return empty/stale results or after a server restart.
 
-Skip WorkspaceGraph for one-off file edits, pure code explanation, or when
-`taskagent_relations` / `taskagent_plan_graph` already answer the question.
+Skip WorkspaceGraph for one-off file edits, pure code explanation, plain
+inventory/audit ("what's open", "close what's done" — use
+`taskagent_list status=active`), or when `taskagent_relations` /
+`taskagent_plan_graph` already answer the question.
 
 ## Core tool sequence
 

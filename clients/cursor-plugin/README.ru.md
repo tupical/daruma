@@ -57,9 +57,16 @@ cargo build --release -p taskagent-server -p taskagent-mcp-bin
 1. **Регистрирует MCP-сервер** в `mcp.json` Cursor — глобально
    (`~/.cursor/mcp.json`) или для проекта (`./.cursor/mcp.json`).
 2. **Генерирует deeplink «Add to Cursor»** для установки локального MCP в один клик.
-3. **Кладёт правило** (`.cursor/rules/taskagent.mdc`), которое учит агента
-   Cursor работать с `taskagent_*`-инструментами (parse → decompose → plan →
-   execute) вместо самодельных тудушек.
+3. **Кладёт три правила** в `.cursor/rules/`, которые учат агента Cursor
+   работать с `taskagent_*`-инструментами (parse → decompose → plan →
+   execute) вместо самодельных тудушек и держат его на экономном пути
+   `list active`:
+   - `taskagent-policy.mdc` (`alwaysApply`) — taskagent как трекер по
+     умолчанию + правила экономии токенов (list-first, без graph-поиска для
+     инвентаря).
+   - `taskagent.mdc` — полный контракт инструментов + audit/close workflow.
+   - `workspacegraph.mdc` — guardrails: `taskagent_workspacegraph_*` для
+     связей/impact, а не для списка открытых задач.
 
 Сам по себе плагин **не содержит логики исполнения**. Cursor-агент общается с
 сервером taskagent напрямую через MCP — здесь только обвязка.
@@ -90,7 +97,7 @@ taskagent-cursor doctor             # проверка
 | `taskagent-cursor install [--global\|--project DIR]`      | Прописать taskagent MCP в выбранный `mcp.json`.                         |
 | `taskagent-cursor uninstall [--global\|--project DIR]`    | Удалить запись.                                                         |
 | `taskagent-cursor deeplink [--print-url]`                 | Напечатать `cursor://`-deeplink (и HTTPS-зеркало).                      |
-| `taskagent-cursor rules [--project DIR] [--force]`        | Положить `.cursor/rules/taskagent.mdc` в проект.                        |
+| `taskagent-cursor rules [--project DIR] [--force]`        | Положить три `.cursor/rules/*.mdc` (policy + контракт + workspacegraph) в проект. |
 | `taskagent-cursor doctor [--json\|--quiet]`               | Проверить Cursor + `taskagent-mcp` + HTTP-сервер. Exit 0 ⇒ READY.       |
 | `taskagent-cursor setup`                                  | Подсказки по установке отсутствующего.                                  |
 | `taskagent-cursor marketplace`                            | Напечатать plugin-манифест taskagent (со встроенным актуальным deeplink).  |
@@ -156,7 +163,10 @@ clients/cursor-plugin/
 │   └── rules.mjs                         # установка .cursor/rules/*.mdc
 ├── cursor/
 │   ├── mcp.example.json                  # эталон для ручной установки
-│   └── rules/taskagent.mdc               # контракт для Cursor-агента
+│   └── rules/                            # policy + контракт + workspacegraph guardrails
+│       ├── taskagent-policy.mdc          # alwaysApply policy (list-first / экономия токенов)
+│       ├── taskagent.mdc                 # контракт + audit/close workflow
+│       └── workspacegraph.mdc            # граф-инструменты: связи/impact, не инвентарь
 ├── .taskagent/plugin.json                   # манифест маркетплейса taskagent
 └── tests/                                # node --test
 ```

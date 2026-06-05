@@ -58,9 +58,16 @@ cargo build --release -p taskagent-server -p taskagent-mcp-bin
 1. **Registers the MCP server** in Cursor's `mcp.json` — globally
    (`~/.cursor/mcp.json`) or per-project (`./.cursor/mcp.json`).
 2. **Generates "Add to Cursor" deeplinks** for one-click local MCP setup.
-3. **Drops a Cursor Rule** (`.cursor/rules/taskagent.mdc`) that teaches
-   Cursor's agent how to drive `taskagent_*` tools — parse → decompose →
-   plan → execute — instead of inventing its own task tracker.
+3. **Drops three Cursor Rules** into `.cursor/rules/` that teach Cursor's
+   agent how to drive `taskagent_*` tools — parse → decompose → plan →
+   execute — instead of inventing its own task tracker, and keep it on the
+   token-lean `list active` path:
+   - `taskagent-policy.mdc` (`alwaysApply`) — taskagent is the default
+     tracker; token-economy rules (list-first, no graph search for
+     inventory).
+   - `taskagent.mdc` — full tool contract + the audit/close workflow.
+   - `workspacegraph.mdc` — guardrails so `taskagent_workspacegraph_*` is
+     used for relations/impact, never to list open tasks.
 
 It owns **no execution logic of its own**. Cursor's agent talks MCP directly
 to the taskagent server; this plugin is purely the wiring.
@@ -91,7 +98,7 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 | `taskagent-cursor install [--global\|--project DIR]`      | Register the taskagent MCP server in the chosen `mcp.json`.             |
 | `taskagent-cursor uninstall [--global\|--project DIR]`    | Remove the entry.                                                       |
 | `taskagent-cursor deeplink [--print-url]`                 | Print the `cursor://` install deeplink (and HTTPS mirror).              |
-| `taskagent-cursor rules [--project DIR] [--force]`        | Drop `.cursor/rules/taskagent.mdc` into a project.                      |
+| `taskagent-cursor rules [--project DIR] [--force]`        | Drop the three `.cursor/rules/*.mdc` (policy + contract + workspacegraph) into a project. |
 | `taskagent-cursor doctor [--json\|--quiet]`               | Probe Cursor + `taskagent-mcp` + HTTP server. Exit 0 ⇒ READY.           |
 | `taskagent-cursor setup`                                  | Print install hints for missing pieces.                                 |
 | `taskagent-cursor marketplace`                            | Print the taskagent plugin manifest (with live deeplink baked in).         |
@@ -157,7 +164,10 @@ clients/cursor-plugin/
 │   └── rules.mjs                         # drop .cursor/rules/*.mdc
 ├── cursor/
 │   ├── mcp.example.json                  # manual install reference
-│   └── rules/taskagent.mdc               # agent contract for Cursor
+│   └── rules/                            # policy + contract + workspacegraph guardrails
+│       ├── taskagent-policy.mdc          # alwaysApply policy (list-first / token economy)
+│       ├── taskagent.mdc                 # agent contract + audit/close workflow
+│       └── workspacegraph.mdc            # graph tools: relations/impact, not inventory
 ├── .taskagent-plugin/plugin.json            # taskagent plugin manifest
 └── tests/                                # node --test
 ```

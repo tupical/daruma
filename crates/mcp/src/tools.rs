@@ -93,7 +93,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_get",
-            description: "Fetch a single task by its identifier.",
+            description: "Fetch a single task by its identifier. Use only when you need fields a list/search row does not already carry. Do NOT re-fetch rows a recent `taskagent_list` or `taskagent_search` already returned — those rows already include title, status, and priority.",
             input_schema: schema_with_id("id"),
         },
         ToolDefinition {
@@ -103,12 +103,12 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_list",
-            description: "List tasks. **Required `status`:** single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list, shortcut `active` (non-terminal), or `all`. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`.",
+            description: "List tasks. **This is the default tool for \"what's open / inventory / audit / close what's done\"** — `status=active` already excludes done/cancelled; do NOT substitute `taskagent_search` or `taskagent_workspacegraph_search` to enumerate open work. **Required `status`:** single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list, shortcut `active` (non-terminal), or `all`. **Agent safety:** do not call with `status=all` unless the user explicitly confirmed in this turn — `all` returns the full archive and can produce a very large response that fills the context window; prefer `active` or a narrow status filter. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`.",
             input_schema: schema_list(),
         },
         ToolDefinition {
             name: "taskagent_search",
-            description: "Search tasks, comments, and plans by text. Scope defaults to all three; project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
+            description: "Full-text lookup across tasks, comments, and plans for a named keyword/topic. Use ONLY when the user names concrete text to find — to list open work or take inventory use `taskagent_list status=active` instead (cheaper, scoped). Always pass a `limit`. Scope defaults to all three domains; project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
             input_schema: schema_search(),
         },
         ToolDefinition {
@@ -250,12 +250,12 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_plan_get",
-            description: "Fetch a plan by id, including progress metrics.",
+            description: "Fetch a plan by id, including progress metrics. This is the cheap way to summarize a plan's status — prefer ONE `taskagent_plan_get` over enumerating finished plans/tasks with `taskagent_plan_list status=completed` or `taskagent_search`.",
             input_schema: schema_with_id("id"),
         },
         ToolDefinition {
             name: "taskagent_plan_list",
-            description: "List plans. **Required `status`:** `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. `project_id` uses the resolved repo project when unambiguous. Pass `all` as `project_id` to query across projects, or pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders.",
+            description: "List plans. **Required `status`:** `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. **Agent safety:** do not call with `status=all` unless the user explicitly confirmed in this turn — `all` returns every plan (including completed/abandoned) and can produce a very large response; prefer `draft,active` or a narrow filter. **Do NOT enumerate `status=completed` to summarize progress** — each completed plan carries its full goal + success_criteria, so this is very token-heavy; call `taskagent_plan_get` on the one relevant plan instead. `project_id` uses the resolved repo project when unambiguous. Pass `all` as `project_id` to query across projects, or pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders.",
             input_schema: schema_plan_list(),
         },
         ToolDefinition {
@@ -331,7 +331,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_workspacegraph_search",
-            description: "Full-text search over WorkspaceGraph nodes. project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
+            description: "Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. NOT for listing open tasks or inventory: that is `taskagent_list status=active` (one scoped call vs a multi-KB graph dump). project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
             input_schema: schema_workspacegraph_search(),
         },
         ToolDefinition {
@@ -1988,7 +1988,7 @@ fn schema_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required. Single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list (e.g. `todo,in_progress`), shortcut `active` (non-terminal), or `all`."
+                "description": "Required. Single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list (e.g. `todo,in_progress`), shortcut `active` (non-terminal), or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
             }
         },
         "required": ["status"]
@@ -2204,7 +2204,7 @@ fn schema_plan_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required. `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`."
+                "description": "Required. `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
             }
         },
         "required": ["status"]

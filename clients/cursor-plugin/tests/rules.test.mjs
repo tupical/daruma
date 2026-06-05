@@ -33,12 +33,28 @@ test("installRules drops both bundled rules with alwaysApply policy", async () =
     // so the agent reaches for taskagent on either side.
     assert.match(policy, /трекер/);
     assert.match(policy, /tracker/);
+    // Token-economy guard: the always-applied policy must steer toward
+    // list-first and must NOT carry the old "use search for lookups" hint
+    // that pushed the agent into expensive search/graph dumps.
+    assert.match(policy, /status:\s*"active"/);
+    assert.doesNotMatch(policy, /for targeted lookups/);
 
     const contract = await fs.readFile(
       join(dir, ".cursor", "rules", "taskagent.mdc"),
       "utf8",
     );
     assert.match(contract, /taskagent-policy\.mdc/);
+    // The on-demand contract must document the lean audit/close workflow
+    // and drop the old "Prefer search over bulk list" guidance.
+    assert.match(contract, /Audit & close workflow/);
+    assert.doesNotMatch(contract, /Prefer search over bulk list/);
+
+    const graph = await fs.readFile(
+      join(dir, ".cursor", "rules", "workspacegraph.mdc"),
+      "utf8",
+    );
+    // workspacegraph guardrail: never use graph search to list open tasks.
+    assert.match(graph, /Never use `taskagent_workspacegraph_search` to list open tasks/);
   });
 });
 
@@ -67,9 +83,10 @@ test("installRules overwrites with overwrite: true", async () => {
   });
 });
 
-test("RULE_FILES lists both managed rule names", () => {
+test("RULE_FILES lists all managed rule names", () => {
   assert.deepEqual([...RULE_FILES].sort(), [
     "taskagent-policy.mdc",
     "taskagent.mdc",
+    "workspacegraph.mdc",
   ]);
 });

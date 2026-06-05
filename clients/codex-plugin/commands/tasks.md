@@ -17,6 +17,8 @@ Drive the taskagent MCP server (do not invent IDs, do not write to
 2. Fetch tasks server-side (don't filter locally):
    - `taskagent_list` with `project_id = <resolved>`,
      `status = ["inbox", "todo", "in_progress"]`, limit ~50.
+   - **Never** use `status=all` unless the user explicitly asked for the
+     full archive — `all` is token-heavy.
 
 3. Render exactly this format:
 

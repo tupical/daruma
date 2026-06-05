@@ -90,6 +90,60 @@ If `taskagent_healthz` fails, tell the user to start the server:
 ./target/release/taskagent-server
 ```
 
+## Listing tasks and plans
+
+- **`status=all` needs explicit user OK.** Do not call `taskagent_list` or
+  `taskagent_plan_list` with `status=all` on your own initiative — the
+  response can be huge (full archive with descriptions) and will crowd out
+  the rest of the context. Ask the user to confirm before a full dump.
+- **Default filters:** `status=active` for open work; `todo,in_progress` when
+  you need a short backlog; `draft,active` for plans. Scope with
+  `project_id` / `project_scope` / `scope_path` — never rely on an unscoped
+  `all` across projects.
+- **`taskagent_list` is the default for "what's open".** For inventory,
+  audit, status, or "close what's done", call
+  `taskagent_list { status: "active", project_scope }` — it already drops
+  `done`/`cancelled`. Do **not** reach for `taskagent_search` or
+  `taskagent_workspacegraph_search` to enumerate open tasks.
+- **`taskagent_search` is for text lookup only** — when the user names a
+  concrete keyword/topic and you need matching tasks/comments/plans from the
+  archive. Always pass a `limit`. It is a content query, not a task list.
+
+## Audit & close workflow (token-lean)
+
+When asked to "check the tracker and close what's done" (or any inventory +
+cleanup request), take the narrow path — do **not** enter research mode:
+
+1. `taskagent_workspace_info` → resolve the scope.
+2. `taskagent_list { status: "active", project_scope }` → the open set.
+   `active` already covers inbox + todo + in_progress + in_review, so this
+   one call is the complete open set — don't fire `inbox` / `todo,in_progress`
+   variants on top of it.
+3. For each open task, run **one** targeted `Grep`/`Read` in the repo to
+   confirm whether the work landed. Do not `Glob **/*` the whole tree.
+4. `taskagent_complete` only the tasks you verified as done.
+5. Need a phase/progress summary for the report? **One** `taskagent_plan_get`
+   on the relevant plan — not `taskagent_plan_list status=completed` and not
+   `taskagent_search "Phase"`.
+6. **Stop.** If nothing but backlog remains, report that and end.
+
+For an inventory/close request, **never**:
+
+- `taskagent_search` (incl. searching for the project name) — the open set
+  is the `list active` result, not the archive;
+- `taskagent_plan_list status=completed` to summarize — completed plans
+  carry full goal + success_criteria and are very token-heavy; use one
+  `taskagent_plan_get`;
+- `taskagent_get` rows the `list` already returned, or re-check tasks shown
+  as `done`;
+- `taskagent_workspacegraph_*`, `codegraph_*`, repo-wide README reads, or
+  `Glob **/*` to report "repo health" — none of that closes a task.
+
+Rule of thumb: the cheapest call that answers the question wins. One scoped
+`list active` (+ at most one `plan_get` and one targeted `Grep`) beats a
+dozen `search` / `plan_list completed` / `get` round-trips (tens of KB of
+JSON) for the exact same answer.
+
 ## Hygiene
 
 - Never invent task IDs — always use the IDs returned by `taskagent_create` /

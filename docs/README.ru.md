@@ -11,7 +11,7 @@
 | [guides/comment-conventions.md](guides/comment-conventions.md) | Префиксы в теле комментария (`lesson:`, `branch:`) |
 | [mcp/EXECUTOR-LOOP.md](mcp/EXECUTOR-LOOP.md) | Канонический цикл drain plan → execute → complete |
 | [adr/workspacegraph.md](adr/workspacegraph.md) | ADR WorkspaceGraph: sidecar index, nodes/edges, non-goals |
-| Cursor rule `workspacegraph.mdc` | Agent guidance for `taskagent_workspacegraph_*` MCP tools (bundled in `clients/cursor-plugin/`) |
+| Cursor rule `workspacegraph.mdc` | Guardrails для `taskagent_workspacegraph_*` (граф — для связей/impact, не для списка задач). Ставится в `.cursor/rules/` командой `taskagent-cursor install` вместе с `taskagent-policy.mdc` и `taskagent.mdc`. |
 | [MODULES.md](MODULES.md) | Реестр модулей (core / client / transport / embed) |
 | [MODULE_CONTRACT.md](MODULE_CONTRACT.md) | SLA между core и модулями |
 | [RELEASES.md](RELEASES.md) | Контракт релизов OSS core и правила зависимостей apps |

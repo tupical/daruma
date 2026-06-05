@@ -20,6 +20,8 @@ a markdown table.
    filter locally):
    - `taskagent_list` with `project_id = <resolved>`, `status =
      ["inbox", "todo", "in_progress"]`. Limit to ~50.
+   - **Never** use `status=all` in this command unless the user explicitly
+     asked for the full archive — `all` is token-heavy.
 
 3. Render exactly this format, nothing else:
 

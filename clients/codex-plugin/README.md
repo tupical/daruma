@@ -13,6 +13,15 @@ session.
 - Skills that map Codex work sessions to TaskAgent projects, plans, and task
   updates.
 - Setup and doctor helpers for local MCP wiring.
+- `taskagent-codex init` — drops a managed policy block into `AGENTS.md`
+  (includes the rule: ask the user before `taskagent_list` /
+  `taskagent_plan_list` with `status=all`).
+
+Run once per repo:
+
+```bash
+taskagent-codex init
+```
 
 ## Russian
 

@@ -12,6 +12,8 @@ The user invoked `/taskagent-claude:mine`. Read-only.
    `status = ["in_progress"]`, `owner = "self"`. If the server rejects
    `owner = "self"`, list everything in `in_progress` and filter
    client-side by `owner == <agent_id from workspace_info>`.
+   **Never** use `status=all` unless the user explicitly asked for the
+   full archive — `all` is token-heavy.
 3. Render:
 
    ```

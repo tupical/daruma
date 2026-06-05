@@ -1,11 +1,11 @@
 // Maintains a managed default-tracker policy block inside a project's
-// `CLAUDE.md`. Claude Code reads this file automatically on every session
-// in the workspace, so the block makes taskagent the default tracker for
-// tasks and plans without touching the user's global `~/.claude/CLAUDE.md`.
+// `AGENTS.md`. Codex reads this file automatically on every session in
+// the workspace, so the block makes taskagent the default tracker for
+// tasks and plans without touching global Codex config.
 //
-// Cursor's plugin uses `.cursor/rules/taskagent-policy.mdc` with
-// `alwaysApply: true` for the same purpose; Claude Code has no
-// `alwaysApply` concept, but project CLAUDE.md is always loaded.
+// Claude's plugin uses `CLAUDE.md` via `clients/claude-plugin/lib/policy.mjs`;
+// Cursor uses `.cursor/rules/taskagent-policy.mdc`. Keep the hard rules
+// in sync across those three surfaces.
 //
 // The block is delimited and idempotent — replaced in place on subsequent
 // runs. Surrounding hand-written content is preserved.
@@ -13,15 +13,14 @@
 import { promises as fs } from "node:fs";
 import { join, resolve } from "node:path";
 
-const BEGIN = "<!-- taskagent-claude:policy:begin -->";
-const END = "<!-- taskagent-claude:policy:end -->";
+const BEGIN = "<!-- taskagent-codex:policy:begin -->";
+const END = "<!-- taskagent-codex:policy:end -->";
 
 const BLOCK_BODY = `# TaskAgent — default tracker (project policy)
 
 This project uses the **taskagent** MCP server as the single source of
-truth for tasks, plans, and AI decomposition. The taskagent-claude
-Claude Code plugin manages this block; do not hand-edit between the
-markers.
+truth for tasks, plans, and AI decomposition. The taskagent-codex
+Codex plugin manages this block; do not hand-edit between the markers.
 
 ## Hard rules
 
@@ -146,27 +145,21 @@ mention a different system (Linear, Jira, GitHub Issues, etc.).
 
 ## Useful slash commands
 
-- \`/taskagent-claude:tasks\` — open tasks as a compact table.
-- \`/taskagent-claude:plan\` — active plan with progress bar.
-- \`/taskagent-claude:next\` — claim the next ready task.
-- \`/taskagent-claude:mine\` — tasks claimed by this session.
-- \`/taskagent-claude:start "<task>"\` — full parse → decompose →
-  execute pipeline (via \`omc team\`).
+- \`/taskagent:tasks\` — open tasks as a compact table.
+- \`/taskagent:plan\` — active plan with progress bar.
+- \`/taskagent:next\` — claim the next ready task.
+- \`/taskagent:mine\` — tasks claimed by this session.
+- \`/taskagent:start "<task>"\` — full parse → decompose → execute pipeline.
 `;
 
 function buildBlock() {
   return `${BEGIN}\n${BLOCK_BODY}${END}\n`;
 }
 
-// Idempotent write of the managed block to `<projectDir>/CLAUDE.md`.
-// Returns:
-//   { action: "installed", path } — file created
-//   { action: "updated",   path } — managed block replaced
-//   { action: "appended",  path } — file existed without our block
-//   { action: "unchanged", path } — block already current
+// Idempotent write of the managed block to `<projectDir>/AGENTS.md`.
 export async function installPolicy({ projectDir } = {}) {
   const dir = projectDir ? resolve(projectDir) : process.cwd();
-  const target = join(dir, "CLAUDE.md");
+  const target = join(dir, "AGENTS.md");
   await fs.mkdir(dir, { recursive: true });
 
   const block = buildBlock();
@@ -200,10 +193,9 @@ export async function installPolicy({ projectDir } = {}) {
   return { action: "updated", path: target };
 }
 
-// Removes the managed block. Deletes the file if it would be empty.
 export async function removePolicy({ projectDir } = {}) {
   const dir = projectDir ? resolve(projectDir) : process.cwd();
-  const target = join(dir, "CLAUDE.md");
+  const target = join(dir, "AGENTS.md");
 
   let existing = null;
   try {

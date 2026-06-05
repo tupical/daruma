@@ -29,6 +29,10 @@ test("installPolicy creates CLAUDE.md with policy block when missing", async () 
     // Trigger-word guard.
     assert.match(body, /трекер/);
     assert.match(body, /tracker/);
+    assert.match(body, /status=all/);
+    // Token-economy guard: list-first, no "Prefer search" default.
+    assert.match(body, /Go straight to the goal/);
+    assert.doesNotMatch(body, /Prefer `taskagent_search`/);
   });
 });
 

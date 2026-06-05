@@ -77,7 +77,13 @@
       "path": "cursor/rules/taskagent.mdc",
       "target": ".cursor/rules/taskagent.mdc",
       "alwaysApply": false,
-      "description": "Контракт для Cursor-агента: когда и как звать taskagent_* инструменты."
+      "description": "Контракт для Cursor-агента: когда и как звать taskagent_* инструменты + token-lean audit/close workflow."
+    },
+    {
+      "path": "cursor/rules/workspacegraph.mdc",
+      "target": ".cursor/rules/workspacegraph.mdc",
+      "alwaysApply": false,
+      "description": "Guardrails для taskagent_workspacegraph_* инструментов: граф — для связей/impact вокруг известного узла, а не для списка открытых задач (для этого taskagent_list status=active)."
     }
   ],
   "commands": [

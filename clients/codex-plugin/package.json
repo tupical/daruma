@@ -22,14 +22,23 @@
   "author": "tupical",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "taskagent-codex": "bin/taskagent-codex.mjs"
+  },
   "files": [
+    "bin/",
+    "lib/",
     "commands/",
     "skills/",
     ".codex-plugin/",
     "README.md",
+    "README.ru.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/**/*.test.mjs"
   }
 }

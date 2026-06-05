@@ -64,6 +64,58 @@ oh-my-claudecode (OMC).
    ./target/release/taskagent-server
    ```
 
+7. **`status=all` on list tools requires user confirmation.** Never call
+   `taskagent_list` or `taskagent_plan_list` with `status=all` unless the
+   user explicitly asked for the full archive in this turn. `all` returns
+   every task/plan (including `done`/`cancelled`/`abandoned`) and can
+   produce a very large JSON payload that fills the context window and
+   burns tokens. Default to `status=active` (tasks) or a narrow status
+   filter (plans).
+
+8. **Go straight to the goal — fetch the minimum.** Every MCP response
+   lands in the model context, so never bulk-load "just in case":
+   - **`taskagent_search` is for text lookup only** — a named keyword or
+     topic across the archive (tasks/comments/plans), always with a
+     `limit`. It is a content query, not the way to list open work.
+   - **`taskagent_workspacegraph_*` is for relations/impact around a known
+     node id**, not for discovering what exists. Skip it when
+     `taskagent_list` / `taskagent_relations` / `taskagent_plan_graph`
+     already answer the question.
+   - **Always pass scope on the first call** (`project_scope` /
+     `project_id` / `scope_path`) — an unscoped call in a multi-repo folder
+     wastes a round-trip on an ambiguous-scope error.
+
+9. **Inventory requests have a fixed, minimal recipe — follow it and
+   STOP.** "Check the tracker / what's open / close what's done / status /
+   progress" is NOT a research task. The whole recipe is:
+
+   ```
+   taskagent_list { status: "active", project_scope }   ← the entire open set
+     • 0 open             → say so and STOP
+     • only backlog / 1–2 → at most ONE targeted Grep per item to verify
+     • close ONLY items you confirmed as done
+   (optional) ONE taskagent_plan_get for a phase/progress summary
+   ```
+
+   `status=active` already covers inbox + todo + in_progress + in_review, so
+   that single scoped call is the complete open set. For these requests,
+   **never**:
+   - run `taskagent_search` — the open set is the `list active` result, not
+     the archive (searching for the project name to "see what's open"
+     violates this rule);
+   - run `taskagent_plan_list status=completed` to "summarize progress" — a
+     single `taskagent_plan_get` on the relevant plan already has the
+     summary, and completed plans are very token-heavy;
+   - `taskagent_get` a row, or fire extra `taskagent_list` variants
+     (`inbox`, `todo,in_progress`), for items the first `list` already
+     returned — you already have their title/status/priority;
+   - reach for `codegraph_*`, repo-wide README reads, or `Glob **/*` to
+     report "repo health" — that is not part of closing tasks.
+
+   The cheapest call that answers the question wins: one `list active`
+   (+ at most one `plan_get` and one targeted `Grep`) beats a dozen
+   search/get/list round-trips for the identical answer.
+
 ## Detection cues that mean "use taskagent now"
 
 When the user mentions any of the following, the conversation is about
