@@ -1,6 +1,6 @@
 {
   "name": "taskagent-cursor",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Cursor plugin for tupical/taskagent. Registers the taskagent MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI, and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
   "keywords": [
     "cursor",
