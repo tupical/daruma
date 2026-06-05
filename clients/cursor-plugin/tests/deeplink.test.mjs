@@ -42,7 +42,7 @@ test("buildHttpsInstallUrl uses cursor.com mirror", () => {
 });
 
 test("defaultTaskagentConfigSync produces TASKAGENT_API_URL", () => {
-  const cfg = defaultTaskagentConfigSync();
+  const cfg = defaultTaskagentConfigSync({ apiUrl: "http://localhost:8080" });
   assert.equal(cfg.type, "stdio");
   assert.equal(cfg.command, "taskagent-mcp");
   assert.equal(cfg.env.TASKAGENT_API_URL, "http://localhost:8080");

@@ -20,6 +20,7 @@ import {
   SELFHOST_URL_DEFAULT,
   urlForApiPreset,
 } from "./api-urls.mjs";
+import { resolveMcpCommand } from "./resolve-mcp-command.mjs";
 
 const SCHEME_DEEPLINK = "cursor://anysphere.cursor-deeplink/mcp/install";
 const HTTPS_INSTALL = "https://cursor.com/install-mcp";
@@ -88,7 +89,8 @@ export async function defaultTaskagentConfig({
     env.TASKAGENT_API_URL =
       urlForApiPreset(remote) ?? SELFHOST_URL_DEFAULT;
   }
-  const entry = { type: "stdio", command };
+  const resolved = await resolveMcpCommand({ command });
+  const entry = { type: "stdio", command: resolved.command };
   if (args.length > 0) entry.args = args;
   entry.env = env;
   return entry;

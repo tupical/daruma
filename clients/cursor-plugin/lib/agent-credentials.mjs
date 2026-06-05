@@ -11,7 +11,22 @@ import {
 const AGENT_DIR_NAME = "taskagent";
 const CREDENTIALS_FILE = "credentials.json";
 const MODE_REMOTE = "remote";
+const MODE_CLOUD = "cloud";
 const MODE_SELF_HOST = "self-host";
+
+function isRemoteMode(mode) {
+  return mode === MODE_REMOTE || mode === MODE_CLOUD;
+}
+
+function isSelfHostUrl(url) {
+  if (!url) return false;
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
 
 /** Canonical agent data root (`~/.agents/taskagent` or `%USERPROFILE%\.agents\taskagent`). */
 export function agentDirRoot() {
@@ -107,8 +122,49 @@ export function resolveActiveProfile(creds, opts = {}) {
 export function profileServerUrl(profile) {
   if (profile?.server_url) return String(profile.server_url).replace(/\/$/, "");
   if (profile?.mode === MODE_SELF_HOST) return SELFHOST_URL_DEFAULT;
-  if (profile?.mode === MODE_REMOTE) return DEFAULT_API_URL;
+  if (isRemoteMode(profile?.mode)) return DEFAULT_API_URL;
   return SELFHOST_URL_DEFAULT;
+}
+
+/**
+ * Pick the credentials profile that matches an install target.
+ * @param {object | null} creds
+ * @param {{ apiUrl?: string, token?: string, remote?: import("./api-urls.mjs").ApiPreset, mode?: string, profile?: string }} [overrides]
+ */
+export function resolveProfileForInstall(creds, overrides = {}) {
+  if (!creds?.profiles || typeof creds.profiles !== "object") {
+    return null;
+  }
+
+  const entries = Object.entries(creds.profiles).filter(([, p]) => p?.token);
+  if (entries.length === 0) return null;
+
+  const explicit = overrides.profile
+    ? entries.find(([name]) => name === overrides.profile)
+    : null;
+  if (explicit) return { name: explicit[0], ...explicit[1] };
+
+  const targetUrl =
+    overrides.apiUrl?.replace(/\/$/, "") ??
+    urlForApiPreset(overrides.remote);
+
+  if (targetUrl) {
+    const exact = entries.find(
+      ([, p]) => profileServerUrl(p).replace(/\/$/, "") === targetUrl,
+    );
+    if (exact) return { name: exact[0], ...exact[1] };
+
+    const preferredMode = isSelfHostUrl(targetUrl) ? MODE_SELF_HOST : MODE_CLOUD;
+    const byMode = entries.find(([, p]) => p.mode === preferredMode);
+    if (byMode) return { name: byMode[0], ...byMode[1] };
+  }
+
+  if (overrides.mode) {
+    const byMode = entries.find(([, p]) => p.mode === overrides.mode);
+    if (byMode) return { name: byMode[0], ...byMode[1] };
+  }
+
+  return resolveActiveProfile(creds, overrides);
 }
 
 /**
@@ -135,7 +191,7 @@ export async function resolveMcpEnvFromCredentials(overrides = {}) {
   }
 
   const creds = await loadCredentials();
-  const profile = creds ? resolveActiveProfile(creds) : null;
+  const profile = creds ? resolveProfileForInstall(creds, overrides) : null;
   if (!profile?.token) {
     if (!env.TASKAGENT_API_URL) {
       env.TASKAGENT_API_URL = SELFHOST_URL_DEFAULT;
@@ -151,7 +207,7 @@ export async function resolveMcpEnvFromCredentials(overrides = {}) {
   }
   if (
     !env.TASKAGENT_WORKSPACE_ID &&
-    profile.mode === MODE_REMOTE &&
+    isRemoteMode(profile.mode) &&
     profile.workspace_id
   ) {
     env.TASKAGENT_WORKSPACE_ID = profile.workspace_id;

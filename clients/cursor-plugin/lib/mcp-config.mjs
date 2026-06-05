@@ -44,9 +44,18 @@ export async function readMcp(path) {
 
 async function writeAtomic(path, payload) {
   await fs.mkdir(dirname(path), { recursive: true });
-  const tmp = join(tmpdir(), `mcp-cursor.${process.pid}.${Date.now()}.json`);
+  const tmp = join(dirname(path), `.mcp-cursor.${process.pid}.${Date.now()}.json`);
   await fs.writeFile(tmp, payload);
-  await fs.rename(tmp, path);
+  try {
+    await fs.rename(tmp, path);
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && err.code === "EXDEV") {
+      await fs.copyFile(tmp, path);
+      await fs.unlink(tmp);
+      return;
+    }
+    throw err;
+  }
 }
 
 // Adds (or replaces) the named server entry. Returns

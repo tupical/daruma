@@ -19,6 +19,7 @@ import {
 import { globalMcpPath, projectMcpPath, readMcp } from "./mcp-config.mjs";
 import { RULE_FILES } from "./rules.mjs";
 import { COMMAND_FILES } from "./commands.mjs";
+import { resolveMcpCommand } from "./resolve-mcp-command.mjs";
 
 const exec = promisify(execFile);
 
@@ -204,13 +205,21 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
   ]);
 
   const registered = registration.global.present || registration.project.present;
-  const mcpReady = registered && http.ok;
+  const activeEntry =
+    registration.project.entry ??
+    registration.global.entry ??
+    null;
+  const configuredCommand = activeEntry?.command ?? "taskagent-mcp";
+  const resolvedCommand = await resolveMcpCommand({ command: configuredCommand });
+  const commandReady = resolvedCommand.resolved || mcpCli.ok;
+  const mcpReady = registered && http.ok && commandReady;
 
   return {
     name: "taskagent",
     installed: mcpCli.ok || registered || http.ok,
     mcpReady,
     cli: mcpCli.ok ? `${mcpCli.cmd}: ${mcpCli.output}` : null,
+    mcpCommand: resolvedCommand,
     http,
     credentials: {
       path: credentialsLocationHint(),
@@ -222,20 +231,29 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
     projectRules,
     projectCommands,
     installHint: [
-      "Build taskagent from source (workspace at github.com/tupical/taskagent):",
-      "  cargo build --release -p taskagent-server -p taskagent-mcp-bin",
-      "Start the HTTP server (keep this running):",
-      "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
+      "Build the MCP stdio shim (required for Cursor even with TaskAgent Cloud):",
+      "  cargo build --release -p taskagent-mcp-bin",
+      "  ln -sf \"$PWD/target/release/taskagent-mcp\" ~/.local/bin/taskagent-mcp",
+      "Pair with TaskAgent Cloud (device code):",
+      "  npx @mcpbox/taskagent login --server https://taskagent.vskideas.ru",
       "Register the MCP stdio shim with Cursor:",
-      "  taskagent-cursor install --global",
-      "Or click the deeplink from the marketplace card (Add to Cursor).",
+      "  npx taskagent-cursor install --global --api-url https://taskagent.vskideas.ru",
+      "For local self-host, also keep taskagent-server running:",
+      "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
     ].join("\n"),
     mcpHint: [
       "taskagent is not yet wired into Cursor.",
       `HTTP probe: GET ${probeUrl}/v1/healthz`,
       profile?.token
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
-        : `credentials: none at ${credentialsLocationHint()} — set TASKAGENT_API_URL + TASKAGENT_TOKEN or save a local profile, then re-run install`,
+        : `credentials: none at ${credentialsLocationHint()} — run npx @mcpbox/taskagent login, then re-run install`,
+      commandReady
+        ? `mcp command: ${resolvedCommand.command}${resolvedCommand.source === "discovered" ? " (auto-discovered)" : ""}`
+        : [
+            `mcp command missing: ${configuredCommand} not executable`,
+            "  cargo build --release -p taskagent-mcp-bin",
+            "  taskagent-cursor install --global --command \"$PWD/target/release/taskagent-mcp\"",
+          ].join("\n         "),
       http.ok
         ? `HTTP server: ${http.status}${http.version ? ` (v${http.version})` : ""}`
         : `HTTP server unreachable: ${http.error}`,
@@ -267,6 +285,11 @@ export function formatReport(report) {
     const status = tool.installed ? "OK" : "MISSING";
     lines.push(`[${status}] ${tool.name}`);
     if (tool.cli) lines.push(`       cli: ${tool.cli}`);
+    if (tool.mcpCommand) {
+      lines.push(
+        `       mcp command: ${tool.mcpCommand.command}${tool.mcpCommand.resolved ? "" : " (MISSING)"}`,
+      );
+    }
     if (tool.http) {
       lines.push(
         `       http: ${tool.http.ok
