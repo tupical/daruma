@@ -157,10 +157,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Next { project_id } => cmd_next(&client, project_id, cli.json).await,
         Cmd::Show { id } => cmd_show(&client, &id, cli.json).await,
         Cmd::Done { id } => cmd_done(&client, &id, cli.json).await,
-        Cmd::List {
-            project_id,
-            status,
-        } => cmd_list(&client, project_id, &status, cli.json).await,
+        Cmd::List { project_id, status } => cmd_list(&client, project_id, &status, cli.json).await,
         Cmd::History {
             entity_type,
             entity_id,

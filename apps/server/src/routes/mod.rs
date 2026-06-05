@@ -2772,9 +2772,7 @@ struct ListPlansQuery {
 ///
 /// `all` → `Ok(None)` (no status predicate). Otherwise returns the parsed
 /// statuses for an `IN (...)` filter.
-fn parse_plan_status_filter(
-    raw: Option<&str>,
-) -> Result<Option<Vec<PlanStatus>>, ApiError> {
+fn parse_plan_status_filter(raw: Option<&str>) -> Result<Option<Vec<PlanStatus>>, ApiError> {
     let Some(raw) = raw else {
         return Err(ApiError::from(CoreError::validation(
             "status is required (e.g. status=active, status=draft,active, or status=all)",

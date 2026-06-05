@@ -1,6 +1,6 @@
 {
   "name": "taskagent-claude",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Glue between tupical/taskagent and oh-my-claudecode. Drives the taskagent pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
   "keywords": [
     "claude-code",
