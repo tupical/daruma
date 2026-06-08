@@ -295,7 +295,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "taskagent_plan_drain_next",
-            description: "Atomically resolve the next eligible plan task and acquire a claim for this MCP session's agent.",
+            description: "Canonical primitive for parallel agents: atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Concurrent callers each get a *distinct* task — never the same one — via a claim-aware resolver + compare-and-set with retry. Returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
             input_schema: schema_plan_drain_next(),
         },
         ToolDefinition {
@@ -391,6 +391,43 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             name: "taskagent_release",
             description: "Release a previously-acquired task claim.",
             input_schema: schema_release(),
+        },
+        // ── Work-lease tools (parallel-agent file coordination) ──────────
+        ToolDefinition {
+            name: "taskagent_reserve_files",
+            description: "Reserve file/path globs for a task so parallel agents don't edit the same files. Pass repo-relative `paths` (dirs or files; `*`/`**` globs allowed). Returns `reserved:true` on success, or `reserved:false` with `conflict_path` + `holder` when another agent owns an overlapping area — then take a different task. Re-reserving extends the TTL and adds new paths. Leases auto-release when the task closes or the TTL lapses.",
+            input_schema: schema_reserve_files(),
+        },
+        ToolDefinition {
+            name: "taskagent_release_files",
+            description: "Release all file/path leases held by an agent for a task. Usually automatic on task completion; call explicitly to free files early.",
+            input_schema: schema_release_files(),
+        },
+        ToolDefinition {
+            name: "taskagent_active_work",
+            description: "List the active work backlog: live file/path leases (who is touching which files) for a project. Use before reserving to see contended areas. Pass `project_id` to scope; omit for all.",
+            input_schema: schema_active_work(),
+        },
+        // ── Project-wide ready pool ──────────────────────────────────────
+        ToolDefinition {
+            name: "taskagent_ready",
+            description: "List the project-wide ready pool: tasks across ALL active plans whose dependencies are satisfied and that no other agent holds. The read-only view behind `taskagent_ready_drain`.",
+            input_schema: schema_ready(),
+        },
+        ToolDefinition {
+            name: "taskagent_ready_drain",
+            description: "Atomically claim the next ready task across the project's active plans (not a single plan). The canonical primitive for 'close all tasks for this project' with many agents — concurrent callers each get a distinct task; sets it in_progress. Returns null when nothing is ready. Loop until null.",
+            input_schema: schema_ready_drain(),
+        },
+        ToolDefinition {
+            name: "taskagent_doctor",
+            description: "Reconcile parallel-agent state for a project: reports tasks stuck `in_progress` with no live claim (an agent likely crashed and its claim TTL lapsed). These are reclaimable — reopen or re-drain them.",
+            input_schema: schema_doctor(),
+        },
+        ToolDefinition {
+            name: "taskagent_suggest_files",
+            description: "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `taskagent_reserve_files` at claim time. Heuristic only (no code index) — review before reserving.",
+            input_schema: schema_suggest_files(),
         },
         // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
         ToolDefinition {
@@ -1385,6 +1422,72 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let task_id = required_string(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/claims/{agent_id}/{task_id}"))
+                .await
+        }
+
+        // ── Work-lease tools (parallel-agent file coordination) ──────────
+        "taskagent_reserve_files" => {
+            let agent_id = required_string(&args, "agent_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            let paths = args
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("`paths` (array of strings) is required"))?;
+            let mut body = json!({
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "paths": paths,
+            });
+            if let Some(p) = args.get("project_id").and_then(|v| v.as_str()) {
+                body["project_id"] = json!(p);
+            }
+            if let Some(ttl) = args.get("ttl_secs").and_then(|v| v.as_u64()) {
+                body["ttl_secs"] = json!(ttl);
+            }
+            client.post_json("/v1/leases", body).await
+        }
+        "taskagent_release_files" => {
+            let agent_id = required_string(&args, "agent_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .delete_json(&format!("/v1/leases/{agent_id}/{task_id}"))
+                .await
+        }
+        "taskagent_active_work" => {
+            let path = match args.get("project_id").and_then(|v| v.as_str()) {
+                Some(p) if !p.is_empty() => format!("/v1/leases?project_id={p}"),
+                _ => "/v1/leases".to_string(),
+            };
+            client.get_json(&path).await
+        }
+
+        // ── Project-wide ready pool ──────────────────────────────────────
+        "taskagent_ready" => {
+            let project_id = required_string(&args, "project_id")?;
+            client
+                .get_json(&format!("/v1/ready?project_id={project_id}"))
+                .await
+        }
+        "taskagent_ready_drain" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut body = json!({});
+            if let Some(ttl) = args.get("claim_ttl_secs").and_then(|v| v.as_u64()) {
+                body["claim_ttl_secs"] = json!(ttl);
+            }
+            client
+                .post_json(&format!("/v1/ready/drain?project_id={project_id}"), body)
+                .await
+        }
+        "taskagent_doctor" => {
+            let project_id = required_string(&args, "project_id")?;
+            client
+                .get_json(&format!("/v1/doctor?project_id={project_id}"))
+                .await
+        }
+        "taskagent_suggest_files" => {
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .get_json(&format!("/v1/leases/suggest?task_id={task_id}"))
                 .await
         }
 
@@ -2467,6 +2570,87 @@ fn schema_release() -> Value {
     })
 }
 
+// ── Work-lease schemas (parallel-agent file coordination) ───────────────────
+
+fn schema_reserve_files() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id":   {"type":"string"},
+            "task_id":    {"type":"string"},
+            "project_id": {"type":"string", "description":"Scope leases to a project so identical paths in different repos don't collide."},
+            "paths":      {
+                "type":"array",
+                "items": {"type":"string"},
+                "description":"Repo-relative path globs to reserve (dirs or files; `*` matches one segment, `**` matches the rest)."
+            },
+            "ttl_secs":   {"type":"integer","minimum":1,"maximum":86400,"description":"Lease lifetime in seconds (default 300). Re-call to refresh."}
+        },
+        "required":["agent_id","task_id","paths"]
+    })
+}
+
+fn schema_release_files() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "agent_id": {"type":"string"},
+            "task_id":  {"type":"string"}
+        },
+        "required":["agent_id","task_id"]
+    })
+}
+
+fn schema_active_work() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string", "description":"Optional project scope; omit to list leases across all projects."}
+        }
+    })
+}
+
+fn schema_ready() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string", "description":"Project to list the ready pool for."}
+        },
+        "required":["project_id"]
+    })
+}
+
+fn schema_ready_drain() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id":     {"type":"string", "description":"Project to claim the next ready task from."},
+            "claim_ttl_secs": {"type":"integer","minimum":1,"maximum":86400,"description":"Claim lifetime in seconds (default 300)."}
+        },
+        "required":["project_id"]
+    })
+}
+
+fn schema_doctor() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string", "description":"Project to reconcile."}
+        },
+        "required":["project_id"]
+    })
+}
+
+fn schema_suggest_files() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string", "description":"Task whose title/description is mined for path-like tokens."}
+        },
+        "required":["task_id"]
+    })
+}
+
 // ── Session schemas (W3.2 / Linear B.1) ─────────────────────────────────────
 
 fn schema_session_start() -> Value {
@@ -2965,6 +3149,16 @@ mod tests {
             // Claim tools
             "taskagent_claim",
             "taskagent_release",
+            // Work-lease tools
+            "taskagent_reserve_files",
+            "taskagent_release_files",
+            "taskagent_active_work",
+            // Project-wide ready pool
+            "taskagent_ready",
+            "taskagent_ready_drain",
+            // Doctor + file suggestion
+            "taskagent_doctor",
+            "taskagent_suggest_files",
             // Session tools (Linear B.1)
             "taskagent_session_start",
             "taskagent_session_get",

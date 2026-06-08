@@ -1,21 +1,23 @@
 // Read/write Cursor's mcp.json — both ~/.cursor/mcp.json (global) and
 // <project>/.cursor/mcp.json (project-scoped).
 //
-// Cursor uses the same shape as Claude Desktop / Claude Code:
-//   { "mcpServers": { "<name>": { "type": "stdio", "command": "...", ... } } }
+// Cursor uses the standard mcp.json shape:
+//   { "mcpServers": { "<name>": { "type": "http", "url": "..." } } }
+// with stdio still available for explicit local fallback entries.
 //
 // We touch only the requested server entry — other servers are preserved.
 
 import { promises as fs } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
+import { resolvePath } from "./paths.mjs";
 
 export function globalMcpPath() {
   return join(homedir(), ".cursor", "mcp.json");
 }
 
 export function projectMcpPath(projectDir) {
-  const dir = projectDir ? resolve(projectDir) : process.cwd();
+  const dir = projectDir ? resolvePath(projectDir) : process.cwd();
   return join(dir, ".cursor", "mcp.json");
 }
 

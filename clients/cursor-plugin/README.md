@@ -16,7 +16,7 @@
 <p align="center">
   <strong>One click wires the taskagent MCP server into Cursor.</strong>
   <br/>
-  <sub>Drop-in Cursor wiring for the local taskagent MCP server.</sub>
+  <sub>Drop-in Cursor wiring for the hosted taskagent MCP server.</sub>
 </p>
 
 ---
@@ -28,23 +28,21 @@ deeplink, show an approval dialog, and write the server into
 `~/.cursor/mcp.json` for you.
 
 <p align="center">
-  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D">
+  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D">
     <img src="https://img.shields.io/badge/Add%20to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
   </a>
 </p>
 
-Or the HTTPS mirror (works from any link unfurler):
+Or copy the official Cursor deeplink:
 
 ```
-https://cursor.com/install-mcp?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D
+cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D
 ```
 
-The deeplink expects `taskagent-mcp` on your `PATH`. Build it from the
-[taskagent repo](https://github.com/tupical/taskagent) first:
+The default Cursor path uses TaskAgent's HTTP MCP endpoint. For local
+development, run the server first:
 
 ```bash
-cargo build --release -p taskagent-server -p taskagent-mcp-bin
-# put target/release/taskagent-mcp on $PATH (symlink or cp)
 ./target/release/taskagent-server   # data: ~/.agents/taskagent/data
 ```
 
@@ -57,7 +55,7 @@ cargo build --release -p taskagent-server -p taskagent-mcp-bin
 
 1. **Registers the MCP server** in Cursor's `mcp.json` — globally
    (`~/.cursor/mcp.json`) or per-project (`./.cursor/mcp.json`).
-2. **Generates "Add to Cursor" deeplinks** for one-click local MCP setup.
+2. **Generates "Add to Cursor" links** for one-click HTTP MCP setup.
 3. **Drops three Cursor Rules** into `.cursor/rules/` that teach Cursor's
    agent how to drive `taskagent_*` tools — parse → decompose → plan →
    execute — instead of inventing its own task tracker, and keep it on the
@@ -97,9 +95,9 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `taskagent-cursor install [--global\|--project DIR]`      | Register the taskagent MCP server in the chosen `mcp.json`.             |
 | `taskagent-cursor uninstall [--global\|--project DIR]`    | Remove the entry.                                                       |
-| `taskagent-cursor deeplink [--print-url]`                 | Print the `cursor://` install deeplink (and HTTPS mirror).              |
+| `taskagent-cursor deeplink [--print-scheme]`              | Print the official Cursor Add-to-Cursor deeplink.                       |
 | `taskagent-cursor rules [--project DIR] [--force]`        | Drop the three `.cursor/rules/*.mdc` (policy + contract + workspacegraph) into a project. |
-| `taskagent-cursor doctor [--json\|--quiet]`               | Probe Cursor + `taskagent-mcp` + HTTP server. Exit 0 ⇒ READY.           |
+| `taskagent-cursor doctor [--json\|--quiet]`               | Probe Cursor MCP config + HTTP server. Exit 0 ⇒ READY.                  |
 | `taskagent-cursor setup`                                  | Print install hints for missing pieces.                                 |
 | `taskagent-cursor marketplace`                            | Print the taskagent plugin manifest (with live deeplink baked in).         |
 | `taskagent-cursor --version` / `--help`                   |                                                                         |
@@ -109,9 +107,10 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 | Flag                         | Default                    | Notes                                                       |
 | ---------------------------- | -------------------------- | ----------------------------------------------------------- |
 | `--global` / `--project DIR` | `--global`                 | Picks which `mcp.json` to write.                            |
-| `--command CMD`              | `taskagent-mcp`            | Override the stdio binary (absolute path is fine).          |
-| `--base-url URL`             | `http://localhost:8080`    | Sets `env.TASKAGENT_BASE_URL` for the server.               |
-| `--token T`                  | (none)                     | Sets `env.TASKAGENT_TOKEN`.                                 |
+| `--transport http\|stdio`    | `http`                     | Cursor defaults to hosted HTTP MCP.                         |
+| `--command CMD`              | (none)                     | Forces stdio fallback and overrides the binary path.        |
+| `--base-url URL`             | `http://localhost:8080`    | Sets the HTTP MCP server origin.                            |
+| `--token T`                  | (none)                     | Adds an Authorization header for explicit self-host config.  |
 | `--name NAME`                | `taskagent`                | Rename the server entry (if you run multiple instances).    |
 
 ---
@@ -146,7 +145,7 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=<NAME>&config=<BASE64_JSON>
 Generate yours at any time with:
 
 ```bash
-taskagent-cursor deeplink --print-url
+taskagent-cursor deeplink
 ```
 
 ---
@@ -178,9 +177,10 @@ clients/cursor-plugin/
 
 - Cursor (any recent version that supports MCP)
 - Node.js ≥ 20 (only for the CLI; not needed at runtime once installed)
-- `taskagent-mcp` and `taskagent-server` from
-  [tupical/taskagent](https://github.com/tupical/taskagent), built with
-  `cargo build --release -p taskagent-server -p taskagent-mcp-bin`
+- A running taskagent HTTP server. For local development, build it from
+  [tupical/taskagent](https://github.com/tupical/taskagent) with
+  `cargo build --release -p taskagent-server`.
+- `taskagent-mcp` is only needed for the explicit `--transport stdio` fallback.
 
 ---
 

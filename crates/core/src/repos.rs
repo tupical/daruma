@@ -111,6 +111,15 @@ pub trait AgentClaimRepository: Send + Sync {
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
 
+// ── Work leases ─────────────────────────────────────────────────────────────
+
+/// Projection interface for the `work_leases` table.
+#[async_trait]
+pub trait WorkLeaseRepository: Send + Sync {
+    /// Apply a persisted lease event to the projection (idempotent).
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
+}
+
 // ── Document (PR1 §3-4) ───────────────────────────────────────────────────────
 
 /// Read / projection interface for the `documents` table.
@@ -157,6 +166,7 @@ pub trait ExternalRefRepository: Send + Sync {
 use taskagent_events::Event;
 use taskagent_storage::{
     AgentClaimRepo, DocumentRepo, ExternalRefRepo, PlanRepo, RunNoteRepo, RunRepo, SessionRepo,
+    WorkLeaseRepo,
 };
 
 #[async_trait]
@@ -244,6 +254,28 @@ impl AgentClaimRepository for AgentClaimRepo {
                 expires_at,
             } => self.acquire_until(*agent_id, *task_id, *expires_at).await,
             Event::AgentReleased { agent_id, task_id } => self.release(*agent_id, *task_id).await,
+            // Auto-release every claim when the task closes.
+            Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
+            _ => Ok(()),
+        }
+    }
+}
+
+#[async_trait]
+impl WorkLeaseRepository for WorkLeaseRepo {
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
+        match &env.payload {
+            Event::FilesReserved { leases } => {
+                for lease in leases {
+                    self.apply_reserved(lease).await?;
+                }
+                Ok(())
+            }
+            Event::FilesReleased { agent_id, task_id } => {
+                self.release_for_task(*agent_id, *task_id).await
+            }
+            // Auto-release every file lease when the task closes.
+            Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
             _ => Ok(()),
         }
     }

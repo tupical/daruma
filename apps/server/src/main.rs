@@ -11,7 +11,7 @@ use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, Db, DocumentRepo, EntityVersionRepo,
     ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
     SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
-    WebhookEnrichment, WebhookRepo, WorkspaceGraphRepo,
+    WebhookEnrichment, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use taskagent_sync::Hub;
 use taskagent_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};
@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     let run_notes = Arc::new(RunNoteRepo::new(pool.clone()));
     let sessions = Arc::new(SessionRepo::new(pool.clone()));
     let claims = Arc::new(AgentClaimRepo::new(pool.clone()));
+    let work_leases = Arc::new(WorkLeaseRepo::new(pool.clone()));
     let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
     let documents = Arc::new(DocumentRepo::new(pool.clone()));
     let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
@@ -127,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         .with_run_notes(run_notes.clone())
         .with_sessions(sessions.clone())
         .with_claims(claims.clone())
+        .with_work_leases(work_leases.clone())
         .with_external_refs(external_refs.clone())
         .with_tenant_quotas(tenant_quotas.clone())
         .with_documents(documents.clone())
@@ -196,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
         run_notes,
         sessions,
         claims: claims.clone(),
+        work_leases: work_leases.clone(),
         external_refs,
         idempotency: idempotency.clone(),
         tenant_quotas,
@@ -208,9 +211,10 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter: RateLimiter::default(),
     };
 
-    // ── Background: claim TTL sweep (every 30 s) ──────────────────────────────
+    // ── Background: claim + work-lease TTL sweep (every 30 s) ─────────────────
     {
         let claims_bg = claims;
+        let leases_bg = work_leases;
         let bus_bg = command_bus;
         tokio::spawn(async move {
             loop {
@@ -227,6 +231,19 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Err(e) => tracing::warn!(err = %e, "claim TTL sweep failed"),
+                }
+                match leases_bg.sweep_expired().await {
+                    Ok(released) => {
+                        for (agent_id, task_id) in released {
+                            let _ = bus_bg
+                                .dispatch(
+                                    taskagent_core::Command::ReleaseFiles { agent_id, task_id },
+                                    taskagent_domain::Actor::user(),
+                                )
+                                .await;
+                        }
+                    }
+                    Err(e) => tracing::warn!(err = %e, "work-lease TTL sweep failed"),
                 }
             }
         });

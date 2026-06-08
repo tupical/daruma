@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use taskagent_domain::{PlanStatus, Status};
 use taskagent_shared::{time, AgentId, CoreError, PlanId, Result, RunId, TaskId, Timestamp};
-use taskagent_storage::TaskRepo;
+use taskagent_storage::{AgentClaimRepo, TaskRepo};
 
 use crate::repos::PlanRepository;
 
@@ -36,10 +36,12 @@ pub struct NextTask {
 /// 2. List `plan_tasks` ordered by `position`.
 /// 3. Skip tasks whose `status == Done`.
 /// 4. Skip tasks whose `depends_on` contains any non-Done task.
-/// 5. Return the first survivor + (optionally) compute `claim_expires_at`.
+/// 5. Skip tasks already claimed by a *different* agent (claim-aware).
+/// 6. Return the first survivor + (optionally) compute `claim_expires_at`.
 pub struct NextTaskResolver<'a> {
     pub plans: &'a dyn PlanRepository,
     pub tasks: &'a TaskRepo,
+    pub claims: &'a AgentClaimRepo,
 }
 
 impl NextTaskResolver<'_> {
@@ -47,7 +49,7 @@ impl NextTaskResolver<'_> {
         &self,
         plan_id: PlanId,
         _run_id: RunId,
-        _agent_id: AgentId,
+        agent_id: AgentId,
         claim_ttl: Option<Duration>,
     ) -> Result<Option<NextTask>> {
         // 1. Plan must be Active
@@ -92,7 +94,18 @@ impl NextTaskResolver<'_> {
                 continue;
             }
 
-            // 5. Found candidate — compute optional claim expiry
+            // 5. Skip tasks already claimed by a different agent so concurrent
+            //    resolvers don't all return the same task.
+            if self
+                .claims
+                .is_claimed_by_other(pt.task_id, agent_id)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+
+            // 6. Found candidate — compute optional claim expiry
             let claim_expires_at = claim_ttl.map(|ttl| {
                 let secs = ttl.as_secs().min(i64::MAX as u64) as i64;
                 time::now() + chrono::Duration::seconds(secs)

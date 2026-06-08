@@ -1,17 +1,15 @@
 // Cursor "Add to Cursor" deeplink generator.
 //
-// Official format (cursor.com/docs/context/mcp/install-links):
+// Official format (https://docs.cursor.com/en/deeplinks):
 //   cursor://anysphere.cursor-deeplink/mcp/install?name=NAME&config=BASE64_JSON
 //
 // `config` is a base64-encoded JSON object matching a single entry of
 // `mcpServers` in mcp.json — i.e. { command, args?, env?, type? } for stdio
-// servers or { url, headers? } for remote servers. The wrapping
+// servers or { type: "http", url, headers? } for remote servers. The wrapping
 // { "mcpServers": { ... } } object is NOT included.
 //
-// We also emit a marketplace-friendly HTTPS wrapper
-//   https://cursor.com/install-mcp?name=NAME&config=BASE64_JSON
-// which Cursor's web flow forwards to the cursor:// scheme. The HTTPS form is
-// what a web page can render as an "Add to Cursor" button.
+// Web buttons should use this cursor:// URL directly. The old
+// https://cursor.com/install-mcp wrapper is not a documented route and can 404.
 
 import { resolveMcpEnvFromCredentials } from "./agent-credentials.mjs";
 import {
@@ -23,7 +21,7 @@ import {
 import { resolveMcpCommand } from "./resolve-mcp-command.mjs";
 
 const SCHEME_DEEPLINK = "cursor://anysphere.cursor-deeplink/mcp/install";
-const HTTPS_INSTALL = "https://cursor.com/install-mcp";
+const MCP_RESOURCE_PATH = "/v1/mcp";
 
 export function encodeConfig(config) {
   if (!config || typeof config !== "object") {
@@ -58,10 +56,25 @@ export function buildCursorDeeplink(name, config) {
 }
 
 export function buildHttpsInstallUrl(name, config) {
-  assertName(name);
-  const b64 = encodeConfig(config);
-  const qs = new URLSearchParams({ name, config: b64 }).toString();
-  return `${HTTPS_INSTALL}?${qs}`;
+  return buildCursorDeeplink(name, config);
+}
+
+export function mcpResourceUrl(serverUrl) {
+  const base = (serverUrl || SELFHOST_URL_DEFAULT).replace(/\/$/, "");
+  return `${base}${MCP_RESOURCE_PATH}`;
+}
+
+export function defaultTaskagentHttpConfig({ apiUrl, remote, token = null, workspaceId = null } = {}) {
+  const serverUrl = apiUrl ?? urlForApiPreset(remote) ?? DEFAULT_API_URL;
+  const entry = {
+    type: "http",
+    url: mcpResourceUrl(serverUrl),
+  };
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (workspaceId) headers["X-TaskAgent-Workspace-Id"] = workspaceId;
+  if (Object.keys(headers).length > 0) entry.headers = headers;
+  return entry;
 }
 
 /**
@@ -69,7 +82,7 @@ export function buildHttpsInstallUrl(name, config) {
  * Env uses `TASKAGENT_API_URL` (read by taskagent-mcp). After remote pair,
  * `resolveMcpEnvFromCredentials` fills URL, token, and workspace id.
  */
-export async function defaultTaskagentConfig({
+export async function defaultTaskagentStdioConfig({
   command = "taskagent-mcp",
   args = [],
   apiUrl,
@@ -96,18 +109,35 @@ export async function defaultTaskagentConfig({
   return entry;
 }
 
+export async function defaultTaskagentConfig(opts = {}) {
+  const transport = opts.transport ?? (opts.command ? "stdio" : "http");
+  if (transport === "http" || transport === "remote" || transport === "remote-oauth") {
+    return defaultTaskagentHttpConfig(opts);
+  }
+  if (transport !== "stdio") {
+    throw new RangeError(`unknown Cursor MCP transport: ${transport}`);
+  }
+  return defaultTaskagentStdioConfig(opts);
+}
+
 /** Sync variant when credentials are not needed (tests / explicit env only). */
 export function defaultTaskagentConfigSync({
-  command = "taskagent-mcp",
+  command,
   args = [],
   apiUrl = SELFHOST_URL_DEFAULT,
   token = null,
   workspaceId = null,
+  transport,
 } = {}) {
+  const resolvedTransport = transport ?? (command ? "stdio" : "http");
+  if (resolvedTransport === "http" || resolvedTransport === "remote" || resolvedTransport === "remote-oauth") {
+    return defaultTaskagentHttpConfig({ apiUrl, token, workspaceId });
+  }
+  const resolvedCommand = command ?? "taskagent-mcp";
   const env = { TASKAGENT_API_URL: apiUrl };
   if (token) env.TASKAGENT_TOKEN = token;
   if (workspaceId) env.TASKAGENT_WORKSPACE_ID = workspaceId;
-  const entry = { type: "stdio", command };
+  const entry = { type: "stdio", command: resolvedCommand };
   if (args.length > 0) entry.args = args;
   entry.env = env;
   return entry;
@@ -122,7 +152,7 @@ export async function buildTaskagentInstallLinks(opts = {}) {
     name,
     config,
     deeplink: buildCursorDeeplink(name, config),
-    httpsUrl: buildHttpsInstallUrl(name, config),
+    httpsUrl: buildCursorDeeplink(name, config),
     apiUrls: {
       prod: DEFAULT_API_URL,
       staging: ALT_API_URL,

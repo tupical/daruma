@@ -14,6 +14,7 @@ pub mod run;
 pub mod session;
 pub mod signal;
 pub mod task;
+pub mod work_lease;
 
 pub use activity::{Activity, Verb};
 pub use agent::{Actor, AgentAction, AgentActionKind};
@@ -34,3 +35,4 @@ pub use session::{
 };
 pub use signal::SignalKind;
 pub use task::{NewTask, Priority, Status, Task, TaskPatch, TriageState};
+pub use work_lease::WorkLease;

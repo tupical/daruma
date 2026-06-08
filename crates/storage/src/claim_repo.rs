@@ -4,6 +4,18 @@ use chrono::{DateTime, Duration, Utc};
 use sqlx::{Row, SqlitePool};
 use taskagent_shared::{AgentId, CoreError, Result, TaskId, Timestamp};
 
+/// Outcome of an atomic [`AgentClaimRepo::try_acquire`] attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// The claim was acquired (or refreshed by the same agent).
+    Acquired { expires_at: Timestamp },
+    /// Another agent holds a live claim — the task is taken.
+    Busy {
+        holder: AgentId,
+        expires_at: Timestamp,
+    },
+}
+
 /// Read/write access to the `agent_claims` table.
 pub struct AgentClaimRepo {
     pub(crate) pool: SqlitePool,
@@ -48,6 +60,41 @@ impl AgentClaimRepo {
                     .map_err(|e| CoreError::serde(e.to_string()))?;
                 let expires_at = parse_ts(&expires_at_s)?;
                 Ok(Some((agent_id, expires_at)))
+            }
+        }
+    }
+
+    /// Return the agent holding a live claim on `task_id` that is **not**
+    /// `agent_id`, if any. Used by the claim-aware next-task resolver to skip
+    /// tasks already taken by a different agent.
+    pub async fn is_claimed_by_other(
+        &self,
+        task_id: TaskId,
+        agent_id: AgentId,
+    ) -> Result<Option<AgentId>> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "SELECT agent_id FROM agent_claims \
+             WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
+             ORDER BY expires_at DESC LIMIT 1",
+        )
+        .bind(task_id.to_string())
+        .bind(&now)
+        .bind(agent_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        match row {
+            None => Ok(None),
+            Some(r) => {
+                let s: String = r
+                    .try_get("agent_id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                Ok(Some(
+                    s.parse::<AgentId>()
+                        .map_err(|e| CoreError::serde(e.to_string()))?,
+                ))
             }
         }
     }
@@ -125,6 +172,84 @@ impl AgentClaimRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         Ok(expires_at)
+    }
+
+    /// Atomically acquire an **exclusive** claim on `task_id` for `ttl`.
+    ///
+    /// Exclusivity is enforced by SQLite at the statement level: the row is
+    /// inserted only when no *other* agent holds a live (non-expired) claim.
+    /// The same agent re-acquiring simply refreshes its TTL (upsert). This is
+    /// the compare-and-set primitive the concurrent `drain_next` / `claim`
+    /// paths rely on — the generic [`acquire`](Self::acquire) is non-atomic and
+    /// kept only for event replay.
+    ///
+    /// Returns [`ClaimOutcome::Acquired`] on success, or [`ClaimOutcome::Busy`]
+    /// with the current holder when another agent owns the task.
+    pub async fn try_acquire(
+        &self,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: Duration,
+    ) -> Result<ClaimOutcome> {
+        let now = Utc::now();
+        let now_s = now.to_rfc3339();
+        let expires_at = now + ttl;
+        let expires_s = expires_at.to_rfc3339();
+
+        // Single-statement CAS: insert iff no *other* agent holds a live claim;
+        // on PK conflict (same agent re-acquiring) refresh the TTL. A lone
+        // INSERT statement runs under SQLite's write lock, so two concurrent
+        // callers serialize and the loser inserts zero rows.
+        let res = sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at) \
+             SELECT ?, ?, ?, ? \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM agent_claims \
+                 WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
+             ) \
+             ON CONFLICT(agent_id, task_id) DO UPDATE SET \
+                 acquired_at = excluded.acquired_at, \
+                 expires_at  = excluded.expires_at",
+        )
+        .bind(agent_id.to_string())
+        .bind(task_id.to_string())
+        .bind(&now_s)
+        .bind(&expires_s)
+        .bind(task_id.to_string())
+        .bind(&now_s)
+        .bind(agent_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        if res.rows_affected() >= 1 {
+            return Ok(ClaimOutcome::Acquired { expires_at });
+        }
+
+        // Insert was suppressed → another agent holds it. Report the holder.
+        match self.is_claimed(task_id).await? {
+            Some((holder, exp)) => Ok(ClaimOutcome::Busy {
+                holder,
+                expires_at: exp,
+            }),
+            // Claim vanished between the CAS and this read (expired/released).
+            // Treat as a transient loss; the caller retries against the pool.
+            None => Ok(ClaimOutcome::Busy {
+                holder: agent_id,
+                expires_at,
+            }),
+        }
+    }
+
+    /// Release **all** claims on a task, regardless of holder. Used to
+    /// auto-clean claims when a task closes.
+    pub async fn release_all_for_task(&self, task_id: TaskId) -> Result<()> {
+        sqlx::query("DELETE FROM agent_claims WHERE task_id = ?")
+            .bind(task_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
     }
 
     /// Release a specific agent's claim on a task.
@@ -271,6 +396,109 @@ mod tests {
         // Verify the row is gone.
         let still_claimed = repo.is_claimed(task_id).await.unwrap();
         assert!(still_claimed.is_none());
+    }
+
+    #[tokio::test]
+    async fn try_acquire_is_exclusive_across_agents() {
+        let (_db, repo) = make_repo().await;
+        let task_id = TaskId::new();
+        let a1 = AgentId::new();
+        let a2 = AgentId::new();
+
+        // First agent wins.
+        let out1 = repo
+            .try_acquire(a1, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        assert!(matches!(out1, ClaimOutcome::Acquired { .. }));
+
+        // Second agent is told it's busy, and by whom.
+        let out2 = repo
+            .try_acquire(a2, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        match out2 {
+            ClaimOutcome::Busy { holder, .. } => assert_eq!(holder, a1),
+            other => panic!("expected Busy, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn try_acquire_same_agent_refreshes() {
+        let (_db, repo) = make_repo().await;
+        let task_id = TaskId::new();
+        let agent = AgentId::new();
+
+        let out1 = repo
+            .try_acquire(agent, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        let first = match out1 {
+            ClaimOutcome::Acquired { expires_at } => expires_at,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+
+        let out2 = repo
+            .try_acquire(agent, task_id, Duration::seconds(600))
+            .await
+            .unwrap();
+        match out2 {
+            ClaimOutcome::Acquired { expires_at } => assert!(expires_at >= first),
+            other => panic!("expected refreshed Acquired, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn try_acquire_takes_over_expired_claim() {
+        let (db, repo) = make_repo().await;
+        let task_id = TaskId::new();
+        let stale = AgentId::new();
+        let fresh = AgentId::new();
+
+        // Insert an expired claim held by `stale`.
+        sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(stale.to_string())
+        .bind(task_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind("2000-01-01T00:00:00+00:00")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // A different agent may still acquire because the prior claim is expired.
+        let out = repo
+            .try_acquire(fresh, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        assert!(matches!(out, ClaimOutcome::Acquired { .. }));
+        let (holder, _) = repo.is_claimed(task_id).await.unwrap().unwrap();
+        assert_eq!(holder, fresh);
+    }
+
+    #[tokio::test]
+    async fn is_claimed_by_other_ignores_self_and_expired() {
+        let (_db, repo) = make_repo().await;
+        let task_id = TaskId::new();
+        let me = AgentId::new();
+        let them = AgentId::new();
+
+        // My own live claim must not count as "claimed by other".
+        repo.acquire(me, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        assert_eq!(repo.is_claimed_by_other(task_id, me).await.unwrap(), None);
+
+        // Another agent's live claim does.
+        repo.acquire(them, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.is_claimed_by_other(task_id, me).await.unwrap(),
+            Some(them)
+        );
     }
 
     #[tokio::test]
