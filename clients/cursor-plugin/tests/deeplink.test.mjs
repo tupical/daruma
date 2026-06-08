@@ -37,9 +37,9 @@ test("buildCursorDeeplink rejects bad names", () => {
   assert.throws(() => buildCursorDeeplink("bad name!", { command: "x" }), RangeError);
 });
 
-test("buildHttpsInstallUrl uses cursor.com mirror", () => {
+test("buildHttpsInstallUrl is a legacy alias for the official Cursor deeplink", () => {
   const url = buildHttpsInstallUrl("taskagent", { command: "x" });
-  assert.match(url, /^https:\/\/cursor\.com\/install-mcp\?/);
+  assert.match(url, /^cursor:\/\/anysphere\.cursor-deeplink\/mcp\/install\?/);
 });
 
 test("defaultTaskagentConfigSync produces hosted HTTP config by default", () => {
@@ -69,11 +69,11 @@ test("defaultTaskagentConfig uses remote prod preset", async () => {
   assert.deepEqual(cfg, defaultTaskagentHttpConfig({ apiUrl: DEFAULT_API_URL }));
 });
 
-test("buildTaskagentInstallLinks returns deeplink + https mirror", async () => {
+test("buildTaskagentInstallLinks returns the official Cursor deeplink", async () => {
   const links = await buildTaskagentInstallLinks({ remote: "prod" });
   assert.equal(links.name, "taskagent");
   assert.match(links.deeplink, /^cursor:\/\/anysphere\.cursor-deeplink\/mcp\/install/);
-  assert.match(links.httpsUrl, /^https:\/\/cursor\.com\/install-mcp/);
+  assert.equal(links.httpsUrl, links.deeplink);
   const decoded = decodeConfig(
     new URL(links.httpsUrl).searchParams.get("config"),
   );

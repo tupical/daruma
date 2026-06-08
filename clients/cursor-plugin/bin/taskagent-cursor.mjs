@@ -10,10 +10,9 @@
 //                                      writes ./.cursor/mcp.json.
 //   uninstall [--global|--project DIR]
 //                                      Remove the taskagent entry.
-//   deeplink [--print-scheme] [--base-url URL] [--token T] [--command CMD]
-//                                      Print the https://cursor.com/install-mcp
-//                                      URL that a marketplace card can render
-//                                      as an "Add to Cursor" button.
+//   deeplink [--base-url URL] [--token T] [--command CMD]
+//                                      Print the official cursor:// MCP install
+//                                      URL for an "Add to Cursor" button.
 //   rules [--project DIR] [--force]
 //                                      Drop the bundled .cursor/rules/taskagent.mdc
 //                                      into a project so Cursor's agent knows
@@ -88,9 +87,8 @@ Usage:
                                    [--api prod|staging|self-host]
                                    [--transport http|stdio] [--command CMD]
                                    [--name NAME] [--print-scheme]
-        Print the https://cursor.com/install-mcp URL that a browser or
-        marketplace can render as an "Add to Cursor" button. With
-        --print-scheme, also print the raw cursor:// deeplink.
+        Print the official cursor:// URL that a browser or marketplace can
+        render as an "Add to Cursor" button.
 
   taskagent-cursor rules [--project DIR] [--force]
         Install the bundled .cursor/rules/*.mdc files into a project.
@@ -172,7 +170,6 @@ function parseScopeFlags(rest) {
       case "--force":
       case "-f":
         opts.force = true; break;
-      case "--print-url":
       case "--print-scheme":
         opts.printScheme = true; break;
       case "--json":
@@ -360,14 +357,11 @@ async function cmdUninstall(rest) {
 
 async function cmdDeeplink(rest) {
   const opts = parseScopeFlags(rest);
-  const { deeplink, httpsUrl, config } = await buildTaskagentInstallLinks({
+  const { deeplink, config } = await buildTaskagentInstallLinks({
     name: opts.name,
     ...installEnvOpts(opts),
   });
-  process.stdout.write(httpsUrl + "\n");
-  if (opts.printScheme) {
-    process.stdout.write(deeplink + "\n");
-  }
+  process.stdout.write(deeplink + "\n");
   if (process.env.TASKAGENT_DEBUG) {
     process.stderr.write("\nencoded config:\n");
     process.stderr.write(JSON.stringify(config, null, 2) + "\n");

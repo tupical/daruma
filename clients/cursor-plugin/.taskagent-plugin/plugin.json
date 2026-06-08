@@ -6,20 +6,19 @@
   "title": "TaskAgent for Cursor",
   "summary": "MCP-сервер для управления проектами, задачами и AI-декомпозицией прямо из Cursor. По умолчанию становится единственным трекером и перехватывает планы у oh-my-claudecode.",
   "description": "Подключает MCP-сервер tupical/taskagent в Cursor и раскладывает alwaysApply-правила, делающие taskagent дефолтным трекером задач и планов. Если в проекте есть oh-my-claudecode (.omc/), плагин дописывает managed-блок в .omc/AGENTS.md, чтобы OMC-скиллы (`/plan`, `/ralph`, `/ultrawork`, `/ultragoal`, `/autopilot`) не создавали файлы под .omc/plans/, а брали план из taskagent.",
-  "version": "0.3.0",
+  "version": "0.3.6",
   "license": "MIT",
   "author": { "name": "tupical", "url": "https://github.com/tupical" },
   "vendor": { "name": "taskagent", "url": "" },
   "homepage": "https://github.com/tupical/taskagent/tree/main/clients/cursor-plugin#readme",
   "repository": "https://github.com/tupical/taskagent",
   "issues": "https://github.com/tupical/taskagent/issues",
-  "tags": ["taskagent", "tasks", "planning", "mcp", "stdio", "rust", "cursor"],
+  "tags": ["taskagent", "tasks", "planning", "mcp", "http", "cursor"],
   "categories": ["productivity", "agents", "task-management"],
   "targets": ["cursor"],
   "requirements": {
     "node": ">=20",
     "cursor": ">=0.40",
-    "binariesOnPath": ["taskagent-mcp"],
     "services": [
       {
         "name": "taskagent-server",
@@ -30,8 +29,8 @@
   },
   "install": {
     "primary": "cursor-deeplink",
-    "cursorDeeplink": "cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D",
-    "cursorHttpsUrl": "https://cursor.com/install-mcp?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D",
+    "cursorDeeplink": "cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D",
+    "cursorHttpsUrl": "cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D",
     "npm": {
       "package": "taskagent-cursor",
       "bin": "taskagent-cursor",
@@ -45,24 +44,21 @@
   },
   "mcp": {
     "name": "taskagent",
-    "transport": "stdio",
+    "transport": "http",
     "server": {
-      "type": "stdio",
-      "command": "taskagent-mcp",
-      "env": {
-        "TASKAGENT_API_URL": "http://localhost:8080"
-      }
+      "type": "http",
+      "url": "http://localhost:8080/v1/mcp"
     },
     "envHints": [
       {
-        "key": "TASKAGENT_API_URL",
+        "key": "url",
         "default": "http://localhost:8080",
-        "description": "URL HTTP API. При локальном запуске сервер слушает http://localhost:8080."
+        "description": "HTTP MCP endpoint. При локальном запуске сервер слушает http://localhost:8080/v1/mcp."
       },
       {
-        "key": "TASKAGENT_TOKEN",
+        "key": "Authorization",
         "default": null,
-        "description": "Опциональный bearer-токен. Сервер пишет первый токен в <data>/bootstrap.token."
+        "description": "Опциональный bearer-токен в headers.Authorization для защищенного self-host endpoint."
       }
     ]
   },

@@ -1,6 +1,6 @@
 // Cursor "Add to Cursor" deeplink generator.
 //
-// Official format (cursor.com/docs/context/mcp/install-links):
+// Official format (https://docs.cursor.com/en/deeplinks):
 //   cursor://anysphere.cursor-deeplink/mcp/install?name=NAME&config=BASE64_JSON
 //
 // `config` is a base64-encoded JSON object matching a single entry of
@@ -8,10 +8,8 @@
 // servers or { type: "http", url, headers? } for remote servers. The wrapping
 // { "mcpServers": { ... } } object is NOT included.
 //
-// We also emit a marketplace-friendly HTTPS wrapper
-//   https://cursor.com/install-mcp?name=NAME&config=BASE64_JSON
-// which Cursor's web flow forwards to the cursor:// scheme. The HTTPS form is
-// what a web page can render as an "Add to Cursor" button.
+// Web buttons should use this cursor:// URL directly. The old
+// https://cursor.com/install-mcp wrapper is not a documented route and can 404.
 
 import { resolveMcpEnvFromCredentials } from "./agent-credentials.mjs";
 import {
@@ -23,7 +21,6 @@ import {
 import { resolveMcpCommand } from "./resolve-mcp-command.mjs";
 
 const SCHEME_DEEPLINK = "cursor://anysphere.cursor-deeplink/mcp/install";
-const HTTPS_INSTALL = "https://cursor.com/install-mcp";
 const MCP_RESOURCE_PATH = "/v1/mcp";
 
 export function encodeConfig(config) {
@@ -59,10 +56,7 @@ export function buildCursorDeeplink(name, config) {
 }
 
 export function buildHttpsInstallUrl(name, config) {
-  assertName(name);
-  const b64 = encodeConfig(config);
-  const qs = new URLSearchParams({ name, config: b64 }).toString();
-  return `${HTTPS_INSTALL}?${qs}`;
+  return buildCursorDeeplink(name, config);
 }
 
 export function mcpResourceUrl(serverUrl) {
@@ -158,7 +152,7 @@ export async function buildTaskagentInstallLinks(opts = {}) {
     name,
     config,
     deeplink: buildCursorDeeplink(name, config),
-    httpsUrl: buildHttpsInstallUrl(name, config),
+    httpsUrl: buildCursorDeeplink(name, config),
     apiUrls: {
       prod: DEFAULT_API_URL,
       staging: ALT_API_URL,
