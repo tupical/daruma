@@ -39,11 +39,12 @@ pub mod tenant_quota_repo;
 pub mod token_repo;
 pub mod webhook_enrichment;
 pub mod webhook_repo;
+pub mod work_lease_repo;
 pub mod workspace_graph_repo;
 
 pub use activity_repo::ActivityRepo;
 pub use agent_inbox_repo::AgentInboxRepo;
-pub use claim_repo::AgentClaimRepo;
+pub use claim_repo::{AgentClaimRepo, ClaimOutcome};
 pub use comment_repo::CommentRepo;
 pub use db::Db;
 pub use document_repo::DocumentRepo;
@@ -63,6 +64,7 @@ pub use tenant_quota_repo::TenantQuotaRepo;
 pub use token_repo::TokenRepo;
 pub use webhook_enrichment::WebhookEnrichment;
 pub use webhook_repo::WebhookRepo;
+pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
 pub use workspace_graph_repo::{
     GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode, GraphSearchHit,
     GraphStatus, WorkspaceGraphRepo,

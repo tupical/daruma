@@ -11,7 +11,8 @@
 // since there is no OMC state to override.
 
 import { promises as fs } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolvePath } from "./paths.mjs";
 
 const BEGIN = "<!-- taskagent-claude:begin -->";
 const END = "<!-- taskagent-claude:end -->";
@@ -48,7 +49,7 @@ function buildBlock() {
 }
 
 export async function omcDirExists(projectDir) {
-  const dir = projectDir ? resolve(projectDir) : process.cwd();
+  const dir = projectDir ? resolvePath(projectDir) : process.cwd();
   try {
     const stat = await fs.stat(join(dir, ".omc"));
     return stat.isDirectory();
@@ -65,7 +66,7 @@ export async function omcDirExists(projectDir) {
 //   { action: "appended",      path }        — file existed without our block
 //   { action: "unchanged",     path }        — content already current
 export async function installOmcGuard({ projectDir } = {}) {
-  const dir = projectDir ? resolve(projectDir) : process.cwd();
+  const dir = projectDir ? resolvePath(projectDir) : process.cwd();
   const omcDir = join(dir, ".omc");
   const target = join(omcDir, "AGENTS.md");
 
@@ -107,7 +108,7 @@ export async function installOmcGuard({ projectDir } = {}) {
 
 // Removes the managed block (and the file if it would be left empty).
 export async function removeOmcGuard({ projectDir } = {}) {
-  const dir = projectDir ? resolve(projectDir) : process.cwd();
+  const dir = projectDir ? resolvePath(projectDir) : process.cwd();
   const target = join(dir, ".omc", "AGENTS.md");
 
   let existing = null;

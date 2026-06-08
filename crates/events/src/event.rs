@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Comment, CommentPatch, Document,
     NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome,
-    SessionArtifact, Status, TaskPatch,
+    SessionArtifact, Status, TaskPatch, WorkLease,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId, RunId,
@@ -289,6 +289,18 @@ pub enum Event {
         task_id: TaskId,
     },
 
+    /// An agent reserved one or more file/path leases for a task.
+    FilesReserved {
+        leases: Vec<WorkLease>,
+    },
+
+    /// All of an agent's file/path leases for a task were released
+    /// (task completed, explicit release, or TTL expiry).
+    FilesReleased {
+        agent_id: AgentId,
+        task_id: TaskId,
+    },
+
     // ── Semantic plan/run events (Wave 1 / W1.3) ──────────────────────────────
     /// A human edited the plan while an agent run was active.
     PlanModifiedByHuman {
@@ -475,6 +487,8 @@ impl Event {
             Event::SessionArtifactAttached { .. } => "session_artifact_attached",
             Event::AgentClaimed { .. } => "agent_claimed",
             Event::AgentReleased { .. } => "agent_released",
+            Event::FilesReserved { .. } => "files_reserved",
+            Event::FilesReleased { .. } => "files_released",
             // Semantic
             Event::PlanModifiedByHuman { .. } => "plan_modified_by_human",
             Event::TaskContested { .. } => "task_contested",
@@ -527,6 +541,9 @@ impl Event {
             Event::AgentClaimed { task_id, .. } | Event::AgentReleased { task_id, .. } => {
                 Some(*task_id)
             }
+            // Lease events are per-task (FilesReserved carries it via its leases).
+            Event::FilesReleased { task_id, .. } => Some(*task_id),
+            Event::FilesReserved { leases } => leases.first().map(|l| l.task_id),
             // Contested task.
             Event::TaskContested { task_id, .. } => Some(*task_id),
             // Task relation events — target is the `from` endpoint (the relation's source).
@@ -623,6 +640,8 @@ impl Event {
             | Event::SessionArtifactAttached { .. }
             | Event::AgentClaimed { .. }
             | Event::AgentReleased { .. }
+            | Event::FilesReserved { .. }
+            | Event::FilesReleased { .. }
             // Semantic events — signals for the agent, not the task feed.
             | Event::PlanModifiedByHuman { .. }
             | Event::TaskContested { .. }

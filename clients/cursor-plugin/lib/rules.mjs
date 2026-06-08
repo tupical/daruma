@@ -14,8 +14,9 @@
 //     the agent burns tokens on multi-KB graph dumps (see tokensaveaudit.md).
 
 import { promises as fs } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePath } from "./paths.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOURCE_DIR = join(__dirname, "..", "cursor", "rules");
@@ -27,7 +28,7 @@ export const RULE_FILES = [
 ];
 
 export async function installRules({ projectDir, overwrite = false } = {}) {
-  const dir = projectDir ? resolve(projectDir) : process.cwd();
+  const dir = projectDir ? resolvePath(projectDir) : process.cwd();
   const targetDir = join(dir, ".cursor", "rules");
   await fs.mkdir(targetDir, { recursive: true });
 

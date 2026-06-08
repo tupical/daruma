@@ -10,7 +10,7 @@ use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, DocumentRepo, EntityVersionRepo,
     ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
     SessionRepo, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo, WebhookRepo,
-    WorkspaceGraphRepo,
+    WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use taskagent_sync::Hub;
 use taskagent_webhooks::WebhookStore;
@@ -60,6 +60,8 @@ pub struct AppState {
     pub sessions: Arc<SessionRepo>,
     /// Optimistic task-claim repo.
     pub claims: Arc<AgentClaimRepo>,
+    /// File/path work-lease repo (parallel-agent file coordination).
+    pub work_leases: Arc<WorkLeaseRepo>,
     /// Cross-system identity mapping.
     pub external_refs: Arc<ExternalRefRepo>,
     /// Tenant quota checks for tasks/plans/storage.

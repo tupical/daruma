@@ -53,6 +53,7 @@ use taskagent_shared::{
     AgentId, AgentSessionId, CommentId, CoreError, DocumentId, PlanId, ProjectId, RunId, TaskId,
     TokenId, WebhookId,
 };
+use taskagent_storage::{ClaimOutcome, ReserveOutcome};
 use taskagent_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
 
 use taskagent_api_dto::{MutationResponse, MutationWarning};
@@ -291,6 +292,15 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         // ── Claim routes (W3.1) ─────────────────────────────────────────────
         .route("/claims", post(acquire_claim))
         .route("/claims/{agent_id}/{task_id}", delete(release_claim))
+        // ── Work-lease routes (parallel-agent file coordination) ────────────
+        .route("/leases", post(reserve_files).get(active_work))
+        .route("/leases/{agent_id}/{task_id}", delete(release_files))
+        .route("/leases/suggest", get(suggest_files))
+        // ── Project-wide ready pool (drain across all active plans) ──────────
+        .route("/ready", get(project_ready))
+        .route("/ready/drain", post(project_ready_drain))
+        // ── Doctor: reconcile stale parallel-agent state ────────────────────
+        .route("/doctor", get(project_doctor))
         // ── Relation routes (§3.2 W3.1) ─────────────────────────────────────
         .route(
             "/relations",
@@ -2502,7 +2512,9 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::SendRunSignal { .. }
         | Command::RespondRunSignal { .. }
         | Command::AcquireClaim { .. }
-        | Command::ReleaseClaim { .. } => Capability::RunWrite,
+        | Command::ReleaseClaim { .. }
+        | Command::ReserveFiles { .. }
+        | Command::ReleaseFiles { .. } => Capability::RunWrite,
         // Agent session commands
         Command::StartAgentSession { .. }
         | Command::EndAgentSession { .. }
@@ -2678,6 +2690,7 @@ async fn get_plan_progress(
     let resolver = NextTaskResolver {
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
+        claims: state.claims.as_ref(),
     };
     if let Some(next) = resolver
         .next(plan_id, RunId::new(), auth.agent_id, None)
@@ -3072,6 +3085,7 @@ async fn get_next_task(
     let resolver = NextTaskResolver {
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
+        claims: state.claims.as_ref(),
     };
     let result = resolver
         .next(plan_id, run_id, auth.agent_id, claim_ttl)
@@ -3085,6 +3099,119 @@ async fn get_next_task(
             "claim_expires_at": n.claim_expires_at,
         })
     })))
+}
+
+/// Atomically resolve + claim the next ready task in one plan, coupling the
+/// claim with an `in_progress` transition. Returns the task JSON on success, or
+/// `None` when the plan has no unclaimed ready task. Shared by single-plan
+/// `drain_next` and the project-wide ready drain.
+async fn drain_one_plan(
+    state: &AppState,
+    auth: &AuthContext,
+    plan_id: PlanId,
+    run_id: RunId,
+    ttl_secs: u32,
+) -> Result<Option<serde_json::Value>, ApiError> {
+    let ttl = std::time::Duration::from_secs(ttl_secs as u64);
+
+    // Bound retries by the plan's task count: each Busy means a competing agent
+    // just claimed that candidate, and the claim-aware resolver will skip it on
+    // the next pass — so at most one full sweep of the plan is ever needed.
+    let max_attempts = state
+        .plans
+        .list_tasks_ordered(plan_id)
+        .await
+        .map_err(ApiError::from)?
+        .len()
+        .max(1);
+
+    let resolver = NextTaskResolver {
+        plans: state.plans.as_ref() as &dyn PlanRepository,
+        tasks: state.tasks.as_ref(),
+        claims: state.claims.as_ref(),
+    };
+
+    for _ in 0..max_attempts {
+        let Some(next) = resolver
+            .next(plan_id, run_id, auth.agent_id, Some(ttl))
+            .await
+            .map_err(ApiError::from)?
+        else {
+            return Ok(None);
+        };
+
+        // Atomic compare-and-set: if a competitor grabbed it between resolve and
+        // here, retry; the resolver excludes their claim on the next iteration.
+        let expires_at = match state
+            .claims
+            .try_acquire(
+                auth.agent_id,
+                next.task_id,
+                chrono::Duration::seconds(ttl_secs as i64),
+            )
+            .await
+            .map_err(ApiError::from)?
+        {
+            ClaimOutcome::Busy { .. } => continue,
+            ClaimOutcome::Acquired { expires_at } => expires_at,
+        };
+
+        // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
+        let envs = state
+            .commands
+            .dispatch(
+                Command::AcquireClaim {
+                    agent_id: auth.agent_id,
+                    task_id: next.task_id,
+                    ttl_secs,
+                },
+                actor_from(auth, None),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        let last = envs.last();
+
+        // Couple the claim with a status transition (beads-style): move a ready
+        // task into `in_progress` so the resolver's status filter and dashboards
+        // reflect that it is being worked. The claim holder is the de-facto
+        // assignee (recorded in `agent_claims`).
+        if let Some(task) = state
+            .tasks
+            .get(next.task_id)
+            .await
+            .map_err(ApiError::from)?
+        {
+            if task.status != taskagent_domain::Status::InProgress && !task.status.is_terminal() {
+                let _ = state
+                    .commands
+                    .dispatch(
+                        Command::SetStatus {
+                            id: next.task_id,
+                            status: taskagent_domain::Status::InProgress,
+                            force: true,
+                        },
+                        actor_from(auth, None),
+                    )
+                    .await
+                    .map_err(ApiError::from)?;
+            }
+        }
+
+        return Ok(Some(serde_json::json!({
+            "task_id": next.task_id,
+            "plan_id": plan_id,
+            "position": next.position,
+            "claim_expires_at": expires_at,
+            "claim": {
+                "agent_id": auth.agent_id,
+                "event_id": last.map(|e| e.id),
+                "event_seq": last.map(|e| e.seq),
+            }
+        })));
+    }
+
+    // Exhausted: every ready candidate was taken by a competing agent.
+    Ok(None)
 }
 
 async fn drain_next_task(
@@ -3103,48 +3230,202 @@ async fn drain_next_task(
     let run_id = body.run_id.unwrap_or_else(RunId::new);
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
-    let resolver = NextTaskResolver {
-        plans: state.plans.as_ref() as &dyn PlanRepository,
-        tasks: state.tasks.as_ref(),
-    };
-    let next = resolver
-        .next(
-            plan_id,
-            run_id,
-            auth.agent_id,
-            Some(std::time::Duration::from_secs(ttl_secs as u64)),
-        )
+    let task = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await?;
+    Ok(Json(task.unwrap_or(serde_json::Value::Null)))
+}
+
+#[derive(Deserialize)]
+struct ProjectReadyQuery {
+    project_id: String,
+}
+
+/// `GET /v1/ready?project_id=` — the project-wide ready pool: tasks across all
+/// active plans whose dependencies are satisfied and that no other agent holds.
+async fn project_ready(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ProjectReadyQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::PlanRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid project id: {}",
+            q.project_id
+        )))
+    })?;
+
+    let plans = state
+        .plans
+        .list_by_project(project_id, Some(&[PlanStatus::Active]))
         .await
         .map_err(ApiError::from)?;
 
-    let Some(next) = next else {
-        return Ok(Json(serde_json::Value::Null));
-    };
+    let mut ready = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for plan in &plans {
+        let waves =
+            plan_readiness::plan_fanout(&state.plans, &state.tasks, &state.relations, plan.id)
+                .await
+                .map_err(ApiError::from)?;
+        if let Some(wave0) = waves.first() {
+            for task_id in &wave0.tasks {
+                if seen.insert(*task_id)
+                    && state
+                        .claims
+                        .is_claimed_by_other(*task_id, auth.agent_id)
+                        .await
+                        .map_err(ApiError::from)?
+                        .is_none()
+                {
+                    ready.push(serde_json::json!({ "task_id": task_id, "plan_id": plan.id }));
+                }
+            }
+        }
+    }
 
-    let envs = state
-        .commands
-        .dispatch(
-            Command::AcquireClaim {
-                agent_id: auth.agent_id,
-                task_id: next.task_id,
-                ttl_secs,
-            },
-            actor_from(&auth, None),
-        )
+    Ok(Json(serde_json::json!({ "ready": ready })))
+}
+
+/// `POST /v1/ready/drain?project_id=` — atomically claim the next ready task
+/// across the project's active plans. N agents calling this concurrently each
+/// get a distinct task.
+async fn project_ready_drain(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ProjectReadyQuery>,
+    Json(body): Json<DrainNextBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::PlanRead)
+        .map_err(ApiError::from_missing_cap)?;
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid project id: {}",
+            q.project_id
+        )))
+    })?;
+    let run_id = body.run_id.unwrap_or_else(RunId::new);
+    let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
+
+    let plans = state
+        .plans
+        .list_by_project(project_id, Some(&[PlanStatus::Active]))
         .await
         .map_err(ApiError::from)?;
-    let last = envs.last();
+
+    for plan in &plans {
+        if let Some(task) = drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await? {
+            return Ok(Json(task));
+        }
+    }
+    Ok(Json(serde_json::Value::Null))
+}
+
+/// `GET /v1/doctor?project_id=` — reconcile parallel-agent state. Reports tasks
+/// stuck `in_progress` with **no live claim** (an agent likely crashed mid-task,
+/// leaving its TTL claim to lapse): they are reclaimable but invisible to the
+/// resolver's status filter until reopened. Git-history cross-ref
+/// (committed-but-open) is intentionally an orchestrator-side concern — the
+/// tracker stays VCS-agnostic (see ADR parallel-agent-isolation).
+async fn project_doctor(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ProjectReadyQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid project id: {}",
+            q.project_id
+        )))
+    })?;
+
+    let in_progress = state
+        .tasks
+        .list_by_project_filtered(Some(project_id), &[taskagent_domain::Status::InProgress])
+        .await
+        .map_err(ApiError::from)?;
+
+    let mut stale = Vec::new();
+    for task in &in_progress {
+        if state
+            .claims
+            .is_claimed(task.id)
+            .await
+            .map_err(ApiError::from)?
+            .is_none()
+        {
+            stale.push(serde_json::json!({
+                "task_id": task.id,
+                "title": task.title,
+                "reason": "in_progress with no live claim (likely abandoned; reclaimable)",
+            }));
+        }
+    }
 
     Ok(Json(serde_json::json!({
-        "task_id": next.task_id,
-        "position": next.position,
-        "claim_expires_at": next.claim_expires_at,
-        "claim": {
-            "agent_id": auth.agent_id,
-            "event_id": last.map(|e| e.id),
-            "event_seq": last.map(|e| e.seq),
-        }
+        "in_progress_total": in_progress.len(),
+        "stale_in_progress": stale,
     })))
+}
+
+#[derive(Deserialize)]
+struct SuggestFilesQuery {
+    task_id: String,
+}
+
+/// `GET /v1/leases/suggest?task_id=` — suggest path globs to reserve for a task
+/// by extracting path-like tokens from its title + description. A lightweight
+/// heuristic (no code index): tokens containing `/` or a known source extension.
+async fn suggest_files(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<SuggestFilesQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let task_id = q.task_id.parse::<TaskId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid task id: {}",
+            q.task_id
+        )))
+    })?;
+    let task = state
+        .tasks
+        .get(task_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {task_id}"))))?;
+
+    let text = format!("{} {}", task.title, task.description);
+    let paths = suggest_paths_from_text(&text);
+    Ok(Json(
+        serde_json::json!({ "task_id": task_id, "suggested_paths": paths }),
+    ))
+}
+
+/// Extract path-like tokens (contain `/` or end in a common source extension).
+fn suggest_paths_from_text(text: &str) -> Vec<String> {
+    const EXTS: &[&str] = &[
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".sql", ".toml", ".md", ".css", ".html",
+    ];
+    let mut out = Vec::new();
+    for raw in text
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '`' | '"' | '\''))
+    {
+        let tok = raw.trim_matches(|c: char| matches!(c, '.' | ':' | '#' | '*'));
+        if tok.is_empty() || tok.len() > 200 {
+            continue;
+        }
+        let looks_pathy = tok.contains('/') || EXTS.iter().any(|e| tok.ends_with(e));
+        if looks_pathy && !out.contains(&tok.to_string()) {
+            out.push(tok.to_string());
+        }
+    }
+    out
 }
 
 // ── Run handlers (W3.1) ───────────────────────────────────────────────────────
@@ -3775,27 +4056,62 @@ async fn acquire_claim(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let envs = state
-        .commands
-        .dispatch(
-            Command::AcquireClaim {
-                agent_id: body.agent_id,
-                task_id: body.task_id,
-                ttl_secs: body.ttl_secs,
-            },
-            actor_from(&auth, None),
+
+    // Atomic exclusive acquire: another agent's live claim blocks us.
+    match state
+        .claims
+        .try_acquire(
+            body.agent_id,
+            body.task_id,
+            chrono::Duration::seconds(body.ttl_secs as i64),
         )
         .await
-        .map_err(ApiError::from)?;
-    let last = envs.last();
-    Ok(Json(MutationResponse {
-        success: true,
-        event_id: last.map(|e| e.id),
-        event_seq: last.map(|e| e.seq),
-        data: serde_json::json!({ "agent_id": body.agent_id, "task_id": body.task_id }),
-        warnings: vec![],
-        client_command_id: None,
-    }))
+        .map_err(ApiError::from)?
+    {
+        ClaimOutcome::Busy { holder, expires_at } => Ok(Json(MutationResponse {
+            success: false,
+            event_id: None,
+            event_seq: None,
+            data: serde_json::json!({
+                "acquired": false,
+                "task_id": body.task_id,
+                "holder": holder,
+                "claim_expires_at": expires_at,
+                "reason": "task already claimed by another agent",
+            }),
+            warnings: vec![],
+            client_command_id: None,
+        })),
+        ClaimOutcome::Acquired { expires_at } => {
+            // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
+            let envs = state
+                .commands
+                .dispatch(
+                    Command::AcquireClaim {
+                        agent_id: body.agent_id,
+                        task_id: body.task_id,
+                        ttl_secs: body.ttl_secs,
+                    },
+                    actor_from(&auth, None),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            let last = envs.last();
+            Ok(Json(MutationResponse {
+                success: true,
+                event_id: last.map(|e| e.id),
+                event_seq: last.map(|e| e.seq),
+                data: serde_json::json!({
+                    "acquired": true,
+                    "agent_id": body.agent_id,
+                    "task_id": body.task_id,
+                    "claim_expires_at": expires_at,
+                }),
+                warnings: vec![],
+                client_command_id: None,
+            }))
+        }
+    }
 }
 
 async fn release_claim(
@@ -3832,6 +4148,162 @@ async fn release_claim(
         warnings: vec![],
         client_command_id: None,
     }))
+}
+
+// ── Work-lease handlers (parallel-agent file coordination) ────────────────────
+
+#[derive(Deserialize)]
+struct ReserveFilesBody {
+    agent_id: AgentId,
+    task_id: TaskId,
+    #[serde(default)]
+    project_id: Option<ProjectId>,
+    paths: Vec<String>,
+    #[serde(default)]
+    ttl_secs: Option<u32>,
+}
+
+/// `POST /v1/leases` — atomically reserve file/path globs for a task. Returns
+/// `reserved: false` with the conflicting path + holder when another agent
+/// already owns an overlapping area.
+async fn reserve_files(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ReserveFilesBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    if body.paths.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "paths must not be empty",
+        )));
+    }
+    let ttl_secs = body.ttl_secs.unwrap_or(300);
+
+    match state
+        .work_leases
+        .try_reserve(
+            body.agent_id,
+            body.task_id,
+            body.project_id,
+            body.paths,
+            chrono::Duration::seconds(ttl_secs as i64),
+        )
+        .await
+        .map_err(ApiError::from)?
+    {
+        ReserveOutcome::Conflict {
+            path,
+            holder,
+            holder_task,
+        } => Ok(Json(MutationResponse {
+            success: false,
+            event_id: None,
+            event_seq: None,
+            data: serde_json::json!({
+                "reserved": false,
+                "task_id": body.task_id,
+                "conflict_path": path,
+                "holder": holder,
+                "holder_task": holder_task,
+                "reason": "path overlaps a lease held by another agent; negotiate via taskagent_signal_send or take a different task",
+            }),
+            warnings: vec![],
+            client_command_id: None,
+        })),
+        ReserveOutcome::Reserved { leases } => {
+            // Project the reservation into the event log for audit + WS sync.
+            let envs = state
+                .commands
+                .dispatch(
+                    Command::ReserveFiles {
+                        leases: leases.clone(),
+                    },
+                    actor_from(&auth, None),
+                )
+                .await
+                .map_err(ApiError::from)?;
+            let last = envs.last();
+            Ok(Json(MutationResponse {
+                success: true,
+                event_id: last.map(|e| e.id),
+                event_seq: last.map(|e| e.seq),
+                data: serde_json::json!({ "reserved": true, "leases": leases }),
+                warnings: vec![],
+                client_command_id: None,
+            }))
+        }
+    }
+}
+
+/// `DELETE /v1/leases/{agent_id}/{task_id}` — release all of an agent's leases
+/// for a task (usually automatic on task completion).
+async fn release_files(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path((agent_id_str, task_id_str)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid agent id: {agent_id_str}"
+        )))
+    })?;
+    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid task id: {task_id_str}"
+        )))
+    })?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::ReleaseFiles { agent_id, task_id },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "agent_id": agent_id, "task_id": task_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ActiveWorkQuery {
+    project_id: Option<String>,
+}
+
+/// `GET /v1/leases` — the backlog of active work with affected files,
+/// optionally scoped to a project.
+async fn active_work(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ActiveWorkQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = q
+        .project_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<ProjectId>().map_err(|_| {
+                ApiError::from(CoreError::validation(format!("invalid project id: {s}")))
+            })
+        })
+        .transpose()?;
+    let leases = state
+        .work_leases
+        .list_active(project_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "leases": leases })))
 }
 
 // ── Document handlers (PR1 §8) ────────────────────────────────────────────────

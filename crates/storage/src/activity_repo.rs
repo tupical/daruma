@@ -736,7 +736,9 @@ impl ActivityRepo {
             }
 
             // ── No activity rows for internal / signal events ─────────────
-            Event::RunStepStarted { .. }
+            Event::FilesReserved { .. }
+            | Event::FilesReleased { .. }
+            | Event::RunStepStarted { .. }
             | Event::RunStepFinished { .. }
             | Event::AgentSessionStarted { .. }
             | Event::AgentSessionEnded { .. }

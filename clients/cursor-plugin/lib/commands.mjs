@@ -9,8 +9,9 @@
 //   - taskagent-mine.md   — tasks currently claimed by this session
 
 import { promises as fs } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePath } from "./paths.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOURCE_DIR = join(__dirname, "..", "cursor", "commands");
@@ -23,7 +24,7 @@ export const COMMAND_FILES = [
 ];
 
 export async function installCommands({ projectDir, overwrite = false } = {}) {
-  const dir = projectDir ? resolve(projectDir) : process.cwd();
+  const dir = projectDir ? resolvePath(projectDir) : process.cwd();
   const targetDir = join(dir, ".cursor", "commands");
   await fs.mkdir(targetDir, { recursive: true });
 

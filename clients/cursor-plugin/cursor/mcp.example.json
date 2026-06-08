@@ -1,13 +1,8 @@
 {
   "mcpServers": {
     "taskagent": {
-      "type": "stdio",
-      "command": "taskagent-mcp",
-      "env": {
-        "TASKAGENT_API_URL": "http://localhost:8080",
-        "TASKAGENT_TOKEN": "ta_pat_…",
-        "TASKAGENT_WORKSPACE_ID": "workspace-uuid"
-      }
+      "type": "http",
+      "url": "http://localhost:8080/v1/mcp"
     }
   }
 }

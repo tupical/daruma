@@ -31,7 +31,7 @@ use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, Db, DocumentRepo, EntityVersionRepo,
     ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
     SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
-    WebhookRepo, WorkspaceGraphRepo,
+    WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use taskagent_sync::Hub;
 use taskagent_webhooks::WebhookStore;
@@ -108,6 +108,7 @@ impl TestAppBuilder {
         let run_notes = Arc::new(RunNoteRepo::new(pool.clone()));
         let sessions = Arc::new(SessionRepo::new(pool.clone()));
         let claims = Arc::new(AgentClaimRepo::new(pool.clone()));
+        let work_leases = Arc::new(WorkLeaseRepo::new(pool.clone()));
         let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
         let documents = Arc::new(DocumentRepo::new(pool.clone()));
         let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
@@ -156,6 +157,7 @@ impl TestAppBuilder {
             .with_run_notes(run_notes.clone())
             .with_sessions(sessions.clone())
             .with_claims(claims.clone())
+            .with_work_leases(work_leases.clone())
             .with_external_refs(external_refs.clone())
             .with_tenant_quotas(tenant_quotas.clone())
             .with_documents(documents.clone())
@@ -188,6 +190,7 @@ impl TestAppBuilder {
             run_notes,
             sessions,
             claims,
+            work_leases,
             external_refs,
             idempotency,
             tenant_quotas,

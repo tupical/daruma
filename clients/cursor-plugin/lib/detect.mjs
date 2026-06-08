@@ -209,9 +209,12 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
     registration.project.entry ??
     registration.global.entry ??
     null;
-  const configuredCommand = activeEntry?.command ?? "taskagent-mcp";
-  const resolvedCommand = await resolveMcpCommand({ command: configuredCommand });
-  const commandReady = resolvedCommand.resolved || mcpCli.ok;
+  const isHttpEntry = activeEntry?.type === "http" || Boolean(activeEntry?.url);
+  const configuredCommand = activeEntry?.command ?? null;
+  const resolvedCommand = isHttpEntry
+    ? { command: null, resolved: true, source: "http" }
+    : await resolveMcpCommand({ command: configuredCommand ?? "taskagent-mcp" });
+  const commandReady = isHttpEntry || resolvedCommand.resolved || mcpCli.ok;
   const mcpReady = registered && http.ok && commandReady;
 
   return {
@@ -231,13 +234,9 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
     projectRules,
     projectCommands,
     installHint: [
-      "Build the MCP stdio shim (required for Cursor even with TaskAgent Cloud):",
-      "  cargo build --release -p taskagent-mcp-bin",
-      "  ln -sf \"$PWD/target/release/taskagent-mcp\" ~/.local/bin/taskagent-mcp",
-      "Pair with TaskAgent Cloud (device code):",
-      "  npx @mcpbox/taskagent login --server https://taskagent.vskideas.ru",
-      "Register the MCP stdio shim with Cursor:",
-      "  npx taskagent-cursor install --global --api-url https://taskagent.vskideas.ru",
+      "Register hosted HTTP MCP with Cursor:",
+      "  npx taskagent-cursor install --transport http --global --api-url https://taskagent.vskideas.ru",
+      "Or open an Add-to-Cursor link from the Cloud cabinet Connect page.",
       "For local self-host, also keep taskagent-server running:",
       "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
     ].join("\n"),
@@ -248,11 +247,13 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
         : `credentials: none at ${credentialsLocationHint()} — run npx @mcpbox/taskagent login, then re-run install`,
       commandReady
-        ? `mcp command: ${resolvedCommand.command}${resolvedCommand.source === "discovered" ? " (auto-discovered)" : ""}`
+        ? isHttpEntry
+          ? `mcp transport: http (${activeEntry.url ?? "url configured"})`
+          : `mcp command: ${resolvedCommand.command}${resolvedCommand.source === "discovered" ? " (auto-discovered)" : ""}`
         : [
-            `mcp command missing: ${configuredCommand} not executable`,
+            `mcp command missing: ${configuredCommand ?? "taskagent-mcp"} not executable`,
             "  cargo build --release -p taskagent-mcp-bin",
-            "  taskagent-cursor install --global --command \"$PWD/target/release/taskagent-mcp\"",
+            "  taskagent-cursor install --transport stdio --global --command \"$PWD/target/release/taskagent-mcp\"",
           ].join("\n         "),
       http.ok
         ? `HTTP server: ${http.status}${http.version ? ` (v${http.version})` : ""}`

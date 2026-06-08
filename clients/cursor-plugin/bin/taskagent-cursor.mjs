@@ -2,18 +2,18 @@
 // `taskagent-cursor` — Cursor companion CLI for tupical/taskagent.
 //
 // Subcommands:
-//   install [--global|--project DIR] [--command CMD] [--base-url URL] [--token T]
+//   install [--global|--project DIR] [--transport http|stdio] [--command CMD]
+//                                      [--base-url URL] [--token T]
 //                                      Register the taskagent MCP server in
 //                                      Cursor's mcp.json. --global (default)
 //                                      writes ~/.cursor/mcp.json; --project
 //                                      writes ./.cursor/mcp.json.
 //   uninstall [--global|--project DIR]
 //                                      Remove the taskagent entry.
-//   deeplink [--print-url] [--base-url URL] [--token T] [--command CMD]
-//                                      Print the cursor:// deeplink (and the
-//                                      https://cursor.com/install-mcp mirror)
-//                                      that a marketplace card can render as
-//                                      an "Add to Cursor" button.
+//   deeplink [--print-scheme] [--base-url URL] [--token T] [--command CMD]
+//                                      Print the https://cursor.com/install-mcp
+//                                      URL that a marketplace card can render
+//                                      as an "Add to Cursor" button.
 //   rules [--project DIR] [--force]
 //                                      Drop the bundled .cursor/rules/taskagent.mdc
 //                                      into a project so Cursor's agent knows
@@ -46,6 +46,7 @@ import {
 import { installRules } from "../lib/rules.mjs";
 import { installCommands } from "../lib/commands.mjs";
 import { installOmcGuard, removeOmcGuard } from "../lib/omc-guard.mjs";
+import { resolveCursorAssetRoot } from "../lib/paths.mjs";
 import { createCliUi } from "../lib/cli-ui.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,20 +58,22 @@ const marketplaceManifest = JSON.parse(
 const HELP = `taskagent-cursor v${pkg.version} — Cursor plugin for tupical/taskagent
 
 Usage:
-  taskagent-cursor install [--global|--project DIR] [--command CMD]
+  taskagent-cursor install [--global|--project DIR] [--transport http|stdio]
+                                  [--command CMD]
                                   [--api-url URL] [--base-url URL] [--token T]
                                   [--api prod|staging|self-host] [--name NAME]
                                   [--no-rules] [--no-omc-guard]
                                   [--rules-dir DIR] [--force]
         Register the taskagent MCP server in Cursor's mcp.json AND drop the
-        bundled .cursor/rules/ + .omc/AGENTS.md guard into the project so
+        bundled .cursor/rules/ + .cursor/commands/ into the selected scope so
         Cursor's agent defaults to taskagent for tasks/plans and OMC
         skills do not author .omc/plans/.
 
-        --global  (default) → ~/.cursor/mcp.json
-        --project DIR       → <DIR>/.cursor/mcp.json (defaults to cwd)
+        --global  (default) → ~/.cursor/{mcp.json,rules,commands}
+        --project DIR       → <DIR>/.cursor/{mcp.json,rules,commands}
         --rules-dir DIR     → where to drop .cursor/rules + .omc/AGENTS.md
-                              (defaults to --project DIR or cwd).
+                              (relative paths resolve from home for --global,
+                              cwd for --project).
         --no-rules          → skip .cursor/rules/ install.
         --no-commands       → skip .cursor/commands/ install.
         --no-omc-guard      → skip .omc/AGENTS.md guard.
@@ -82,11 +85,12 @@ Usage:
         the bundled rules and the managed .omc/AGENTS.md block.
 
   taskagent-cursor deeplink [--api-url URL] [--base-url URL] [--token T]
-                                   [--api prod|staging|self-host] [--command CMD]
-                                   [--name NAME] [--print-url]
-        Print the cursor:// install deeplink that a marketplace can render
-        as an "Add to Cursor" button. With --print-url, also print the
-        https://cursor.com/install-mcp mirror URL.
+                                   [--api prod|staging|self-host]
+                                   [--transport http|stdio] [--command CMD]
+                                   [--name NAME] [--print-scheme]
+        Print the https://cursor.com/install-mcp URL that a browser or
+        marketplace can render as an "Add to Cursor" button. With
+        --print-scheme, also print the raw cursor:// deeplink.
 
   taskagent-cursor rules [--project DIR] [--force]
         Install the bundled .cursor/rules/*.mdc files into a project.
@@ -123,23 +127,28 @@ function parseScopeFlags(rest) {
     baseUrl: undefined,
     remote: undefined,
     token: undefined,
+    transport: undefined,
     name: "taskagent",
     force: false,
-    printUrl: false,
+    printScheme: false,
     json: false,
     quiet: false,
     noRules: false,
     noCommands: false,
     noOmcGuard: false,
     purge: false,
+    scopeExplicit: false,
   };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     switch (a) {
       case "--global":
-        opts.scope = "global"; break;
+        opts.scope = "global";
+        opts.scopeExplicit = true;
+        break;
       case "--project":
         opts.scope = "project";
+        opts.scopeExplicit = true;
         if (rest[i + 1] && !rest[i + 1].startsWith("--")) {
           opts.projectDir = rest[++i];
         }
@@ -156,13 +165,16 @@ function parseScopeFlags(rest) {
         opts.remote = requireValue(a, rest[++i]); break;
       case "--token":
         opts.token = requireValue(a, rest[++i]); break;
+      case "--transport":
+        opts.transport = requireValue(a, rest[++i]); break;
       case "--name":
         opts.name = requireValue(a, rest[++i]); break;
       case "--force":
       case "-f":
         opts.force = true; break;
       case "--print-url":
-        opts.printUrl = true; break;
+      case "--print-scheme":
+        opts.printScheme = true; break;
       case "--json":
         opts.json = true; break;
       case "--quiet":
@@ -186,7 +198,16 @@ function parseScopeFlags(rest) {
 }
 
 function resolveRulesDir(opts) {
-  return opts.rulesDir ?? opts.projectDir ?? process.cwd();
+  return resolveCursorAssetRoot({
+    scope: opts.scope,
+    projectDir: opts.projectDir,
+    rulesDir: opts.rulesDir,
+  });
+}
+
+function projectDefaultOpts(opts) {
+  if (opts.scopeExplicit || opts.rulesDir) return opts;
+  return { ...opts, scope: "project" };
 }
 
 const RULES_VERB = {
@@ -221,6 +242,7 @@ function installEnvOpts(opts) {
     apiUrl: opts.apiUrl ?? opts.baseUrl,
     token: opts.token,
     remote: opts.remote,
+    transport: opts.transport,
   };
 }
 
@@ -342,9 +364,9 @@ async function cmdDeeplink(rest) {
     name: opts.name,
     ...installEnvOpts(opts),
   });
-  process.stdout.write(deeplink + "\n");
-  if (opts.printUrl) {
-    process.stdout.write(httpsUrl + "\n");
+  process.stdout.write(httpsUrl + "\n");
+  if (opts.printScheme) {
+    process.stdout.write(deeplink + "\n");
   }
   if (process.env.TASKAGENT_DEBUG) {
     process.stderr.write("\nencoded config:\n");
@@ -354,7 +376,7 @@ async function cmdDeeplink(rest) {
 
 async function cmdRules(rest) {
   const ui = createCliUi({ title: "TaskAgent Cursor Rules" });
-  const opts = parseScopeFlags(rest);
+  const opts = projectDefaultOpts(parseScopeFlags(rest));
   ui.header();
   const dir = resolveRulesDir(opts);
   const results = await ui.task(
@@ -370,7 +392,7 @@ async function cmdRules(rest) {
 
 async function cmdCommands(rest) {
   const ui = createCliUi({ title: "TaskAgent Cursor Commands" });
-  const opts = parseScopeFlags(rest);
+  const opts = projectDefaultOpts(parseScopeFlags(rest));
   ui.header();
   const dir = resolveRulesDir(opts);
   const results = await ui.task(
@@ -386,7 +408,7 @@ async function cmdCommands(rest) {
 
 async function cmdOmcGuard(rest) {
   const ui = createCliUi({ title: "TaskAgent OMC Guard" });
-  const opts = parseScopeFlags(rest);
+  const opts = projectDefaultOpts(parseScopeFlags(rest));
   ui.header();
   const dir = resolveRulesDir(opts);
   const result = await ui.task(

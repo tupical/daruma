@@ -14,6 +14,7 @@ pub mod command;
 pub mod conflict;
 pub mod embed;
 pub mod handler;
+pub mod path_lease;
 pub mod plan_concurrency;
 pub mod plan_readiness;
 pub mod relation_enforcement;

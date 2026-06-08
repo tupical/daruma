@@ -76,6 +76,7 @@ newtype_id!(SessionArtifactId, "saf");
 newtype_id!(RelationId, "rel");
 newtype_id!(DocumentId, "doc");
 newtype_id!(VersionId, "ver");
+newtype_id!(WorkLeaseId, "wls");
 
 #[cfg(test)]
 mod tests {

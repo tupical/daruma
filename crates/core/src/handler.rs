@@ -21,7 +21,7 @@ use crate::{
     relation_enforcement,
     repos::{
         AgentClaimRepository, DocumentRepository, ExternalRefRepository, PlanRepository,
-        RunNoteRepository, RunRepository, SessionRepository,
+        RunNoteRepository, RunRepository, SessionRepository, WorkLeaseRepository,
     },
     search::{index_items_for_event, SearchProvider},
     Command,
@@ -47,6 +47,7 @@ pub struct CommandHandler {
     pub run_notes: Option<Arc<dyn RunNoteRepository>>,
     pub sessions: Option<Arc<dyn SessionRepository>>,
     pub claims: Option<Arc<dyn AgentClaimRepository>>,
+    pub work_leases: Option<Arc<dyn WorkLeaseRepository>>,
     pub external_refs: Option<Arc<dyn ExternalRefRepository>>,
     pub tenant_quotas: Option<Arc<TenantQuotaRepo>>,
 
@@ -83,6 +84,7 @@ impl CommandHandler {
             run_notes: None,
             sessions: None,
             claims: None,
+            work_leases: None,
             external_refs: None,
             tenant_quotas: None,
             documents: None,
@@ -123,6 +125,12 @@ impl CommandHandler {
     /// Wire an `AgentClaimRepository` implementation.
     pub fn with_claims(mut self, repo: Arc<dyn AgentClaimRepository>) -> Self {
         self.claims = Some(repo);
+        self
+    }
+
+    /// Wire a `WorkLeaseRepository` implementation.
+    pub fn with_work_leases(mut self, repo: Arc<dyn WorkLeaseRepository>) -> Self {
+        self.work_leases = Some(repo);
         self
     }
 
@@ -188,6 +196,9 @@ impl CommandHandler {
             }
             if let Some(claims) = &self.claims {
                 claims.apply_event(env).await?;
+            }
+            if let Some(work_leases) = &self.work_leases {
+                work_leases.apply_event(env).await?;
             }
             if let Some(ext) = &self.external_refs {
                 ext.apply_event(env).await?;
@@ -375,6 +386,9 @@ impl CommandHandler {
             }
             if let Some(claims) = &self.claims {
                 claims.apply_event(env).await?;
+            }
+            if let Some(work_leases) = &self.work_leases {
+                work_leases.apply_event(env).await?;
             }
             if let Some(ext) = &self.external_refs {
                 ext.apply_event(env).await?;
@@ -1580,6 +1594,15 @@ impl CommandHandler {
 
             Command::ReleaseClaim { agent_id, task_id } => {
                 Ok(vec![Event::AgentReleased { agent_id, task_id }])
+            }
+
+            // ── Work-lease commands ───────────────────────────────────────────
+            // The atomic reservation already happened in the repo; these commands
+            // project it into the event log for audit + WS sync (idempotent).
+            Command::ReserveFiles { leases } => Ok(vec![Event::FilesReserved { leases }]),
+
+            Command::ReleaseFiles { agent_id, task_id } => {
+                Ok(vec![Event::FilesReleased { agent_id, task_id }])
             }
 
             // ── Document commands (PR1 §6.2) ──────────────────────────────────

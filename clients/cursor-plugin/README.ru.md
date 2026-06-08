@@ -16,7 +16,7 @@
 <p align="center">
   <strong>Один клик подключает taskagent MCP к Cursor.</strong>
   <br/>
-  <sub>Готовая Cursor-обвязка для локального taskagent MCP-сервера.</sub>
+  <sub>Готовая Cursor-обвязка для hosted taskagent MCP-сервера.</sub>
 </p>
 
 ---
@@ -27,7 +27,7 @@
 покажет диалог подтверждения и сам пропишет сервер в `~/.cursor/mcp.json`.
 
 <p align="center">
-  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D">
+  <a href="https://cursor.com/install-mcp?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D">
     <img src="https://img.shields.io/badge/Add%20to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
   </a>
 </p>
@@ -35,15 +35,13 @@
 HTTPS-зеркало (если deeplink не открывается напрямую):
 
 ```
-https://cursor.com/install-mcp?name=taskagent&config=eyJ0eXBlIjoic3RkaW8iLCJjb21tYW5kIjoidGFza2FnZW50LW1jcCIsImVudiI6eyJUQVNLQUdFTlRfQkFTRV9VUkwiOiJodHRwOi8vbG9jYWxob3N0OjgwODAifX0%3D
+https://cursor.com/install-mcp?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D
 ```
 
-Deeplink ожидает `taskagent-mcp` в `PATH`. Собрать из репозитория
-[taskagent](https://github.com/tupical/taskagent):
+Default-путь Cursor использует HTTP MCP endpoint TaskAgent. Для локальной
+разработки сначала запусти сервер:
 
 ```bash
-cargo build --release -p taskagent-server -p taskagent-mcp-bin
-# положить target/release/taskagent-mcp в $PATH (symlink или cp)
 ./target/release/taskagent-server   # данные: ~/.agents/taskagent/data
 ```
 
@@ -56,7 +54,7 @@ cargo build --release -p taskagent-server -p taskagent-mcp-bin
 
 1. **Регистрирует MCP-сервер** в `mcp.json` Cursor — глобально
    (`~/.cursor/mcp.json`) или для проекта (`./.cursor/mcp.json`).
-2. **Генерирует deeplink «Add to Cursor»** для установки локального MCP в один клик.
+2. **Генерирует ссылку «Add to Cursor»** для установки HTTP MCP в один клик.
 3. **Кладёт три правила** в `.cursor/rules/`, которые учат агента Cursor
    работать с `taskagent_*`-инструментами (parse → decompose → plan →
    execute) вместо самодельных тудушек и держат его на экономном пути
@@ -96,9 +94,9 @@ taskagent-cursor doctor             # проверка
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `taskagent-cursor install [--global\|--project DIR]`      | Прописать taskagent MCP в выбранный `mcp.json`.                         |
 | `taskagent-cursor uninstall [--global\|--project DIR]`    | Удалить запись.                                                         |
-| `taskagent-cursor deeplink [--print-url]`                 | Напечатать `cursor://`-deeplink (и HTTPS-зеркало).                      |
+| `taskagent-cursor deeplink [--print-scheme]`              | Напечатать HTTPS Add-to-Cursor ссылку.                                  |
 | `taskagent-cursor rules [--project DIR] [--force]`        | Положить три `.cursor/rules/*.mdc` (policy + контракт + workspacegraph) в проект. |
-| `taskagent-cursor doctor [--json\|--quiet]`               | Проверить Cursor + `taskagent-mcp` + HTTP-сервер. Exit 0 ⇒ READY.       |
+| `taskagent-cursor doctor [--json\|--quiet]`               | Проверить Cursor MCP config + HTTP-сервер. Exit 0 ⇒ READY.              |
 | `taskagent-cursor setup`                                  | Подсказки по установке отсутствующего.                                  |
 | `taskagent-cursor marketplace`                            | Напечатать plugin-манифест taskagent (со встроенным актуальным deeplink).  |
 | `taskagent-cursor --version` / `--help`                   |                                                                         |
@@ -108,9 +106,10 @@ taskagent-cursor doctor             # проверка
 | Флаг                         | По умолчанию               | Заметки                                                     |
 | ---------------------------- | -------------------------- | ----------------------------------------------------------- |
 | `--global` / `--project DIR` | `--global`                 | В какой `mcp.json` писать.                                  |
-| `--command CMD`              | `taskagent-mcp`            | Свой бинарь stdio (можно абсолютный путь).                  |
-| `--base-url URL`             | `http://localhost:8080`    | `env.TASKAGENT_BASE_URL` для сервера.                       |
-| `--token T`                  | (нет)                      | `env.TASKAGENT_TOKEN`.                                      |
+| `--transport http\|stdio`    | `http`                     | Cursor по умолчанию использует hosted HTTP MCP.             |
+| `--command CMD`              | (нет)                      | Включает stdio fallback и задаёт путь к бинарю.             |
+| `--base-url URL`             | `http://localhost:8080`    | Origin HTTP MCP сервера.                                    |
+| `--token T`                  | (нет)                      | Добавляет Authorization header для self-host config.        |
 | `--name NAME`                | `taskagent`                | Переименовать запись (если запускаешь несколько инстансов). |
 
 ---
@@ -145,7 +144,8 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=<NAME>&config=<BASE64_JSON>
 свой:
 
 ```bash
-taskagent-cursor deeplink --print-url
+taskagent-cursor deeplink
+# --print-scheme нужен только если нужен raw cursor:// URL
 ```
 
 ---

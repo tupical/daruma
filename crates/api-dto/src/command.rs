@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     AgentAction, AgentSessionPlanStep, CommentPatch, NewComment, NewDocument, NewPlan, NewTask,
     PlanPatch, PlanStatus, Priority, RelationKind, RunOutcome, SessionArtifactKind, SignalKind,
-    Status, TaskPatch,
+    Status, TaskPatch, WorkLease,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RunId, TaskId,
@@ -272,6 +272,19 @@ pub enum Command {
         task_id: TaskId,
     },
 
+    /// Record file/path leases reserved for a task (audit + WS projection).
+    /// The atomic reservation already happened in the repo; this re-applies it
+    /// idempotently through the event log.
+    ReserveFiles {
+        leases: Vec<WorkLease>,
+    },
+
+    /// Release all file/path leases held by an agent for a task.
+    ReleaseFiles {
+        agent_id: AgentId,
+        task_id: TaskId,
+    },
+
     // ── Document commands (PR1 §5) ────────────────────────────────────────────
     /// Create a new markdown document attached to a project.
     CreateDocument {
@@ -353,6 +366,8 @@ impl Command {
             // Claims
             Command::AcquireClaim { .. } => "acquire_claim",
             Command::ReleaseClaim { .. } => "release_claim",
+            Command::ReserveFiles { .. } => "reserve_files",
+            Command::ReleaseFiles { .. } => "release_files",
             // Documents (PR1)
             Command::CreateDocument { .. } => "create_document",
             Command::ReplaceDocumentContent { .. } => "replace_document_content",
