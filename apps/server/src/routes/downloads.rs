@@ -1,4 +1,5 @@
-//! Authenticated download of the `taskagent-mcp` stdio binary.
+//! Authenticated download of the unified `taskagent` binary (serves the CLI,
+//! launcher, and `taskagent mcp` stdio server in one artifact).
 
 use std::path::Path;
 
@@ -14,7 +15,7 @@ use taskagent_shared::CoreError;
 
 use crate::{error::ApiError, state::AppState};
 
-/// `GET /v1/downloads/taskagent-mcp/{platform}` — `linux` or `windows`.
+/// `GET /v1/downloads/taskagent/{platform}` — `linux` or `windows`.
 pub async fn download_taskagent_mcp(
     auth: Extension<AuthContext>,
     State(state): State<AppState>,
@@ -28,7 +29,7 @@ pub async fn download_taskagent_mcp(
         .path_for(platform.as_str())
         .ok_or_else(|| {
             ApiError(CoreError::not_found(
-                "taskagent-mcp binary is not available for this platform",
+                "taskagent binary is not available for this platform",
             ))
         })?;
 
@@ -57,12 +58,12 @@ async fn serve_binary(path: &Path, filename: &str) -> Result<impl IntoResponse, 
 
 fn filename_for(platform: &str) -> &'static str {
     match platform {
-        "windows" => "taskagent-mcp.exe",
-        _ => "taskagent-mcp",
+        "windows" => "taskagent.exe",
+        _ => "taskagent",
     }
 }
 
-/// `GET /v1/downloads/taskagent-mcp` — which platforms are bundled.
+/// `GET /v1/downloads/taskagent` — which platforms are bundled.
 pub async fn mcp_download_info(
     auth: Extension<AuthContext>,
     State(state): State<AppState>,

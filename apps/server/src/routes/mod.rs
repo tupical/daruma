@@ -6,7 +6,7 @@
 //! |----------|------------------------------------------------------------------|---------------|
 //! | (root)   | `/healthz`                                                       | none          |
 //! | `/v1`    | `/healthz`, `/ws`                                                | none / subproto |
-//! | `/v1`    | `/tokens`, `/downloads/taskagent-mcp/{platform}`, `/ai/parse`, …   | bearer        |
+//! | `/v1`    | `/tokens`, `/downloads/taskagent/{platform}`, `/ai/parse`, …   | bearer        |
 //! | (legacy) | same paths without `/v1` prefix                                  | bearer        |
 //! |          | (also carry `Deprecation: true` + `Sunset` headers)              |               |
 //!
@@ -238,11 +238,11 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/tokens", post(create_token).get(list_tokens))
         .route("/tokens/{id}", delete(revoke_token))
         .route(
-            "/downloads/taskagent-mcp/{platform}",
+            "/downloads/taskagent/{platform}",
             get(downloads::download_taskagent_mcp),
         )
         .route(
-            "/downloads/taskagent-mcp",
+            "/downloads/taskagent",
             get(downloads::mcp_download_info),
         )
         .route("/agents/{agent_id}/inbox", get(agent_inbox))

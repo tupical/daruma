@@ -21,7 +21,8 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use taskagent_mcp::{workspace::Workspace, ApiClient};
+use std::path::{Path, PathBuf};
+use taskagent_mcp::{run_stdio, workspace::Workspace, ApiClient};
 use tracing_subscriber::EnvFilter;
 
 mod format;
@@ -48,7 +49,7 @@ struct Cli {
     token: Option<String>,
 
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -64,7 +65,19 @@ enum Cmd {
         /// Do not prompt. Required when writing credentials.
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Write the TaskAgent CLAUDE.md policy block (+ .omc OMC guard).
+        #[arg(long)]
+        claude: bool,
+        /// Project directory for --claude (default: current dir).
+        #[arg(long, value_name = "DIR")]
+        project: Option<PathBuf>,
     },
+    /// Run the stdio MCP server (JSON-RPC over stdin/stdout).
+    ///
+    /// This is the merged entry-point for what used to be the separate
+    /// `taskagent-mcp` binary — one artifact configures and serves everything.
+    /// Register with: `claude mcp add taskagent -- taskagent mcp`.
+    Mcp {},
     /// Show the next claim-ready task in the current project.
     Next {
         /// Project id (defaults to env / workspace).
@@ -104,15 +117,22 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Logs to stderr; stdout is reserved for the CLI's primary output so
-    // agents-through-shell can pipe `--json` cleanly.
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let cli = Cli::parse();
+
+    // Logs to stderr; stdout is reserved for the CLI's primary output (and for
+    // the MCP JSON-RPC channel) so agents-through-shell can pipe cleanly. The
+    // MCP server is chattier (info); the terse CLI stays quiet (warn) unless
+    // RUST_LOG overrides.
+    let default_level = if matches!(cli.cmd, Some(Cmd::Mcp {})) {
+        "info"
+    } else {
+        "warn"
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
-
-    let cli = Cli::parse();
 
     let base = cli
         .api_url
@@ -126,19 +146,32 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|| taskagent_mcp::credentials::resolve_from_agent_dir().map(|c| c.token))
         .unwrap_or_default();
 
-    if let Cmd::Install {
-        print_config,
-        mode,
-        yes,
-    } = &cli.cmd
-    {
-        return cmd_install(
-            &base,
-            &token,
-            print_config.as_deref(),
-            mode.as_deref(),
-            *yes,
-        );
+    match &cli.cmd {
+        // Bare `taskagent` (no subcommand) → cloud-agnostic HTTP-MCP connect
+        // guide. The launcher never reaches out anywhere; it only reflects
+        // local credentials or prints the self-host quick start.
+        None => return cmd_connect_guide(),
+        Some(Cmd::Install {
+            print_config,
+            mode,
+            yes,
+            claude,
+            project,
+        }) => {
+            return cmd_install(
+                &base,
+                &token,
+                print_config.as_deref(),
+                mode.as_deref(),
+                *yes,
+                *claude,
+                project.as_deref(),
+            );
+        }
+        // Stdio MCP server: does its own env/credentials resolution and never
+        // touches the table-rendering HTTP client below.
+        Some(Cmd::Mcp {}) => return run_mcp_stdio().await,
+        _ => {}
     }
 
     // Install workspace state so the `taskagent-mcp` workspace helpers
@@ -152,8 +185,9 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     let client = ApiClient::with_http(base.clone(), token.clone(), http);
 
-    match cli.cmd {
+    match cli.cmd.expect("None subcommand handled above") {
         Cmd::Install { .. } => unreachable!("install exits before HTTP client setup"),
+        Cmd::Mcp {} => unreachable!("mcp exits before HTTP client setup"),
         Cmd::Next { project_id } => cmd_next(&client, project_id, cli.json).await,
         Cmd::Show { id } => cmd_show(&client, &id, cli.json).await,
         Cmd::Done { id } => cmd_done(&client, &id, cli.json).await,
@@ -166,6 +200,78 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+// ── stdio MCP server (merged `taskagent mcp`) ────────────────────────────────
+
+/// Run the stdio MCP server: read JSON-RPC frames on stdin, forward each tool
+/// call to a `taskagent-server` over HTTP, write responses to stdout. This is
+/// the merged `taskagent mcp` entry-point (formerly the standalone
+/// `taskagent-mcp` binary). Config is via env / credentials.json, exactly like
+/// the rest of the CLI — fully generic over the server it points at.
+async fn run_mcp_stdio() -> anyhow::Result<()> {
+    let mut base =
+        std::env::var("TASKAGENT_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let mut token = std::env::var("TASKAGENT_TOKEN").unwrap_or_default();
+    let mut workspace_id_from_creds: Option<String> = None;
+
+    if token.trim().is_empty() {
+        if let Some(auth) = taskagent_mcp::credentials::resolve_from_agent_dir() {
+            base = auth.api_url;
+            token = auth.token;
+            workspace_id_from_creds = auth.workspace_id;
+            tracing::info!(
+                path = %taskagent_mcp::credentials::credentials_path().display(),
+                "loaded API credentials from agent dir"
+            );
+        }
+    }
+
+    if token.is_empty() {
+        tracing::warn!(
+            "TASKAGENT_TOKEN is empty — only /healthz will work; \
+             set TASKAGENT_API_URL + TASKAGENT_TOKEN or save credentials.json"
+        );
+    }
+
+    let ws = Workspace::init();
+    tracing::info!(
+        workspace = ws.key(),
+        default_project = ?ws.default_project(),
+        "workspace state loaded"
+    );
+    taskagent_mcp::workspace::install(ws);
+
+    let http = reqwest::Client::builder()
+        .user_agent(format!("taskagent-mcp/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    let mut client = ApiClient::with_http(base, token, http);
+    let workspace_id = workspace_id_from_env().or(workspace_id_from_creds);
+    if let Some(workspace_id) = workspace_id {
+        tracing::info!(workspace_id = %workspace_id, "workspace scope configured");
+        client = client.with_workspace_id(workspace_id);
+    }
+
+    tracing::info!("taskagent mcp ready on stdio");
+    run_stdio(client).await
+}
+
+/// Optional workspace scope sent as `X-TaskAgent-Workspace-Id`.
+fn workspace_id_from_env() -> Option<String> {
+    if let Ok(id) = std::env::var("TASKAGENT_WORKSPACE_ID") {
+        let id = id.trim();
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+    if let Ok(key) = std::env::var("TASKAGENT_WORKSPACE") {
+        let key = key.trim();
+        if uuid::Uuid::parse_str(key).is_ok() {
+            return Some(key.to_string());
+        }
+    }
+    None
+}
+
 // ── command handlers ─────────────────────────────────────────────────────────
 
 fn cmd_install(
@@ -174,6 +280,8 @@ fn cmd_install(
     print_config: Option<&str>,
     mode: Option<&str>,
     yes: bool,
+    claude: bool,
+    project: Option<&Path>,
 ) -> anyhow::Result<()> {
     if let Some(mode) = mode {
         save_credentials(mode, base, token, yes)?;
@@ -186,6 +294,119 @@ fn cmd_install(
                 return Ok(());
             }
             other => anyhow::bail!("unsupported --print-config target: {other}"),
+        }
+    }
+
+    if claude {
+        let dir = project
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        install_claude_policy(&dir)?;
+    }
+    Ok(())
+}
+
+/// Begin/end markers for the TaskAgent-managed CLAUDE.md policy block. Kept
+/// byte-for-byte compatible with the installer wrappers so a later
+/// re-run (binary or curl) updates the same block instead of appending.
+const CLAUDE_POLICY_BEGIN: &str = "<!-- taskagent-claude:policy:begin -->";
+const CLAUDE_POLICY_END: &str = "<!-- taskagent-claude:policy:end -->";
+const OMC_GUARD_BEGIN: &str = "<!-- taskagent-claude:begin -->";
+const OMC_GUARD_END: &str = "<!-- taskagent-claude:end -->";
+
+/// The single source of truth for the TaskAgent project policy / OMC-guard
+/// text. Wrappers (install.sh, the `taskagent-claude` npm plugin) and the
+/// connect page call `taskagent install --claude` rather than carrying their
+/// own copies. The bodies live in sibling `.md` files (canonical text + markers
+/// match the npm plugin byte-for-byte so blocks stay idempotent across tools).
+const CLAUDE_POLICY_BODY: &str = include_str!("policy_claude.md");
+
+const OMC_GUARD_BODY: &str = include_str!("policy_omc_guard.md");
+
+/// Write the TaskAgent policy block into `<project>/CLAUDE.md` and, when an
+/// `.omc` directory is present, the OMC guard into `<project>/.omc/AGENTS.md`.
+fn install_claude_policy(project_dir: &Path) -> anyhow::Result<()> {
+    let claude_md = project_dir.join("CLAUDE.md");
+    write_managed_block(
+        &claude_md,
+        CLAUDE_POLICY_BEGIN,
+        CLAUDE_POLICY_END,
+        CLAUDE_POLICY_BODY,
+    )?;
+    println!("claude policy written: {}", claude_md.display());
+
+    if project_dir.join(".omc").is_dir() {
+        let agents_md = project_dir.join(".omc/AGENTS.md");
+        write_managed_block(&agents_md, OMC_GUARD_BEGIN, OMC_GUARD_END, OMC_GUARD_BODY)?;
+        println!("omc guard written:    {}", agents_md.display());
+    }
+    Ok(())
+}
+
+/// Idempotently upsert a `begin`/`end`-delimited block in `path`: replace the
+/// body between existing markers, or append a fresh block (creating the file
+/// and parent dirs as needed). Mirrors the awk writer in the shell installer.
+fn write_managed_block(path: &Path, begin: &str, end: &str, body: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let block = format!("{begin}\n{body}\n{end}\n");
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+
+    let updated = match (existing.find(begin), existing.find(end)) {
+        (Some(b), Some(e)) if e > b => {
+            let end_idx = e + end.len();
+            // Drop a single trailing newline after the old end marker so we do
+            // not accumulate blank lines across re-runs.
+            let mut tail = &existing[end_idx..];
+            tail = tail.strip_prefix('\n').unwrap_or(tail);
+            format!("{}{}{}", &existing[..b], block, tail)
+        }
+        _ => {
+            if existing.is_empty() {
+                block
+            } else if existing.ends_with('\n') {
+                format!("{existing}\n{block}")
+            } else {
+                format!("{existing}\n\n{block}")
+            }
+        }
+    };
+
+    std::fs::write(path, updated)?;
+    Ok(())
+}
+
+/// Default action for bare `taskagent`: print cloud-agnostic HTTP-MCP connect
+/// instructions. With credentials present we echo a ready-to-paste snippet for
+/// whatever server they point at (self-host or any other — the launcher does
+/// not distinguish); without them we show the self-host quick start. No remote
+/// account or service is referenced.
+fn cmd_connect_guide() -> anyhow::Result<()> {
+    match taskagent_mcp::credentials::resolve_from_agent_dir() {
+        Some(auth) => {
+            let server = auth.api_url.trim_end_matches('/');
+            println!("TaskAgent configured → {server}");
+            println!();
+            println!("Connect Claude Code (HTTP MCP):");
+            println!(
+                "  claude mcp add --transport http taskagent {server}/v1/mcp \\\n    --header \"Authorization: Bearer {}\"",
+                auth.token.trim()
+            );
+            println!();
+            println!("Cursor (~/.cursor/mcp.json):");
+            print_json(&cursor_mcp_config(server, &auth.token));
+            println!();
+            println!("Verify:  taskagent next");
+        }
+        None => {
+            println!("No TaskAgent credentials found.");
+            println!();
+            println!("Self-host quick start (HTTP MCP — no account needed):");
+            println!("  1) Start a local server:    taskagent-server");
+            println!("  2) Save local credentials:  taskagent install --mode local -y");
+            println!("  3) Connect Claude Code:     claude mcp add --transport http taskagent http://localhost:8080/v1/mcp");
+            println!("  4) Verify:                  taskagent next");
         }
     }
     Ok(())

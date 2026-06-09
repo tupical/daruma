@@ -1,4 +1,4 @@
-//! Resolve paths to bundled `taskagent-mcp` binaries for HTTP download.
+//! Resolve paths to the bundled unified `taskagent` binary for HTTP download.
 
 use std::path::{Path, PathBuf};
 
@@ -33,7 +33,7 @@ impl McpDownloads {
                 .unwrap_or_else(|_| PathBuf::from("/app/bin"));
 
             if out.linux.is_none() {
-                for name in ["taskagent-mcp-linux", "taskagent-mcp"] {
+                for name in ["taskagent-linux", "taskagent"] {
                     let candidate = dir.join(name);
                     if candidate.is_file() {
                         out.linux = Some(candidate);
@@ -42,7 +42,7 @@ impl McpDownloads {
                 }
             }
             if out.windows.is_none() {
-                for name in ["taskagent-mcp-windows.exe", "taskagent-mcp.exe"] {
+                for name in ["taskagent-windows.exe", "taskagent.exe"] {
                     let candidate = dir.join(name);
                     if candidate.is_file() {
                         out.windows = Some(candidate);
@@ -52,12 +52,12 @@ impl McpDownloads {
             }
         }
 
-        // Local dev: cargo build -p taskagent-mcp-bin
+        // Local dev: cargo build -p taskagent-cli
         if out.linux.is_none() {
-            out.linux = dev_release_binary("taskagent-mcp");
+            out.linux = dev_release_binary("taskagent");
         }
         if out.windows.is_none() {
-            out.windows = dev_release_binary("taskagent-mcp.exe");
+            out.windows = dev_release_binary("taskagent.exe");
         }
 
         out

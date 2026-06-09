@@ -38,6 +38,19 @@ import {
 import { createCliUi } from "../lib/cli-ui.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+
+// Single source of truth for the policy + OMC-guard text is the unified
+// `taskagent` binary (`taskagent install --claude`). When it is on PATH we
+// delegate to it; otherwise we fall back to the byte-identical bundled Node
+// writers below (so `init` still works before the binary is installed).
+function delegatePolicyToBinary(dir) {
+  const r = spawnSync("taskagent", ["install", "--claude", "--project", dir], {
+    encoding: "utf8",
+  });
+  if (r.error) return null; // ENOENT — binary not on PATH
+  return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,14 +64,14 @@ Usage:
                                     Drive taskagent (project → task [→ plan])
                                     via MCP and run each eligible task as
                                     \`omc team\`. No nested Claude Code session.
-  taskagent-claude init [--project DIR] [--no-policy] [--no-omc-guard]
+  taskagent-claude init [--dir DIR] [--no-policy] [--no-omc-guard]
                                     Drop project-scoped artifacts: a managed
                                     policy block in <DIR>/CLAUDE.md so this
                                     project defaults to taskagent for tasks
                                     and plans, plus the OMC guard in
                                     <DIR>/.omc/AGENTS.md when oh-my-claudecode
                                     is present. Idempotent.
-  taskagent-claude uninit [--project DIR]
+  taskagent-claude uninit [--dir DIR]
                                     Remove the managed policy block and OMC
                                     guard. Surrounding content is preserved.
   taskagent-claude doctor [--json|--quiet] [--no-cache]
@@ -191,9 +204,19 @@ function parseInitFlags(rest) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     switch (a) {
+      case "--dir":
       case "--project": {
         const v = rest[++i];
-        if (!v || v.startsWith("--")) throw new Error("--project requires a directory");
+        if (!v || v.startsWith("--")) throw new Error(`${a} requires a directory`);
+        if (a === "--project") {
+          // `--project` here is the target DIRECTORY, which clashes with
+          // `start --project ID` (a taskagent project id). Keep it as a
+          // back-compat alias for `--dir` but steer callers away.
+          process.stderr.write(
+            "taskagent-claude init: --project is deprecated and means the target DIRECTORY, " +
+              "not a taskagent project. Use --dir <directory> (default: current directory).\n",
+          );
+        }
         opts.projectDir = v;
         break;
       }
@@ -219,6 +242,22 @@ async function cmdInit(rest = []) {
   }
   const dir = opts.projectDir ?? process.cwd();
   ui.header();
+
+  // Prefer the unified `taskagent` binary as the single source of policy text.
+  // It writes both the CLAUDE.md policy and the .omc guard in one call; only
+  // delegate when neither block is opted out so per-block flags keep working.
+  if (!opts.noPolicy && !opts.noOmcGuard) {
+    const delegated = delegatePolicyToBinary(dir);
+    if (delegated && delegated.ok) {
+      ui.item("policy + OMC guard written by taskagent (single source)", {
+        kind: "ok",
+      });
+      ui.success("Project is now defaulted to taskagent.");
+      ui.detail("  Open Claude Code in this directory to pick it up.");
+      return;
+    }
+    // binary absent or failed → fall through to the bundled Node writers.
+  }
 
   if (!opts.noPolicy) {
     const result = await ui.task(
