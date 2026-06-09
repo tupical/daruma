@@ -60,6 +60,15 @@ default, also for pre-existing projects — live at
 (`ProjectSettingsChanged`, migration 0034) so other clients update in
 realtime. See docs/guides/documents-auto-append.md.
 
+### Async AI operation events (WS Channel::AiOps)
+
+Server-side AI operations (`/v1/ai/decompose/{task}`,
+`/v1/ai/analyze-complexity/{plan}`) now push typed progress events —
+`ai_operation_started` → `ai_operation_phase_changed` (`llm_call`,
+`apply`) → `ai_operation_completed` (`ok` / `error: …`) — on the new
+WS `AiOps` channel, so clients render progress without polling. The
+HTTP responses are unchanged.
+
 ### Workspace auto-resolution
 
 `POST /v1/workspace-registry/resolve` maps a filesystem root onto its

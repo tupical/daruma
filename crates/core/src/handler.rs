@@ -584,6 +584,13 @@ impl CommandHandler {
         self.project_for_plan(run.plan_id).await
     }
 
+    /// Public wrapper over [`Self::persist_signal_event`] for transports
+    /// that push system-authored progress signals (e.g. §3.8.12 async AI
+    /// operation events on `Channel::AiOps`).
+    pub async fn emit_system_event(&self, payload: Event) -> Result<()> {
+        self.persist_signal_event(payload).await
+    }
+
     /// Persist a single system-authored event (no command validation), apply
     /// it to all projections, and publish on the bus. Used by background
     /// signals such as the liveness watchdog (§3.7.4).

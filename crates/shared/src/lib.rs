@@ -10,7 +10,7 @@ pub mod time;
 
 pub use error::CoreError;
 pub use ids::{
-    ActivityId, AgentId, AgentSessionId, CommentId, DeviceId, DocumentId, EventId, PlanId,
+    ActivityId, AgentId, AgentSessionId, AiOpId, CommentId, DeviceId, DocumentId, EventId, PlanId,
     ProjectId, RelationId, RunId, RunNoteId, SessionArtifactId, TaskId, TokenId, VersionId,
     WebhookDeliveryId, WebhookId, WorkLeaseId,
 };

@@ -782,7 +782,11 @@ impl ActivityRepo {
             | Event::DocumentContentReplaced { .. }
             | Event::DocumentContentAppended { .. }
             | Event::DocumentRenamed { .. }
-            | Event::DocumentArchived { .. } => {}
+            | Event::DocumentArchived { .. }
+            // AI operation progress (§3.8.12): ephemeral WS push, no feed rows.
+            | Event::AiOperationStarted { .. }
+            | Event::AiOperationPhaseChanged { .. }
+            | Event::AiOperationCompleted { .. } => {}
 
             // ── Relation events (§3.2 W2.2) ──────────────────────────────────
             Event::TaskLinked {

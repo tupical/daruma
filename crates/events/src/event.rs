@@ -5,8 +5,8 @@ use taskagent_domain::{
     SessionArtifact, Status, TaskPatch, WorkLease,
 };
 use taskagent_shared::{
-    AgentId, AgentSessionId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId, RunId,
-    RunNoteId, TaskId, Timestamp,
+    AgentId, AgentSessionId, AiOpId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId,
+    RunId, RunNoteId, TaskId, Timestamp,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -419,6 +419,33 @@ pub enum Event {
         at: Timestamp,
     },
 
+    // ── Async AI operations (§3.8.12 / CTM B.6) ──────────────────────────────
+    /// A server-side AI operation (decompose / analyze_complexity / …)
+    /// started. Subscribers on `Channel::AiOps` get push-based progress
+    /// instead of polling.
+    AiOperationStarted {
+        op_id: AiOpId,
+        /// Operation kind: `decompose`, `analyze_complexity`, `scope`, …
+        kind: String,
+        /// Target entity id (task/plan) as a display string.
+        target_id: String,
+        at: Timestamp,
+    },
+    /// The operation moved to a new phase (e.g. `llm_call`, `apply`).
+    AiOperationPhaseChanged {
+        op_id: AiOpId,
+        phase: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        at: Timestamp,
+    },
+    /// The operation finished. `outcome` is `ok` or `error: <message>`.
+    AiOperationCompleted {
+        op_id: AiOpId,
+        outcome: String,
+        at: Timestamp,
+    },
+
     // ── Documents (PR1 §1-2) ──────────────────────────────────────────────────
     /// A new document was created. Emitted by `Command::CreateDocument` and
     /// also by `Command::CreateProject` for the two default documents
@@ -472,6 +499,9 @@ impl Event {
             Event::ProjectCreated { .. } => "project_created",
             Event::ProjectUpdated { .. } => "project_updated",
             Event::ProjectSettingsChanged { .. } => "project_settings_changed",
+            Event::AiOperationStarted { .. } => "ai_operation_started",
+            Event::AiOperationPhaseChanged { .. } => "ai_operation_phase_changed",
+            Event::AiOperationCompleted { .. } => "ai_operation_completed",
             Event::ProjectDeleted { .. } => "project_deleted",
             Event::AgentActionRecorded { .. } => "agent_action_recorded",
             Event::CommentAdded { .. } => "comment_added",
@@ -675,6 +705,11 @@ impl Event {
             | Event::RunElicitationRequested { .. }
             | Event::RunAuthRequired { .. }
             | Event::RunInterventionAccepted { .. } => Channel::Runs,
+            // ── AiOps channel ─────────────────────────────────────────────────
+            Event::AiOperationStarted { .. }
+            | Event::AiOperationPhaseChanged { .. }
+            | Event::AiOperationCompleted { .. } => Channel::AiOps,
+
 
             // ── Documents channel (PR1) ───────────────────────────────────────
             Event::DocumentCreated { .. }
@@ -708,6 +743,8 @@ pub enum Channel {
     Runs,
     /// Document lifecycle and content events (PR1).
     Documents,
+    /// Async AI operation progress (§3.8.12): started / phase / completed.
+    AiOps,
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

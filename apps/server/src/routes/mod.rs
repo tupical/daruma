@@ -1968,9 +1968,41 @@ async fn ai_decompose(
     };
 
     let hint = body.and_then(|Json(b)| b.hint);
-    let cmd = taskagent_ai::decompose_task(client, task_id, &context, hint.as_deref())
-        .await
-        .map_err(ApiError::from)?;
+
+    // §3.8.12: push-based progress on Channel::AiOps (started → llm_call →
+    // completed) so big decompositions don't need polling. Best-effort.
+    let handler = state.commands.handler();
+    let op_id = taskagent_shared::AiOpId::new();
+    let now = chrono::Utc::now();
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationStarted {
+            op_id,
+            kind: "decompose".into(),
+            target_id: task_id.to_string(),
+            at: now,
+        })
+        .await;
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+            op_id,
+            phase: "llm_call".into(),
+            detail: None,
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let result = taskagent_ai::decompose_task(client, task_id, &context, hint.as_deref()).await;
+    let outcome = match &result {
+        Ok(_) => "ok".to_string(),
+        Err(e) => format!("error: {e}"),
+    };
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+            op_id,
+            outcome,
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let cmd = result.map_err(ApiError::from)?;
     Ok(Json(cmd))
 }
 
@@ -2205,15 +2237,64 @@ async fn ai_analyze_complexity(
         })));
     }
 
-    let hints = taskagent_ai::analyze_complexity_batch(client, briefs)
-        .await
-        .map_err(ApiError::from)?;
+    // §3.8.12: push-based progress on Channel::AiOps. Best-effort.
+    let handler = state.commands.handler();
+    let op_id = taskagent_shared::AiOpId::new();
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationStarted {
+            op_id,
+            kind: "analyze_complexity".into(),
+            target_id: plan_id.to_string(),
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+            op_id,
+            phase: "llm_call".into(),
+            detail: Some(format!("{} task(s)", briefs.len())),
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let result = taskagent_ai::analyze_complexity_batch(client, briefs).await;
+    let outcome = match &result {
+        Ok(_) => "ok".to_string(),
+        Err(e) => format!("error: {e}"),
+    };
+    let hints = match result {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = handler
+                .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+                    op_id,
+                    outcome,
+                    at: chrono::Utc::now(),
+                })
+                .await;
+            return Err(ApiError::from(e));
+        }
+    };
 
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+            op_id,
+            phase: "apply".into(),
+            detail: None,
+            at: chrono::Utc::now(),
+        })
+        .await;
     state
         .complexity_hints
         .upsert_batch(&hints)
         .await
         .map_err(ApiError::from)?;
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+            op_id,
+            outcome,
+            at: chrono::Utc::now(),
+        })
+        .await;
 
     let batch_id = hints.first().map(|h| h.batch_id.clone());
     Ok(Json(serde_json::json!({
