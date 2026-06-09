@@ -6,7 +6,7 @@
 //! and got HTTP 422 "missing field `plan`/`patch`").
 
 use serde_json::json;
-use taskagent_mcp::{dispatch_request, ApiClient, JsonRpcRequest};
+use taskagent_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 
 mod common;
 use common::{spawn_server, test_app};
@@ -445,4 +445,14 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
         next_task(&client, &plan_id).await.is_none(),
         "empty eligible-set must return null"
     );
+}
+
+/// All protocol-level tests drive the complete catalogue explicitly; the
+/// compact `default` profile has its own dedicated coverage in
+/// `mcp_dispatch.rs::profiles`.
+async fn dispatch_request(
+    client: &ApiClient,
+    req: JsonRpcRequest,
+) -> Option<taskagent_mcp::JsonRpcResponse> {
+    dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }

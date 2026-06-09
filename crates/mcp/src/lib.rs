@@ -27,8 +27,13 @@ pub mod workspace;
 
 pub use client::ApiClient;
 pub use protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
-pub use server::{dispatch_request, run_stdio};
-pub use tools::{tool_definitions, ToolDefinition};
+pub use server::{
+    dispatch_request, dispatch_request_with_profile, run_stdio, run_stdio_with_profile,
+};
+pub use tools::{
+    tool_definitions, tool_definitions_for, tool_hidden_in_profile, ToolAnnotations,
+    ToolDefinition, ToolDomain, ToolProfile,
+};
 
 #[cfg(test)]
 pub(crate) mod test_support {

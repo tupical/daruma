@@ -29,6 +29,16 @@ Server SQLite and bootstrap tokens live under **`~/.agents/taskagent/data/`**
 For IDE chat traceability (`taskagent_session_start` + `metadata`), see
 [agent-session-metadata.md](agent-session-metadata.md).
 
+## Tool profiles
+
+The advertised tool surface is profile-gated: `default` (compact,
+workflow-first, 30 tools) or `full` (the complete catalogue). Select with
+`taskagent mcp --profile full`, `TASKAGENT_MCP_PROFILE=full`, or
+`/v1/mcp?profile=full`; unset means `default`. Hidden tools are not
+callable in `default` — the error names the fix. Composition, migration
+notes, and the new-tool checklist live in
+[../mcp/PROFILES.md](../mcp/PROFILES.md).
+
 ## Remote HTTP MCP
 
 `apps/server` exposes MCP over HTTP at `/v1/mcp`. Cursor can use a remote

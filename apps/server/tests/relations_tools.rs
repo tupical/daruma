@@ -6,7 +6,9 @@
 //!   relations_read_returns_five_groups — taskagent_relations returns 5-group projection
 
 use serde_json::json;
-use taskagent_mcp::{dispatch_request, tool_definitions, ApiClient, JsonRpcRequest};
+use taskagent_mcp::{
+    dispatch_request_with_profile, tool_definitions, ApiClient, JsonRpcRequest, ToolProfile,
+};
 
 mod common;
 use common::{spawn_server, test_app};
@@ -260,4 +262,14 @@ async fn relations_read_returns_five_groups() {
         0,
         "duplicated_by must be empty: {rel_body}"
     );
+}
+
+/// All protocol-level tests drive the complete catalogue explicitly; the
+/// compact `default` profile has its own dedicated coverage in
+/// `mcp_dispatch.rs::profiles`.
+async fn dispatch_request(
+    client: &ApiClient,
+    req: JsonRpcRequest,
+) -> Option<taskagent_mcp::JsonRpcResponse> {
+    dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }
