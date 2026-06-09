@@ -2706,6 +2706,7 @@ async fn get_plan_progress(
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
         claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
     };
     if let Some(next) = resolver
         .next(plan_id, RunId::new(), auth.agent_id, None)
@@ -3101,6 +3102,7 @@ async fn get_next_task(
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
         claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
     };
     let result = resolver
         .next(plan_id, run_id, auth.agent_id, claim_ttl)
@@ -3144,6 +3146,7 @@ async fn drain_one_plan(
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
         claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
     };
 
     for _ in 0..max_attempts {

@@ -48,6 +48,16 @@ and the MCP tool) accepts optional `targets` + `mode` and returns leases
 carrying tokens; the legacy `paths`-only call is unchanged. The MCP
 `taskagent_healthz` tool moved into the `default` profile.
 
+### Scheduler correctness (multi-agent coordination, P2)
+
+The plan task resolver now honors cross-task `Blocks` relations (same
+semantics as `can_start`) in every dispatch path — `drain_next`,
+`ready_drain`, `next-task`, and `plan_progress.next_ready` — so
+concurrent agents can no longer each grab one side of a mutually
+blocking pair. Multi-target lease reservation is all-or-none over
+canonically sorted targets inside a single immediate transaction,
+making opposite-order bulk acquisition deadlock-free.
+
 ### AI prompt hardening
 
 Grounding context (task bodies, comments, event payloads) interpolated

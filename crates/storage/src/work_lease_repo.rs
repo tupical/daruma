@@ -857,6 +857,64 @@ mod tests {
         assert!(leases[0].fencing_token.is_some());
     }
 
+    /// P2 deadlock-safety: bulk acquisition is all-or-none and canonically
+    /// ordered (requests are sorted before the scan; BEGIN IMMEDIATE
+    /// serializes writers), so two agents grabbing the same pair of
+    /// resources in *opposite* orders can never deadlock — one wins both,
+    /// the other gets a clean Conflict and zero partial grants.
+    #[tokio::test]
+    async fn opposite_order_bulk_acquire_is_all_or_none_without_deadlock() {
+        let (_db, repo) = make_repo().await;
+        let repo = std::sync::Arc::new(repo);
+        let proj = ProjectId::new();
+        let (a1, a2) = (AgentId::new(), AgentId::new());
+
+        let r1 = {
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                repo.try_reserve_targets(
+                    a1,
+                    TaskId::new(),
+                    Some(proj),
+                    vec!["artifact://api/users".into(), "artifact://db/schema".into()],
+                    LeaseMode::Exclusive,
+                    Duration::seconds(60),
+                )
+                .await
+                .unwrap()
+            })
+        };
+        let r2 = {
+            let repo = repo.clone();
+            tokio::spawn(async move {
+                repo.try_reserve_targets(
+                    a2,
+                    TaskId::new(),
+                    Some(proj),
+                    vec!["artifact://db/schema".into(), "artifact://api/users".into()],
+                    LeaseMode::Exclusive,
+                    Duration::seconds(60),
+                )
+                .await
+                .unwrap()
+            })
+        };
+        // Must complete (no deadlock) within the test timeout.
+        let (r1, r2) = (r1.await.unwrap(), r2.await.unwrap());
+
+        let reserved_count = |o: &ReserveOutcome| match o {
+            ReserveOutcome::Reserved { leases } => leases.len(),
+            ReserveOutcome::Conflict { .. } => 0,
+        };
+        let (w1, w2) = (reserved_count(&r1), reserved_count(&r2));
+        assert!(
+            (w1 == 2 && w2 == 0) || (w1 == 0 && w2 == 2),
+            "exactly one agent wins both targets, the other gets none: {w1}/{w2}"
+        );
+        // No partial grants linger for the loser.
+        assert_eq!(repo.list_active(Some(proj)).await.unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn different_projects_do_not_conflict() {
         let (_db, repo) = make_repo().await;
