@@ -72,6 +72,7 @@ fn build_prompt(tasks: &[TaskBrief]) -> String {
             }
         }
     }
+    let tasks_list = crate::untrusted::wrap_untrusted("task list", &tasks_list);
     #[derive(serde::Serialize)]
     struct Ctx<'a> {
         tasks_list: &'a str,

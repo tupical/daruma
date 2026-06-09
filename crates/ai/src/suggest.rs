@@ -23,7 +23,12 @@ pub async fn suggest_next_action(
     client: &OpenAiClient,
     context: &str,
 ) -> Result<String, CoreError> {
-    let prompt = PromptRegistry::load("suggest", "default", &SuggestCtx { context })?;
+    let context = crate::untrusted::wrap_untrusted("project context", context);
+    let prompt = PromptRegistry::load(
+        "suggest",
+        "default",
+        &SuggestCtx { context: &context },
+    )?;
 
     let req = ResponseRequest {
         input: Value::String(prompt),

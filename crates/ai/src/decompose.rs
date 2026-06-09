@@ -31,6 +31,7 @@ struct DecomposeCtx<'a> {
 /// Panics only if the bundled `prompts/decompose.toml` is malformed — a
 /// build-time invariant covered by `PromptRegistry`'s test suite.
 pub fn build_decompose_prompt(task_context: &str, hint: Option<&str>) -> String {
+    let task_context = &crate::untrusted::wrap_untrusted("task context", task_context);
     let trimmed = hint.map(str::trim).filter(|s| !s.is_empty());
     let (variant, ctx) = match trimmed {
         Some(h) => (
@@ -126,10 +127,14 @@ mod tests {
          result.\n\nTask:\n";
 
     #[test]
-    fn prompt_without_hint_matches_legacy_format() {
+    fn prompt_without_hint_keeps_legacy_framing_and_fences_context() {
         let p = build_decompose_prompt("Build login page", None);
-        // Byte-identical to pre-§3.8.4 prompt.
-        assert_eq!(p, format!("{BASE_HEAD}Build login page"));
+        // Same instruction head as the pre-§3.8.4 prompt; the task body is
+        // now fenced as untrusted data (prompt-injection hardening).
+        assert!(p.starts_with(BASE_HEAD));
+        assert!(p.contains("Build login page"));
+        assert!(p.contains(crate::untrusted::UNTRUSTED_OPEN));
+        assert!(p.contains(crate::untrusted::UNTRUSTED_CLOSE));
         assert!(!p.contains("Additional guidance"));
     }
 
