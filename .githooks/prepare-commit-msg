@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Auto-append a DCO Signed-off-by trailer (idempotent) so commits satisfy the
+# DCO check in .github/workflows/dco.yml. Uses the configured git identity.
+#
+# Enable once per clone:  git config core.hooksPath .githooks   (or: just hooks)
+msg_file="$1"
+name="$(git config user.name 2>/dev/null)" || exit 0
+email="$(git config user.email 2>/dev/null)" || exit 0
+[ -n "$name" ] && [ -n "$email" ] || exit 0
+sob="Signed-off-by: $name <$email>"
+git interpret-trailers --if-exists addIfDifferent --trailer "$sob" \
+  --in-place "$msg_file" 2>/dev/null || true

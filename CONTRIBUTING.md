@@ -36,6 +36,16 @@ message — git does this automatically with the `-s` flag:
 git commit -s -m "feat(scope): short summary"
 ```
 
+To sign off automatically, enable the tracked git hooks once per clone:
+
+```bash
+just hooks            # or: git config core.hooksPath .githooks
+```
+
+The `prepare-commit-msg` hook in [`.githooks/`](.githooks/) then appends your
+`Signed-off-by` trailer to every commit (idempotent — it respects an existing
+`git commit -s` and never duplicates the line).
+
 The standard footer looks like:
 
 ```

@@ -22,6 +22,11 @@ fmt:
 fmt-check:
     CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo fmt --all -- --check
 
+# Enable the tracked git hooks (DCO auto sign-off via .githooks/). Run once per clone.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "git hooks enabled — commits now auto-add a Signed-off-by trailer"
+
 server:
     mkdir -p "{{data_dir}}"
     CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" TASKAGENT_DATA_DIR="{{data_dir}}" cargo run -p taskagent-server
