@@ -4173,7 +4173,16 @@ struct ReserveFilesBody {
     task_id: TaskId,
     #[serde(default)]
     project_id: Option<ProjectId>,
+    /// Repo-relative path globs (legacy field; becomes `file://` targets).
+    #[serde(default)]
     paths: Vec<String>,
+    /// Resource URIs (`file://`, `artifact://`, `contract://`, `env://`).
+    /// Merged with `paths`; at least one of the two must be non-empty.
+    #[serde(default)]
+    targets: Vec<String>,
+    /// Lease mode: `exclusive` (default) | `shared_read` | `review` | `intent`.
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     ttl_secs: Option<u32>,
 }
@@ -4188,20 +4197,31 @@ async fn reserve_files(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    if body.paths.is_empty() {
+    let mut targets = body.paths.clone();
+    targets.extend(body.targets.iter().cloned());
+    if targets.is_empty() {
         return Err(ApiError::from(CoreError::validation(
-            "paths must not be empty",
+            "paths/targets must not be empty",
         )));
     }
+    let mode = match body.mode.as_deref() {
+        None => taskagent_domain::LeaseMode::Exclusive,
+        Some(raw) => taskagent_domain::LeaseMode::parse(raw).ok_or_else(|| {
+            ApiError::from(CoreError::validation(format!(
+                "unknown lease mode `{raw}` — expected exclusive|shared_read|review|intent"
+            )))
+        })?,
+    };
     let ttl_secs = body.ttl_secs.unwrap_or(300);
 
     match state
         .work_leases
-        .try_reserve(
+        .try_reserve_targets(
             body.agent_id,
             body.task_id,
             body.project_id,
-            body.paths,
+            targets,
+            mode,
             chrono::Duration::seconds(ttl_secs as i64),
         )
         .await

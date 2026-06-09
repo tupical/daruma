@@ -35,4 +35,4 @@ pub use session::{
 };
 pub use signal::SignalKind;
 pub use task::{NewTask, Priority, Status, Task, TaskPatch, TriageState};
-pub use work_lease::WorkLease;
+pub use work_lease::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};

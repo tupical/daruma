@@ -443,7 +443,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Server health check",
             "Server health check — no auth required.",
             empty_schema(),
-            Dom::Admin, F, Ann::Read,
+            Dom::Admin, D, Ann::Read,
         ),
         // ── Plans ─────────────────────────────────────────────────────────
         tool(
@@ -662,7 +662,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "taskagent_reserve_files",
             "Reserve file paths",
-            "Reserve file/path globs for a task so parallel agents don't edit the same files. Pass repo-relative `paths` (dirs or files; `*`/`**` globs allowed). Returns `reserved:true`, or `reserved:false` with `conflict_path` + `holder` when another agent owns an overlapping area — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
+            "Reserve resources for a task so parallel agents don't collide. Pass repo-relative `paths` (globs) and/or `targets` URIs (file://, artifact://, contract://, env://) plus an optional `mode` (exclusive default; shared_read/review coexist; intent is advisory). Returns `reserved:true` with leases carrying `fencing_token`, or `reserved:false` with `conflict_path` + `holder` — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
             schema_reserve_files(),
             Dom::Coordination, F, Ann::Write,
         ),
@@ -1796,15 +1796,26 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "taskagent_reserve_files" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
-            let paths = args
-                .get("paths")
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| anyhow::anyhow!("`paths` (array of strings) is required"))?;
+            let paths = args.get("paths").and_then(|v| v.as_array()).cloned();
+            let targets = args.get("targets").and_then(|v| v.as_array()).cloned();
+            if paths.as_ref().is_none_or(|p| p.is_empty())
+                && targets.as_ref().is_none_or(|t| t.is_empty())
+            {
+                anyhow::bail!("`paths` and/or `targets` (array of strings) is required");
+            }
             let mut body = json!({
                 "agent_id": agent_id,
                 "task_id": task_id,
-                "paths": paths,
             });
+            if let Some(p) = paths {
+                body["paths"] = json!(p);
+            }
+            if let Some(t) = targets {
+                body["targets"] = json!(t);
+            }
+            if let Some(m) = args.get("mode").and_then(|v| v.as_str()) {
+                body["mode"] = json!(m);
+            }
             if let Some(p) = args.get("project_id").and_then(|v| v.as_str()) {
                 body["project_id"] = json!(p);
             }
@@ -2951,9 +2962,19 @@ fn schema_reserve_files() -> Value {
                 "items": {"type":"string"},
                 "description":"Repo-relative path globs to reserve (dirs or files; `*` matches one segment, `**` matches the rest)."
             },
+            "targets":    {
+                "type":"array",
+                "items": {"type":"string"},
+                "description":"Resource URIs to reserve: file://<glob>, artifact://<kind>/<name>, contract://<name>[@version], env://<name>. Merged with `paths`."
+            },
+            "mode":       {
+                "type":"string",
+                "enum":["exclusive","shared_read","review","intent"],
+                "description":"Lease mode (default exclusive). shared_read/review coexist; intent is advisory and never blocks."
+            },
             "ttl_secs":   {"type":"integer","minimum":1,"maximum":86400,"description":"Lease lifetime in seconds (default 300). Re-call to refresh."}
         },
-        "required":["agent_id","task_id","paths"]
+        "required":["agent_id","task_id"]
     })
 }
 

@@ -9,7 +9,7 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 ### MCP tool-surface profiles
 
 `tools/list` is now profile-gated: the new `default` profile advertises a
-compact, workflow-first surface of 30 tools; `full` keeps the complete
+compact, workflow-first surface of 31 tools; `full` keeps the complete
 catalogue (~94 tools) unchanged. Select with `taskagent mcp --profile`,
 `TASKAGENT_MCP_PROFILE`, or `/v1/mcp?profile=`. **Unset now means
 `default`** — clients that depend on advanced tools (history, documents,
@@ -33,6 +33,20 @@ passes — once per (task, deadline) value, deduped across restarts via the
 `task_due_notifications` projection (migration 0032). Webhook
 subscriptions pick it up by kind like any other event; changing the
 deadline re-arms the notification.
+
+### Generic fenced leases (multi-agent coordination, P1)
+
+`work_leases` generalizes from exclusive path globs to mode-aware
+resource leases (migration 0033): `mode` (`exclusive` | `shared_read` |
+`review` | `intent` — only writes conflict, intent is advisory),
+`target_uri` with scheme-dispatched conflict matching (`file://` glob
+overlap; `artifact://`/`contract://`/`env://` exact canonical match),
+and a monotonic per-resource `fencing_token` issued inside the same
+transaction as the grant — stale holders cannot pass
+`check_fencing_token` after a re-grant. `reserve_files` (HTTP `/v1/leases`
+and the MCP tool) accepts optional `targets` + `mode` and returns leases
+carrying tokens; the legacy `paths`-only call is unchanged. The MCP
+`taskagent_healthz` tool moved into the `default` profile.
 
 ### AI prompt hardening
 
