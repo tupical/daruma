@@ -9,6 +9,7 @@ pub mod document;
 pub mod external_ref;
 pub mod plan;
 pub mod project;
+pub mod project_settings;
 pub mod relation;
 pub mod run;
 pub mod session;
@@ -28,6 +29,7 @@ pub use plan::{
     PlanGraphNode, PlanPatch, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask,
 };
 pub use project::{slugify_title, Project, DEFAULT_TENANT_ID};
+pub use project_settings::{AutoAppendPatch, AutoAppendSettings};
 pub use relation::{Relation, RelationKind, TaskRelations};
 pub use run::{Run, RunNote, RunOutcome, RunStatus};
 pub use session::{

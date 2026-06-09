@@ -48,6 +48,18 @@ and the MCP tool) accepts optional `targets` + `mode` and returns leases
 carrying tokens; the legacy `paths`-only call is unchanged. The MCP
 `taskagent_healthz` tool moved into the `default` profile.
 
+### Auto-append into Interview / Human Log
+
+Project activity now writes itself into the auto-created documents:
+agent activity (agent task ops, runs, run notes) appends to
+**Interview**, human milestones (user task ops, plan completion,
+project renames) append to **Human Log**. Per-project toggles — ON by
+default, also for pre-existing projects — live at
+`GET/PATCH /v1/projects/{id}/settings` and the MCP tools
+`taskagent_project_settings_get` / `_update`; changes are event-sourced
+(`ProjectSettingsChanged`, migration 0034) so other clients update in
+realtime. See docs/guides/documents-auto-append.md.
+
 ### Workspace auto-resolution
 
 `POST /v1/workspace-registry/resolve` maps a filesystem root onto its

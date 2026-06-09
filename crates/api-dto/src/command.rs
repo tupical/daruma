@@ -68,6 +68,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    UpdateProjectSettings {
+        project_id: ProjectId,
+        #[serde(default)]
+        auto_append: taskagent_domain::AutoAppendPatch,
+    },
     UpdateProject {
         id: ProjectId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -329,6 +334,7 @@ impl Command {
             Command::BulkAttachToPlan { .. } => "bulk_attach_to_plan",
             Command::CreateProject { .. } => "create_project",
             Command::UpdateProject { .. } => "update_project",
+            Command::UpdateProjectSettings { .. } => "update_project_settings",
             Command::DeleteProject { .. } => "delete_project",
             Command::SplitTask { .. } => "split_task",
             Command::RecordAgentAction { .. } => "record_agent_action",

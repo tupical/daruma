@@ -411,6 +411,14 @@ pub enum Event {
         occurred_at: Timestamp,
     },
 
+    /// Per-project settings changed (currently the Interview/Human Log
+    /// auto-append toggles). Carries the full new state for replay.
+    ProjectSettingsChanged {
+        project_id: ProjectId,
+        auto_append: taskagent_domain::AutoAppendSettings,
+        at: Timestamp,
+    },
+
     // ── Documents (PR1 §1-2) ──────────────────────────────────────────────────
     /// A new document was created. Emitted by `Command::CreateDocument` and
     /// also by `Command::CreateProject` for the two default documents
@@ -463,6 +471,7 @@ impl Event {
             Event::ConflictResolved { .. } => "conflict_resolved",
             Event::ProjectCreated { .. } => "project_created",
             Event::ProjectUpdated { .. } => "project_updated",
+            Event::ProjectSettingsChanged { .. } => "project_settings_changed",
             Event::ProjectDeleted { .. } => "project_deleted",
             Event::AgentActionRecorded { .. } => "agent_action_recorded",
             Event::CommentAdded { .. } => "comment_added",
@@ -579,6 +588,7 @@ impl Event {
             Event::ConflictResolved { .. } => None,
             Event::ProjectCreated { project } => Some(project.id),
             Event::ProjectUpdated { project_id, .. } => Some(*project_id),
+            Event::ProjectSettingsChanged { project_id, .. } => Some(*project_id),
             Event::ProjectDeleted { project_id } => Some(*project_id),
             // Plans carry their project id inline.
             Event::PlanCreated { plan } => Some(plan.project_id),
@@ -607,6 +617,7 @@ impl Event {
             | Event::TaskClosed { .. }
             | Event::ProjectCreated { .. }
             | Event::ProjectUpdated { .. }
+            | Event::ProjectSettingsChanged { .. }
             | Event::ProjectDeleted { .. }
             | Event::TaskLinked { .. }
             | Event::TaskUnlinked { .. }

@@ -204,6 +204,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/projects/{id}", axum::routing::delete(delete_project))
         .route("/projects/{id}/workspace", patch(move_project_to_workspace))
         .route(
+            "/projects/{id}/settings",
+            get(get_project_settings).patch(patch_project_settings),
+        )
+        .route(
             "/projects/{id}/triage",
             get(list_project_triage).patch(patch_project_triage),
         )
@@ -1258,6 +1262,82 @@ async fn resolve_workspace_context(
         "created_workspace": created_workspace,
         "created_project": true,
     })))
+}
+
+/// `GET /v1/projects/{id}/settings` — per-project settings (auto-append
+/// toggles, ON by default including for pre-migration projects).
+async fn get_project_settings(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_project_id(&id_str)?;
+    state
+        .projects
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {id}"))))?;
+    let auto_append = state
+        .project_settings
+        .auto_append(id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "auto_append": auto_append })))
+}
+
+#[derive(Deserialize)]
+struct ProjectSettingsPatchBody {
+    #[serde(default)]
+    auto_append: taskagent_domain::AutoAppendPatch,
+}
+
+/// `PATCH /v1/projects/{id}/settings` — partial update of the auto-append
+/// toggles, dispatched through the command bus (event-sourced).
+async fn patch_project_settings(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<ProjectSettingsPatchBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_project_id(&id_str)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::UpdateProjectSettings {
+                project_id: id,
+                auto_append: body.auto_append,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let auto_append = state
+        .project_settings
+        .auto_append(id)
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "auto_append": auto_append }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+fn parse_project_id(id_str: &str) -> Result<ProjectId, ApiError> {
+    id_str.parse::<ProjectId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid project id: {id_str}"
+        )))
+    })
 }
 
 fn validate_workspace_name(name: &str) -> Result<String, ApiError> {
@@ -2727,6 +2807,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::SplitTask { .. }
         | Command::BulkSetStatus { .. } => Capability::TaskWrite,
         Command::CreateProject { .. }
+        | Command::UpdateProjectSettings { .. }
         | Command::UpdateProject { .. }
         | Command::DeleteProject { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,

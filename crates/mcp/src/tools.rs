@@ -401,6 +401,20 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_project_move_workspace(),
             Dom::Projects, F, Ann::WriteIdem,
         ),
+        tool(
+            "taskagent_project_settings_get",
+            "Get project settings",
+            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default).",
+            schema_with_id("project_id"),
+            Dom::Projects, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_project_settings_update",
+            "Update project settings",
+            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document.",
+            schema_project_settings_update(),
+            Dom::Projects, F, Ann::WriteIdem,
+        ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "taskagent_ai_parse",
@@ -1814,6 +1828,28 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
+        "taskagent_project_settings_get" => {
+            let project_id = required_string(&args, "project_id")?;
+            client
+                .get_json(&format!("/v1/projects/{project_id}/settings"))
+                .await
+        }
+        "taskagent_project_settings_update" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut auto_append = json!({});
+            if let Some(v) = args.get("interview").and_then(|v| v.as_bool()) {
+                auto_append["interview"] = json!(v);
+            }
+            if let Some(v) = args.get("human_log").and_then(|v| v.as_bool()) {
+                auto_append["human_log"] = json!(v);
+            }
+            client
+                .patch_json(
+                    &format!("/v1/projects/{project_id}/settings"),
+                    json!({ "auto_append": auto_append }),
+                )
+                .await
+        }
         "taskagent_workspace_resolve" => {
             let ws = workspace::global();
             let raw_path = args.get("scope_path").and_then(|v| v.as_str());
@@ -3016,6 +3052,18 @@ fn schema_release() -> Value {
 }
 
 // ── Work-lease schemas (parallel-agent file coordination) ───────────────────
+
+fn schema_project_settings_update() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string"},
+            "interview": {"type":"boolean","description":"Auto-append agent activity to the Interview document."},
+            "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."}
+        },
+        "required":["project_id"]
+    })
+}
 
 fn schema_workspace_resolve() -> Value {
     json!({

@@ -368,6 +368,27 @@ impl ActivityRepo {
                 .await?;
             }
 
+            Event::ProjectSettingsChanged {
+                project_id,
+                auto_append,
+                ..
+            } => {
+                self.insert_row(Activity {
+                    id: ActivityId::new(),
+                    task_id: None,
+                    project_id: Some(*project_id),
+                    actor: actor.clone(),
+                    verb: Verb::ProjectUpdated,
+                    field: Some("settings.auto_append".into()),
+                    old_value: None,
+                    new_value: serde_json::to_string(auto_append).ok(),
+                    occurred_at,
+                    event_id,
+                    seq,
+                })
+                .await?;
+            }
+
             Event::ProjectDeleted { project_id } => {
                 self.insert_row(Activity {
                     id: ActivityId::new(),
