@@ -234,9 +234,9 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
     projectRules,
     projectCommands,
     installHint: [
-      "Register hosted HTTP MCP with Cursor:",
-      "  npx taskagent-cursor install --transport http --global --api-url https://taskagent.vskideas.ru",
-      "Or open an Add-to-Cursor link from the Cloud cabinet Connect page.",
+      "Register HTTP MCP with Cursor (use your own server origin):",
+      "  npx taskagent-cursor install --transport http --global --api-url <your-taskagent-server>",
+      "Or open an Add-to-Cursor link from your TaskAgent Connect page.",
       "For local self-host, also keep taskagent-server running:",
       "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
     ].join("\n"),
@@ -245,7 +245,7 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
       `HTTP probe: GET ${probeUrl}/v1/healthz`,
       profile?.token
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
-        : `credentials: none at ${credentialsLocationHint()} — run npx @mcpbox/taskagent login, then re-run install`,
+        : `credentials: none at ${credentialsLocationHint()} — run your TaskAgent installer to save credentials.json, then re-run install`,
       commandReady
         ? isHttpEntry
           ? `mcp transport: http (${activeEntry.url ?? "url configured"})`
