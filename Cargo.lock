@@ -2532,14 +2532,14 @@ dependencies = [
 
 [[package]]
 name = "taskagent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "taskagent-auth",
 ]
 
 [[package]]
 name = "taskagent-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2561,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-api-dto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2574,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2609,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-events"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2673,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-mcp-bin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2702,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-mobile"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2714,7 +2714,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-shared"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2760,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2783,7 +2783,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -2802,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "taskagent-webhooks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
