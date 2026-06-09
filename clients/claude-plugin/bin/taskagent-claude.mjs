@@ -51,14 +51,14 @@ Usage:
                                     Drive taskagent (project → task [→ plan])
                                     via MCP and run each eligible task as
                                     \`omc team\`. No nested Claude Code session.
-  taskagent-claude init [--project DIR] [--no-policy] [--no-omc-guard]
+  taskagent-claude init [--dir DIR] [--no-policy] [--no-omc-guard]
                                     Drop project-scoped artifacts: a managed
                                     policy block in <DIR>/CLAUDE.md so this
                                     project defaults to taskagent for tasks
                                     and plans, plus the OMC guard in
                                     <DIR>/.omc/AGENTS.md when oh-my-claudecode
                                     is present. Idempotent.
-  taskagent-claude uninit [--project DIR]
+  taskagent-claude uninit [--dir DIR]
                                     Remove the managed policy block and OMC
                                     guard. Surrounding content is preserved.
   taskagent-claude doctor [--json|--quiet] [--no-cache]
@@ -191,9 +191,19 @@ function parseInitFlags(rest) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     switch (a) {
+      case "--dir":
       case "--project": {
         const v = rest[++i];
-        if (!v || v.startsWith("--")) throw new Error("--project requires a directory");
+        if (!v || v.startsWith("--")) throw new Error(`${a} requires a directory`);
+        if (a === "--project") {
+          // `--project` here is the target DIRECTORY, which clashes with
+          // `start --project ID` (a taskagent project id). Keep it as a
+          // back-compat alias for `--dir` but steer callers away.
+          process.stderr.write(
+            "taskagent-claude init: --project is deprecated and means the target DIRECTORY, " +
+              "not a taskagent project. Use --dir <directory> (default: current directory).\n",
+          );
+        }
         opts.projectDir = v;
         break;
       }
