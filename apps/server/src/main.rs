@@ -80,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
     let documents = Arc::new(DocumentRepo::new(pool.clone()));
     let project_settings = Arc::new(taskagent_storage::ProjectSettingsRepo::new(pool.clone()));
+    let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
     let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
     let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
     let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
@@ -134,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         .with_tenant_quotas(tenant_quotas.clone())
         .with_documents(documents.clone())
         .with_project_settings(project_settings.clone())
+        .with_work_units(work_units.clone())
         .with_relations(relations.clone())
         .with_search_provider(Arc::new(FtsSearchProvider::new(
             tasks.clone(),
@@ -207,6 +209,7 @@ async fn main() -> anyhow::Result<()> {
         relations,
         documents,
         project_settings,
+        work_units,
         entity_versions,
         complexity_hints,
         workspace_graph,

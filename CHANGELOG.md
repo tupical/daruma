@@ -48,6 +48,20 @@ and the MCP tool) accepts optional `targets` + `mode` and returns leases
 carrying tokens; the legacy `paths`-only call is unchanged. The MCP
 `taskagent_healthz` tool moved into the `default` profile.
 
+### WorkUnit layer (multi-agent coordination, P3)
+
+A task can now decompose into **work units** — the minimal dispatchable
+unit for several agents working one task. `POST /v1/work-units` creates
+units (with declared `artifact_refs` and acceptance criteria);
+`POST /v1/work-units/drain-next` atomically claims the next dispatchable
+unit (single-statement CAS — concurrent callers get distinct units) and
+acquires its declared exclusive resource leases in the same dispatch,
+returning a briefing `{work_unit, leases (fencing tokens), acceptance}`;
+a lease conflict reverts the claim. Complete/release endpoints, the
+`work_units` projection (migration 0035), WorkUnit* events on the new
+WS `WorkUnits` channel, and five MCP tools (full profile) round it out.
+Lazy activation: tasks without units are completely untouched.
+
 ### Auto-append into Interview / Human Log
 
 Project activity now writes itself into the auto-created documents:

@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Comment, CommentPatch, Document,
     NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome,
-    SessionArtifact, Status, TaskPatch, WorkLease,
+    SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, AiOpId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId,
-    RunId, RunNoteId, TaskId, Timestamp,
+    RunId, RunNoteId, TaskId, Timestamp, WorkUnitId,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -446,6 +446,43 @@ pub enum Event {
         at: Timestamp,
     },
 
+    // ── Work units (P3, ADR work-units-and-artifacts) ────────────────────────
+    /// A work unit was created under a task.
+    WorkUnitCreated {
+        work_unit: WorkUnit,
+    },
+    /// An agent atomically claimed a dispatchable work unit.
+    WorkUnitClaimed {
+        work_unit_id: WorkUnitId,
+        agent_id: AgentId,
+        expires_at: Timestamp,
+    },
+    /// The holder started executing the unit.
+    WorkUnitStarted {
+        work_unit_id: WorkUnitId,
+        at: Timestamp,
+    },
+    /// The unit cannot proceed; carries a human/agent-readable reason.
+    WorkUnitBlocked {
+        work_unit_id: WorkUnitId,
+        reason: String,
+        at: Timestamp,
+    },
+    /// The unit finished. Payload is mineable (P6): outcome + produced
+    /// artifact URIs.
+    WorkUnitCompleted {
+        work_unit_id: WorkUnitId,
+        outcome: String,
+        #[serde(default)]
+        produced_artifacts: Vec<String>,
+        at: Timestamp,
+    },
+    /// The holder's claim was released (explicit or TTL expiry).
+    WorkUnitReleased {
+        work_unit_id: WorkUnitId,
+        at: Timestamp,
+    },
+
     // ── Documents (PR1 §1-2) ──────────────────────────────────────────────────
     /// A new document was created. Emitted by `Command::CreateDocument` and
     /// also by `Command::CreateProject` for the two default documents
@@ -502,6 +539,12 @@ impl Event {
             Event::AiOperationStarted { .. } => "ai_operation_started",
             Event::AiOperationPhaseChanged { .. } => "ai_operation_phase_changed",
             Event::AiOperationCompleted { .. } => "ai_operation_completed",
+            Event::WorkUnitCreated { .. } => "work_unit_created",
+            Event::WorkUnitClaimed { .. } => "work_unit_claimed",
+            Event::WorkUnitStarted { .. } => "work_unit_started",
+            Event::WorkUnitBlocked { .. } => "work_unit_blocked",
+            Event::WorkUnitCompleted { .. } => "work_unit_completed",
+            Event::WorkUnitReleased { .. } => "work_unit_released",
             Event::ProjectDeleted { .. } => "project_deleted",
             Event::AgentActionRecorded { .. } => "agent_action_recorded",
             Event::CommentAdded { .. } => "comment_added",
@@ -705,6 +748,14 @@ impl Event {
             | Event::RunElicitationRequested { .. }
             | Event::RunAuthRequired { .. }
             | Event::RunInterventionAccepted { .. } => Channel::Runs,
+            // ── WorkUnits channel ─────────────────────────────────────────────
+            Event::WorkUnitCreated { .. }
+            | Event::WorkUnitClaimed { .. }
+            | Event::WorkUnitStarted { .. }
+            | Event::WorkUnitBlocked { .. }
+            | Event::WorkUnitCompleted { .. }
+            | Event::WorkUnitReleased { .. } => Channel::WorkUnits,
+
             // ── AiOps channel ─────────────────────────────────────────────────
             Event::AiOperationStarted { .. }
             | Event::AiOperationPhaseChanged { .. }
@@ -745,6 +796,9 @@ pub enum Channel {
     Documents,
     /// Async AI operation progress (§3.8.12): started / phase / completed.
     AiOps,
+    /// Work-unit lifecycle (P3): created / claimed / started / blocked /
+    /// completed / released.
+    WorkUnits,
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

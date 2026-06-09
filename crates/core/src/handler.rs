@@ -14,7 +14,7 @@ use taskagent_shared::{
 };
 use taskagent_storage::{
     ActivityRepo, CommentRepo, ProjectRepo, ProjectSettingsRepo, RelationRepo, TaskRepo,
-    TenantQuotaRepo,
+    TenantQuotaRepo, WorkUnitRepo,
 };
 
 use crate::{
@@ -53,6 +53,8 @@ pub struct CommandHandler {
     /// minimal test harnesses; when absent, defaults apply and the settings
     /// command is rejected.
     pub project_settings: Option<Arc<ProjectSettingsRepo>>,
+    /// WorkUnit projection (P3). `None` until wired by the server.
+    pub work_units: Option<Arc<WorkUnitRepo>>,
     pub external_refs: Option<Arc<dyn ExternalRefRepository>>,
     pub tenant_quotas: Option<Arc<TenantQuotaRepo>>,
 
@@ -94,6 +96,7 @@ impl CommandHandler {
             tenant_quotas: None,
             documents: None,
             project_settings: None,
+            work_units: None,
             search_provider: None,
         }
     }
@@ -143,6 +146,12 @@ impl CommandHandler {
     /// Wire the per-project settings projection (auto-append toggles).
     pub fn with_project_settings(mut self, repo: Arc<ProjectSettingsRepo>) -> Self {
         self.project_settings = Some(repo);
+        self
+    }
+
+    /// Wire the WorkUnit projection (P3).
+    pub fn with_work_units(mut self, repo: Arc<WorkUnitRepo>) -> Self {
+        self.work_units = Some(repo);
         self
     }
 
@@ -220,6 +229,9 @@ impl CommandHandler {
             }
             if let Some(settings) = &self.project_settings {
                 settings.apply_event(env).await?;
+            }
+            if let Some(work_units) = &self.work_units {
+                work_units.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -574,6 +586,19 @@ impl CommandHandler {
         }
     }
 
+    async fn work_unit(
+        &self,
+        id: taskagent_shared::WorkUnitId,
+    ) -> Result<taskagent_domain::WorkUnit> {
+        let repo = self
+            .work_units
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("work unit repository not configured"))?;
+        repo.get(id)
+            .await?
+            .ok_or_else(|| CoreError::not_found(format!("work unit {id}")))
+    }
+
     async fn project_for_plan(&self, plan_id: PlanId) -> Option<ProjectId> {
         let plan = self.plans.as_ref()?.get(plan_id).await.ok().flatten()?;
         Some(plan.project_id)
@@ -595,7 +620,17 @@ impl CommandHandler {
     /// it to all projections, and publish on the bus. Used by background
     /// signals such as the liveness watchdog (§3.7.4).
     async fn persist_signal_event(&self, payload: Event) -> Result<()> {
-        let envelope = EventEnvelope::new(Actor::user(), payload);
+        self.persist_signal_event_as(Actor::user(), payload).await
+    }
+
+    /// [`Self::persist_signal_event`] with an explicit actor (e.g. the
+    /// claiming agent for work-unit dispatch events).
+    pub async fn emit_system_event_as(&self, actor: Actor, payload: Event) -> Result<()> {
+        self.persist_signal_event_as(actor, payload).await
+    }
+
+    async fn persist_signal_event_as(&self, actor: Actor, payload: Event) -> Result<()> {
+        let envelope = EventEnvelope::new(actor, payload);
         let persisted = self.store.append_batch(vec![envelope]).await?;
         for env in &persisted {
             self.tasks.apply_event(env).await?;
@@ -628,6 +663,12 @@ impl CommandHandler {
             }
             if let Some(documents) = &self.documents {
                 documents.apply_event(env).await?;
+            }
+            if let Some(settings) = &self.project_settings {
+                settings.apply_event(env).await?;
+            }
+            if let Some(work_units) = &self.work_units {
+                work_units.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -1096,6 +1137,83 @@ impl CommandHandler {
                     auto_append: current.apply(auto_append),
                     at: taskagent_shared::time::now(),
                 }])
+            }
+
+            Command::CreateWorkUnit { work_unit } => {
+                self.tasks
+                    .get(work_unit.task_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("task {}", work_unit.task_id)))?;
+                let mut wu = work_unit.into_work_unit(time::now());
+                if wu.id == taskagent_shared::WorkUnitId::default() {
+                    wu.id = taskagent_shared::WorkUnitId::new();
+                }
+                if wu.title.trim().is_empty() {
+                    return Err(CoreError::validation("work unit title must not be empty"));
+                }
+                Ok(vec![Event::WorkUnitCreated { work_unit: wu }])
+            }
+
+            Command::CompleteWorkUnit {
+                id,
+                outcome,
+                produced_artifacts,
+            } => {
+                let unit = self.work_unit(id).await?;
+                if unit.status.is_terminal() {
+                    return Err(CoreError::conflict(format!(
+                        "work unit {id} already closed"
+                    )));
+                }
+                Ok(vec![Event::WorkUnitCompleted {
+                    work_unit_id: id,
+                    outcome: outcome.unwrap_or_else(|| "ok".into()),
+                    produced_artifacts,
+                    at: time::now(),
+                }])
+            }
+
+            Command::ReleaseWorkUnit { id } => {
+                self.work_unit(id).await?;
+                Ok(vec![Event::WorkUnitReleased {
+                    work_unit_id: id,
+                    at: time::now(),
+                }])
+            }
+
+            Command::SetWorkUnitStatus { id, status, reason } => {
+                use taskagent_domain::WorkUnitStatus as WUS;
+                let unit = self.work_unit(id).await?;
+                if unit.status.is_terminal() {
+                    return Err(CoreError::conflict(format!(
+                        "work unit {id} already closed"
+                    )));
+                }
+                let now = time::now();
+                match status {
+                    WUS::InProgress => Ok(vec![Event::WorkUnitStarted {
+                        work_unit_id: id,
+                        at: now,
+                    }]),
+                    WUS::Blocked => Ok(vec![Event::WorkUnitBlocked {
+                        work_unit_id: id,
+                        reason: reason.unwrap_or_else(|| "blocked".into()),
+                        at: now,
+                    }]),
+                    WUS::Done => Ok(vec![Event::WorkUnitCompleted {
+                        work_unit_id: id,
+                        outcome: "ok".into(),
+                        produced_artifacts: vec![],
+                        at: now,
+                    }]),
+                    WUS::Ready | WUS::Todo => Ok(vec![Event::WorkUnitReleased {
+                        work_unit_id: id,
+                        at: now,
+                    }]),
+                    other => Err(CoreError::validation(format!(
+                        "unsupported work unit transition to {other:?}                          (review/cancelled land with the handoff layer)"
+                    ))),
+                }
             }
 
             Command::DeleteProject { id } => {

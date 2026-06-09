@@ -62,7 +62,7 @@ job — competing/overlapping alternatives stay in `full`:
 | Projects | project_list, project_use, workspace_info, healthz | project_create (rare), project_delete (destructive, two-step), workspace_resolve, workspace_list, project_move_workspace (registry ops) |
 | Plans | plan_create, plan_get, plan_list, plan_add_task, plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
 | Runs | run_start, run_complete, run_abort, run_note_append | run_start_step, run_finish_step, run_log, run_notes_list (step-level tracing) |
-| Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull (multi-agent orchestration) |
+| Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration) |
 | Relations | link, relations | unlink (destructive) |
 | Search/graph | — (plain `search` is in Tasks) | workspacegraph_* (5; competes with list/search for inventory questions) |
 | Documents | — | doc_* (7) |

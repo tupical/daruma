@@ -629,7 +629,11 @@ fn channel_required_capability(ch: Channel) -> Option<Capability> {
         // PR1: Documents events are not exposed over WS yet — future work
         // can introduce `SubscribeDocuments`. Treated like Presence/Webhooks
         // (no dedicated capability gate, but no realtime route either).
-        Channel::Presence | Channel::Webhooks | Channel::Documents | Channel::AiOps => None,
+        Channel::Presence
+        | Channel::Webhooks
+        | Channel::Documents
+        | Channel::AiOps
+        | Channel::WorkUnits => None,
     }
 }
 

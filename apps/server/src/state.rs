@@ -76,6 +76,8 @@ pub struct AppState {
     pub documents: Arc<DocumentRepo>,
     /// Per-project settings projection (auto-append toggles).
     pub project_settings: Arc<taskagent_storage::ProjectSettingsRepo>,
+    /// WorkUnit projection (P3 multi-agent coordination).
+    pub work_units: Arc<taskagent_storage::WorkUnitRepo>,
     /// Immutable task/document version history repo.
     pub entity_versions: Arc<EntityVersionRepo>,
     // ── AI-derived projection (§3.8.3) ───────────────────────────────────────

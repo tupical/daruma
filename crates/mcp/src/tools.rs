@@ -743,6 +743,41 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_suggest_files(),
             Dom::Coordination, F, Ann::Read,
         ),
+        tool(
+            "taskagent_work_unit_create",
+            "Create work unit",
+            "Create a work unit under a task — the minimal dispatchable unit for multi-agent work on one task. Declare `artifact_refs` (file://, artifact://, contract://, env://) so the dispatcher can lease them on claim. Simple tasks don't need work units.",
+            schema_work_unit_create(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_work_unit_list",
+            "List task work units",
+            "List all work units under a task (full decomposition state, including done/cancelled).",
+            schema_with_id("task_id"),
+            Dom::Coordination, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_work_unit_drain_next",
+            "Claim next work unit",
+            "Atomically claim the next dispatchable work unit under a task and acquire its declared exclusive resource leases. Concurrent callers each get a distinct unit. Returns a briefing {work_unit, leases (with fencing_token), acceptance}; null when nothing is dispatchable; lease_conflict (claim reverted) when the unit's resources are held elsewhere.",
+            schema_work_unit_drain(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_work_unit_complete",
+            "Complete work unit",
+            "Mark a work unit done with an outcome and the produced artifact URIs (mineable payload). Releases the holder claim.",
+            schema_work_unit_complete(),
+            Dom::Coordination, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_work_unit_release",
+            "Release work unit claim",
+            "Release a claimed work unit back to the dispatch pool (status returns to ready).",
+            schema_with_id("id"),
+            Dom::Coordination, F, Ann::WriteIdem,
+        ),
         // ── Sessions ──────────────────────────────────────────────────────
         tool(
             "taskagent_session_start",
@@ -1828,6 +1863,57 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
+        "taskagent_work_unit_create" => {
+            let task_id = required_string(&args, "task_id")?;
+            let title = required_string(&args, "title")?;
+            let mut wu = json!({ "task_id": task_id, "title": title });
+            for key in ["description", "stage_plan_id", "priority"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    wu[key] = json!(v);
+                }
+            }
+            for key in ["capability_tags", "artifact_refs", "acceptance"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_array()) {
+                    wu[key] = json!(v);
+                }
+            }
+            client
+                .post_json("/v1/work-units", json!({ "work_unit": wu }))
+                .await
+        }
+        "taskagent_work_unit_list" => {
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .get_json(&format!("/v1/tasks/{task_id}/work-units"))
+                .await
+        }
+        "taskagent_work_unit_drain_next" => {
+            let task_id = required_string(&args, "task_id")?;
+            let mut body = json!({ "task_id": task_id });
+            if let Some(ttl) = args.get("ttl_secs").and_then(|v| v.as_u64()) {
+                body["ttl_secs"] = json!(ttl);
+            }
+            client.post_json("/v1/work-units/drain-next", body).await
+        }
+        "taskagent_work_unit_complete" => {
+            let id = required_string(&args, "id")?;
+            let mut body = json!({});
+            if let Some(o) = args.get("outcome").and_then(|v| v.as_str()) {
+                body["outcome"] = json!(o);
+            }
+            if let Some(a) = args.get("produced_artifacts").and_then(|v| v.as_array()) {
+                body["produced_artifacts"] = json!(a);
+            }
+            client
+                .post_json(&format!("/v1/work-units/{id}/complete"), body)
+                .await
+        }
+        "taskagent_work_unit_release" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_json(&format!("/v1/work-units/{id}/release"), json!({}))
+                .await
+        }
         "taskagent_project_settings_get" => {
             let project_id = required_string(&args, "project_id")?;
             client
@@ -3052,6 +3138,46 @@ fn schema_release() -> Value {
 }
 
 // ── Work-lease schemas (parallel-agent file coordination) ───────────────────
+
+fn schema_work_unit_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string"},
+            "title": {"type":"string"},
+            "description": {"type":"string"},
+            "stage_plan_id": {"type":"string","description":"Optional stage (plan with parent_plan_id)."},
+            "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
+            "capability_tags": {"type":"array","items":{"type":"string"}},
+            "artifact_refs": {"type":"array","items":{"type":"string"},"description":"Resource URIs leased exclusively on claim."},
+            "acceptance": {"type":"array","items":{"type":"string"}}
+        },
+        "required":["task_id","title"]
+    })
+}
+
+fn schema_work_unit_drain() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string"},
+            "ttl_secs": {"type":"integer","minimum":1,"maximum":86400,"description":"Claim + lease TTL (default 300)."}
+        },
+        "required":["task_id"]
+    })
+}
+
+fn schema_work_unit_complete() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string"},
+            "outcome": {"type":"string"},
+            "produced_artifacts": {"type":"array","items":{"type":"string"}}
+        },
+        "required":["id"]
+    })
+}
 
 fn schema_project_settings_update() -> Value {
     json!({

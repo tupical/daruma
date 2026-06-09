@@ -786,7 +786,15 @@ impl ActivityRepo {
             // AI operation progress (§3.8.12): ephemeral WS push, no feed rows.
             | Event::AiOperationStarted { .. }
             | Event::AiOperationPhaseChanged { .. }
-            | Event::AiOperationCompleted { .. } => {}
+            | Event::AiOperationCompleted { .. }
+            // Work units (P3): WorkUnitRepo owns the projection; the task
+            // activity feed stays task-level.
+            | Event::WorkUnitCreated { .. }
+            | Event::WorkUnitClaimed { .. }
+            | Event::WorkUnitStarted { .. }
+            | Event::WorkUnitBlocked { .. }
+            | Event::WorkUnitCompleted { .. }
+            | Event::WorkUnitReleased { .. } => {}
 
             // ── Relation events (§3.2 W2.2) ──────────────────────────────────
             Event::TaskLinked {

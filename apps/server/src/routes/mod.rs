@@ -301,6 +301,11 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/claims/{agent_id}/{task_id}", delete(release_claim))
         // ── Work-lease routes (parallel-agent file coordination) ────────────
         .route("/leases", post(reserve_files).get(active_work))
+        .route("/work-units", post(create_work_unit))
+        .route("/work-units/drain-next", post(work_unit_drain_next))
+        .route("/work-units/{id}/complete", post(complete_work_unit))
+        .route("/work-units/{id}/release", post(release_work_unit))
+        .route("/tasks/{id}/work-units", get(list_task_work_units))
         .route("/leases/{agent_id}/{task_id}", delete(release_files))
         .route("/leases/suggest", get(suggest_files))
         // ── Project-wide ready pool (drain across all active plans) ──────────
@@ -1039,6 +1044,246 @@ async fn move_project_to_workspace(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {project_id}"))))?;
     Ok(Json(project))
+}
+
+#[derive(Deserialize)]
+struct CreateWorkUnitBody {
+    work_unit: taskagent_domain::NewWorkUnit,
+}
+
+/// `POST /v1/work-units` — create a work unit under a task (lazy
+/// activation: only callers that opted into the work-unit layer use this;
+/// plain tasks are untouched).
+async fn create_work_unit(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<CreateWorkUnitBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CreateWorkUnit {
+                work_unit: body.work_unit,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let unit = envs.iter().find_map(|e| match &e.payload {
+        taskagent_events::Event::WorkUnitCreated { work_unit } => Some(work_unit.clone()),
+        _ => None,
+    });
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "work_unit": unit }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `GET /v1/tasks/{id}/work-units` — full decomposition state of a task.
+async fn list_task_work_units(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let task_id = id_str
+        .parse::<TaskId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id_str}"))))?;
+    let units = state
+        .work_units
+        .list_by_task(task_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(units))
+}
+
+#[derive(Deserialize)]
+struct WorkUnitDrainBody {
+    task_id: TaskId,
+    #[serde(default)]
+    ttl_secs: Option<u32>,
+}
+
+/// `POST /v1/work-units/drain-next` — atomically claim the next
+/// dispatchable work unit under a task and acquire its declared resource
+/// leases (exclusive, P1). Concurrent callers each get a distinct unit.
+///
+/// Returns the dispatch briefing `{ work_unit, leases, acceptance }`, or
+/// `{ work_unit: null }` when nothing is dispatchable, or
+/// `{ work_unit: null, lease_conflict: {...} }` when the unit's declared
+/// resources are held by another agent — the claim is reverted so the
+/// lease holder (or anyone after release) can take the unit.
+async fn work_unit_drain_next(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<WorkUnitDrainBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let agent_id = auth.agent_id;
+    let ttl_secs = body.ttl_secs.unwrap_or(300);
+    let ttl = chrono::Duration::seconds(ttl_secs as i64);
+
+    let Some(unit) = state
+        .work_units
+        .try_claim_next(body.task_id, agent_id, ttl)
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(Json(serde_json::json!({ "work_unit": null })));
+    };
+
+    // Atomically take the unit's declared exclusive resource leases. On
+    // conflict the claim is reverted: the unit stays dispatchable for the
+    // current lease holder.
+    let mut leases = serde_json::Value::Null;
+    if !unit.artifact_refs.is_empty() {
+        let project_id = state
+            .tasks
+            .get(unit.task_id)
+            .await
+            .map_err(ApiError::from)?
+            .and_then(|t| t.project_id);
+        match state
+            .work_leases
+            .try_reserve_targets(
+                agent_id,
+                unit.task_id,
+                project_id,
+                unit.artifact_refs.clone(),
+                taskagent_domain::LeaseMode::Exclusive,
+                ttl,
+            )
+            .await
+            .map_err(ApiError::from)?
+        {
+            ReserveOutcome::Conflict {
+                path,
+                holder,
+                holder_task,
+            } => {
+                state
+                    .work_units
+                    .revert_claim(unit.id, agent_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                return Ok(Json(serde_json::json!({
+                    "work_unit": null,
+                    "lease_conflict": {
+                        "work_unit_id": unit.id,
+                        "path": path,
+                        "holder": holder,
+                        "holder_task": holder_task,
+                    },
+                })));
+            }
+            ReserveOutcome::Reserved { leases: granted } => {
+                leases = serde_json::json!(granted);
+            }
+        }
+    }
+
+    // Project the claim into the event log (audit + WS).
+    let handler = state.commands.handler();
+    let _ = handler
+        .emit_system_event_as(
+            actor_from(&auth, None),
+            taskagent_events::Event::WorkUnitClaimed {
+                work_unit_id: unit.id,
+                agent_id,
+                expires_at: chrono::Utc::now() + ttl,
+            },
+        )
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "work_unit": unit,
+        "leases": leases,
+        "acceptance": unit.acceptance,
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct CompleteWorkUnitBody {
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    produced_artifacts: Vec<String>,
+}
+
+/// `POST /v1/work-units/{id}/complete`
+async fn complete_work_unit(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    body: Option<Json<CompleteWorkUnitBody>>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_work_unit_id(&id_str)?;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CompleteWorkUnit {
+                id,
+                outcome: body.outcome,
+                produced_artifacts: body.produced_artifacts,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "work_unit_id": id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `POST /v1/work-units/{id}/release`
+async fn release_work_unit(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_work_unit_id(&id_str)?;
+    let envs = state
+        .commands
+        .dispatch(Command::ReleaseWorkUnit { id }, actor_from(&auth, None))
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "work_unit_id": id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+fn parse_work_unit_id(id_str: &str) -> Result<taskagent_shared::WorkUnitId, ApiError> {
+    id_str.parse::<taskagent_shared::WorkUnitId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid work unit id: {id_str}"
+        )))
+    })
 }
 
 #[derive(Deserialize)]
@@ -2918,7 +3163,11 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::AcquireClaim { .. }
         | Command::ReleaseClaim { .. }
         | Command::ReserveFiles { .. }
-        | Command::ReleaseFiles { .. } => Capability::RunWrite,
+        | Command::ReleaseFiles { .. }
+        | Command::CompleteWorkUnit { .. }
+        | Command::ReleaseWorkUnit { .. }
+        | Command::SetWorkUnitStatus { .. } => Capability::RunWrite,
+        Command::CreateWorkUnit { .. } => Capability::TaskWrite,
         // Agent session commands
         Command::StartAgentSession { .. }
         | Command::EndAgentSession { .. }

@@ -12,6 +12,7 @@ use taskagent_domain::{
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RunId, TaskId,
+    WorkUnitId,
 };
 
 /// All mutations are commands. Tagged-union JSON for stable wire format.
@@ -67,6 +68,25 @@ pub enum Command {
         title: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+    },
+    CreateWorkUnit {
+        work_unit: taskagent_domain::NewWorkUnit,
+    },
+    CompleteWorkUnit {
+        id: WorkUnitId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
+        #[serde(default)]
+        produced_artifacts: Vec<String>,
+    },
+    ReleaseWorkUnit {
+        id: WorkUnitId,
+    },
+    SetWorkUnitStatus {
+        id: WorkUnitId,
+        status: taskagent_domain::WorkUnitStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     UpdateProjectSettings {
         project_id: ProjectId,
@@ -335,6 +355,10 @@ impl Command {
             Command::CreateProject { .. } => "create_project",
             Command::UpdateProject { .. } => "update_project",
             Command::UpdateProjectSettings { .. } => "update_project_settings",
+            Command::CreateWorkUnit { .. } => "create_work_unit",
+            Command::CompleteWorkUnit { .. } => "complete_work_unit",
+            Command::ReleaseWorkUnit { .. } => "release_work_unit",
+            Command::SetWorkUnitStatus { .. } => "set_work_unit_status",
             Command::DeleteProject { .. } => "delete_project",
             Command::SplitTask { .. } => "split_task",
             Command::RecordAgentAction { .. } => "record_agent_action",
