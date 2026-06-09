@@ -4,6 +4,48 @@ This file tracks public, user-visible changes for TaskAgent releases.
 
 For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## 0.2.0
+
+### One unified `taskagent` binary
+
+The stdio MCP server is now a subcommand of the CLI: a single `taskagent`
+binary is the CLI, the launcher, and the MCP server — one artifact configures
+and serves everything.
+
+- `taskagent mcp` serves the stdio MCP server, superseding the standalone
+  `taskagent-mcp` binary. Register it with
+  `claude mcp add taskagent -- taskagent mcp`.
+- Bare `taskagent` (no subcommand) prints HTTP-MCP connect instructions. With
+  credentials it emits a ready-to-paste snippet for whatever server
+  `~/.agents/taskagent/credentials.json` points at.
+- `taskagent install --claude` writes the project policy (`CLAUDE.md`) and the
+  `.omc` guard, now the single source of truth for that text (shared
+  byte-for-byte with the `taskagent-claude` plugin).
+
+### Cloud-agnostic core
+
+- The `taskagent` binary references no hosted service: it reads a generic
+  `server_url` + `token` from credentials and works against any server,
+  self-hosted or otherwise.
+- Removed the cloud-flavored `install.sh` and its GitHub Pages workflow from
+  the OSS repository; cloud onboarding is no longer shipped from OSS.
+
+### Server
+
+- The binary download endpoint moved from
+  `/v1/downloads/taskagent-mcp/{platform}` to
+  `/v1/downloads/taskagent/{platform}` and serves the unified binary.
+
+### Client plugins
+
+- `taskagent-claude` delegates policy writing to the `taskagent` binary when it
+  is on `PATH`, falling back to its bundled Node writer otherwise.
+- `taskagent-cursor` no longer hardcodes a hosted URL in its install hints.
+
+### Docs
+
+- README rewritten as a leaner, overview-first document.
+
 ## 0.1.0
 
 Initial OSS release preparation:

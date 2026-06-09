@@ -6,6 +6,51 @@
 рассказываем «что это даёт пользователю», а технические детали
 оставляем в `git log` и human_log Changelog в TaskAgent tracker.
 
+## 2026-06-09 — релиз 0.2.0
+
+Главное: вместо россыпи бинарей и обёрток теперь **один бинарь
+`taskagent`**, через который настраивается и обслуживается всё. Облако в
+OSS больше не зашито — бинарь работает с любым сервером по
+`credentials.json`.
+
+### Единый бинарь `taskagent`
+
+stdio MCP-сервер стал подкомандой CLI: один артефакт `taskagent` — это и
+CLI, и лаунчер, и MCP-сервер.
+
+- `taskagent mcp` поднимает stdio MCP-сервер вместо отдельного бинаря
+  `taskagent-mcp`. Регистрация: `claude mcp add taskagent -- taskagent mcp`.
+- Голый `taskagent` (без подкоманды) печатает инструкцию подключения
+  HTTP MCP. При наличии кред — готовый сниппет под тот сервер, на который
+  указывает `~/.agents/taskagent/credentials.json`.
+- `taskagent install --claude` пишет project-policy (`CLAUDE.md`) и
+  `.omc`-guard — теперь это единственный источник этого текста (совпадает
+  байт-в-байт с плагином `taskagent-claude`).
+
+### Cloud-agnostic ядро
+
+- Бинарь `taskagent` не упоминает никакой хостинг: читает generic
+  `server_url` + `token` из кред и работает против любого сервера —
+  self-host или иного.
+- Из OSS-репозитория убраны cloud-ориентированный `install.sh` и его
+  GitHub Pages workflow; онбординг в облако из OSS больше не поставляется.
+
+### Сервер
+
+- Endpoint скачивания бинаря переехал с
+  `/v1/downloads/taskagent-mcp/{platform}` на
+  `/v1/downloads/taskagent/{platform}` и отдаёт единый бинарь.
+
+### Клиентские плагины
+
+- `taskagent-claude` делегирует запись policy бинарю `taskagent`, когда он
+  на `PATH`; иначе — bundled node-writer (вывод идентичен).
+- `taskagent-cursor` больше не хардкодит хостинг-URL в подсказках.
+
+### Документация
+
+- README переписан в более лаконичный, обзорный вид.
+
 ## 2026-05-29
 
 ### Архитектура: OSS core как версионированная зависимость
