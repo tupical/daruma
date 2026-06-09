@@ -380,6 +380,27 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             empty_schema(),
             Dom::Admin, D, Ann::Read,
         ),
+        tool(
+            "taskagent_workspace_resolve",
+            "Resolve/bind workspace for a path",
+            "Resolve a filesystem root to its logical workspace + default project via the server registry. Unknown roots are created-and-bound on first call (pass `create:false` to probe only); the resolved project is persisted as this scope's default. Use when starting in a repo taskagent has never seen.",
+            schema_workspace_resolve(),
+            Dom::Projects, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_workspace_list",
+            "List logical workspaces",
+            "List logical workspaces from the server registry: id, name, bound filesystem roots, and project count.",
+            empty_schema(),
+            Dom::Projects, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_project_move_workspace",
+            "Move project to workspace",
+            "Move a project into another logical workspace (registry API), optionally binding a filesystem root to the project.",
+            schema_project_move_workspace(),
+            Dom::Projects, F, Ann::WriteIdem,
+        ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "taskagent_ai_parse",
@@ -1793,6 +1814,52 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
+        "taskagent_workspace_resolve" => {
+            let ws = workspace::global();
+            let raw_path = args.get("scope_path").and_then(|v| v.as_str());
+            let root_path = match (raw_path, ws) {
+                (Some(p), Some(ws)) if !std::path::Path::new(p).is_absolute() => {
+                    std::path::Path::new(ws.key())
+                        .join(p)
+                        .to_string_lossy()
+                        .into_owned()
+                }
+                (Some(p), _) => p.to_string(),
+                (None, Some(ws)) => ws.key().to_string(),
+                (None, None) => anyhow::bail!("`scope_path` is required (no workspace state)"),
+            };
+            let mut body = json!({ "root_path": root_path });
+            if let Some(c) = args.get("create").and_then(|v| v.as_bool()) {
+                body["create"] = json!(c);
+            }
+            if let Some(w) = args.get("workspace_id").and_then(|v| v.as_str()) {
+                body["workspace_id"] = json!(w);
+            }
+            let resp = client
+                .post_json("/v1/workspace-registry/resolve", body)
+                .await?;
+            // Persist the resolved project as this scope's default so later
+            // unscoped calls hit it without re-resolving.
+            if let (Some(ws), Some(project_id)) = (
+                workspace::global(),
+                resp.get("project_id").and_then(|v| v.as_str()),
+            ) {
+                let _ = ws.set_default_project(project_id, Some(&root_path));
+            }
+            Ok(resp)
+        }
+        "taskagent_workspace_list" => client.get_json("/v1/workspace-registry").await,
+        "taskagent_project_move_workspace" => {
+            let project_id = required_string(&args, "project_id")?;
+            let workspace_id = required_string(&args, "workspace_id")?;
+            let mut body = json!({ "workspace_id": workspace_id });
+            if let Some(r) = args.get("root_path").and_then(|v| v.as_str()) {
+                body["root_path"] = json!(r);
+            }
+            client
+                .patch_json(&format!("/v1/projects/{project_id}/workspace"), body)
+                .await
+        }
         "taskagent_reserve_files" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
@@ -2949,6 +3016,29 @@ fn schema_release() -> Value {
 }
 
 // ── Work-lease schemas (parallel-agent file coordination) ───────────────────
+
+fn schema_workspace_resolve() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "scope_path": {"type":"string","description":"Filesystem root to resolve (defaults to this session's workspace key). Relative paths resolve from the workspace key."},
+            "create": {"type":"boolean","description":"Create-and-bind a logical workspace + default project for an unknown root (default true)."},
+            "workspace_id": {"type":"string","description":"Bind the root into this existing workspace instead of deriving one from the folder name."}
+        }
+    })
+}
+
+fn schema_project_move_workspace() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string"},
+            "workspace_id": {"type":"string","description":"Destination logical workspace id."},
+            "root_path": {"type":"string","description":"Optional filesystem root to bind to the project."}
+        },
+        "required":["project_id","workspace_id"]
+    })
+}
 
 fn schema_reserve_files() -> Value {
     json!({

@@ -59,7 +59,7 @@ job — competing/overlapping alternatives stay in `full`:
 | Domain | In `default` | In `full` only (rationale) |
 |--------|--------------|----------------------------|
 | Tasks | create, capture, get, update, list, search, comment, set_status, set_priority, complete, reopen, can_start | capture_batch, bulk_set_status (bulk = orchestration), split, move_project (rare), delete (destructive), lesson_recall |
-| Projects | project_list, project_use, workspace_info, healthz | project_create (rare), project_delete (destructive, two-step) |
+| Projects | project_list, project_use, workspace_info, healthz | project_create (rare), project_delete (destructive, two-step), workspace_resolve, workspace_list, project_move_workspace (registry ops) |
 | Plans | plan_create, plan_get, plan_list, plan_add_task, plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
 | Runs | run_start, run_complete, run_abort, run_note_append | run_start_step, run_finish_step, run_log, run_notes_list (step-level tracing) |
 | Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull (multi-agent orchestration) |

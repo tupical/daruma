@@ -211,6 +211,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/workspace-registry",
             get(list_logical_workspaces).post(create_logical_workspace),
         )
+        .route(
+            "/workspace-registry/resolve",
+            post(resolve_workspace_context),
+        )
         .route("/mcp", post(mcp_http))
         .route("/commands", post(dispatch_command))
         .route("/events", get(list_events))
@@ -1031,6 +1035,229 @@ async fn move_project_to_workspace(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {project_id}"))))?;
     Ok(Json(project))
+}
+
+#[derive(Deserialize)]
+struct ResolveWorkspaceContextBody {
+    /// Filesystem root the agent started in (absolute path).
+    root_path: String,
+    /// When true (default), an unknown root creates-or-binds a logical
+    /// workspace and a default project; when false, resolve only.
+    #[serde(default = "default_resolve_create")]
+    create: bool,
+    /// Bind the root into this existing workspace instead of deriving one.
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
+fn default_resolve_create() -> bool {
+    true
+}
+
+/// `POST /v1/workspace-registry/resolve` — map a filesystem root onto its
+/// logical workspace + default project, creating both on first contact.
+///
+/// Resolution order: longest `project_roots` prefix → that project (+ its
+/// workspace); else longest `workspace_roots` prefix → that workspace, with
+/// a default project created and bound on demand; else (with `create`)
+/// a new logical workspace named after the folder. Idempotent per root.
+async fn resolve_workspace_context(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ResolveWorkspaceContextBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let root = body.root_path.trim().trim_end_matches('/').to_string();
+    if root.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "root_path must not be empty",
+        )));
+    }
+    let inside = |path: &str, base: &str| -> bool {
+        path == base
+            || path
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    let pool = state.projects.pool();
+
+    // 1. Longest project_roots prefix wins.
+    let project_rows = sqlx::query("SELECT project_id, root_path FROM project_roots")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    let mut best: Option<(usize, String)> = None;
+    for row in &project_rows {
+        let pr: String = row
+            .try_get("root_path")
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        let base = pr.trim_end_matches('/');
+        if inside(&root, base) && best.as_ref().is_none_or(|(len, _)| base.len() > *len) {
+            let pid: String = row
+                .try_get("project_id")
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            best = Some((base.len(), pid));
+        }
+    }
+    if let Some((_, project_id)) = best {
+        let tenant: Option<String> =
+            sqlx::query_scalar("SELECT tenant_id FROM projects WHERE id = ?")
+                .bind(&project_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        // DB stores display-prefixed ids; the JSON API serializes plain.
+        let project_id = project_id.parse::<ProjectId>().map_err(|e| {
+            ApiError::from(CoreError::storage(format!("bad project_roots id: {e}")))
+        })?;
+        return Ok(Json(json!({
+            "resolved": true,
+            "workspace_id": tenant,
+            "project_id": project_id,
+            "created_workspace": false,
+            "created_project": false,
+        })));
+    }
+
+    // 2. Longest workspace_roots prefix → existing logical workspace.
+    let ws_rows = sqlx::query("SELECT tenant_id, root_path FROM workspace_roots")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    let mut ws_best: Option<(usize, String)> = None;
+    for row in &ws_rows {
+        let wr: String = row
+            .try_get("root_path")
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        let base = wr.trim_end_matches('/');
+        if inside(&root, base) && ws_best.as_ref().is_none_or(|(len, _)| base.len() > *len) {
+            let tid: String = row
+                .try_get("tenant_id")
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            ws_best = Some((base.len(), tid));
+        }
+    }
+    let explicit_ws = body
+        .workspace_id
+        .as_deref()
+        .map(validate_workspace_id)
+        .transpose()?;
+    let mut created_workspace = false;
+    let had_explicit_ws = explicit_ws.is_some();
+    let workspace_id = match explicit_ws.or(ws_best.map(|(_, t)| t)) {
+        Some(t) => {
+            let exists: Option<String> = sqlx::query_scalar("SELECT id FROM tenants WHERE id = ?")
+                .bind(&t)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            if exists.is_none() {
+                return Err(ApiError::from(CoreError::not_found(format!(
+                    "workspace {t}"
+                ))));
+            }
+            t
+        }
+        None => {
+            if !body.create {
+                return Ok(Json(json!({ "resolved": false })));
+            }
+            let name = std::path::Path::new(&root)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+                .to_string();
+            let id = taskagent_domain::slugify_title(&name);
+            let id = validate_workspace_id(&id)?;
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query(
+                "INSERT INTO tenants (id, name, status, created_at, updated_at) \
+                 VALUES (?, ?, 'active', ?, ?) ON CONFLICT(id) DO NOTHING",
+            )
+            .bind(&id)
+            .bind(&name)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            created_workspace = true;
+            id
+        }
+    };
+    if !body.create {
+        return Ok(Json(json!({
+            "resolved": true,
+            "workspace_id": workspace_id,
+            "project_id": Value::Null,
+            "created_workspace": false,
+            "created_project": false,
+        })));
+    }
+
+    // Bind the workspace root (idempotent) and create the default project.
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        if created_workspace || had_explicit_ws {
+            upsert_workspace_root(&mut tx, &workspace_id, &root, &now).await?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    }
+
+    let title = std::path::Path::new(&root)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CreateProject {
+                title: title.clone(),
+                description: Some(format!("Auto-created for workspace root {root}")),
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let project_id = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            taskagent_events::Event::ProjectCreated { project } => Some(project.id),
+            _ => None,
+        })
+        .ok_or_else(|| ApiError::from(CoreError::storage("project_created event missing")))?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    sqlx::query("UPDATE projects SET tenant_id = ?, updated_at = ? WHERE id = ?")
+        .bind(&workspace_id)
+        .bind(&now)
+        .bind(project_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    upsert_project_root(&mut tx, project_id, &root, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+
+    Ok(Json(json!({
+        "resolved": true,
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "created_workspace": created_workspace,
+        "created_project": true,
+    })))
 }
 
 fn validate_workspace_name(name: &str) -> Result<String, ApiError> {

@@ -48,6 +48,16 @@ and the MCP tool) accepts optional `targets` + `mode` and returns leases
 carrying tokens; the legacy `paths`-only call is unchanged. The MCP
 `taskagent_healthz` tool moved into the `default` profile.
 
+### Workspace auto-resolution
+
+`POST /v1/workspace-registry/resolve` maps a filesystem root onto its
+logical workspace + default project, creating and binding both on first
+contact (longest project-root prefix wins; `create:false` probes only;
+`workspace_id` targets an existing workspace). New MCP tools (full
+profile): `taskagent_workspace_resolve` (persists the resolved project
+as the scope default), `taskagent_workspace_list`, and
+`taskagent_project_move_workspace`.
+
 ### Scheduler correctness (multi-agent coordination, P2)
 
 The plan task resolver now honors cross-task `Blocks` relations (same
