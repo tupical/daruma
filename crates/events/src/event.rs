@@ -386,6 +386,16 @@ pub enum Event {
         occurred_at: Timestamp,
     },
 
+    /// An active task's `due_at` has passed without the task closing.
+    /// Emitted once per (task, due_at) value by the server's due-date
+    /// watchdog tick; webhook subscribers receive it as `task.due`.
+    TaskDueElapsed {
+        task_id: TaskId,
+        /// The deadline that elapsed (the task's `due_at` at notification time).
+        due_at: Timestamp,
+        at: Timestamp,
+    },
+
     /// An existing relation's `kind` was transitioned (§3.7.2 / LIN A.3).
     ///
     /// Today this is emitted alongside `TaskUnblocked` when a blocker reaches
@@ -502,6 +512,7 @@ impl Event {
             Event::TaskLinked { .. } => "task.linked",
             Event::TaskUnlinked { .. } => "task.unlinked",
             Event::TaskUnblocked { .. } => "task.unblocked",
+            Event::TaskDueElapsed { .. } => "task.due",
             Event::TaskRelationKindChanged { .. } => "task.relation_kind_changed",
             // Documents (PR1)
             Event::DocumentCreated { .. } => "document_created",
@@ -551,6 +562,7 @@ impl Event {
             | Event::TaskUnlinked { from, .. }
             | Event::TaskRelationKindChanged { from, .. } => Some(*from),
             Event::TaskUnblocked { task_id, .. } => Some(*task_id),
+            Event::TaskDueElapsed { task_id, .. } => Some(*task_id),
             // All remaining plan/run/session/signal events do not resolve to a single task.
             _ => None,
         }
@@ -599,6 +611,7 @@ impl Event {
             | Event::TaskLinked { .. }
             | Event::TaskUnlinked { .. }
             | Event::TaskUnblocked { .. }
+            | Event::TaskDueElapsed { .. }
             | Event::TaskRelationKindChanged { .. } => Channel::Tasks,
 
             // ── Comments channel ──────────────────────────────────────────────

@@ -850,6 +850,26 @@ impl ActivityRepo {
                 .await?;
             }
 
+            Event::TaskDueElapsed {
+                task_id, due_at, ..
+            } => {
+                let project_id = self.inherit_project_id(*task_id).await?;
+                self.insert_row(Activity {
+                    id: ActivityId::new(),
+                    task_id: Some(*task_id),
+                    project_id,
+                    actor: actor.clone(),
+                    verb: Verb::DueElapsed,
+                    field: Some("due_at".into()),
+                    old_value: None,
+                    new_value: Some(due_at.to_rfc3339()),
+                    occurred_at,
+                    event_id,
+                    seq,
+                })
+                .await?;
+            }
+
             // §3.7.2 / LIN A.3 — historical relation transition (Blocks → WasBlocking).
             Event::TaskRelationKindChanged {
                 relation_id,

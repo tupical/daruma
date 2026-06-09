@@ -56,6 +56,8 @@ pub enum Verb {
     Deleted,
     /// `TaskSplitGenerated`
     SplitGenerated,
+    /// `TaskDueElapsed` — the task's due date passed while still open.
+    DueElapsed,
 
     // ── Project lifecycle ─────────────────────────────────────────────────
     ProjectCreated,
@@ -154,6 +156,7 @@ mod tests {
             Verb::Completed,
             Verb::Deleted,
             Verb::SplitGenerated,
+            Verb::DueElapsed,
             Verb::ProjectCreated,
             Verb::ProjectUpdated,
             Verb::Commented,

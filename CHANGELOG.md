@@ -25,6 +25,21 @@ tools return an actionable error instead of dispatching. See
 - Tool descriptions were tightened for decision-making (shorter, fewer
   cross-tool warnings) without changing names or input schemas.
 
+### task.due webhooks
+
+A due-date watchdog tick (`TASKAGENT_DUE_TICK_SECS`, default 60 s, `0`
+disables) now emits a `task.due` event when an active task's `due_at`
+passes — once per (task, deadline) value, deduped across restarts via the
+`task_due_notifications` projection (migration 0032). Webhook
+subscriptions pick it up by kind like any other event; changing the
+deadline re-arms the notification.
+
+### AI prompt hardening
+
+Grounding context (task bodies, comments, event payloads) interpolated
+into AI prompts is now fenced as explicit untrusted data with embedded
+fence-escape neutralization. See docs/guides/ai-agent.md.
+
 ## 0.2.0
 
 ### One unified `taskagent` binary

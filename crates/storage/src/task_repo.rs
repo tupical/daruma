@@ -218,6 +218,23 @@ impl TaskRepo {
                     .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
+            Event::TaskDueElapsed {
+                task_id,
+                due_at,
+                at,
+            } => {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO task_due_notifications \
+                     (task_id, due_at, notified_at) VALUES (?, ?, ?)",
+                )
+                .bind(task_id.to_string())
+                .bind(due_at.to_rfc3339())
+                .bind(at.to_rfc3339())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+
             Event::TaskUpdated { task_id, patch } => {
                 let mut tx = self.begin_tx().await?;
                 if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
@@ -305,6 +322,11 @@ impl TaskRepo {
                     .map(|task| task_value(&task))
                     .transpose()?;
                 sqlx::query("DELETE FROM tasks WHERE id = ?")
+                    .bind(task_id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                sqlx::query("DELETE FROM task_due_notifications WHERE task_id = ?")
                     .bind(task_id.to_string())
                     .execute(&mut *tx)
                     .await
@@ -404,6 +426,47 @@ impl TaskRepo {
             .begin()
             .await
             .map_err(|e| CoreError::storage(e.to_string()))
+    }
+
+    /// Tasks whose `due_at` has passed while still in a non-terminal
+    /// status and that have not yet been notified for *this* deadline
+    /// value (`task.due` webhook watchdog, capped at `limit`).
+    pub async fn list_due_unnotified(
+        &self,
+        now: taskagent_shared::Timestamp,
+        limit: u32,
+    ) -> Result<Vec<(TaskId, taskagent_shared::Timestamp)>> {
+        let rows = sqlx::query(
+            "SELECT t.id, t.due_at FROM tasks t \
+             WHERE t.due_at IS NOT NULL \
+               AND t.due_at < ? \
+               AND t.status IN ('inbox', 'todo', 'in_progress', 'in_review') \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM task_due_notifications n \
+                   WHERE n.task_id = t.id AND n.due_at = t.due_at\
+               ) \
+             ORDER BY t.due_at ASC LIMIT ?",
+        )
+        .bind(now.to_rfc3339())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let id_s: String = row
+                .try_get("id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            let due_s: String = row
+                .try_get("due_at")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            let task_id = id_s
+                .parse::<TaskId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            out.push((task_id, parse_ts(&due_s)?));
+        }
+        Ok(out)
     }
 
     async fn upsert_task_tx(&self, tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {

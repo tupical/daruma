@@ -291,6 +291,28 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // ── Due-date watchdog (task.due webhooks) ────────────────────────────────
+    {
+        let due_tick_secs: u64 = std::env::var("TASKAGENT_DUE_TICK_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+        if due_tick_secs > 0 {
+            let handler_bg = handler.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(due_tick_secs));
+                loop {
+                    tick.tick().await;
+                    match handler_bg.tick_due_tasks(chrono::Utc::now()).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(count = n, "task.due notifications emitted"),
+                        Err(e) => tracing::warn!(err = %e, "due-date watchdog tick failed"),
+                    }
+                }
+            });
+        }
+    }
+
     // ── Router ────────────────────────────────────────────────────────────────
     let app = routes::router(state).layer(cors::cors_layer());
 

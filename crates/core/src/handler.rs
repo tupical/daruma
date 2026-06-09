@@ -358,6 +358,26 @@ impl CommandHandler {
         Ok(emitted)
     }
 
+    /// Due-date watchdog: emit `TaskDueElapsed` (webhook kind `task.due`)
+    /// for every active task whose `due_at` has passed and that has not
+    /// been notified for this deadline value yet. Returns the number of
+    /// events emitted. Idempotent per (task, due_at): the projection in
+    /// `task_due_notifications` dedupes across ticks and restarts.
+    pub async fn tick_due_tasks(&self, now: taskagent_shared::Timestamp) -> Result<usize> {
+        let due = self.tasks.list_due_unnotified(now, 100).await?;
+        let mut emitted = 0usize;
+        for (task_id, due_at) in due {
+            self.persist_signal_event(Event::TaskDueElapsed {
+                task_id,
+                due_at,
+                at: now,
+            })
+            .await?;
+            emitted += 1;
+        }
+        Ok(emitted)
+    }
+
     /// Persist a single system-authored event (no command validation), apply
     /// it to all projections, and publish on the bus. Used by background
     /// signals such as the liveness watchdog (§3.7.4).

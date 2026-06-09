@@ -24,6 +24,12 @@ impl CommandBus {
         Self { handler }
     }
 
+    /// Clone out the underlying handler — used by background watchdog
+    /// tasks (liveness, due-date) and integration tests.
+    pub fn handler(&self) -> Arc<CommandHandler> {
+        self.handler.clone()
+    }
+
     /// Dispatch a command and return the persisted event envelopes.
     pub async fn dispatch(&self, cmd: Command, actor: Actor) -> Result<Vec<EventEnvelope>> {
         self.handler.handle(cmd, actor).await
