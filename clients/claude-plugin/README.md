@@ -61,7 +61,7 @@
 # 1. taskagent — build from source (Rust workspace)
 git clone https://github.com/tupical/taskagent.git
 cd taskagent
-cargo build --release -p taskagent-server -p taskagent-mcp-bin
+cargo build --release -p taskagent-server -p taskagent-cli
 
 # 2. start the HTTP server (keep this running)
 ./target/release/taskagent-server
@@ -222,7 +222,7 @@ OPENAI_API_KEY=sk-... ./target/release/taskagent-server
 ```bash
 taskagent-claude update                                  # taskagent-claude + omc
 cd /path/to/taskagent && git pull \
-  && cargo build --release -p taskagent-server -p taskagent-mcp-bin   # taskagent
+  && cargo build --release -p taskagent-server -p taskagent-cli   # taskagent
 npm i -g oh-my-claude-sisyphus@latest                    # oh-my-claudecode (manual)
 ```
 

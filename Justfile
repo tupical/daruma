@@ -32,7 +32,7 @@ server:
     CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" TASKAGENT_DATA_DIR="{{data_dir}}" cargo run -p taskagent-server
 
 mcp:
-    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p taskagent-mcp-bin
+    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p taskagent-cli -- mcp
 
 desktop:
     CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p taskagent-desktop

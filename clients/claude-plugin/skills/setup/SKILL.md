@@ -22,7 +22,7 @@ Credentials may live at **`~/.agents/taskagent/credentials.json`** (Windows: `%U
 ```bash
 git clone https://github.com/tupical/taskagent
 cd taskagent
-cargo build --release -p taskagent-server -p taskagent-mcp-bin
+cargo build --release -p taskagent-server -p taskagent-cli
 ./target/release/taskagent-server
 claude mcp add taskagent -- ./target/release/taskagent-mcp
 ```
@@ -53,7 +53,7 @@ Requires Node.js ≥ 20.
 `taskagent-claude update` checks `taskagent-claude` (npm) and `omc`. taskagent itself has to be pulled and rebuilt manually:
 
 ```
-cd <taskagent-repo> && git pull && cargo build --release -p taskagent-server -p taskagent-mcp-bin
+cd <taskagent-repo> && git pull && cargo build --release -p taskagent-server -p taskagent-cli
 ```
 
 ## Step 5 — Re-verify

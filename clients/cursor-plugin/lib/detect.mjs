@@ -252,7 +252,7 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
           : `mcp command: ${resolvedCommand.command}${resolvedCommand.source === "discovered" ? " (auto-discovered)" : ""}`
         : [
             `mcp command missing: ${configuredCommand ?? "taskagent-mcp"} not executable`,
-            "  cargo build --release -p taskagent-mcp-bin",
+            "  cargo build --release -p taskagent-cli",
             "  taskagent-cursor install --transport stdio --global --command \"$PWD/target/release/taskagent-mcp\"",
           ].join("\n         "),
       http.ok
@@ -262,7 +262,7 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
         ? `mcp.json: registered (global=${registration.global.present}, project=${registration.project.present})`
         : "mcp.json: taskagent entry missing — run `taskagent-cursor install --global`",
     ].join("\n"),
-    updateHint: "cd <taskagent repo> && git pull && cargo build --release -p taskagent-server -p taskagent-mcp-bin",
+    updateHint: "cd <taskagent repo> && git pull && cargo build --release -p taskagent-server -p taskagent-cli",
   };
 }
 
