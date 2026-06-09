@@ -198,7 +198,7 @@ export async function detectTaskagent() {
     installHint: [
       "Self-host (build from source — server + MCP shim):",
       "  git clone https://github.com/tupical/taskagent && cd taskagent",
-      "  cargo build --release -p taskagent-server -p taskagent-mcp-bin",
+      "  cargo build --release -p taskagent-server -p taskagent-cli",
       "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
       "Register the MCP shim with Claude Code:",
       "  claude mcp add taskagent -- taskagent-mcp",
@@ -218,7 +218,7 @@ export async function detectTaskagent() {
         ? `HTTP server: ${httpProbe.status}${httpProbe.version ? ` (v${httpProbe.version})` : ""}`
         : `HTTP server unreachable: ${httpProbe.error}`,
     ].join("\n"),
-    updateHint: "cd <taskagent repo> && git pull && cargo build --release -p taskagent-server -p taskagent-mcp-bin",
+    updateHint: "cd <taskagent repo> && git pull && cargo build --release -p taskagent-server -p taskagent-cli",
   };
 }
 

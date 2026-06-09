@@ -49,7 +49,8 @@ pub fn build_research_prompt(query: &str, context: &[Task]) -> String {
         PromptRegistry::load("research", "default", &DefaultCtx { query })
             .expect("bundled research prompt is well-formed")
     } else {
-        let tasks_block = format_task_context(context);
+        let tasks_block =
+            crate::untrusted::wrap_untrusted("task context", &format_task_context(context));
         PromptRegistry::load(
             "research",
             "with_context",

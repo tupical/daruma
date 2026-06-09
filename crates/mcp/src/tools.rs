@@ -62,504 +62,871 @@ fn consume_confirm_token(token: &str, project_id: &str) -> std::result::Result<(
     Ok(())
 }
 
+/// Tool surface profile — which subset of the catalogue is advertised.
+///
+/// * `Default` — compact, workflow-first surface for everyday agent work.
+/// * `Full`    — the complete catalogue (backward-compatible superset).
+///
+/// Resolution order: explicit override (CLI `--profile`, `/v1/mcp?profile=`)
+/// → `TASKAGENT_MCP_PROFILE` env → built-in `Default`. Clients that need the
+/// advanced tools must opt into `full` (see docs/mcp/PROFILES.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolProfile {
+    Default,
+    Full,
+}
+
+impl ToolProfile {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "default" | "core" => Some(Self::Default),
+            "full" | "all" | "compat" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// Resolve from `TASKAGENT_MCP_PROFILE`; unset or unrecognized → `Default`.
+    pub fn from_env() -> Self {
+        std::env::var("TASKAGENT_MCP_PROFILE")
+            .ok()
+            .and_then(|v| Self::parse(&v))
+            .unwrap_or(Self::Default)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Full => "full",
+        }
+    }
+}
+
+/// Internal grouping of tools by workflow domain. Never serialized to MCP
+/// clients; exists so catalogue audits and profile composition stay explicit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolDomain {
+    Tasks,
+    Projects,
+    Plans,
+    Runs,
+    Coordination,
+    Sessions,
+    Signals,
+    Relations,
+    WorkspaceGraph,
+    Documents,
+    History,
+    Ai,
+    Events,
+    Admin,
+}
+
+/// MCP `ToolAnnotations` (spec 2025-06-18): behavior hints for clients.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    pub title: &'static str,
+    pub read_only_hint: bool,
+    pub destructive_hint: bool,
+    pub idempotent_hint: bool,
+    pub open_world_hint: bool,
+}
+
+/// Annotation presets. Every tool entry must pick one — there is no
+/// `Default` impl on purpose, so a new tool cannot skip the decision.
+#[derive(Clone, Copy, Debug)]
+enum Ann {
+    /// Pure read: no state change, repeatable.
+    Read,
+    /// Mutating, additive (create/append), not idempotent.
+    Write,
+    /// Mutating but idempotent (set-style updates, releases).
+    WriteIdem,
+    /// Deletes/archives/overwrites user-visible data.
+    Destructive,
+    /// LLM-backed, talks to an external model, no persistent write.
+    AiRead,
+    /// LLM-backed, talks to an external model, persists results.
+    AiWrite,
+}
+
+impl Ann {
+    fn build(self, title: &'static str) -> ToolAnnotations {
+        let (read_only, destructive, idempotent, open_world) = match self {
+            Ann::Read => (true, false, true, false),
+            Ann::Write => (false, false, false, false),
+            Ann::WriteIdem => (false, false, true, false),
+            Ann::Destructive => (false, true, false, false),
+            Ann::AiRead => (true, false, false, true),
+            Ann::AiWrite => (false, false, false, true),
+        };
+        ToolAnnotations {
+            title,
+            read_only_hint: read_only,
+            destructive_hint: destructive,
+            idempotent_hint: idempotent,
+            open_world_hint: open_world,
+        }
+    }
+}
+
 /// Static description of a tool, returned by `tools/list`.
+///
+/// `domain` and `profile` are internal catalogue metadata (skipped in
+/// serialization); everything else maps 1:1 onto the MCP `Tool` object.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ToolDefinition {
     pub name: &'static str,
+    pub title: &'static str,
     pub description: &'static str,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
+    pub annotations: ToolAnnotations,
+    #[serde(skip)]
+    pub domain: ToolDomain,
+    #[serde(skip)]
+    pub profile: ToolProfile,
 }
 
-/// Full catalogue of tools the MCP server advertises. AC-7 requires ≥10
-/// tools including `taskagent_subscribe_project`, `taskagent_inbox_pull`,
-/// `taskagent_comment`, and `taskagent_reopen`.
+#[allow(clippy::too_many_arguments)]
+fn tool(
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    input_schema: Value,
+    domain: ToolDomain,
+    profile: ToolProfile,
+    ann: Ann,
+) -> ToolDefinition {
+    ToolDefinition {
+        name,
+        title,
+        description,
+        input_schema,
+        annotations: ann.build(title),
+        domain,
+        profile,
+    }
+}
+
+/// Full catalogue of tools (the `full` profile). Use
+/// [`tool_definitions_for`] to get a profile-filtered surface.
 pub fn tool_definitions() -> Vec<ToolDefinition> {
+    use ToolDomain as Dom;
+    const D: ToolProfile = ToolProfile::Default;
+    const F: ToolProfile = ToolProfile::Full;
+
     vec![
-        ToolDefinition {
-            name: "taskagent_create",
-            description: "Create a new task. `title` is required; everything else is optional.",
-            input_schema: schema_create(),
-        },
-        ToolDefinition {
-            name: "taskagent_capture",
-            description: "Quick-capture a fleeting idea as an inbox task (priority p3). Uses the resolved repo project when unambiguous; pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Pass `project_id: null` for a project-less inbox task.",
-            input_schema: schema_capture(),
-        },
-        ToolDefinition {
-            name: "taskagent_capture_batch",
-            description: "Capture multiple inbox tasks in one call. Each string becomes a separate task (priority p3).",
-            input_schema: schema_capture_batch(),
-        },
-        ToolDefinition {
-            name: "taskagent_get",
-            description: "Fetch a single task by its identifier. Use only when you need fields a list/search row does not already carry. Do NOT re-fetch rows a recent `taskagent_list` or `taskagent_search` already returned — those rows already include title, status, and priority.",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_update",
-            description: "Update a task's title, description, or due date. The change is dispatched as `update_task`, so it is recorded in the task event/activity log.",
-            input_schema: schema_update(),
-        },
-        ToolDefinition {
-            name: "taskagent_list",
-            description: "List tasks. **This is the default tool for \"what's open / inventory / audit / close what's done\"** — `status=active` already excludes done/cancelled; do NOT substitute `taskagent_search` or `taskagent_workspacegraph_search` to enumerate open work. **Required `status`:** single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list, shortcut `active` (non-terminal), or `all`. **Agent safety:** do not call with `status=all` unless the user explicitly confirmed in this turn — `all` returns the full archive and can produce a very large response that fills the context window; prefer `active` or a narrow status filter. Optional `project_id` filters; pass `inbox` for tasks with no project and `all` to explicitly query every project. When omitted, the resolved repo project is used only if unambiguous; if no project is resolved, the tool returns a compact project-selection response instead of listing tasks from every project. Select one with `taskagent_project_use` to persist the default for later calls.",
-            input_schema: schema_list(),
-        },
-        ToolDefinition {
-            name: "taskagent_search",
-            description: "Full-text lookup across tasks, comments, and plans for a named keyword/topic. Use ONLY when the user names concrete text to find — to list open work or take inventory use `taskagent_list status=active` instead (cheaper, scoped). Always pass a `limit`. Scope defaults to all three domains; project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
-            input_schema: schema_search(),
-        },
-        ToolDefinition {
-            name: "taskagent_lesson_recall",
-            description: "Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix.",
-            input_schema: schema_lesson_recall(),
-        },
-        ToolDefinition {
-            name: "taskagent_project_list",
-            description: "List every project (id, title, description).",
-            input_schema: empty_schema(),
-        },
-        ToolDefinition {
-            name: "taskagent_project_create",
-            description: "Create a new project.",
-            input_schema: schema_project_create(),
-        },
-        ToolDefinition {
-            name: "taskagent_project_use",
-            description: "Bind a workspace/repo scope to a taskagent project. When MCP is running in a folder that contains multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
-            input_schema: schema_project_use(),
-        },
-        ToolDefinition {
-            name: "taskagent_project_delete",
-            description: "Delete a project. Two-step, destructive: (1) call with only `id` to receive a one-time `confirm_token` (TTL 5 min) plus an emptiness/contents summary; (2) call again with the same `id`, the issued `confirm_token`, AND `confirm` set to the project's exact title. The server still refuses unless the project has 0 tasks and 0 plans.",
-            input_schema: schema_project_delete(),
-        },
-        ToolDefinition {
-            name: "taskagent_workspace_info",
-            description: "Show this MCP session's workspace key, inferred project, inference error, and known repo scopes.",
-            input_schema: empty_schema(),
-        },
-        ToolDefinition {
-            name: "taskagent_set_status",
-            description: "Set a task's status (inbox / todo / in_progress / done).",
-            input_schema: schema_set_status(),
-        },
-        ToolDefinition {
-            name: "taskagent_set_priority",
-            description: "Set a task's priority (p0 / p1 / p2 / p3).",
-            input_schema: schema_set_priority(),
-        },
-        ToolDefinition {
-            name: "taskagent_move_project",
-            description: "Move a task to another project while preserving its id, comments, relations, and event history. Pass `project_id`, `project_scope`, or `scope_path`.",
-            input_schema: schema_move_project(),
-        },
-        ToolDefinition {
-            name: "taskagent_complete",
-            description: "Mark a task as completed.",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_delete",
-            description: "Delete a task.",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_split",
-            description: "Split a parent task into 2+ subtasks.",
-            input_schema: schema_split(),
-        },
-        // ── Bulk task ops (§3.7.7 / LIN B.7) ──────────────────────────────
-        ToolDefinition {
-            name: "taskagent_bulk_set_status",
-            description: "Atomically set the same status on up to 50 tasks. Duplicate ids are deduped; fail-fast if any id is missing.",
-            input_schema: schema_bulk_set_status(),
-        },
-        ToolDefinition {
-            name: "taskagent_bulk_attach_to_plan",
-            description: "Atomically attach up to 50 tasks to a single plan. Already-attached tasks are skipped (idempotent); fail-fast if any task or the plan is missing.",
-            input_schema: schema_bulk_attach_to_plan(),
-        },
-        ToolDefinition {
-            name: "taskagent_ai_parse",
-            description: "Have the AI parse free-form text into a Command.",
-            input_schema: schema_ai_parse(),
-        },
-        ToolDefinition {
-            name: "taskagent_ai_decompose",
-            description: "Have the AI decompose a task into subtasks. Optional `hint` (free-form string, typically an `expansion_hint` from `taskagent_ai_analyze_complexity`) is appended to the prompt as additional guidance.",
-            input_schema: schema_ai_decompose(),
-        },
-        ToolDefinition {
-            name: "taskagent_ai_analyze_complexity",
-            description: "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `taskagent_ai_decompose { hint }` to chain analyze → decompose.",
-            input_schema: schema_ai_analyze_complexity(),
-        },
-        ToolDefinition {
-            name: "taskagent_ai_scope",
-            description: "Rewrite a task's title + description at a broader (`up`) or narrower (`down`) scope. Returns the proposed `Command::UpdateTask` JSON; the caller decides whether to dispatch.",
-            input_schema: schema_ai_scope(),
-        },
-        ToolDefinition {
-            name: "taskagent_research",
-            description: "Run a free-form research query against the AI provider, optionally grounded in the bodies of one or more existing tasks (`context_task_ids`). When `save_to_task_id` is set, the answer is also persisted as a Research comment on that task.",
-            input_schema: schema_ai_research(),
-        },
-        ToolDefinition {
-            name: "taskagent_comment",
-            description: "Add a comment to a task.",
-            input_schema: schema_comment(),
-        },
-        ToolDefinition {
-            name: "taskagent_reopen",
-            description: "Reopen a completed task (sets status back to `todo`).",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_inbox_pull",
-            description: "Poll a single agent's inbox; optionally long-poll up to 60 s.",
-            input_schema: schema_inbox_pull(),
-        },
-        ToolDefinition {
-            name: "taskagent_subscribe_project",
-            description: "One-shot snapshot of events for a project (the streaming form lives on /v1/ws).",
-            input_schema: schema_subscribe_project(),
-        },
-        ToolDefinition {
-            name: "taskagent_events_since",
-            description: "Load events with `seq > since`, capped at `limit` (default 100).",
-            input_schema: schema_events_since(),
-        },
-        ToolDefinition {
-            name: "taskagent_healthz",
-            description: "Server health check — no auth required.",
-            input_schema: empty_schema(),
-        },
-        // ── Plan tools (W3.2) ─────────────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_plan_create",
-            description: "Create a new execution plan for a project.",
-            input_schema: schema_plan_create(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_update",
-            description: "Update a plan's title, description, goal, success criteria, or parent. Pass null for parent_plan_id to unparent (move to root); omit the field to leave the parent unchanged.",
-            input_schema: schema_plan_update(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_get",
-            description: "Fetch a plan by id, including progress metrics. This is the cheap way to summarize a plan's status — prefer ONE `taskagent_plan_get` over enumerating finished plans/tasks with `taskagent_plan_list status=completed` or `taskagent_search`.",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_list",
-            description: "List plans. **Required `status`:** `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. **Agent safety:** do not call with `status=all` unless the user explicitly confirmed in this turn — `all` returns every plan (including completed/abandoned) and can produce a very large response; prefer `draft,active` or a narrow filter. **Do NOT enumerate `status=completed` to summarize progress** — each completed plan carries its full goal + success_criteria, so this is very token-heavy; call `taskagent_plan_get` on the one relevant plan instead. `project_id` uses the resolved repo project when unambiguous. Pass `all` as `project_id` to query across projects, or pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders.",
-            input_schema: schema_plan_list(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_add_task",
-            description: "Attach a task to a plan at an optional position with optional dependencies.",
-            input_schema: schema_plan_add_task(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_remove_task",
-            description: "Detach a task from a plan. Aborts any in-progress step atomically.",
-            input_schema: schema_plan_task_ref(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_reorder",
-            description: "Replace the full task order within a plan.",
-            input_schema: schema_plan_reorder(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_archive",
-            description: "Archive a plan and atomically abort all active runs.",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_set_status",
-            description: "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
-            input_schema: schema_plan_set_status(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_next_task",
-            description: "Return the first eligible task in a plan for a given run, respecting dependencies.",
-            input_schema: schema_plan_next_task(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_progress",
-            description: "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
-            input_schema: schema_with_id("plan_id"),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_drain_next",
-            description: "Canonical primitive for parallel agents: atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Concurrent callers each get a *distinct* task — never the same one — via a claim-aware resolver + compare-and-set with retry. Returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
-            input_schema: schema_plan_drain_next(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_graph",
-            description: "Read a plan's execution DAG: task nodes plus depends_on and blocks edges.",
-            input_schema: schema_with_plan_id(),
-        },
-        ToolDefinition {
-            name: "taskagent_plan_fanout",
-            description: "Return parallel execution waves for a plan, respecting depends_on and active Blocks relations.",
-            input_schema: schema_with_plan_id(),
-        },
-        ToolDefinition {
-            name: "taskagent_can_start",
-            description: "Check whether a task is ready to start, returning active blockers with title and status.",
-            input_schema: schema_can_start(),
-        },
-        // ── WorkspaceGraph tools (P3) ─────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_workspacegraph_status",
-            description: "WorkspaceGraph index health: schema version, node/edge counts, event lag, and last error.",
-            input_schema: empty_schema(),
-        },
-        ToolDefinition {
-            name: "taskagent_workspacegraph_context",
-            description: "Immediate neighborhood of a graph node (incoming/outgoing edges plus ranked neighbors).",
-            input_schema: schema_workspacegraph_context(),
-        },
-        ToolDefinition {
-            name: "taskagent_workspacegraph_related",
-            description: "Breadth-first related nodes around a graph node, capped by depth and limit.",
-            input_schema: schema_workspacegraph_related(),
-        },
-        ToolDefinition {
-            name: "taskagent_workspacegraph_search",
-            description: "Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. NOT for listing open tasks or inventory: that is `taskagent_list status=active` (one scoped call vs a multi-KB graph dump). project_id uses the resolved repo project when unambiguous, or pass `all` to search globally.",
-            input_schema: schema_workspacegraph_search(),
-        },
-        ToolDefinition {
-            name: "taskagent_workspacegraph_impact",
-            description: "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges.",
-            input_schema: schema_workspacegraph_impact(),
-        },
-        // ── Run tools (W3.2) ──────────────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_run_start",
-            description: "Start a new agent run of a plan.",
-            input_schema: schema_run_start(),
-        },
-        ToolDefinition {
-            name: "taskagent_run_start_step",
-            description: "Mark the beginning of a task step within a run.",
-            input_schema: schema_run_step(),
-        },
-        ToolDefinition {
-            name: "taskagent_run_finish_step",
-            description: "Mark the completion of a task step with an outcome.",
-            input_schema: schema_run_finish_step(),
-        },
-        ToolDefinition {
-            name: "taskagent_run_complete",
-            description: "Terminate a run successfully.",
-            input_schema: schema_with_id("run_id"),
-        },
-        ToolDefinition {
-            name: "taskagent_run_abort",
-            description: "Abort a run with a reason (e.g. plan archived or explicit stop).",
-            input_schema: schema_run_abort(),
-        },
-        // ── Run note tools (§3.8.2) ───────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_run_note_append",
-            description: "Append a free-form journal note to an active run. The actor is taken from the MCP session token; body is required (≤ 4 KiB).",
-            input_schema: schema_run_note_append(),
-        },
-        ToolDefinition {
-            name: "taskagent_run_log",
-            description: "Append a leveled progress log entry to an active run. Uses the run notes stream with body formatted as `[level] message`.",
-            input_schema: schema_run_log(),
-        },
-        ToolDefinition {
-            name: "taskagent_run_notes_list",
-            description: "List journal notes for a run in chronological order. Optional `limit` (default 50, max 500) and `after` (cursor = id of last note from previous page).",
-            input_schema: schema_run_notes_list(),
-        },
-        // ── Claim tools (W3.2) ────────────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_claim",
-            description: "Acquire an optimistic claim on a task for a given TTL in seconds.",
-            input_schema: schema_claim(),
-        },
-        ToolDefinition {
-            name: "taskagent_release",
-            description: "Release a previously-acquired task claim.",
-            input_schema: schema_release(),
-        },
-        // ── Work-lease tools (parallel-agent file coordination) ──────────
-        ToolDefinition {
-            name: "taskagent_reserve_files",
-            description: "Reserve file/path globs for a task so parallel agents don't edit the same files. Pass repo-relative `paths` (dirs or files; `*`/`**` globs allowed). Returns `reserved:true` on success, or `reserved:false` with `conflict_path` + `holder` when another agent owns an overlapping area — then take a different task. Re-reserving extends the TTL and adds new paths. Leases auto-release when the task closes or the TTL lapses.",
-            input_schema: schema_reserve_files(),
-        },
-        ToolDefinition {
-            name: "taskagent_release_files",
-            description: "Release all file/path leases held by an agent for a task. Usually automatic on task completion; call explicitly to free files early.",
-            input_schema: schema_release_files(),
-        },
-        ToolDefinition {
-            name: "taskagent_active_work",
-            description: "List the active work backlog: live file/path leases (who is touching which files) for a project. Use before reserving to see contended areas. Pass `project_id` to scope; omit for all.",
-            input_schema: schema_active_work(),
-        },
-        // ── Project-wide ready pool ──────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_ready",
-            description: "List the project-wide ready pool: tasks across ALL active plans whose dependencies are satisfied and that no other agent holds. The read-only view behind `taskagent_ready_drain`.",
-            input_schema: schema_ready(),
-        },
-        ToolDefinition {
-            name: "taskagent_ready_drain",
-            description: "Atomically claim the next ready task across the project's active plans (not a single plan). The canonical primitive for 'close all tasks for this project' with many agents — concurrent callers each get a distinct task; sets it in_progress. Returns null when nothing is ready. Loop until null.",
-            input_schema: schema_ready_drain(),
-        },
-        ToolDefinition {
-            name: "taskagent_doctor",
-            description: "Reconcile parallel-agent state for a project: reports tasks stuck `in_progress` with no live claim (an agent likely crashed and its claim TTL lapsed). These are reclaimable — reopen or re-drain them.",
-            input_schema: schema_doctor(),
-        },
-        ToolDefinition {
-            name: "taskagent_suggest_files",
-            description: "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `taskagent_reserve_files` at claim time. Heuristic only (no code index) — review before reserving.",
-            input_schema: schema_suggest_files(),
-        },
-        // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
-        ToolDefinition {
-            name: "taskagent_session_start",
-            description: "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
-            input_schema: schema_session_start(),
-        },
-        ToolDefinition {
-            name: "taskagent_session_get",
-            description: "Fetch an agent session by id (includes metadata: client, model, chat_id, transcript_path).",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_session_list",
-            description: "List agent sessions for an agent id (defaults to this MCP process).",
-            input_schema: schema_session_list(),
-        },
-        ToolDefinition {
-            name: "taskagent_session_end",
-            description: "End an agent session.",
-            input_schema: schema_with_id("id"),
-        },
-        ToolDefinition {
-            name: "taskagent_session_set_plan",
-            description: "Replace the session's plan-steps list (max 100 steps). Linear B.1.",
-            input_schema: schema_session_set_plan(),
-        },
-        ToolDefinition {
-            name: "taskagent_session_artifact",
-            description: "Attach a file/url/diff artifact reference to an agent session.",
-            input_schema: schema_session_artifact(),
-        },
-        ToolDefinition {
-            name: "taskagent_session_artifacts_list",
-            description: "List artifact references attached to an agent session.",
-            input_schema: schema_with_id("id"),
-        },
-        // ── Signal tools (W3.2 / Linear B.5) ─────────────────────────────
-        ToolDefinition {
-            name: "taskagent_signal_send",
-            description: "Send a typed signal to a run (stop / elicit / auth_required).",
-            input_schema: schema_signal_send(),
-        },
-        ToolDefinition {
-            name: "taskagent_signal_respond",
-            description: "Human responds to an elicitation request on a run.",
-            input_schema: schema_signal_respond(),
-        },
-        // ── Relation tools (§3.2 W3.2) ───────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_link",
-            description: "Create a typed relation (blocks / relates_to / duplicates) between two tasks. Idempotent via `client_command_id`.",
-            input_schema: schema_link(),
-        },
-        ToolDefinition {
-            name: "taskagent_unlink",
-            description: "Delete a relation by its id.",
-            input_schema: schema_unlink(),
-        },
-        ToolDefinition {
-            name: "taskagent_relations",
-            description: "Read 5-group relations projection for a task (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
-            input_schema: schema_relations(),
-        },
-        // ── Document tools (PR1 §7) ───────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_doc_create",
-            description: "Create a markdown document for a project. `kind` is `interview` or `human_log`; multiple docs of the same kind are allowed.",
-            input_schema: schema_doc_create(),
-        },
-        ToolDefinition {
-            name: "taskagent_doc_get",
-            description: "Fetch a document by id, including its full markdown body.",
-            input_schema: schema_with_id("document_id"),
-        },
-        ToolDefinition {
-            name: "taskagent_doc_append",
-            description: "Append markdown to a document. A blank-line separator is inserted by the server when the existing body is non-empty.",
-            input_schema: schema_doc_append(),
-        },
-        ToolDefinition {
-            name: "taskagent_doc_replace",
-            description: "Replace a document's entire markdown body.",
-            input_schema: schema_doc_replace(),
-        },
-        ToolDefinition {
-            name: "taskagent_doc_rename",
-            description: "Rename a document (title only; body is unchanged).",
-            input_schema: schema_doc_rename(),
-        },
-        ToolDefinition {
-            name: "taskagent_doc_archive",
-            description: "Soft-archive a document. It remains queryable via `taskagent_doc_list` when `include_archived=true`.",
-            input_schema: schema_with_id("document_id"),
-        },
-        ToolDefinition {
-            name: "taskagent_doc_list",
-            description: "List documents for a project. `project_id` uses the resolved repo project when unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `kind` filter; archived docs are hidden unless `include_archived=true`.",
-            input_schema: schema_doc_list(),
-        },
-        // ── Version-history tools ─────────────────────────────────────────
-        ToolDefinition {
-            name: "taskagent_history_list",
-            description: "List immutable version records for one task or document, newest first.",
-            input_schema: schema_history_entity(),
-        },
-        ToolDefinition {
-            name: "taskagent_history_get",
-            description: "Fetch one immutable version record by version id.",
-            input_schema: schema_with_id("version_id"),
-        },
-        ToolDefinition {
-            name: "taskagent_history_compare",
-            description: "Compare two version numbers for the same task or document.",
-            input_schema: schema_history_compare(),
-        },
-        ToolDefinition {
-            name: "taskagent_history_latest",
-            description: "List latest task/document version records visible to this token.",
-            input_schema: schema_history_latest(),
-        },
-        ToolDefinition {
-            name: "taskagent_history_summary",
-            description: "Return a compact agent-readable summary timeline for one task or document.",
-            input_schema: schema_history_entity(),
-        },
-        ToolDefinition {
-            name: "taskagent_history_rollback",
-            description: "Restore a task or document to a selected immutable version by creating a new rollback version.",
-            input_schema: schema_with_id("version_id"),
-        },
+        // ── Tasks ─────────────────────────────────────────────────────────
+        tool(
+            "taskagent_create",
+            "Create task",
+            "Create a new task. `title` is required; everything else is optional.",
+            schema_create(),
+            Dom::Tasks, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_capture",
+            "Capture inbox task",
+            "Quick-capture a fleeting idea as an inbox task (priority p3). Uses the resolved repo project when unambiguous; pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Pass `project_id: null` for a project-less inbox task.",
+            schema_capture(),
+            Dom::Tasks, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_capture_batch",
+            "Capture multiple inbox tasks",
+            "Capture multiple inbox tasks in one call. Each string becomes a separate task (priority p3).",
+            schema_capture_batch(),
+            Dom::Tasks, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_get",
+            "Get task",
+            "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority).",
+            schema_with_id("id"),
+            Dom::Tasks, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_update",
+            "Update task",
+            "Update a task's title, description, or due date. Recorded in the task event/activity log.",
+            schema_update(),
+            Dom::Tasks, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_list",
+            "List tasks",
+            "List tasks — the default tool for \"what's open / inventory\". Required `status`: a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, `active` (all non-terminal), or `all`. Avoid `status=all` unless the user explicitly asked for the archive — it can return a very large response. Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
+            schema_list(),
+            Dom::Tasks, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_search",
+            "Search tasks and comments",
+            "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `taskagent_list status=active` instead. Always pass `limit`.",
+            schema_search(),
+            Dom::Tasks, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_lesson_recall",
+            "Recall lessons",
+            "Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix.",
+            schema_lesson_recall(),
+            Dom::Tasks, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_set_status",
+            "Set task status",
+            "Set a task's status (inbox / todo / in_progress / in_review / done / cancelled).",
+            schema_set_status(),
+            Dom::Tasks, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_set_priority",
+            "Set task priority",
+            "Set a task's priority (p0 / p1 / p2 / p3).",
+            schema_set_priority(),
+            Dom::Tasks, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_move_project",
+            "Move task to another project",
+            "Move a task to another project while preserving its id, comments, relations, and event history. Pass `project_id`, `project_scope`, or `scope_path`.",
+            schema_move_project(),
+            Dom::Tasks, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_complete",
+            "Complete task",
+            "Mark a task as completed.",
+            schema_with_id("id"),
+            Dom::Tasks, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_reopen",
+            "Reopen task",
+            "Reopen a completed task (sets status back to `todo`).",
+            schema_with_id("id"),
+            Dom::Tasks, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_delete",
+            "Delete task",
+            "Delete a task permanently.",
+            schema_with_id("id"),
+            Dom::Tasks, F, Ann::Destructive,
+        ),
+        tool(
+            "taskagent_split",
+            "Split task into subtasks",
+            "Split a parent task into 2+ subtasks.",
+            schema_split(),
+            Dom::Tasks, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_bulk_set_status",
+            "Bulk set task status",
+            "Atomically set the same status on up to 50 tasks. Duplicate ids are deduped; fail-fast if any id is missing.",
+            schema_bulk_set_status(),
+            Dom::Tasks, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_comment",
+            "Comment on task",
+            "Add a comment to a task. Optional semantic `kind` (intent/progress/outcome/blocker/research).",
+            schema_comment(),
+            Dom::Tasks, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_can_start",
+            "Check task readiness",
+            "Check whether a task is ready to start, returning active blockers with title and status.",
+            schema_can_start(),
+            Dom::Tasks, D, Ann::Read,
+        ),
+        // ── Projects / workspace ──────────────────────────────────────────
+        tool(
+            "taskagent_project_list",
+            "List projects",
+            "List every project (id, title, description).",
+            empty_schema(),
+            Dom::Projects, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_project_create",
+            "Create project",
+            "Create a new project.",
+            schema_project_create(),
+            Dom::Projects, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_project_use",
+            "Bind workspace to project",
+            "Bind a workspace/repo scope to a taskagent project. When MCP runs in a folder containing multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
+            schema_project_use(),
+            Dom::Projects, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_project_delete",
+            "Delete project",
+            "Delete a project. Two-step, destructive: (1) call with only `id` to receive a one-time `confirm_token` (TTL 5 min) plus a contents summary; (2) call again with the same `id`, the issued `confirm_token`, AND `confirm` set to the project's exact title. The server still refuses unless the project has 0 tasks and 0 plans.",
+            schema_project_delete(),
+            Dom::Projects, F, Ann::Destructive,
+        ),
+        tool(
+            "taskagent_workspace_info",
+            "Show workspace info",
+            "Show this MCP session's workspace key, inferred project, inference error, and known repo scopes.",
+            empty_schema(),
+            Dom::Admin, D, Ann::Read,
+        ),
+        // ── AI tools ──────────────────────────────────────────────────────
+        tool(
+            "taskagent_ai_parse",
+            "AI: parse text into command",
+            "Have the AI parse free-form text into a Command (returned as JSON; nothing is dispatched).",
+            schema_ai_parse(),
+            Dom::Ai, F, Ann::AiRead,
+        ),
+        tool(
+            "taskagent_ai_decompose",
+            "AI: decompose task",
+            "Have the AI decompose a task into subtasks. Optional `hint` (typically an `expansion_hint` from `taskagent_ai_analyze_complexity`) is appended to the prompt as guidance.",
+            schema_ai_decompose(),
+            Dom::Ai, F, Ann::AiWrite,
+        ),
+        tool(
+            "taskagent_ai_analyze_complexity",
+            "AI: analyze plan complexity",
+            "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `taskagent_ai_decompose { hint }` to chain analyze → decompose.",
+            schema_ai_analyze_complexity(),
+            Dom::Ai, F, Ann::AiWrite,
+        ),
+        tool(
+            "taskagent_ai_scope",
+            "AI: rescope task",
+            "Rewrite a task's title + description at a broader (`up`) or narrower (`down`) scope. Returns the proposed `Command::UpdateTask` JSON; the caller decides whether to dispatch.",
+            schema_ai_scope(),
+            Dom::Ai, F, Ann::AiRead,
+        ),
+        tool(
+            "taskagent_research",
+            "AI: research query",
+            "Run a free-form research query against the AI provider, optionally grounded in the bodies of existing tasks (`context_task_ids`). When `save_to_task_id` is set, the answer is persisted as a Research comment on that task.",
+            schema_ai_research(),
+            Dom::Ai, F, Ann::AiWrite,
+        ),
+        // ── Events / health ───────────────────────────────────────────────
+        tool(
+            "taskagent_inbox_pull",
+            "Pull agent inbox",
+            "Poll a single agent's inbox; optionally long-poll up to 60 s.",
+            schema_inbox_pull(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_subscribe_project",
+            "Snapshot project events",
+            "One-shot snapshot of events for a project (the streaming form lives on /v1/ws).",
+            schema_subscribe_project(),
+            Dom::Events, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_events_since",
+            "Load events since seq",
+            "Load events with `seq > since`, capped at `limit` (default 100).",
+            schema_events_since(),
+            Dom::Events, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_healthz",
+            "Server health check",
+            "Server health check — no auth required.",
+            empty_schema(),
+            Dom::Admin, F, Ann::Read,
+        ),
+        // ── Plans ─────────────────────────────────────────────────────────
+        tool(
+            "taskagent_plan_create",
+            "Create plan",
+            "Create a new execution plan for a project.",
+            schema_plan_create(),
+            Dom::Plans, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_plan_update",
+            "Update plan",
+            "Update a plan's title, description, goal, success criteria, or parent. Pass null for parent_plan_id to unparent (move to root); omit the field to leave the parent unchanged.",
+            schema_plan_update(),
+            Dom::Plans, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_plan_get",
+            "Get plan",
+            "Fetch a plan by id, including progress metrics — the cheap way to summarize one plan's status (prefer this over enumerating completed plans or tasks).",
+            schema_with_id("id"),
+            Dom::Plans, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_plan_list",
+            "List plans",
+            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans carry their full goal + success criteria and are token-heavy — summarize a single plan with `taskagent_plan_get` instead of enumerating. `project_id` uses the resolved repo project when unambiguous; pass `all` to query across projects.",
+            schema_plan_list(),
+            Dom::Plans, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_plan_add_task",
+            "Attach task to plan",
+            "Attach a task to a plan at an optional position with optional dependencies.",
+            schema_plan_add_task(),
+            Dom::Plans, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_plan_remove_task",
+            "Detach task from plan",
+            "Detach a task from a plan. Aborts any in-progress step atomically.",
+            schema_plan_task_ref(),
+            Dom::Plans, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_plan_reorder",
+            "Reorder plan tasks",
+            "Replace the full task order within a plan.",
+            schema_plan_reorder(),
+            Dom::Plans, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_plan_archive",
+            "Archive plan",
+            "Archive a plan and atomically abort all active runs.",
+            schema_with_id("id"),
+            Dom::Plans, F, Ann::Destructive,
+        ),
+        tool(
+            "taskagent_plan_set_status",
+            "Set plan status",
+            "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
+            schema_plan_set_status(),
+            Dom::Plans, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_plan_next_task",
+            "Peek next eligible plan task",
+            "Return the first eligible task in a plan for a given run, respecting dependencies. May acquire a claim when `claim_ttl_secs` is set — prefer `taskagent_plan_drain_next` for parallel agents.",
+            schema_plan_next_task(),
+            Dom::Plans, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_plan_progress",
+            "Plan progress snapshot",
+            "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
+            schema_with_id("plan_id"),
+            Dom::Plans, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_plan_drain_next",
+            "Claim next plan task",
+            "Atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Concurrent callers each get a distinct task; returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
+            schema_plan_drain_next(),
+            Dom::Plans, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_plan_graph",
+            "Read plan DAG",
+            "Read a plan's execution DAG: task nodes plus depends_on and blocks edges.",
+            schema_with_plan_id(),
+            Dom::Plans, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_plan_fanout",
+            "Plan execution waves",
+            "Return parallel execution waves for a plan, respecting depends_on and active Blocks relations.",
+            schema_with_plan_id(),
+            Dom::Plans, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_bulk_attach_to_plan",
+            "Bulk attach tasks to plan",
+            "Atomically attach up to 50 tasks to a single plan. Already-attached tasks are skipped (idempotent); fail-fast if any task or the plan is missing.",
+            schema_bulk_attach_to_plan(),
+            Dom::Plans, F, Ann::WriteIdem,
+        ),
+        // ── WorkspaceGraph ────────────────────────────────────────────────
+        tool(
+            "taskagent_workspacegraph_status",
+            "WorkspaceGraph index health",
+            "WorkspaceGraph index health: schema version, node/edge counts, event lag, and last error.",
+            empty_schema(),
+            Dom::WorkspaceGraph, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_workspacegraph_context",
+            "Graph node neighborhood",
+            "Immediate neighborhood of a graph node (incoming/outgoing edges plus ranked neighbors).",
+            schema_workspacegraph_context(),
+            Dom::WorkspaceGraph, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_workspacegraph_related",
+            "Graph related nodes",
+            "Breadth-first related nodes around a graph node, capped by depth and limit.",
+            schema_workspacegraph_related(),
+            Dom::WorkspaceGraph, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_workspacegraph_search",
+            "Search WorkspaceGraph nodes",
+            "Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Not for listing open work (use `taskagent_list status=active`).",
+            schema_workspacegraph_search(),
+            Dom::WorkspaceGraph, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_workspacegraph_impact",
+            "Graph impact analysis",
+            "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges.",
+            schema_workspacegraph_impact(),
+            Dom::WorkspaceGraph, F, Ann::Read,
+        ),
+        // ── Runs ──────────────────────────────────────────────────────────
+        tool(
+            "taskagent_run_start",
+            "Start run",
+            "Start a new agent run of a plan.",
+            schema_run_start(),
+            Dom::Runs, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_run_start_step",
+            "Start run step",
+            "Mark the beginning of a task step within a run.",
+            schema_run_step(),
+            Dom::Runs, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_run_finish_step",
+            "Finish run step",
+            "Mark the completion of a task step with an outcome.",
+            schema_run_finish_step(),
+            Dom::Runs, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_run_complete",
+            "Complete run",
+            "Terminate a run successfully.",
+            schema_with_id("run_id"),
+            Dom::Runs, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_run_abort",
+            "Abort run",
+            "Abort a run with a reason (e.g. plan archived or explicit stop).",
+            schema_run_abort(),
+            Dom::Runs, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_run_note_append",
+            "Append run note",
+            "Append a free-form journal note to an active run. The actor is taken from the MCP session token; body is required (≤ 4 KiB).",
+            schema_run_note_append(),
+            Dom::Runs, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_run_log",
+            "Append run log entry",
+            "Append a leveled progress log entry to an active run. Uses the run notes stream with body formatted as `[level] message`.",
+            schema_run_log(),
+            Dom::Runs, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_run_notes_list",
+            "List run notes",
+            "List journal notes for a run in chronological order. Optional `limit` (default 50, max 500) and `after` (cursor = id of last note from previous page).",
+            schema_run_notes_list(),
+            Dom::Runs, F, Ann::Read,
+        ),
+        // ── Claims & leases (parallel-agent coordination) ─────────────────
+        tool(
+            "taskagent_claim",
+            "Claim task",
+            "Acquire an optimistic claim on a task for a given TTL in seconds.",
+            schema_claim(),
+            Dom::Coordination, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_release",
+            "Release task claim",
+            "Release a previously-acquired task claim.",
+            schema_release(),
+            Dom::Coordination, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_reserve_files",
+            "Reserve file paths",
+            "Reserve file/path globs for a task so parallel agents don't edit the same files. Pass repo-relative `paths` (dirs or files; `*`/`**` globs allowed). Returns `reserved:true`, or `reserved:false` with `conflict_path` + `holder` when another agent owns an overlapping area — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
+            schema_reserve_files(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_release_files",
+            "Release file leases",
+            "Release all file/path leases held by an agent for a task. Usually automatic on task completion; call explicitly to free files early.",
+            schema_release_files(),
+            Dom::Coordination, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_active_work",
+            "List active file leases",
+            "List the active work backlog: live file/path leases (who is touching which files) for a project. Use before reserving to see contended areas. Pass `project_id` to scope; omit for all.",
+            schema_active_work(),
+            Dom::Coordination, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_ready",
+            "List project ready pool",
+            "List the project-wide ready pool: tasks across ALL active plans whose dependencies are satisfied and that no other agent holds. The read-only view behind `taskagent_ready_drain`.",
+            schema_ready(),
+            Dom::Coordination, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_ready_drain",
+            "Claim next ready task (project-wide)",
+            "Atomically claim the next ready task across the project's active plans. Concurrent callers each get a distinct task; sets it in_progress. Returns null when nothing is ready — loop until null.",
+            schema_ready_drain(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_doctor",
+            "Reconcile stuck parallel work",
+            "Reconcile parallel-agent state for a project: reports tasks stuck `in_progress` with no live claim (an agent likely crashed and its claim TTL lapsed). These are reclaimable — reopen or re-drain them.",
+            schema_doctor(),
+            Dom::Coordination, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_suggest_files",
+            "Suggest paths to reserve",
+            "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `taskagent_reserve_files` at claim time. Heuristic only — review before reserving.",
+            schema_suggest_files(),
+            Dom::Coordination, F, Ann::Read,
+        ),
+        // ── Sessions ──────────────────────────────────────────────────────
+        tool(
+            "taskagent_session_start",
+            "Start agent session",
+            "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
+            schema_session_start(),
+            Dom::Sessions, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_session_get",
+            "Get agent session",
+            "Fetch an agent session by id (includes metadata: client, model, chat_id, transcript_path).",
+            schema_with_id("id"),
+            Dom::Sessions, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_session_list",
+            "List agent sessions",
+            "List agent sessions for an agent id (defaults to this MCP process).",
+            schema_session_list(),
+            Dom::Sessions, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_session_end",
+            "End agent session",
+            "End an agent session.",
+            schema_with_id("id"),
+            Dom::Sessions, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_session_set_plan",
+            "Set session plan steps",
+            "Replace the session's plan-steps list (max 100 steps).",
+            schema_session_set_plan(),
+            Dom::Sessions, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_session_artifact",
+            "Attach session artifact",
+            "Attach a file/url/diff artifact reference to an agent session.",
+            schema_session_artifact(),
+            Dom::Sessions, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_session_artifacts_list",
+            "List session artifacts",
+            "List artifact references attached to an agent session.",
+            schema_with_id("id"),
+            Dom::Sessions, F, Ann::Read,
+        ),
+        // ── Signals ───────────────────────────────────────────────────────
+        tool(
+            "taskagent_signal_send",
+            "Send run signal",
+            "Send a typed signal to a run (stop / elicit / auth_required).",
+            schema_signal_send(),
+            Dom::Signals, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_signal_respond",
+            "Respond to run signal",
+            "Human responds to an elicitation request on a run.",
+            schema_signal_respond(),
+            Dom::Signals, F, Ann::Write,
+        ),
+        // ── Relations ─────────────────────────────────────────────────────
+        tool(
+            "taskagent_link",
+            "Link tasks",
+            "Create a typed relation (blocks / relates_to / duplicates) between two tasks. Idempotent via `client_command_id`.",
+            schema_link(),
+            Dom::Relations, D, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_unlink",
+            "Delete task relation",
+            "Delete a relation by its id.",
+            schema_unlink(),
+            Dom::Relations, F, Ann::Destructive,
+        ),
+        tool(
+            "taskagent_relations",
+            "Read task relations",
+            "Read 5-group relations projection for a task (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
+            schema_relations(),
+            Dom::Relations, D, Ann::Read,
+        ),
+        // ── Documents ─────────────────────────────────────────────────────
+        tool(
+            "taskagent_doc_create",
+            "Create document",
+            "Create a markdown document for a project. `kind` is `interview` or `human_log`; multiple docs of the same kind are allowed.",
+            schema_doc_create(),
+            Dom::Documents, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_doc_get",
+            "Get document",
+            "Fetch a document by id, including its full markdown body.",
+            schema_with_id("document_id"),
+            Dom::Documents, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_doc_append",
+            "Append to document",
+            "Append markdown to a document. A blank-line separator is inserted by the server when the existing body is non-empty.",
+            schema_doc_append(),
+            Dom::Documents, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_doc_replace",
+            "Replace document body",
+            "Replace a document's entire markdown body.",
+            schema_doc_replace(),
+            Dom::Documents, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_doc_rename",
+            "Rename document",
+            "Rename a document (title only; body is unchanged).",
+            schema_doc_rename(),
+            Dom::Documents, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_doc_archive",
+            "Archive document",
+            "Soft-archive a document. It remains queryable via `taskagent_doc_list` when `include_archived=true`.",
+            schema_with_id("document_id"),
+            Dom::Documents, F, Ann::Destructive,
+        ),
+        tool(
+            "taskagent_doc_list",
+            "List documents",
+            "List documents for a project. `project_id` uses the resolved repo project when unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `kind` filter; archived docs are hidden unless `include_archived=true`.",
+            schema_doc_list(),
+            Dom::Documents, F, Ann::Read,
+        ),
+        // ── Version history ───────────────────────────────────────────────
+        tool(
+            "taskagent_history_list",
+            "List version history",
+            "List immutable version records for one task or document, newest first.",
+            schema_history_entity(),
+            Dom::History, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_history_get",
+            "Get version record",
+            "Fetch one immutable version record by version id.",
+            schema_with_id("version_id"),
+            Dom::History, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_history_compare",
+            "Compare versions",
+            "Compare two version numbers for the same task or document.",
+            schema_history_compare(),
+            Dom::History, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_history_latest",
+            "List latest versions",
+            "List latest task/document version records visible to this token.",
+            schema_history_latest(),
+            Dom::History, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_history_summary",
+            "Version summary timeline",
+            "Return a compact agent-readable summary timeline for one task or document.",
+            schema_history_entity(),
+            Dom::History, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_history_rollback",
+            "Rollback to version",
+            "Restore a task or document to a selected immutable version by creating a new rollback version.",
+            schema_with_id("version_id"),
+            Dom::History, F, Ann::Destructive,
+        ),
     ]
+}
+
+/// Catalogue filtered to `profile`. `Full` returns everything; `Default`
+/// returns the compact workflow-first surface.
+pub fn tool_definitions_for(profile: ToolProfile) -> Vec<ToolDefinition> {
+    tool_definitions()
+        .into_iter()
+        .filter(|t| profile == ToolProfile::Full || t.profile == ToolProfile::Default)
+        .collect()
+}
+
+/// True when `name` is a known catalogue tool that the given profile hides.
+/// Unknown names return false so dispatch can produce its normal
+/// unknown-tool error.
+pub fn tool_hidden_in_profile(name: &str, profile: ToolProfile) -> bool {
+    profile == ToolProfile::Default
+        && tool_definitions()
+            .iter()
+            .any(|t| t.name == name && t.profile == ToolProfile::Full)
+}
+
+/// Profile-gated dispatch: hidden tools are not callable and return an
+/// actionable error instead of silently working.
+pub async fn call_tool_in_profile(
+    client: &ApiClient,
+    profile: ToolProfile,
+    name: &str,
+    arguments: Value,
+) -> anyhow::Result<Value> {
+    if tool_hidden_in_profile(name, profile) {
+        anyhow::bail!(
+            "tool `{name}` is not available in the `{}` MCP profile; \
+             restart the MCP server with TASKAGENT_MCP_PROFILE=full \
+             (or `taskagent mcp --profile full`) to enable the full catalogue",
+            profile.as_str()
+        );
+    }
+    call_tool(client, name, arguments).await
 }
 
 /// Dispatch a single tool call by name. The MCP client passes `arguments`
@@ -3210,5 +3577,193 @@ mod tests {
             let s = serde_json::to_string(&tool.input_schema).unwrap();
             let _: Value = serde_json::from_str(&s).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn full_profile_is_a_superset_of_default() {
+        let full: Vec<&str> = tool_definitions_for(ToolProfile::Full)
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        let default: Vec<&str> = tool_definitions_for(ToolProfile::Default)
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(full.len(), tool_definitions().len());
+        assert!(default.len() < full.len());
+        for name in &default {
+            assert!(full.contains(name), "default tool {name} missing from full");
+        }
+    }
+
+    #[test]
+    fn default_profile_is_compact_and_workflow_first() {
+        let default: Vec<&str> = tool_definitions_for(ToolProfile::Default)
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        // Compact: meaningfully smaller than the full catalogue, but still a
+        // complete capture→plan→execute→close workflow.
+        assert!(
+            default.len() <= 32,
+            "default profile grew to {} tools — keep it compact",
+            default.len()
+        );
+        for required in [
+            "taskagent_capture",
+            "taskagent_create",
+            "taskagent_list",
+            "taskagent_get",
+            "taskagent_search",
+            "taskagent_comment",
+            "taskagent_set_status",
+            "taskagent_complete",
+            "taskagent_plan_create",
+            "taskagent_plan_get",
+            "taskagent_plan_drain_next",
+            "taskagent_claim",
+            "taskagent_release",
+            "taskagent_run_start",
+            "taskagent_run_complete",
+            "taskagent_link",
+        ] {
+            assert!(default.contains(&required), "default must keep {required}");
+        }
+        // Advanced/destructive surfaces stay out of default.
+        for excluded in [
+            "taskagent_delete",
+            "taskagent_project_delete",
+            "taskagent_history_rollback",
+            "taskagent_workspacegraph_search",
+            "taskagent_ai_decompose",
+            "taskagent_session_start",
+        ] {
+            assert!(
+                !default.contains(&excluded),
+                "{excluded} must not be in the default profile"
+            );
+        }
+    }
+
+    #[test]
+    fn every_tool_has_title_metadata_and_unique_name() {
+        let tools = tool_definitions();
+        let mut seen = std::collections::HashSet::new();
+        for t in &tools {
+            assert!(!t.title.is_empty(), "{} missing title", t.name);
+            assert!(!t.description.is_empty(), "{} missing description", t.name);
+            assert_eq!(t.annotations.title, t.title, "{} annotation title", t.name);
+            assert!(seen.insert(t.name), "duplicate tool name {}", t.name);
+        }
+    }
+
+    #[test]
+    fn annotations_are_coherent() {
+        for t in tool_definitions() {
+            if t.annotations.read_only_hint {
+                assert!(
+                    !t.annotations.destructive_hint,
+                    "{} cannot be read-only and destructive",
+                    t.name
+                );
+            }
+        }
+        let destructive: Vec<&str> = tool_definitions()
+            .iter()
+            .filter(|t| t.annotations.destructive_hint)
+            .map(|t| t.name)
+            .collect();
+        for expected in [
+            "taskagent_delete",
+            "taskagent_project_delete",
+            "taskagent_plan_archive",
+            "taskagent_doc_archive",
+            "taskagent_unlink",
+            "taskagent_history_rollback",
+        ] {
+            assert!(
+                destructive.contains(&expected),
+                "{expected} must be destructive"
+            );
+        }
+        let open_world: Vec<&str> = tool_definitions()
+            .iter()
+            .filter(|t| t.annotations.open_world_hint)
+            .map(|t| t.name)
+            .collect();
+        for expected in [
+            "taskagent_ai_parse",
+            "taskagent_ai_decompose",
+            "taskagent_ai_analyze_complexity",
+            "taskagent_ai_scope",
+            "taskagent_research",
+        ] {
+            assert!(
+                open_world.contains(&expected),
+                "{expected} must be open-world"
+            );
+        }
+    }
+
+    #[test]
+    fn serialized_tool_matches_mcp_shape() {
+        let tools = tool_definitions();
+        let sample = tools.iter().find(|t| t.name == "taskagent_list").unwrap();
+        let v = serde_json::to_value(sample).unwrap();
+        assert!(v.get("inputSchema").is_some(), "inputSchema key");
+        assert!(v.get("title").is_some(), "title key");
+        let ann = v.get("annotations").expect("annotations key");
+        for key in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+            "title",
+        ] {
+            assert!(ann.get(key).is_some(), "annotations.{key}");
+        }
+        // Internal catalogue metadata must not leak to clients.
+        assert!(v.get("domain").is_none());
+        assert!(v.get("profile").is_none());
+    }
+
+    #[test]
+    fn hidden_tools_are_not_callable_in_default_profile() {
+        assert!(tool_hidden_in_profile(
+            "taskagent_delete",
+            ToolProfile::Default
+        ));
+        assert!(!tool_hidden_in_profile(
+            "taskagent_list",
+            ToolProfile::Default
+        ));
+        assert!(!tool_hidden_in_profile(
+            "taskagent_delete",
+            ToolProfile::Full
+        ));
+        // Unknown names fall through to the normal unknown-tool error.
+        assert!(!tool_hidden_in_profile("frobnicate", ToolProfile::Default));
+    }
+
+    #[test]
+    fn profile_parse_and_env_resolution() {
+        let _guard = crate::test_support::env_lock();
+        assert_eq!(ToolProfile::parse("default"), Some(ToolProfile::Default));
+        assert_eq!(ToolProfile::parse("FULL"), Some(ToolProfile::Full));
+        assert_eq!(ToolProfile::parse("compat"), Some(ToolProfile::Full));
+        assert_eq!(ToolProfile::parse("nope"), None);
+
+        std::env::remove_var("TASKAGENT_MCP_PROFILE");
+        assert_eq!(ToolProfile::from_env(), ToolProfile::Default);
+        std::env::set_var("TASKAGENT_MCP_PROFILE", "full");
+        assert_eq!(ToolProfile::from_env(), ToolProfile::Full);
+        std::env::set_var("TASKAGENT_MCP_PROFILE", "garbage");
+        assert_eq!(ToolProfile::from_env(), ToolProfile::Default);
+        std::env::remove_var("TASKAGENT_MCP_PROFILE");
     }
 }

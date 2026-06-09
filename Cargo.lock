@@ -2688,19 +2688,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "taskagent-mcp-bin"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "reqwest",
- "taskagent-mcp",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "taskagent-mobile"
 version = "0.2.0"
 dependencies = [

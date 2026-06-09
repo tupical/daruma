@@ -26,7 +26,7 @@ Task/document version records — [VERSION_HISTORY.md](VERSION_HISTORY.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ apps/desktop (GPUI)  taskagent-web↗  apps/server (Axum)  apps/mcp │  UI / transports
+│ apps/desktop (GPUI)  taskagent-web↗  apps/server (Axum)  apps/cli │  UI / transports
 ├──────────────────────────────────────────────────────────────────┤
 │ taskagent-ai   taskagent-sync   taskagent-webhooks  taskagent-mcp│  agent + realtime
 ├──────────────────────────────────────────────────────────────────┤
@@ -62,8 +62,8 @@ The **core** is the set of crates and apps that own the contract:
   trio; the only place that turns commands into events.
 - `apps/server` — Axum router on `/v1/*` (HTTP) + `/v1/ws`
   (WebSocket); the only network-facing surface.
-- `apps/mcp` — MCP transport binary (re-exports the same
-  command/event semantics over MCP framing).
+- `apps/cli` (`taskagent mcp`) — stdio MCP transport (re-exports the
+  same command/event semantics over MCP framing via `crates/mcp`).
 - `crates/sync`, `crates/webhooks`, `crates/ai`, `crates/mcp` —
   realtime fanout, outbound webhooks, AI tools, MCP wiring. Counted
   as core because they subscribe to the same `EventBus`/`EventStore`;
@@ -78,8 +78,8 @@ ritual in [docs/MODULE_CONTRACT.md](docs/MODULE_CONTRACT.md#versioning).
 Every other tree is a **module**, classified by *kind*:
 
 - **transport** — a transport implementation that ships inside the
-  workspace (today: `apps/server`, `apps/mcp`, `crates/sync`,
-  `crates/webhooks`).
+  workspace (today: `apps/server`, the `taskagent mcp` stdio entry in
+  `apps/cli`, `crates/sync`, `crates/webhooks`).
 - **client** — `/v1/*` consumers with their own UI/CLI: `taskagent-web`
   (standalone repo), `apps/cli`, planned `apps/mobile`.
 - **embed** — runs the core in-process. `apps/desktop` (GPUI) is the
@@ -98,7 +98,7 @@ flowchart LR
     coreL[taskagent-core<br/>Command→Event→Projection]
     auth[taskagent-auth]
     server[apps/server<br/>HTTP / WS]
-    mcp[apps/mcp<br/>MCP framing]
+    mcp[taskagent mcp<br/>stdio MCP framing]
     domain --> coreL
     storage --> coreL
     auth --> server
@@ -463,7 +463,7 @@ guard.
   `Event::kind()` through the existing dispatcher; no new dispatcher
   code required.
 
-### `taskagent-mcp` (+ `apps/mcp`)
+### `taskagent-mcp` (served via `taskagent mcp` / `/v1/mcp`)
 - 44 MCP tools — original 20 from B.5/W2.x plus 21 new in W3.2 covering
   the full plan/run/session/claim/signal surface, plus 3 new in §3.2
   for typed task relations:

@@ -12,7 +12,9 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::json;
-use taskagent_mcp::{dispatch_request, tool_definitions, ApiClient, JsonRpcRequest};
+use taskagent_mcp::{
+    dispatch_request_with_profile, tool_definitions, ApiClient, JsonRpcRequest, ToolProfile,
+};
 use tower::ServiceExt;
 
 mod common;
@@ -250,4 +252,128 @@ async fn ac7_catalogue_is_consistent_with_direct_helper() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(direct.len(), from_protocol.len());
+}
+
+/// All protocol-level tests drive the complete catalogue explicitly; the
+/// compact `default` profile has its own dedicated coverage in
+/// `mcp_dispatch.rs::profiles`.
+async fn dispatch_request(
+    client: &ApiClient,
+    req: JsonRpcRequest,
+) -> Option<taskagent_mcp::JsonRpcResponse> {
+    dispatch_request_with_profile(client, ToolProfile::Full, req).await
+}
+
+// ── MCP tool-surface profiles ───────────────────────────────────────────────
+
+async fn tools_list_names(client: &ApiClient, profile: ToolProfile) -> Vec<String> {
+    let resp = dispatch_request_with_profile(client, profile, req("tools/list", json!({})))
+        .await
+        .unwrap();
+    resp.result.unwrap()["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn profiles_tools_list_reflects_selected_surface() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let full = tools_list_names(&client, ToolProfile::Full).await;
+    let compact = tools_list_names(&client, ToolProfile::Default).await;
+
+    assert_eq!(
+        full.len(),
+        tool_definitions().len(),
+        "full = whole catalogue"
+    );
+    assert!(
+        compact.len() < full.len(),
+        "default ({}) must be smaller than full ({})",
+        compact.len(),
+        full.len()
+    );
+    for name in &compact {
+        assert!(full.contains(name), "default tool {name} missing from full");
+    }
+    assert!(compact.iter().any(|n| n == "taskagent_list"));
+    assert!(
+        !compact.iter().any(|n| n == "taskagent_history_rollback"),
+        "advanced tools must be hidden in the default profile"
+    );
+}
+
+#[tokio::test]
+async fn profiles_tools_list_carries_titles_and_annotations() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let resp =
+        dispatch_request_with_profile(&client, ToolProfile::Full, req("tools/list", json!({})))
+            .await
+            .unwrap();
+    for tool in resp.result.unwrap()["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
+        assert!(
+            tool["title"].as_str().is_some_and(|t| !t.is_empty()),
+            "{name} missing title"
+        );
+        let ann = tool
+            .get("annotations")
+            .unwrap_or_else(|| panic!("{name} missing annotations"));
+        for key in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ] {
+            assert!(ann.get(key).is_some(), "{name} missing annotations.{key}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn profiles_hidden_tool_is_not_callable_in_default() {
+    let (addr, token) = spawn_taskagent_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let resp = dispatch_request_with_profile(
+        &client,
+        ToolProfile::Default,
+        req(
+            "tools/call",
+            json!({ "name": "taskagent_history_latest", "arguments": {} }),
+        ),
+    )
+    .await
+    .unwrap();
+    let err = resp
+        .error
+        .expect("hidden tool must error in default profile");
+    assert!(
+        err.message.contains("not available") && err.message.contains("full"),
+        "error must point at the full profile, got: {}",
+        err.message
+    );
+
+    // The same call succeeds when the full profile is selected.
+    let ok = dispatch_request_with_profile(
+        &client,
+        ToolProfile::Full,
+        req(
+            "tools/call",
+            json!({ "name": "taskagent_history_latest", "arguments": { "limit": 1 } }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        ok.error.is_none(),
+        "full profile must dispatch: {:?}",
+        ok.error
+    );
 }

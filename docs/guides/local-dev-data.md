@@ -73,3 +73,77 @@ cp -an /path/to/old/data/. ~/.agents/taskagent/data/   # no clobber (-n)
 ```
 
 Restart the server (no `TASKAGENT_DATA_DIR` override required).
+
+## Backup & restore (SQLite event log)
+
+The event log is the source of truth — everything else (projections,
+WorkspaceGraph) can be rebuilt from it. The server runs SQLite in **WAL
+mode** (`journal_mode=WAL`, `synchronous=NORMAL`, see
+`crates/storage/src/db.rs`), which changes how you copy files safely.
+
+### What to back up
+
+```text
+~/.agents/taskagent/data/
+  taskagent.sqlite        # canonical event log + projections  ← back up
+  taskagent.sqlite-wal    # WAL (recent commits not yet checkpointed)
+  taskagent.sqlite-shm    # WAL shared-memory index (transient)
+  workspacegraph.sqlite   # sidecar index — REBUILDABLE, optional
+  bootstrap.token         # local admin token — back up if you rely on it
+```
+
+### Safe backup with the server running
+
+A plain `cp taskagent.sqlite` while the server is up is **not safe**: in
+WAL mode the latest commits live in `-wal`, and copying the main file
+mid-checkpoint can capture a torn state. Use SQLite's own backup:
+
+```bash
+sqlite3 ~/.agents/taskagent/data/taskagent.sqlite \
+  ".backup '/backups/taskagent-$(date +%F).sqlite'"
+# or, equivalently:
+sqlite3 ~/.agents/taskagent/data/taskagent.sqlite \
+  "VACUUM INTO '/backups/taskagent-$(date +%F).sqlite'"
+```
+
+Both produce a single consistent file (no `-wal`/`-shm` needed) and are
+safe against a live writer. To fold the WAL into the main file first
+(e.g. before an offline file-level copy):
+
+```bash
+sqlite3 ~/.agents/taskagent/data/taskagent.sqlite \
+  "PRAGMA wal_checkpoint(TRUNCATE);"
+```
+
+### Cold backup (server stopped)
+
+Stop `taskagent-server`, then copy `taskagent.sqlite` **together with**
+`taskagent.sqlite-wal` if it exists (or checkpoint first as above).
+Never ship a main file with a stale `-wal` from a different point in time.
+
+### Restore
+
+1. Stop the server.
+2. Replace `taskagent.sqlite` with the backup file.
+3. Delete any leftover `taskagent.sqlite-wal` / `taskagent.sqlite-shm`
+   (they belong to the old database generation).
+4. Optionally delete `workspacegraph.sqlite` — the sidecar index is
+   re-derived from the event log on the next start/reindex.
+5. Start the server.
+
+### Self-host in a repo
+
+If you point `TASKAGENT_DATA_DIR` inside a working copy, gitignore the
+data files:
+
+```gitignore
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+bootstrap.token
+```
+
+### Future work
+
+A `taskagent export` CLI (portable JSON event-log dump) is tracked in the
+roadmap; until then the SQLite-level backup above is the supported path.

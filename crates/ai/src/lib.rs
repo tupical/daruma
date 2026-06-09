@@ -31,6 +31,7 @@ pub mod scope;
 pub mod suggest;
 pub mod summarize;
 pub mod tools;
+pub mod untrusted;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 
@@ -45,3 +46,4 @@ pub use provider::AiProvider;
 pub use scope::{scope_task, ScopeDirection};
 pub use suggest::suggest_next_action;
 pub use summarize::summarize_project;
+pub use untrusted::wrap_untrusted;

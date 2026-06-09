@@ -36,7 +36,6 @@ The runtime split is formalised in
 | `taskagent-sync`       | `crates/sync/`             | `transport`   | Rust  | shipped    | core           | events        |
 | `taskagent-webhooks`   | `crates/webhooks/`         | `transport`   | Rust  | shipped    | core           | events        |
 | `taskagent-mcp`        | `crates/mcp/`              | `transport`   | Rust  | shipped    | core           | server (HTTP) |
-| `taskagent-mcp-bin`    | `apps/mcp/`                | `transport`   | Rust  | shipped    | core           | mcp+server (HTTP) |
 | `taskagent-ai`         | `crates/ai/`               | `transport`   | Rust  | shipped    | core           | domain+events |
 | `taskagent-web`        | `../taskagent-web/` (repo) | `client`      | Rust/WASM | shipped | clients        | `/v1/*` + WS  |
 | `taskagent-cli`        | `apps/cli/`                | `client`      | Rust  | shipped    | clients        | `/v1/*`       |

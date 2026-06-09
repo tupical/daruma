@@ -1,7 +1,7 @@
 # Module ⇄ Core Contract
 
 This is the formal SLA between **TaskAgent core** (the `taskagent-*`
-crates plus `apps/server` and `apps/mcp`) and every **module** (client,
+crates plus `apps/server` and the `taskagent mcp` stdio entry in `apps/cli`) and every **module** (client,
 embed, integration) that consumes it. See
 [docs/MODULES.md](MODULES.md) for the live registry of modules.
 

@@ -22,7 +22,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use taskagent_mcp::{run_stdio, workspace::Workspace, ApiClient};
+use taskagent_mcp::{run_stdio_with_profile, workspace::Workspace, ApiClient, ToolProfile};
 use tracing_subscriber::EnvFilter;
 
 mod format;
@@ -77,7 +77,12 @@ enum Cmd {
     /// This is the merged entry-point for what used to be the separate
     /// `taskagent-mcp` binary — one artifact configures and serves everything.
     /// Register with: `claude mcp add taskagent -- taskagent mcp`.
-    Mcp {},
+    Mcp {
+        /// Tool surface profile: `default` (compact workflow set) or `full`
+        /// (complete catalogue). Overrides TASKAGENT_MCP_PROFILE.
+        #[arg(long, value_name = "PROFILE")]
+        profile: Option<String>,
+    },
     /// Show the next claim-ready task in the current project.
     Next {
         /// Project id (defaults to env / workspace).
@@ -123,12 +128,13 @@ async fn main() -> anyhow::Result<()> {
     // the MCP JSON-RPC channel) so agents-through-shell can pipe cleanly. The
     // MCP server is chattier (info); the terse CLI stays quiet (warn) unless
     // RUST_LOG overrides.
-    let default_level = if matches!(cli.cmd, Some(Cmd::Mcp {})) {
+    let default_level = if matches!(cli.cmd, Some(Cmd::Mcp { .. })) {
         "info"
     } else {
         "warn"
     };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -170,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
         }
         // Stdio MCP server: does its own env/credentials resolution and never
         // touches the table-rendering HTTP client below.
-        Some(Cmd::Mcp {}) => return run_mcp_stdio().await,
+        Some(Cmd::Mcp { profile }) => return run_mcp_stdio(profile.as_deref()).await,
         _ => {}
     }
 
@@ -187,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.cmd.expect("None subcommand handled above") {
         Cmd::Install { .. } => unreachable!("install exits before HTTP client setup"),
-        Cmd::Mcp {} => unreachable!("mcp exits before HTTP client setup"),
+        Cmd::Mcp { .. } => unreachable!("mcp exits before HTTP client setup"),
         Cmd::Next { project_id } => cmd_next(&client, project_id, cli.json).await,
         Cmd::Show { id } => cmd_show(&client, &id, cli.json).await,
         Cmd::Done { id } => cmd_done(&client, &id, cli.json).await,
@@ -207,7 +213,13 @@ async fn main() -> anyhow::Result<()> {
 /// the merged `taskagent mcp` entry-point (formerly the standalone
 /// `taskagent-mcp` binary). Config is via env / credentials.json, exactly like
 /// the rest of the CLI — fully generic over the server it points at.
-async fn run_mcp_stdio() -> anyhow::Result<()> {
+async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
+    let profile = match profile_flag {
+        Some(raw) => ToolProfile::parse(raw).ok_or_else(|| {
+            anyhow::anyhow!("unknown MCP profile `{raw}` — expected `default` or `full`")
+        })?,
+        None => ToolProfile::from_env(),
+    };
     let mut base =
         std::env::var("TASKAGENT_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
     let mut token = std::env::var("TASKAGENT_TOKEN").unwrap_or_default();
@@ -251,8 +263,8 @@ async fn run_mcp_stdio() -> anyhow::Result<()> {
         client = client.with_workspace_id(workspace_id);
     }
 
-    tracing::info!("taskagent mcp ready on stdio");
-    run_stdio(client).await
+    tracing::info!(profile = profile.as_str(), "taskagent mcp ready on stdio");
+    run_stdio_with_profile(client, profile).await
 }
 
 /// Optional workspace scope sent as `X-TaskAgent-Workspace-Id`.

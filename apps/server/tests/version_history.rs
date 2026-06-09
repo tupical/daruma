@@ -3,7 +3,7 @@
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 use taskagent_auth::{Capabilities, Capability, TokenKind};
-use taskagent_mcp::{dispatch_request, ApiClient, JsonRpcRequest};
+use taskagent_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 
 mod common;
 use common::{json_get, json_post, mint_with_caps, spawn_server, test_app};
@@ -230,4 +230,14 @@ async fn history_rollback_requires_write_capability() {
         StatusCode::FORBIDDEN,
         "rollback must require task write: {rollback}"
     );
+}
+
+/// All protocol-level tests drive the complete catalogue explicitly; the
+/// compact `default` profile has its own dedicated coverage in
+/// `mcp_dispatch.rs::profiles`.
+async fn dispatch_request(
+    client: &ApiClient,
+    req: JsonRpcRequest,
+) -> Option<taskagent_mcp::JsonRpcResponse> {
+    dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }

@@ -8,11 +8,23 @@ use crate::protocol::{
     JsonRpcRequest, JsonRpcResponse, ERR_INTERNAL, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
     ERR_PARSE,
 };
-use crate::tools::{call_tool, tool_definitions};
+use crate::tools::{call_tool_in_profile, tool_definitions_for, ToolProfile};
 
-/// Dispatch a single JSON-RPC request. Returns `Ok(None)` for
+/// Dispatch a single JSON-RPC request using the profile resolved from
+/// `TASKAGENT_MCP_PROFILE` (unset → `default`). Returns `Ok(None)` for
 /// notifications (no `id` present, no response expected).
 pub async fn dispatch_request(client: &ApiClient, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+    dispatch_request_with_profile(client, ToolProfile::from_env(), req).await
+}
+
+/// Dispatch a single JSON-RPC request against an explicit tool profile.
+/// `tools/list` advertises only the profile's tools and `tools/call`
+/// refuses tools the profile hides.
+pub async fn dispatch_request_with_profile(
+    client: &ApiClient,
+    profile: ToolProfile,
+    req: JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
 
     // Notifications (id absent) don't get a reply.
@@ -20,8 +32,8 @@ pub async fn dispatch_request(client: &ApiClient, req: JsonRpcRequest) -> Option
 
     let result = match req.method.as_str() {
         "initialize" => Ok(handle_initialize()),
-        "tools/list" => Ok(handle_tools_list()),
-        "tools/call" => handle_tools_call(client, req.params.unwrap_or(Value::Null)).await,
+        "tools/list" => Ok(handle_tools_list(profile)),
+        "tools/call" => handle_tools_call(client, profile, req.params.unwrap_or(Value::Null)).await,
         "ping" => Ok(json!({})),
         other => {
             return Some(JsonRpcResponse::err(
@@ -46,12 +58,16 @@ fn handle_initialize() -> Value {
     })
 }
 
-fn handle_tools_list() -> Value {
-    let tools = tool_definitions();
+fn handle_tools_list(profile: ToolProfile) -> Value {
+    let tools = tool_definitions_for(profile);
     json!({ "tools": tools })
 }
 
-async fn handle_tools_call(client: &ApiClient, params: Value) -> anyhow::Result<Value> {
+async fn handle_tools_call(
+    client: &ApiClient,
+    profile: ToolProfile,
+    params: Value,
+) -> anyhow::Result<Value> {
     let name = params
         .get("name")
         .and_then(|v| v.as_str())
@@ -62,7 +78,7 @@ async fn handle_tools_call(client: &ApiClient, params: Value) -> anyhow::Result<
         .cloned()
         .unwrap_or_else(|| Value::Object(Default::default()));
 
-    let output = call_tool(client, &name, arguments).await?;
+    let output = call_tool_in_profile(client, profile, &name, arguments).await?;
     let text = serde_json::to_string(&output)?;
     Ok(json!({
         "content": [{ "type": "text", "text": text }]
@@ -70,8 +86,14 @@ async fn handle_tools_call(client: &ApiClient, params: Value) -> anyhow::Result<
 }
 
 /// Read newline-delimited JSON-RPC frames from stdin, dispatch them, and
-/// write responses to stdout. Blocks until EOF.
+/// write responses to stdout. Blocks until EOF. The tool profile is
+/// resolved from `TASKAGENT_MCP_PROFILE` (unset → `default`).
 pub async fn run_stdio(client: ApiClient) -> anyhow::Result<()> {
+    run_stdio_with_profile(client, ToolProfile::from_env()).await
+}
+
+/// [`run_stdio`] with an explicit tool profile (e.g. from a CLI flag).
+pub async fn run_stdio_with_profile(client: ApiClient, profile: ToolProfile) -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
     let mut stdout = tokio::io::stdout();
@@ -90,7 +112,7 @@ pub async fn run_stdio(client: ApiClient) -> anyhow::Result<()> {
                         "jsonrpc must be 2.0",
                     ))
                 } else {
-                    dispatch_request(&client, req).await
+                    dispatch_request_with_profile(&client, profile, req).await
                 }
             }
             Err(e) => Some(JsonRpcResponse::err(

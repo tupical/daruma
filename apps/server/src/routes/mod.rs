@@ -48,7 +48,9 @@ use taskagent_domain::{
     SignalKind, Status, Task, TaskPatch, TriageState, Verb,
 };
 use taskagent_events::{Event, EventEnvelope};
-use taskagent_mcp::{dispatch_request as dispatch_mcp_request, ApiClient, JsonRpcRequest};
+use taskagent_mcp::{
+    dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
+};
 use taskagent_shared::{
     AgentId, AgentSessionId, CommentId, CoreError, DocumentId, PlanId, ProjectId, RunId, TaskId,
     TokenId, WebhookId,
@@ -241,10 +243,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/downloads/taskagent/{platform}",
             get(downloads::download_taskagent_mcp),
         )
-        .route(
-            "/downloads/taskagent",
-            get(downloads::mcp_download_info),
-        )
+        .route("/downloads/taskagent", get(downloads::mcp_download_info))
         .route("/agents/{agent_id}/inbox", get(agent_inbox))
         .route("/agents/{agent_id}/inbox/ack", post(agent_inbox_ack))
         .route("/webhooks", post(create_webhook).get(list_webhooks))
@@ -1324,10 +1323,26 @@ async fn dispatch_command(
     }))
 }
 
+#[derive(serde::Deserialize, Default)]
+struct McpHttpQuery {
+    /// Tool surface profile override: `default` or `full`.
+    /// Falls back to TASKAGENT_MCP_PROFILE, then `default`.
+    profile: Option<String>,
+}
+
 async fn mcp_http(
     headers: HeaderMap,
+    Query(query): Query<McpHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let profile = match query.profile.as_deref() {
+        Some(raw) => taskagent_mcp::ToolProfile::parse(raw).ok_or_else(|| {
+            ApiError::from(CoreError::validation(format!(
+                "unknown MCP profile `{raw}` — expected `default` or `full`"
+            )))
+        })?,
+        None => taskagent_mcp::ToolProfile::from_env(),
+    };
     let token = bearer_token(&headers)?;
     let http = reqwest::Client::builder()
         .user_agent(format!(
@@ -1341,7 +1356,7 @@ async fn mcp_http(
         client = client.with_workspace_id(workspace_id);
     }
 
-    match dispatch_mcp_request(&client, request).await {
+    match dispatch_mcp_request(&client, profile, request).await {
         Some(response) => Ok(Json(response).into_response()),
         None => Ok(StatusCode::ACCEPTED.into_response()),
     }

@@ -34,7 +34,7 @@ pub async fn summarize_project(
         "default",
         &SummarizeCtx {
             project_id: project_id.to_string(),
-            events_json: &events_json,
+            events_json: &crate::untrusted::wrap_untrusted("event log", &events_json),
         },
     )?;
 

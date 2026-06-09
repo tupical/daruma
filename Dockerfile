@@ -30,9 +30,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     else \
         cargo build --release -p taskagent-server; \
     fi \
- && cargo build --release -p taskagent-mcp-bin \
+ && cargo build --release -p taskagent-cli \
  && cp /app/target/release/taskagent-server /usr/local/bin/taskagent-server \
- && cp /app/target/release/taskagent-mcp /usr/local/bin/taskagent-mcp-linux
+ && cp /app/target/release/taskagent /usr/local/bin/taskagent-linux
 
 FROM rust:1.95-slim-bookworm AS mcp-windows-builder
 
@@ -53,8 +53,8 @@ COPY apps ./apps
 ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
 
 RUN rustup target add x86_64-pc-windows-gnu \
-    && cargo build --release -p taskagent-mcp-bin --target x86_64-pc-windows-gnu \
- && cp /app/target/x86_64-pc-windows-gnu/release/taskagent-mcp.exe /usr/local/bin/taskagent-mcp-windows.exe
+    && cargo build --release -p taskagent-cli --target x86_64-pc-windows-gnu \
+ && cp /app/target/x86_64-pc-windows-gnu/release/taskagent.exe /usr/local/bin/taskagent-windows.exe
 
 # =========================================================================
 # Runtime stage — minimal image for the production server.
@@ -75,8 +75,8 @@ WORKDIR /app
 USER taskagent
 
 COPY --from=builder /usr/local/bin/taskagent-server /usr/local/bin/taskagent-server
-COPY --from=builder /usr/local/bin/taskagent-mcp-linux /app/bin/taskagent-mcp-linux
-COPY --from=mcp-windows-builder /usr/local/bin/taskagent-mcp-windows.exe /app/bin/taskagent-mcp-windows.exe
+COPY --from=builder /usr/local/bin/taskagent-linux /app/bin/taskagent-linux
+COPY --from=mcp-windows-builder /usr/local/bin/taskagent-windows.exe /app/bin/taskagent-windows.exe
 
 ENV RUST_LOG=info \
     TASKAGENT_DATA_DIR=/app/data \

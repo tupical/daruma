@@ -53,12 +53,14 @@ struct ScopeCtx<'a> {
 
 /// Build the scope prompt. Pure — exposed for tests.
 pub fn build_scope_prompt(task: &Task, direction: ScopeDirection) -> String {
+    let title = crate::untrusted::wrap_untrusted("task title", &task.title);
+    let description = crate::untrusted::wrap_untrusted("task description", &task.description);
     PromptRegistry::load(
         "scope",
         direction.as_variant(),
         &ScopeCtx {
-            title: &task.title,
-            description: &task.description,
+            title: &title,
+            description: &description,
         },
     )
     .expect("bundled scope prompt is well-formed")

@@ -9,7 +9,7 @@
 //!      until `include_archived=true`.
 
 use serde_json::{json, Value};
-use taskagent_mcp::{dispatch_request, ApiClient, JsonRpcRequest};
+use taskagent_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 
 mod common;
 use common::{spawn_server, test_app};
@@ -263,4 +263,14 @@ async fn doc_archive_hides_from_default_list() {
         !revived["archived_at"].is_null(),
         "archived_at must be set: {revived:?}"
     );
+}
+
+/// All protocol-level tests drive the complete catalogue explicitly; the
+/// compact `default` profile has its own dedicated coverage in
+/// `mcp_dispatch.rs::profiles`.
+async fn dispatch_request(
+    client: &ApiClient,
+    req: JsonRpcRequest,
+) -> Option<taskagent_mcp::JsonRpcResponse> {
+    dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }
