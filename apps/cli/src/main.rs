@@ -68,7 +68,23 @@ enum Cmd {
         /// Write the TaskAgent CLAUDE.md policy block (+ .omc OMC guard).
         #[arg(long)]
         claude: bool,
-        /// Project directory for --claude (default: current dir).
+        /// Upsert taskagent MCP entry into Cursor mcp.json.
+        #[arg(long)]
+        cursor: bool,
+        /// Upsert taskagent MCP entry into Windsurf mcp_config.json.
+        #[arg(long)]
+        windsurf: bool,
+        /// Write the codex AGENTS.md managed policy block.
+        #[arg(long)]
+        codex: bool,
+        /// Install all targets: cursor + windsurf + codex + claude.
+        #[arg(long)]
+        all: bool,
+        /// Overwrite an existing taskagent entry instead of skipping.
+        #[arg(long)]
+        force: bool,
+        /// Project directory for --claude / --codex / --cursor / --windsurf
+        /// (default: current dir for policy targets; home dir for MCP configs).
         #[arg(long, value_name = "DIR")]
         project: Option<PathBuf>,
     },
@@ -162,6 +178,11 @@ async fn main() -> anyhow::Result<()> {
             mode,
             yes,
             claude,
+            cursor,
+            windsurf,
+            codex,
+            all,
+            force,
             project,
         }) => {
             return cmd_install(
@@ -171,6 +192,11 @@ async fn main() -> anyhow::Result<()> {
                 mode.as_deref(),
                 *yes,
                 *claude,
+                *cursor,
+                *windsurf,
+                *codex,
+                *all,
+                *force,
                 project.as_deref(),
             );
         }
@@ -192,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
     let client = ApiClient::with_http(base.clone(), token.clone(), http);
 
     match cli.cmd.expect("None subcommand handled above") {
-        Cmd::Install { .. } => unreachable!("install exits before HTTP client setup"),
+        Cmd::Install { .. } => unreachable!("install exits before HTTP client setup"), // all fields covered by `..`
         Cmd::Mcp { .. } => unreachable!("mcp exits before HTTP client setup"),
         Cmd::Next { project_id } => cmd_next(&client, project_id, cli.json).await,
         Cmd::Show { id } => cmd_show(&client, &id, cli.json).await,
@@ -293,6 +319,11 @@ fn cmd_install(
     mode: Option<&str>,
     yes: bool,
     claude: bool,
+    cursor: bool,
+    windsurf: bool,
+    codex: bool,
+    all: bool,
+    force: bool,
     project: Option<&Path>,
 ) -> anyhow::Result<()> {
     if let Some(mode) = mode {
@@ -309,12 +340,138 @@ fn cmd_install(
         }
     }
 
-    if claude {
+    let do_claude = claude || all;
+    let do_cursor = cursor || all;
+    let do_windsurf = windsurf || all;
+    let do_codex = codex || all;
+
+    if do_cursor {
+        let config_path = match project {
+            Some(p) => p.join(".cursor").join("mcp.json"),
+            None => home_dir().join(".cursor").join("mcp.json"),
+        };
+        install_mcp_json(&config_path, base, token, force)?;
+        println!("cursor mcp.json:  {}", config_path.display());
+    }
+
+    if do_windsurf {
+        let config_path = match project {
+            Some(p) => p.join(".windsurf").join("mcp_config.json"),
+            None => home_dir()
+                .join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"),
+        };
+        install_mcp_json(&config_path, base, token, force)?;
+        println!("windsurf mcp_config.json: {}", config_path.display());
+    }
+
+    if do_codex {
+        let dir = project
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        install_codex_policy(&dir)?;
+    }
+
+    if do_claude {
         let dir = project
             .map(Path::to_path_buf)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         install_claude_policy(&dir)?;
     }
+
+    Ok(())
+}
+
+/// Returns the current user's home directory.
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Upsert `mcpServers.taskagent` into a JSON config file (Cursor / Windsurf).
+/// Preserves all other entries. Writes atomically (tmp + rename).
+/// Returns an error-like message (not Err) if already present and !force — the
+/// caller prints it directly so the overall install continues.
+fn install_mcp_json(path: &Path, base: &str, token: &str, force: bool) -> anyhow::Result<()> {
+    // Read existing or start fresh.
+    let existing_raw = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: serde_json::Value = if existing_raw.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&existing_raw)
+            .with_context(|| format!("parse existing JSON at {}", path.display()))?
+    };
+
+    if !doc.get("mcpServers").is_some_and(|v| v.is_object()) {
+        doc["mcpServers"] = serde_json::json!({});
+    }
+
+    if doc["mcpServers"].get("taskagent").is_some() && !force {
+        println!(
+            "  already present: {} (use --force to overwrite)",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    // Build the entry — same shape as cursor_mcp_config() helper.
+    let entry = {
+        let mut e = serde_json::json!({
+            "type": "http",
+            "url": format!("{}/v1/mcp", base.trim_end_matches('/')),
+        });
+        if !token.trim().is_empty() {
+            e["headers"] = serde_json::json!({
+                "Authorization": format!("Bearer {}", token.trim()),
+            });
+        }
+        e
+    };
+    doc["mcpServers"]["taskagent"] = entry;
+
+    // Atomic write: tmp file in same directory, then rename.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string_pretty(&doc)? + "\n")?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // Cross-device rename (rare on Linux, possible on Windows).
+        std::fs::copy(&tmp, path)?;
+        std::fs::remove_file(&tmp).unwrap_or(());
+        let _ = e; // original error ignored after successful copy
+    }
+    Ok(())
+}
+
+/// Markers for the codex AGENTS.md managed block. Kept byte-for-byte
+/// compatible with clients/codex-plugin/lib/policy.mjs so re-runs from
+/// either tool update the same block.
+const CODEX_POLICY_BEGIN: &str = "<!-- taskagent-codex:policy:begin -->";
+const CODEX_POLICY_END: &str = "<!-- taskagent-codex:policy:end -->";
+
+/// Body of the codex policy block. The include_str! may carry a trailing
+/// newline; we strip it so write_managed_block produces the same byte sequence
+/// as the JS buildBlock() helper (`BEGIN\n<body>\nEND\n`).
+const CODEX_POLICY_BODY_RAW: &str = include_str!("policy_codex.md");
+
+fn codex_policy_body() -> &'static str {
+    CODEX_POLICY_BODY_RAW.trim_end_matches('\n')
+}
+
+/// Write the codex policy block into `<project>/AGENTS.md`.
+fn install_codex_policy(project_dir: &Path) -> anyhow::Result<()> {
+    let agents_md = project_dir.join("AGENTS.md");
+    write_managed_block(
+        &agents_md,
+        CODEX_POLICY_BEGIN,
+        CODEX_POLICY_END,
+        codex_policy_body(),
+    )?;
+    println!("codex policy written: {}", agents_md.display());
     Ok(())
 }
 
@@ -688,6 +845,190 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    // ── install_mcp_json tests ────────────────────────────────────────────────
+
+    #[test]
+    fn install_mcp_json_writes_entry_into_empty_file() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-mcp-test-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(".cursor").join("mcp.json");
+
+        install_mcp_json(&path, "http://localhost:8080", "mytoken", false).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            doc["mcpServers"]["taskagent"]["url"],
+            "http://localhost:8080/v1/mcp"
+        );
+        assert_eq!(
+            doc["mcpServers"]["taskagent"]["headers"]["Authorization"],
+            "Bearer mytoken"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_mcp_json_preserves_foreign_entries() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-mcp-test-foreign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+
+        // Pre-populate with a foreign entry.
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"other":{"type":"http","url":"http://other"}}}"#,
+        )
+        .unwrap();
+
+        install_mcp_json(&path, "http://localhost:8080", "tok", false).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // Foreign entry preserved.
+        assert_eq!(doc["mcpServers"]["other"]["url"], "http://other");
+        // New entry written.
+        assert_eq!(
+            doc["mcpServers"]["taskagent"]["url"],
+            "http://localhost:8080/v1/mcp"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_mcp_json_skips_without_force_when_entry_exists() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-mcp-test-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"taskagent":{"type":"http","url":"http://old/v1/mcp"}}}"#,
+        )
+        .unwrap();
+
+        install_mcp_json(&path, "http://new", "newtoken", false).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // Still the old URL — was skipped.
+        assert_eq!(doc["mcpServers"]["taskagent"]["url"], "http://old/v1/mcp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_mcp_json_force_overwrites_existing_entry() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-mcp-test-force-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"taskagent":{"type":"http","url":"http://old/v1/mcp"}}}"#,
+        )
+        .unwrap();
+
+        install_mcp_json(&path, "http://new", "newtoken", true).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(doc["mcpServers"]["taskagent"]["url"], "http://new/v1/mcp");
+        assert_eq!(
+            doc["mcpServers"]["taskagent"]["headers"]["Authorization"],
+            "Bearer newtoken"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── install_codex_policy tests ────────────────────────────────────────────
+
+    #[test]
+    fn install_codex_policy_creates_agents_md() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-codex-test-create-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        install_codex_policy(&dir).unwrap();
+
+        let body = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        assert!(body.contains(CODEX_POLICY_BEGIN));
+        assert!(body.contains(CODEX_POLICY_END));
+        assert!(body.contains("taskagent_plan_create"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_codex_policy_idempotent_rerun() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-codex-test-idem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        install_codex_policy(&dir).unwrap();
+        let first = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+
+        install_codex_policy(&dir).unwrap();
+        let second = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+
+        assert_eq!(first, second, "second run must produce identical output");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_codex_policy_preserves_surrounding_content() {
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-codex-test-preserve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("AGENTS.md");
+        std::fs::write(&path, "# My notes\nkeep this.\n").unwrap();
+
+        install_codex_policy(&dir).unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("# My notes"), "original header preserved");
+        assert!(body.contains("keep this."), "original content preserved");
+        assert!(body.contains(CODEX_POLICY_BEGIN));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codex_policy_block_matches_js_marker_format() {
+        // The block produced by write_managed_block must start/end with the
+        // same markers the JS buildBlock() uses so cross-tool idempotency holds.
+        let dir = std::env::temp_dir()
+            .join(format!("taskagent-codex-test-markers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        install_codex_policy(&dir).unwrap();
+
+        let body = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        // Block must start with the begin marker and end with end marker + \n.
+        assert!(
+            body.contains(&format!("{CODEX_POLICY_BEGIN}\n")),
+            "begin marker must be followed by newline"
+        );
+        assert!(
+            body.contains(&format!("\n{CODEX_POLICY_END}\n")),
+            "end marker must be preceded and followed by newline"
+        );
+        // No double-blank-line between body and end marker.
+        assert!(
+            !body.contains(&format!("\n\n{CODEX_POLICY_END}")),
+            "no blank line between body and end marker"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
