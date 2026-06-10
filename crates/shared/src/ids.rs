@@ -79,6 +79,8 @@ newtype_id!(RelationId, "rel");
 newtype_id!(DocumentId, "doc");
 newtype_id!(VersionId, "ver");
 newtype_id!(WorkLeaseId, "wls");
+newtype_id!(ArtifactId, "art");
+newtype_id!(ArtifactRelationId, "artrel");
 
 #[cfg(test)]
 mod tests {

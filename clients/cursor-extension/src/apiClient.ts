@@ -40,6 +40,17 @@ export interface PlanGraph {
   nodes: PlanGraphNode[];
 }
 
+export interface TaskAgentEvent {
+  id: string;
+  type: string;
+  payload?: unknown;
+}
+
+export interface EventsResponse {
+  events: TaskAgentEvent[];
+  cursor?: string;
+}
+
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export class TaskagentApiClient {
@@ -86,6 +97,43 @@ export class TaskagentApiClient {
       command: { type: "complete_task", id },
       actor: { kind: "user" }
     });
+  }
+
+  async claimTask(id: string, actor?: string): Promise<void> {
+    await this.postJson("/v1/commands", {
+      command: { type: "claim_task", id, actor: actor ?? "user" },
+      actor: { kind: "user" }
+    });
+  }
+
+  async commentTask(id: string, body: string): Promise<void> {
+    await this.postJson("/v1/commands", {
+      command: { type: "comment_task", id, body },
+      actor: { kind: "user" }
+    });
+  }
+
+  async setTaskPriority(id: string, priority: string): Promise<void> {
+    await this.postJson("/v1/commands", {
+      command: { type: "set_priority", id, priority },
+      actor: { kind: "user" }
+    });
+  }
+
+  async splitTask(id: string, titles: string[]): Promise<void> {
+    await this.postJson("/v1/commands", {
+      command: { type: "split_task", id, subtasks: titles.map((title) => ({ title })) },
+      actor: { kind: "user" }
+    });
+  }
+
+  async getEventsSince(cursor?: string): Promise<EventsResponse> {
+    const params = new URLSearchParams();
+    if (cursor) {
+      params.set("since", cursor);
+    }
+    const query = params.toString();
+    return this.getJson<EventsResponse>(`/v1/events/since${query ? `?${query}` : ""}`);
   }
 
   private async getJson<T>(path: string): Promise<T> {

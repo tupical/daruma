@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use taskagent_domain::{
-    Actor, AgentAction, AgentSession, AgentSessionPlanStep, Comment, CommentPatch, Document,
-    NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome,
-    SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
+    Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
+    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, NewTask,
+    Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome, SessionArtifact,
+    Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{
-    AgentId, AgentSessionId, AiOpId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId,
-    RunId, RunNoteId, TaskId, Timestamp, WorkUnitId,
+    AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
+    EventId, PlanId, ProjectId, RelationId, RunId, RunNoteId, TaskId, Timestamp, WorkUnitId,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -519,6 +520,74 @@ pub enum Event {
         document_id: DocumentId,
         at: Timestamp,
     },
+
+    // ── Artifact Registry (P4) ────────────────────────────────────────────────
+    /// A new artifact URI was registered in the registry.
+    ArtifactRegistered {
+        artifact: Artifact,
+    },
+
+    /// Outcome ownership of an artifact was assigned to an agent.
+    ArtifactOwnerAssigned {
+        artifact_id: ArtifactId,
+        owner_agent_id: AgentId,
+        at: Timestamp,
+    },
+
+    /// The lifecycle status of an artifact changed (e.g. Pending → Active).
+    ArtifactStatusChanged {
+        artifact_id: ArtifactId,
+        from: ArtifactStatus,
+        to: ArtifactStatus,
+        at: Timestamp,
+    },
+
+    /// Metadata (title, description) of an artifact was updated.
+    ArtifactChanged {
+        artifact_id: ArtifactId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        at: Timestamp,
+    },
+
+    /// A write was committed to an artifact.
+    ///
+    /// Validates that `fencing_token` matches the current live lease for the
+    /// artifact URI; rejects with `Err` if the token is stale (holder lost
+    /// the lease). On success, updates `last_write_token` and `version`.
+    ArtifactWriteCommitted {
+        artifact_id: ArtifactId,
+        agent_id: AgentId,
+        /// Fencing token from the work-lease; must equal the current sequence.
+        fencing_token: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        at: Timestamp,
+    },
+
+    /// An artifact was soft-deprecated (no new consumers should reference it).
+    ArtifactDeprecated {
+        artifact_id: ArtifactId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        at: Timestamp,
+    },
+
+    /// A typed relation between two artifacts was created.
+    ArtifactRelationAdded {
+        relation: ArtifactRelation,
+    },
+
+    /// A typed relation between two artifacts was removed.
+    ArtifactRelationRemoved {
+        relation_id: ArtifactRelationId,
+        from_id: ArtifactId,
+        to_id: ArtifactId,
+        kind: ArtifactRelationKind,
+        at: Timestamp,
+    },
 }
 
 impl Event {
@@ -602,6 +671,15 @@ impl Event {
             Event::DocumentContentAppended { .. } => "document_content_appended",
             Event::DocumentRenamed { .. } => "document_renamed",
             Event::DocumentArchived { .. } => "document_archived",
+            // Artifact Registry (P4)
+            Event::ArtifactRegistered { .. } => "artifact_registered",
+            Event::ArtifactOwnerAssigned { .. } => "artifact_owner_assigned",
+            Event::ArtifactStatusChanged { .. } => "artifact_status_changed",
+            Event::ArtifactChanged { .. } => "artifact_changed",
+            Event::ArtifactWriteCommitted { .. } => "artifact_write_committed",
+            Event::ArtifactDeprecated { .. } => "artifact_deprecated",
+            Event::ArtifactRelationAdded { .. } => "artifact_relation_added",
+            Event::ArtifactRelationRemoved { .. } => "artifact_relation_removed",
         }
     }
 
@@ -768,6 +846,16 @@ impl Event {
             | Event::DocumentContentAppended { .. }
             | Event::DocumentRenamed { .. }
             | Event::DocumentArchived { .. } => Channel::Documents,
+
+            // ── Artifacts channel (P4) ────────────────────────────────────────
+            Event::ArtifactRegistered { .. }
+            | Event::ArtifactOwnerAssigned { .. }
+            | Event::ArtifactStatusChanged { .. }
+            | Event::ArtifactChanged { .. }
+            | Event::ArtifactWriteCommitted { .. }
+            | Event::ArtifactDeprecated { .. }
+            | Event::ArtifactRelationAdded { .. }
+            | Event::ArtifactRelationRemoved { .. } => Channel::Artifacts,
         }
     }
 }
@@ -799,6 +887,9 @@ pub enum Channel {
     /// Work-unit lifecycle (P3): created / claimed / started / blocked /
     /// completed / released.
     WorkUnits,
+    /// Artifact registry lifecycle (P4): registered / owner assigned /
+    /// status changed / write committed / deprecated / relations.
+    Artifacts,
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

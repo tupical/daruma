@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod agent;
+pub mod artifact;
 pub mod comment;
 pub mod complexity;
 pub mod device;
@@ -20,6 +21,9 @@ pub mod work_unit;
 
 pub use activity::{Activity, Verb};
 pub use agent::{Actor, AgentAction, AgentActionKind};
+pub use artifact::{
+    Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus, NewArtifact,
+};
 pub use comment::{Comment, CommentKind, CommentPatch, NewComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;

@@ -10,9 +10,10 @@ pub mod time;
 
 pub use error::CoreError;
 pub use ids::{
-    ActivityId, AgentId, AgentSessionId, AiOpId, CommentId, DeviceId, DocumentId, EventId, PlanId,
-    ProjectId, RelationId, RunId, RunNoteId, SessionArtifactId, TaskId, TokenId, VersionId,
-    WebhookDeliveryId, WebhookId, WorkLeaseId, WorkUnitId,
+    ActivityId, AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId,
+    DeviceId, DocumentId, EventId, PlanId, ProjectId, RelationId, RunId, RunNoteId,
+    SessionArtifactId, TaskId, TokenId, VersionId, WebhookDeliveryId, WebhookId, WorkLeaseId,
+    WorkUnitId,
 };
 pub use path_lease::{normalize_lease_path, paths_overlap};
 pub use time::Timestamp;

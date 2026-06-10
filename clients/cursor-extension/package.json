@@ -40,18 +40,52 @@
     "commands": [
       {
         "command": "taskagent.refresh",
-        "title": "TaskAgent: Refresh"
+        "title": "TaskAgent: Refresh",
+        "icon": "$(refresh)"
       },
       {
         "command": "taskagent.completeTask",
-        "title": "TaskAgent: Complete Task"
+        "title": "TaskAgent: Complete Task",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "taskagent.claimTask",
+        "title": "TaskAgent: Claim Task",
+        "icon": "$(account)"
+      },
+      {
+        "command": "taskagent.commentTask",
+        "title": "TaskAgent: Comment on Task",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "taskagent.setTaskPriority",
+        "title": "TaskAgent: Set Task Priority",
+        "icon": "$(symbol-number)"
+      },
+      {
+        "command": "taskagent.splitTask",
+        "title": "TaskAgent: Split Task",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "taskagent.showTask",
+        "title": "TaskAgent: Show Task"
       },
       {
         "command": "taskagent.openPlan",
-        "title": "TaskAgent: Open Plan"
+        "title": "TaskAgent: Open Plan",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "taskagent.refresh",
+          "when": "view == taskagent.tasks",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
           "command": "taskagent.openPlan",
@@ -61,7 +95,27 @@
         {
           "command": "taskagent.completeTask",
           "when": "view == taskagent.tasks && viewItem == taskagent.task",
-          "group": "inline"
+          "group": "inline@1"
+        },
+        {
+          "command": "taskagent.claimTask",
+          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "group": "inline@2"
+        },
+        {
+          "command": "taskagent.commentTask",
+          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "group": "inline@3"
+        },
+        {
+          "command": "taskagent.setTaskPriority",
+          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "taskagent.splitTask",
+          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "group": "1_actions@2"
         }
       ]
     },
