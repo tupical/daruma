@@ -20,6 +20,7 @@ mod cmds;
 mod context;
 mod flush;
 mod local_executor;
+mod onboarding;
 mod outbox;
 mod remote;
 mod render;
@@ -68,6 +69,13 @@ async fn main() -> anyhow::Result<()> {
             let path = context::data_path();
             println!("{}", path.display());
         }
+        // ── LAN discovery + pairing (§3.3.5) ──────────────────────────────
+        "discover" => {
+            onboarding::cmd_discover(&rest).await?;
+        }
+        "pair" => {
+            onboarding::cmd_pair(&rest).await?;
+        }
         "help" | "--help" | "-h" => print_help(),
         other => {
             eprintln!("unknown subcommand: {other}\n");
@@ -101,6 +109,8 @@ fn print_help() {
          sync [--limit N]                     flush offline events to server\n  \
          ai parse \"<input>\"                   parse natural language → CreateTask\n  \
          ai decompose <id|prefix>             split a task into subtasks\n  \
+         discover [--timeout <secs>]          scan LAN for taskagent servers (mDNS)\n  \
+         pair <taskagent://pair?…>            pair with a server via QR/paste URL\n  \
          where                                print the DB path\n  \
          help                                 this message\n\n\
          ENV\n  \
@@ -109,6 +119,9 @@ fn print_help() {
          TASKAGENT_TOKEN      bearer token for `sync`\n  \
          OPENAI_API_KEY       required for `ai *` subcommands\n  \
          OPENAI_MODEL         model id (default: gpt-4.1-mini)\n  \
+         TASKAGENT_MDNS_DISABLE  set to disable mDNS advertisement on the server\n  \
+         TASKAGENT_HOSTNAME   override hostname in mDNS + TLS cert (server)\n  \
+         TASKAGENT_TLS_PORT   TLS listen port (server, default: 8443)\n  \
          RUST_LOG             tracing filter\n"
     );
 }

@@ -15,11 +15,13 @@ path = "src/main.rs"
 # crates (`taskagent-shared`, `taskagent-domain`) remain direct deps as
 # they have no I/O surface. `taskagent-sync` is unused by the CLI today
 # but kept opt-in for the upcoming GPUI client.
-taskagent-shared  = { workspace = true }
-taskagent-domain  = { workspace = true }
-taskagent-core    = { workspace = true }
-taskagent-sync    = { workspace = true }
-taskagent-ai      = { workspace = true }
+taskagent-shared     = { workspace = true }
+taskagent-domain     = { workspace = true }
+taskagent-core       = { workspace = true }
+taskagent-sync       = { workspace = true }
+taskagent-ai         = { workspace = true }
+taskagent-discovery  = { workspace = true }
+mdns-sd              = { workspace = true }
 tokio       = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
@@ -42,3 +44,9 @@ async-trait = { workspace = true }
 #   3. Build on the host:  cargo run -p taskagent-desktop
 #
 # gpui = { git = "https://github.com/zed-industries/zed", branch = "main" }
+
+[features]
+## Enable camera-based QR code scanning for pairing (requires nokhwa + a
+## graphical host).  Disabled by default — the feature is a stub; the actual
+## nokhwa integration will be added in a future revision.
+camera-pairing = []
