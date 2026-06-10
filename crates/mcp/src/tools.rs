@@ -586,6 +586,33 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_bulk_attach_to_plan(),
             Dom::Plans, F, Ann::WriteIdem,
         ),
+        // ── Artifact Registry (P4) ───────────────────────────────────────
+        tool(
+            "taskagent_artifact_register",
+            "Register artifact",
+            "Register a named artifact URI in the registry (creates a Pending artifact node). \
+             `uri` must use a supported scheme: `artifact://`, `file://`, `contract://`, or `env://`. \
+             Optional `task_id` links the artifact to the task that produces it.",
+            schema_artifact_register(),
+            Dom::WorkspaceGraph, D, Ann::Write,
+        ),
+        tool(
+            "taskagent_artifact_list",
+            "List artifacts",
+            "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
+             owner, version. Use to answer \"who owns this\" before writing.",
+            schema_artifact_list(),
+            Dom::WorkspaceGraph, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_artifact_impact",
+            "Artifact impact analysis",
+            "Downstream dependents of an artifact node via ArtDependsOn, ArtImplements, \
+             ArtTests, ArtDocuments, ArtSupersedes, ArtConflictsWith, and Produces edges. \
+             Answers \"what breaks if I change this artifact\".",
+            schema_artifact_impact(),
+            Dom::WorkspaceGraph, D, Ann::Read,
+        ),
         // ── WorkspaceGraph ────────────────────────────────────────────────
         tool(
             "taskagent_workspacegraph_status",
@@ -2304,6 +2331,58 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
 
+        // ── Artifact Registry (P4) ───────────────────────────────────────
+        "taskagent_artifact_register" => {
+            let uri = required_string(&args, "uri")?;
+            let title = required_string(&args, "title")?;
+            let mut body = json!({"uri": uri, "title": title});
+            for key in ["description", "task_id", "project_id"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    body[key] = json!(v);
+                }
+            }
+            client.post_json("/v1/artifacts", body).await
+        }
+        "taskagent_artifact_list" => {
+            let mut params: Vec<(&str, String)> = vec![];
+            if let Some(p) = args.get("project_id").and_then(|v| v.as_str()) {
+                params.push(("project_id", urlencode(p)));
+            }
+            if let Some(t) = args.get("task_id").and_then(|v| v.as_str()) {
+                params.push(("task_id", urlencode(t)));
+            }
+            if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
+                params.push(("status", urlencode(s)));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            let path = if qs.is_empty() {
+                "/v1/artifacts".to_string()
+            } else {
+                format!("/v1/artifacts?{qs}")
+            };
+            client.get_json(&path).await
+        }
+        "taskagent_artifact_impact" => {
+            let artifact_id = required_string(&args, "artifact_id")?;
+            let mut params: Vec<(&str, String)> =
+                vec![("node_id", urlencode(&format!("artifact:{artifact_id}")))];
+            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
+                params.push(("limit", limit.to_string()));
+            }
+            let qs = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            client
+                .get_json(&format!("/v1/workspacegraph/impact?{qs}"))
+                .await
+        }
+
         other => anyhow::bail!("unknown tool: {other}"),
     }
 }
@@ -3188,6 +3267,46 @@ fn schema_project_settings_update() -> Value {
             "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."}
         },
         "required":["project_id"]
+    })
+}
+
+fn schema_artifact_register() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "uri":         {"type":"string","description":"Canonical resource URI — artifact://, file://, contract://, or env://."},
+            "title":       {"type":"string","description":"Short human-readable name."},
+            "description": {"type":"string","description":"Optional longer description."},
+            "task_id":     {"type":"string","description":"Task that produces this artifact (creates a Produces edge)."},
+            "project_id":  {"type":"string","description":"Project scope (creates a Contains edge)."}
+        },
+        "required": ["uri","title"]
+    })
+}
+
+fn schema_artifact_list() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "project_id": {"type":"string","description":"Scope to a project."},
+            "task_id":    {"type":"string","description":"Scope to a task."},
+            "status":     {
+                "type":"string",
+                "enum":["pending","active","committed","deprecated"],
+                "description":"Filter by lifecycle status."
+            }
+        }
+    })
+}
+
+fn schema_artifact_impact() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Artifact id to analyze downstream dependents from."},
+            "limit":       {"type":"integer","minimum":1,"maximum":100,"default":20}
+        },
+        "required": ["artifact_id"]
     })
 }
 

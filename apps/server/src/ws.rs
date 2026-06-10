@@ -633,7 +633,11 @@ fn channel_required_capability(ch: Channel) -> Option<Capability> {
         | Channel::Webhooks
         | Channel::Documents
         | Channel::AiOps
-        | Channel::WorkUnits => None,
+        | Channel::WorkUnits
+        // P4: Artifacts channel has no dedicated WS gate yet — same
+        // treatment as Documents/WorkUnits until a SubscribeArtifacts
+        // capability is introduced.
+        | Channel::Artifacts => None,
     }
 }
 
