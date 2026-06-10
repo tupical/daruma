@@ -23,6 +23,23 @@ impl ApiError {
     pub fn from_missing_cap(m: MissingCapability) -> Self {
         Self(CoreError::forbidden(m.to_string()))
     }
+
+    /// Build an `ApiError` that maps to a specific HTTP status code.
+    ///
+    /// Useful when the domain error hierarchy does not have a matching variant
+    /// (e.g., a custom 403 with a fingerprint-mismatch message).
+    pub fn status(code: StatusCode, msg: impl Into<String>) -> Self {
+        let msg = msg.into();
+        let core = match code {
+            StatusCode::NOT_FOUND => CoreError::not_found(msg),
+            StatusCode::CONFLICT => CoreError::conflict(msg),
+            StatusCode::UNAUTHORIZED => CoreError::unauthorized(msg),
+            StatusCode::FORBIDDEN => CoreError::forbidden(msg),
+            StatusCode::BAD_REQUEST => CoreError::validation(msg),
+            _ => CoreError::storage(msg),
+        };
+        Self(core)
+    }
 }
 
 impl IntoResponse for ApiError {

@@ -14,9 +14,10 @@ name = "taskagent-server"
 path = "src/main.rs"
 
 [dependencies]
-taskagent-shared  = { workspace = true }
-taskagent-domain  = { workspace = true }
-taskagent-events  = { workspace = true, features = ["runtime"] }
+taskagent-shared     = { workspace = true }
+taskagent-domain     = { workspace = true }
+taskagent-discovery  = { workspace = true }
+taskagent-events     = { workspace = true, features = ["runtime"] }
 taskagent-storage = { workspace = true }
 taskagent-core    = { workspace = true }
 taskagent-sync    = { workspace = true }
@@ -42,6 +43,7 @@ uuid        = { workspace = true }
 sha2        = { workspace = true }
 hmac        = { workspace = true }
 hex         = { workspace = true }
+base64      = { workspace = true }
 
 [features]
 ## When enabled every dispatch() call derives the actor from the bearer token,

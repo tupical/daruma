@@ -44,6 +44,33 @@ impl TokenScope {
             capabilities: [crate::Capability::Admin].into(),
         }
     }
+
+    /// Default scope for a newly-paired end-user device: read/write access to
+    /// tasks, projects, comments, plans, and subscriptions.
+    pub fn default_user() -> Self {
+        use crate::Capability::*;
+        Self {
+            projects: ProjectFilter::All,
+            capabilities: [
+                TaskRead,
+                TaskWrite,
+                CommentRead,
+                CommentWrite,
+                ProjectRead,
+                ProjectWrite,
+                PlanRead,
+                PlanWrite,
+                RunRead,
+                SubscribeTasks,
+                SubscribeComments,
+                SubscribePlans,
+                SubscribeRuns,
+                TaskRelationRead,
+                DocumentRead,
+            ]
+            .into(),
+        }
+    }
 }
 
 #[cfg(test)]

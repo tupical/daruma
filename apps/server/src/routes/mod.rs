@@ -14,6 +14,7 @@
 //! `Sec-WebSocket-Protocol` subprotocol — implemented in W2.3.
 
 pub mod downloads;
+pub mod pairing;
 pub mod relations;
 pub mod shell;
 pub mod workspacegraph;
@@ -189,6 +190,8 @@ pub fn router(state: AppState) -> Router {
 fn public_routes(state: AppState) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
+        // Pairing: the single-use token IS the credential — no bearer needed.
+        .route("/devices/pair", post(pairing::pair_device))
         .with_state(state)
 }
 
@@ -247,6 +250,8 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/tasks/{id}/triage", patch(patch_task_triage))
         .route("/tokens", post(create_token).get(list_tokens))
         .route("/tokens/{id}", delete(revoke_token))
+        // Pairing: issue a QR ticket (requires TokenWrite capability).
+        .route("/devices/pair/ticket", get(pairing::issue_pairing_ticket))
         .route(
             "/downloads/taskagent/{platform}",
             get(downloads::download_taskagent_mcp),

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use taskagent_ai::OpenAiClient;
 use taskagent_auth::TokenStore;
 use taskagent_core::CommandBus;
+use taskagent_discovery::PairingStore;
 use taskagent_events::EventStore;
 use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, DocumentRepo, EntityVersionRepo,
@@ -89,4 +90,12 @@ pub struct AppState {
     pub mcp_downloads: crate::mcp_downloads::McpDownloads,
     /// In-memory per-workspace/per-token HTTP rate limiter.
     pub rate_limiter: RateLimiter,
+    // ── LAN discovery + pairing (§3.3.5) ─────────────────────────────────────
+    /// In-process single-use pairing token store (TTL 5 min).
+    pub pairing: PairingStore,
+    /// `host:port` string advertised in mDNS TXT and embedded in pairing URLs.
+    pub tls_host: String,
+    /// Hex SHA-256 fingerprint of the server's self-signed TLS certificate
+    /// (without the `sha256:` prefix — callers prepend it as needed).
+    pub tls_fingerprint: String,
 }

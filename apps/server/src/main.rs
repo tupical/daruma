@@ -17,6 +17,8 @@ use taskagent_sync::Hub;
 use taskagent_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};
 use tracing_subscriber::EnvFilter;
 
+use taskagent_discovery::{CertBundle, MdnsAdvertiser, PairingStore};
+
 use taskagent_server::{
     cors, mcp_downloads::McpDownloads, middleware::rate_limit::RateLimiter, routes,
     state::AppState, workspace_graph,
@@ -174,6 +176,65 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // ── TLS certificate (self-signed, persisted) ──────────────────────────────
+    let hostname = std::env::var("TASKAGENT_HOSTNAME")
+        .unwrap_or_else(|_| hostname_or_localhost());
+    let tls_bundle = CertBundle::load_or_generate(&data_path, &hostname)
+        .await
+        .map_err(|e| anyhow::anyhow!("TLS init failed: {e}"))?;
+    let tls_fingerprint = tls_bundle.fingerprint.clone();
+
+    let tls_port: u16 = std::env::var("TASKAGENT_TLS_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8443);
+    let tls_host = format!("{hostname}:{tls_port}");
+
+    // ── Pairing store ─────────────────────────────────────────────────────────
+    let pairing = PairingStore::new();
+
+    // ── mDNS advertisement ────────────────────────────────────────────────────
+    let host_id_str = load_or_create_host_id(&data_path).await?;
+    let _mdns = if std::env::var("TASKAGENT_MDNS_DISABLE").is_ok() {
+        tracing::info!("mDNS advertisement disabled via TASKAGENT_MDNS_DISABLE");
+        None
+    } else {
+        match MdnsAdvertiser::start(
+            &hostname,
+            tls_port,
+            &host_id_str,
+            &format!("sha256:{tls_fingerprint}"),
+            env!("CARGO_PKG_VERSION"),
+        ) {
+            Ok(advertiser) => {
+                tracing::info!(
+                    service = "_taskagent._tcp.local.",
+                    port = tls_port,
+                    fingerprint = %tls_fingerprint,
+                    "mDNS advertisement started"
+                );
+                Some(advertiser)
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, "mDNS advertisement failed to start (non-fatal)");
+                None
+            }
+        }
+    };
+    // Keep _mdns alive for the process lifetime so the advertisement persists.
+
+    // Spawn periodic pairing-store sweep (removes expired tickets every 60 s).
+    {
+        let pairing_bg = pairing.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                pairing_bg.sweep().await;
+            }
+        });
+    }
+
     // ── App state ─────────────────────────────────────────────────────────────
     let mcp_downloads = McpDownloads::discover();
     if mcp_downloads.linux.is_some() {
@@ -215,6 +276,9 @@ async fn main() -> anyhow::Result<()> {
         workspace_graph,
         mcp_downloads,
         rate_limiter: RateLimiter::default(),
+        pairing,
+        tls_host,
+        tls_fingerprint,
     };
 
     // ── Background: claim + work-lease TTL sweep (every 30 s) ─────────────────
@@ -404,4 +468,33 @@ async fn bootstrap_admin_token(
     );
 
     Ok(())
+}
+
+// ── Discovery helpers ─────────────────────────────────────────────────────────
+
+/// Return the system hostname, falling back to `"localhost"` on any error.
+fn hostname_or_localhost() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| {
+            // gethostname via std::process is not exposed; use the nix-style
+            // approach of reading /etc/hostname when available.
+            std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|_| "localhost".to_string())
+}
+
+/// Load a stable UUID from `<data_dir>/host_id`, generating and persisting one
+/// on first call.
+async fn load_or_create_host_id(data_dir: &std::path::Path) -> anyhow::Result<String> {
+    let path = data_dir.join("host_id");
+    if path.exists() {
+        let raw = tokio::fs::read_to_string(&path).await?;
+        let id = raw.trim().to_string();
+        if !id.is_empty() {
+            return Ok(id);
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    tokio::fs::write(&path, &id).await?;
+    Ok(id)
 }
