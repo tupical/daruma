@@ -33,11 +33,13 @@ Health check: `curl http://localhost:8080/v1/healthz`
 
 ```bash
 /plugin marketplace add tupical/taskagent
+/plugin install taskagent@taskagent
 ```
 
-This reads `.claude-plugin/marketplace.json` from the repo root and installs
-the `taskagent-claude` plugin (commands, skills, hooks, CLAUDE.md policy) in
-one step. The MCP server entry is still required — see §1 above.
+The first command fetches `.claude-plugin/marketplace.json` from the repo root.
+The second installs the `taskagent` plugin (commands, skills, hooks, CLAUDE.md
+policy) from `clients/claude-plugin`. The MCP server entry is still required —
+see §1 above.
 
 ### 3. Configure MCP manually
 
