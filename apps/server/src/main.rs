@@ -26,6 +26,12 @@ use taskagent_server::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // rustls refuses to pick a CryptoProvider when both `ring` and `aws-lc-rs`
+    // end up in the dependency graph — pin ring explicitly before any TLS use.
+    tokio_rustls::rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("rustls CryptoProvider already installed"))?;
+
     // ── Tracing ───────────────────────────────────────────────────────────────
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
