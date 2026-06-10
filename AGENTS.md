@@ -41,16 +41,42 @@ The second installs the `taskagent` plugin (commands, skills, hooks, CLAUDE.md
 policy) from `clients/claude-plugin`. The MCP server entry is still required —
 see §1 above.
 
-### 3. Configure MCP manually
+### 3. Configure MCP via the unified binary (canonical)
 
-Pick your IDE:
+The `taskagent` binary owns all install logic. Use it directly:
+
+```bash
+taskagent install --cursor                   # ~/.cursor/mcp.json (global)
+taskagent install --cursor --project DIR     # <DIR>/.cursor/mcp.json
+taskagent install --windsurf                 # ~/.codeium/windsurf/mcp_config.json
+taskagent install --codex                    # AGENTS.md policy in current dir
+taskagent install --claude                   # CLAUDE.md policy in current dir
+taskagent install --all                      # cursor + windsurf + codex + claude
+taskagent install --cursor --force           # overwrite an existing entry
+```
+
+Pass `--api-url` and `--token` (or set `TASKAGENT_API_URL` / `TASKAGENT_TOKEN`)
+to configure a non-default server or authenticated deployment.
+
+`npx taskagent-codex-install` is a thin convenience delegate that requires the
+`taskagent` binary and maps `--ide <target>` to the flags above:
+
+```bash
+npx taskagent-codex-install                  # auto-detect IDE from env
+npx taskagent-codex-install --ide cursor     # equivalent to taskagent install --cursor
+npx taskagent-codex-install --ide all        # equivalent to taskagent install --all
+```
+
+For Claude Code policy (`--claude`) the binary writes a CLAUDE.md managed block
+and prints the `claude mcp add` command to register the HTTP MCP server — it
+does **not** write into `~/.claude/settings.json`.
 
 | IDE / Agent | Config path | Install command |
 |---|---|---|
-| **Cursor** | `~/.cursor/mcp.json` | `npx taskagent-cursor install --global` |
-| **Claude Code** | `~/.claude/settings.json` | `npx taskagent-claude setup` |
-| **Codex** | `AGENTS.md` policy (this file) | `npx taskagent-codex init` |
-| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | see §Windsurf below |
+| **Cursor** | `~/.cursor/mcp.json` | `taskagent install --cursor` |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | `taskagent install --windsurf` |
+| **Codex** | `AGENTS.md` policy | `taskagent install --codex` |
+| **Claude Code** | CLAUDE.md policy + `claude mcp add` | `taskagent install --claude` |
 | **Manual** | any MCP host | see §Manual MCP entry below |
 
 #### Manual MCP entry (HTTP transport)
