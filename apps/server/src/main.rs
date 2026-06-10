@@ -194,7 +194,6 @@ async fn main() -> anyhow::Result<()> {
     let pairing = PairingStore::new();
 
     // ── mDNS advertisement ────────────────────────────────────────────────────
-    let host_id_str = load_or_create_host_id(&data_path).await?;
     let _mdns = if std::env::var("TASKAGENT_MDNS_DISABLE").is_ok() {
         tracing::info!("mDNS advertisement disabled via TASKAGENT_MDNS_DISABLE");
         None
@@ -202,7 +201,6 @@ async fn main() -> anyhow::Result<()> {
         match MdnsAdvertiser::start(
             &hostname,
             tls_port,
-            &host_id_str,
             &format!("sha256:{tls_fingerprint}"),
             env!("CARGO_PKG_VERSION"),
         ) {
@@ -386,19 +384,84 @@ async fn main() -> anyhow::Result<()> {
     // ── Router ────────────────────────────────────────────────────────────────
     let app = routes::router(state).layer(cors::cors_layer());
 
-    // ── Bind and serve ────────────────────────────────────────────────────────
+    // ── TLS listener on :8443 (pairing flow; carries the cert whose
+    //    fingerprint is in QR/mDNS) ──────────────────────────────────────────
+    let tls_config = tls_bundle
+        .into_tls_config()
+        .map_err(|e| anyhow::anyhow!("TLS config build failed: {e}"))?;
+
+    let tls_addr = std::net::SocketAddr::from(([0, 0, 0, 0], tls_port));
+    let tls_tcp = tokio::net::TcpListener::bind(tls_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("TLS bind {tls_addr}: {e}"))?;
+    tracing::info!(addr = %tls_addr, "TLS listener ready");
+
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config.clone());
+    let tls_app = app.clone();
+    tokio::spawn(async move {
+        loop {
+            match tls_tcp.accept().await {
+                Ok((stream, peer_addr)) => {
+                    let acceptor = tls_acceptor.clone();
+                    let svc = tls_app.clone();
+                    tokio::spawn(async move {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                let hyper_svc = hyper::service::service_fn(move |req| {
+                                    let mut svc = svc.clone();
+                                    // Inject peer addr so ConnectInfo extractor works.
+                                    use tower::Service;
+                                    svc.call(req)
+                                });
+                                if let Err(e) = hyper::server::conn::http1::Builder::new()
+                                    .serve_connection(io, hyper_svc)
+                                    .with_upgrades()
+                                    .await
+                                {
+                                    tracing::debug!(err = %e, "TLS connection error");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!(peer = %peer_addr, err = %e, "TLS handshake failed");
+                            }
+                        }
+                    });
+                }
+                Err(e) => tracing::warn!(err = %e, "TLS accept error"),
+            }
+        }
+    });
+
+    // ── Plain HTTP listener on :8080 (existing API clients, not for pairing) ─
     let port: u16 = std::env::var("TASKAGENT_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
-
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!(%addr, "listening");
+    tracing::info!(%addr, "HTTP listener ready");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Load a stable UUID from `<data_dir>/host_id`, generating and persisting
+/// one on first call. Used by callers that need a stable installation ID.
+#[allow(dead_code)]
+async fn load_or_create_host_id(data_dir: &std::path::Path) -> anyhow::Result<String> {
+    let path = data_dir.join("host_id");
+    if path.exists() {
+        let raw = tokio::fs::read_to_string(&path).await?;
+        let id = raw.trim().to_string();
+        if !id.is_empty() {
+            return Ok(id);
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    tokio::fs::write(&path, &id).await?;
+    Ok(id)
 }
 
 /// On the very first run (no active tokens in the DB), generate a
@@ -483,18 +546,3 @@ fn hostname_or_localhost() -> String {
         .unwrap_or_else(|_| "localhost".to_string())
 }
 
-/// Load a stable UUID from `<data_dir>/host_id`, generating and persisting one
-/// on first call.
-async fn load_or_create_host_id(data_dir: &std::path::Path) -> anyhow::Result<String> {
-    let path = data_dir.join("host_id");
-    if path.exists() {
-        let raw = tokio::fs::read_to_string(&path).await?;
-        let id = raw.trim().to_string();
-        if !id.is_empty() {
-            return Ok(id);
-        }
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    tokio::fs::write(&path, &id).await?;
-    Ok(id)
-}

@@ -18,6 +18,9 @@ taskagent-shared     = { workspace = true }
 taskagent-domain     = { workspace = true }
 taskagent-discovery  = { workspace = true }
 taskagent-events     = { workspace = true, features = ["runtime"] }
+tokio-rustls         = { workspace = true }
+hyper                = { workspace = true }
+hyper-util           = { workspace = true }
 taskagent-storage = { workspace = true }
 taskagent-core    = { workspace = true }
 taskagent-sync    = { workspace = true }
