@@ -527,6 +527,138 @@ impl WorkspaceGraphRepo {
                 .await?;
             }
 
+            // ── Artifact Registry (P4) ─────────────────────────────────────
+            Event::ArtifactRegistered { artifact } => {
+                let node_id = artifact_node_id(&artifact.id);
+                self.upsert_node(
+                    &node_id,
+                    "Artifact",
+                    &artifact.id.to_string(),
+                    artifact.project_id.map(|p| p.to_string()).as_deref(),
+                    &artifact.title,
+                    &artifact.description,
+                    &updated_at,
+                    json!({
+                        "uri": artifact.uri,
+                        "status": artifact.status.as_str(),
+                        "task_id": artifact.task_id.map(|t| t.to_string()),
+                    }),
+                )
+                .await?;
+                // Link to project if present.
+                if let Some(project_id) = artifact.project_id {
+                    self.upsert_edge(
+                        &project_node_id(&project_id),
+                        &node_id,
+                        "Contains",
+                        seq,
+                        json!({}),
+                    )
+                    .await?;
+                }
+                // Link to producing task if present.
+                if let Some(task_id) = artifact.task_id {
+                    self.upsert_edge(
+                        &task_node_id(&task_id),
+                        &node_id,
+                        "Produces",
+                        seq,
+                        json!({}),
+                    )
+                    .await?;
+                }
+            }
+
+            Event::ArtifactStatusChanged {
+                artifact_id, to, ..
+            } => {
+                self.merge_node_metadata(
+                    &artifact_node_id(artifact_id),
+                    json!({ "status": to.as_str() }),
+                    &updated_at,
+                )
+                .await?;
+            }
+
+            Event::ArtifactChanged {
+                artifact_id,
+                title,
+                description,
+                ..
+            } => {
+                if let Some(t) = title {
+                    self.update_node_title(&artifact_node_id(artifact_id), t, &updated_at)
+                        .await?;
+                }
+                if let Some(d) = description {
+                    self.update_node_text(&artifact_node_id(artifact_id), d, &updated_at)
+                        .await?;
+                }
+            }
+
+            Event::ArtifactOwnerAssigned {
+                artifact_id,
+                owner_agent_id,
+                ..
+            } => {
+                self.merge_node_metadata(
+                    &artifact_node_id(artifact_id),
+                    json!({ "owner_agent_id": owner_agent_id.to_string() }),
+                    &updated_at,
+                )
+                .await?;
+            }
+
+            Event::ArtifactWriteCommitted {
+                artifact_id,
+                version,
+                ..
+            } => {
+                self.merge_node_metadata(
+                    &artifact_node_id(artifact_id),
+                    json!({
+                        "status": "committed",
+                        "version": version,
+                    }),
+                    &updated_at,
+                )
+                .await?;
+            }
+
+            Event::ArtifactDeprecated { artifact_id, .. } => {
+                self.merge_node_metadata(
+                    &artifact_node_id(artifact_id),
+                    json!({ "status": "deprecated" }),
+                    &updated_at,
+                )
+                .await?;
+            }
+
+            Event::ArtifactRelationAdded { relation } => {
+                self.upsert_edge(
+                    &artifact_node_id(&relation.from_id),
+                    &artifact_node_id(&relation.to_id),
+                    relation.kind.graph_edge_kind(),
+                    seq,
+                    json!({ "relation_id": relation.id.to_string() }),
+                )
+                .await?;
+            }
+
+            Event::ArtifactRelationRemoved {
+                from_id,
+                to_id,
+                kind,
+                ..
+            } => {
+                self.delete_edge(
+                    &artifact_node_id(from_id),
+                    &artifact_node_id(to_id),
+                    kind.graph_edge_kind(),
+                )
+                .await?;
+            }
+
             _ => {}
         }
 
@@ -625,7 +757,11 @@ impl WorkspaceGraphRepo {
                 "SELECT from_id, to_id, kind, source_event_seq, metadata_json
                  FROM workspacegraph_edges
                  WHERE from_id = ?
-                   AND kind IN ('Blocks', 'PlanContains', 'Contains')",
+                   AND kind IN (
+                       'Blocks', 'PlanContains', 'Contains', 'Produces',
+                       'ArtDependsOn', 'ArtImplements', 'ArtTests',
+                       'ArtDocuments', 'ArtSupersedes', 'ArtConflictsWith'
+                   )",
             )
             .bind(&current)
             .fetch_all(&self.pool)
@@ -1214,6 +1350,10 @@ fn document_node_id(id: &impl ToString) -> String {
 
 fn comment_node_id(id: &impl ToString) -> String {
     format!("comment:{}", id.to_string())
+}
+
+fn artifact_node_id(id: &impl ToString) -> String {
+    format!("artifact:{}", id.to_string())
 }
 
 fn storage_err<E: std::fmt::Display>(err: E) -> CoreError {
