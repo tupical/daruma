@@ -23,7 +23,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "taskagent-codex": "bin/taskagent-codex.mjs"
+    "taskagent-codex": "bin/taskagent-codex.mjs",
+    "taskagent-codex-install": "bin/install.mjs"
   },
   "files": [
     "bin/",
