@@ -83,3 +83,22 @@ agent session and surface it in `taskagent_active_work`. This is descriptive
 - **Advisory-only registry.** Rejected for the default: the user requires hard
   conflict avoidance, so overlap blocks by default. (A read-only view of leases
   is still exposed via `taskagent_active_work`.)
+
+
+## Addendum (P2): Blocks-aware drain + deadlock-safe bulk acquire
+
+Two correctness fixes landed after the original ADR:
+
+1. **`NextTaskResolver` honors cross-task `Blocks` relations.** The
+   resolver previously consulted only `plan_tasks.depends_on`, so two
+   agents could each claim one side of a mutually-blocking pair. It now
+   skips candidates with a live blocker (same semantics as `can_start`),
+   in every dispatch path (`drain_next`, `ready_drain`, `next-task`,
+   `plan_progress.next_ready`).
+2. **Bulk lease acquisition is deadlock-free by construction.** A
+   multi-target reserve canonicalizes and sorts its targets, scans for
+   conflicts, and grants all-or-none inside one `BEGIN IMMEDIATE`
+   transaction — concurrent acquirers serialize instead of interleaving,
+   so opposite-order acquisition cannot deadlock and a loser never keeps
+   partial grants. Policy for agents: do not block while holding —
+   release leases before waiting on human approval.

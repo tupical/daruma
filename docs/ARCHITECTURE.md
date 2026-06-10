@@ -459,9 +459,11 @@ guard.
   Delivery is single-shot for the MVP; retries-with-backoff are a
   follow-up.
 - Webhook event kinds include (§3.2 additions): `task.linked`,
-  `task.unlinked`, `task.unblocked` — dispatched automatically via
-  `Event::kind()` through the existing dispatcher; no new dispatcher
-  code required.
+  `task.unlinked`, `task.unblocked`, plus `task.due` (due-date watchdog:
+  an active task's `due_at` passed; emitted once per (task, due_at)
+  value by a server tick, `TASKAGENT_DUE_TICK_SECS`, default 60, 0
+  disables) — dispatched automatically via `Event::kind()` through the
+  existing dispatcher; no new dispatcher code required.
 
 ### `taskagent-mcp` (served via `taskagent mcp` / `/v1/mcp`)
 - 44 MCP tools — original 20 from B.5/W2.x plus 21 new in W3.2 covering

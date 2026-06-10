@@ -59,6 +59,8 @@ macro_rules! newtype_id {
 }
 
 newtype_id!(TaskId, "tsk");
+newtype_id!(AiOpId, "aiop");
+newtype_id!(WorkUnitId, "wu");
 newtype_id!(ProjectId, "prj");
 newtype_id!(EventId, "evt");
 newtype_id!(AgentId, "agt");

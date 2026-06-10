@@ -380,6 +380,41 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             empty_schema(),
             Dom::Admin, D, Ann::Read,
         ),
+        tool(
+            "taskagent_workspace_resolve",
+            "Resolve/bind workspace for a path",
+            "Resolve a filesystem root to its logical workspace + default project via the server registry. Unknown roots are created-and-bound on first call (pass `create:false` to probe only); the resolved project is persisted as this scope's default. Use when starting in a repo taskagent has never seen.",
+            schema_workspace_resolve(),
+            Dom::Projects, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_workspace_list",
+            "List logical workspaces",
+            "List logical workspaces from the server registry: id, name, bound filesystem roots, and project count.",
+            empty_schema(),
+            Dom::Projects, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_project_move_workspace",
+            "Move project to workspace",
+            "Move a project into another logical workspace (registry API), optionally binding a filesystem root to the project.",
+            schema_project_move_workspace(),
+            Dom::Projects, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_project_settings_get",
+            "Get project settings",
+            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default).",
+            schema_with_id("project_id"),
+            Dom::Projects, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_project_settings_update",
+            "Update project settings",
+            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document.",
+            schema_project_settings_update(),
+            Dom::Projects, F, Ann::WriteIdem,
+        ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "taskagent_ai_parse",
@@ -443,7 +478,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Server health check",
             "Server health check — no auth required.",
             empty_schema(),
-            Dom::Admin, F, Ann::Read,
+            Dom::Admin, D, Ann::Read,
         ),
         // ── Plans ─────────────────────────────────────────────────────────
         tool(
@@ -662,7 +697,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "taskagent_reserve_files",
             "Reserve file paths",
-            "Reserve file/path globs for a task so parallel agents don't edit the same files. Pass repo-relative `paths` (dirs or files; `*`/`**` globs allowed). Returns `reserved:true`, or `reserved:false` with `conflict_path` + `holder` when another agent owns an overlapping area — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
+            "Reserve resources for a task so parallel agents don't collide. Pass repo-relative `paths` (globs) and/or `targets` URIs (file://, artifact://, contract://, env://) plus an optional `mode` (exclusive default; shared_read/review coexist; intent is advisory). Returns `reserved:true` with leases carrying `fencing_token`, or `reserved:false` with `conflict_path` + `holder` — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
             schema_reserve_files(),
             Dom::Coordination, F, Ann::Write,
         ),
@@ -707,6 +742,41 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `taskagent_reserve_files` at claim time. Heuristic only — review before reserving.",
             schema_suggest_files(),
             Dom::Coordination, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_work_unit_create",
+            "Create work unit",
+            "Create a work unit under a task — the minimal dispatchable unit for multi-agent work on one task. Declare `artifact_refs` (file://, artifact://, contract://, env://) so the dispatcher can lease them on claim. Simple tasks don't need work units.",
+            schema_work_unit_create(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_work_unit_list",
+            "List task work units",
+            "List all work units under a task (full decomposition state, including done/cancelled).",
+            schema_with_id("task_id"),
+            Dom::Coordination, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_work_unit_drain_next",
+            "Claim next work unit",
+            "Atomically claim the next dispatchable work unit under a task and acquire its declared exclusive resource leases. Concurrent callers each get a distinct unit. Returns a briefing {work_unit, leases (with fencing_token), acceptance}; null when nothing is dispatchable; lease_conflict (claim reverted) when the unit's resources are held elsewhere.",
+            schema_work_unit_drain(),
+            Dom::Coordination, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_work_unit_complete",
+            "Complete work unit",
+            "Mark a work unit done with an outcome and the produced artifact URIs (mineable payload). Releases the holder claim.",
+            schema_work_unit_complete(),
+            Dom::Coordination, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_work_unit_release",
+            "Release work unit claim",
+            "Release a claimed work unit back to the dispatch pool (status returns to ready).",
+            schema_with_id("id"),
+            Dom::Coordination, F, Ann::WriteIdem,
         ),
         // ── Sessions ──────────────────────────────────────────────────────
         tool(
@@ -1793,18 +1863,148 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
+        "taskagent_work_unit_create" => {
+            let task_id = required_string(&args, "task_id")?;
+            let title = required_string(&args, "title")?;
+            let mut wu = json!({ "task_id": task_id, "title": title });
+            for key in ["description", "stage_plan_id", "priority"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    wu[key] = json!(v);
+                }
+            }
+            for key in ["capability_tags", "artifact_refs", "acceptance"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_array()) {
+                    wu[key] = json!(v);
+                }
+            }
+            client
+                .post_json("/v1/work-units", json!({ "work_unit": wu }))
+                .await
+        }
+        "taskagent_work_unit_list" => {
+            let task_id = required_string(&args, "task_id")?;
+            client
+                .get_json(&format!("/v1/tasks/{task_id}/work-units"))
+                .await
+        }
+        "taskagent_work_unit_drain_next" => {
+            let task_id = required_string(&args, "task_id")?;
+            let mut body = json!({ "task_id": task_id });
+            if let Some(ttl) = args.get("ttl_secs").and_then(|v| v.as_u64()) {
+                body["ttl_secs"] = json!(ttl);
+            }
+            client.post_json("/v1/work-units/drain-next", body).await
+        }
+        "taskagent_work_unit_complete" => {
+            let id = required_string(&args, "id")?;
+            let mut body = json!({});
+            if let Some(o) = args.get("outcome").and_then(|v| v.as_str()) {
+                body["outcome"] = json!(o);
+            }
+            if let Some(a) = args.get("produced_artifacts").and_then(|v| v.as_array()) {
+                body["produced_artifacts"] = json!(a);
+            }
+            client
+                .post_json(&format!("/v1/work-units/{id}/complete"), body)
+                .await
+        }
+        "taskagent_work_unit_release" => {
+            let id = required_string(&args, "id")?;
+            client
+                .post_json(&format!("/v1/work-units/{id}/release"), json!({}))
+                .await
+        }
+        "taskagent_project_settings_get" => {
+            let project_id = required_string(&args, "project_id")?;
+            client
+                .get_json(&format!("/v1/projects/{project_id}/settings"))
+                .await
+        }
+        "taskagent_project_settings_update" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut auto_append = json!({});
+            if let Some(v) = args.get("interview").and_then(|v| v.as_bool()) {
+                auto_append["interview"] = json!(v);
+            }
+            if let Some(v) = args.get("human_log").and_then(|v| v.as_bool()) {
+                auto_append["human_log"] = json!(v);
+            }
+            client
+                .patch_json(
+                    &format!("/v1/projects/{project_id}/settings"),
+                    json!({ "auto_append": auto_append }),
+                )
+                .await
+        }
+        "taskagent_workspace_resolve" => {
+            let ws = workspace::global();
+            let raw_path = args.get("scope_path").and_then(|v| v.as_str());
+            let root_path = match (raw_path, ws) {
+                (Some(p), Some(ws)) if !std::path::Path::new(p).is_absolute() => {
+                    std::path::Path::new(ws.key())
+                        .join(p)
+                        .to_string_lossy()
+                        .into_owned()
+                }
+                (Some(p), _) => p.to_string(),
+                (None, Some(ws)) => ws.key().to_string(),
+                (None, None) => anyhow::bail!("`scope_path` is required (no workspace state)"),
+            };
+            let mut body = json!({ "root_path": root_path });
+            if let Some(c) = args.get("create").and_then(|v| v.as_bool()) {
+                body["create"] = json!(c);
+            }
+            if let Some(w) = args.get("workspace_id").and_then(|v| v.as_str()) {
+                body["workspace_id"] = json!(w);
+            }
+            let resp = client
+                .post_json("/v1/workspace-registry/resolve", body)
+                .await?;
+            // Persist the resolved project as this scope's default so later
+            // unscoped calls hit it without re-resolving.
+            if let (Some(ws), Some(project_id)) = (
+                workspace::global(),
+                resp.get("project_id").and_then(|v| v.as_str()),
+            ) {
+                let _ = ws.set_default_project(project_id, Some(&root_path));
+            }
+            Ok(resp)
+        }
+        "taskagent_workspace_list" => client.get_json("/v1/workspace-registry").await,
+        "taskagent_project_move_workspace" => {
+            let project_id = required_string(&args, "project_id")?;
+            let workspace_id = required_string(&args, "workspace_id")?;
+            let mut body = json!({ "workspace_id": workspace_id });
+            if let Some(r) = args.get("root_path").and_then(|v| v.as_str()) {
+                body["root_path"] = json!(r);
+            }
+            client
+                .patch_json(&format!("/v1/projects/{project_id}/workspace"), body)
+                .await
+        }
         "taskagent_reserve_files" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
-            let paths = args
-                .get("paths")
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| anyhow::anyhow!("`paths` (array of strings) is required"))?;
+            let paths = args.get("paths").and_then(|v| v.as_array()).cloned();
+            let targets = args.get("targets").and_then(|v| v.as_array()).cloned();
+            if paths.as_ref().is_none_or(|p| p.is_empty())
+                && targets.as_ref().is_none_or(|t| t.is_empty())
+            {
+                anyhow::bail!("`paths` and/or `targets` (array of strings) is required");
+            }
             let mut body = json!({
                 "agent_id": agent_id,
                 "task_id": task_id,
-                "paths": paths,
             });
+            if let Some(p) = paths {
+                body["paths"] = json!(p);
+            }
+            if let Some(t) = targets {
+                body["targets"] = json!(t);
+            }
+            if let Some(m) = args.get("mode").and_then(|v| v.as_str()) {
+                body["mode"] = json!(m);
+            }
             if let Some(p) = args.get("project_id").and_then(|v| v.as_str()) {
                 body["project_id"] = json!(p);
             }
@@ -2939,6 +3139,81 @@ fn schema_release() -> Value {
 
 // ── Work-lease schemas (parallel-agent file coordination) ───────────────────
 
+fn schema_work_unit_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string"},
+            "title": {"type":"string"},
+            "description": {"type":"string"},
+            "stage_plan_id": {"type":"string","description":"Optional stage (plan with parent_plan_id)."},
+            "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
+            "capability_tags": {"type":"array","items":{"type":"string"}},
+            "artifact_refs": {"type":"array","items":{"type":"string"},"description":"Resource URIs leased exclusively on claim."},
+            "acceptance": {"type":"array","items":{"type":"string"}}
+        },
+        "required":["task_id","title"]
+    })
+}
+
+fn schema_work_unit_drain() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "task_id": {"type":"string"},
+            "ttl_secs": {"type":"integer","minimum":1,"maximum":86400,"description":"Claim + lease TTL (default 300)."}
+        },
+        "required":["task_id"]
+    })
+}
+
+fn schema_work_unit_complete() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string"},
+            "outcome": {"type":"string"},
+            "produced_artifacts": {"type":"array","items":{"type":"string"}}
+        },
+        "required":["id"]
+    })
+}
+
+fn schema_project_settings_update() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string"},
+            "interview": {"type":"boolean","description":"Auto-append agent activity to the Interview document."},
+            "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."}
+        },
+        "required":["project_id"]
+    })
+}
+
+fn schema_workspace_resolve() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "scope_path": {"type":"string","description":"Filesystem root to resolve (defaults to this session's workspace key). Relative paths resolve from the workspace key."},
+            "create": {"type":"boolean","description":"Create-and-bind a logical workspace + default project for an unknown root (default true)."},
+            "workspace_id": {"type":"string","description":"Bind the root into this existing workspace instead of deriving one from the folder name."}
+        }
+    })
+}
+
+fn schema_project_move_workspace() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string"},
+            "workspace_id": {"type":"string","description":"Destination logical workspace id."},
+            "root_path": {"type":"string","description":"Optional filesystem root to bind to the project."}
+        },
+        "required":["project_id","workspace_id"]
+    })
+}
+
 fn schema_reserve_files() -> Value {
     json!({
         "type":"object",
@@ -2951,9 +3226,19 @@ fn schema_reserve_files() -> Value {
                 "items": {"type":"string"},
                 "description":"Repo-relative path globs to reserve (dirs or files; `*` matches one segment, `**` matches the rest)."
             },
+            "targets":    {
+                "type":"array",
+                "items": {"type":"string"},
+                "description":"Resource URIs to reserve: file://<glob>, artifact://<kind>/<name>, contract://<name>[@version], env://<name>. Merged with `paths`."
+            },
+            "mode":       {
+                "type":"string",
+                "enum":["exclusive","shared_read","review","intent"],
+                "description":"Lease mode (default exclusive). shared_read/review coexist; intent is advisory and never blocks."
+            },
             "ttl_secs":   {"type":"integer","minimum":1,"maximum":86400,"description":"Lease lifetime in seconds (default 300). Re-call to refresh."}
         },
-        "required":["agent_id","task_id","paths"]
+        "required":["agent_id","task_id"]
     })
 }
 
