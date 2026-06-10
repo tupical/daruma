@@ -594,7 +594,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
              `uri` must use a supported scheme: `artifact://`, `file://`, `contract://`, or `env://`. \
              Optional `task_id` links the artifact to the task that produces it.",
             schema_artifact_register(),
-            Dom::WorkspaceGraph, D, Ann::Write,
+            Dom::WorkspaceGraph, F, Ann::Write,
         ),
         tool(
             "taskagent_artifact_list",
@@ -602,7 +602,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
              owner, version. Use to answer \"who owns this\" before writing.",
             schema_artifact_list(),
-            Dom::WorkspaceGraph, D, Ann::Read,
+            Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
             "taskagent_artifact_impact",
@@ -611,7 +611,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
              ArtTests, ArtDocuments, ArtSupersedes, ArtConflictsWith, and Produces edges. \
              Answers \"what breaks if I change this artifact\".",
             schema_artifact_impact(),
-            Dom::WorkspaceGraph, D, Ann::Read,
+            Dom::WorkspaceGraph, F, Ann::Read,
         ),
         // ── WorkspaceGraph ────────────────────────────────────────────────
         tool(
