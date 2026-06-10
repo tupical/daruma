@@ -29,6 +29,7 @@ pub mod external_ref_repo;
 pub mod idempotency_repo;
 pub mod plan_repo;
 pub mod project_repo;
+pub mod project_settings_repo;
 pub mod relation_repo;
 pub mod run_note_repo;
 pub mod run_repo;
@@ -40,6 +41,7 @@ pub mod token_repo;
 pub mod webhook_enrichment;
 pub mod webhook_repo;
 pub mod work_lease_repo;
+pub mod work_unit_repo;
 pub mod workspace_graph_repo;
 
 pub use activity_repo::ActivityRepo;
@@ -54,6 +56,7 @@ pub use external_ref_repo::ExternalRefRepo;
 pub use idempotency_repo::IdempotencyRepo;
 pub use plan_repo::PlanRepo;
 pub use project_repo::ProjectRepo;
+pub use project_settings_repo::ProjectSettingsRepo;
 pub use relation_repo::RelationRepo;
 pub use run_note_repo::RunNoteRepo;
 pub use run_repo::RunRepo;
@@ -65,6 +68,7 @@ pub use token_repo::TokenRepo;
 pub use webhook_enrichment::WebhookEnrichment;
 pub use webhook_repo::WebhookRepo;
 pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
+pub use work_unit_repo::WorkUnitRepo;
 pub use workspace_graph_repo::{
     GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode, GraphSearchHit,
     GraphStatus, WorkspaceGraphRepo,

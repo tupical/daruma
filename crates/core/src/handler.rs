@@ -9,11 +9,12 @@ use taskagent_domain::{
 };
 use taskagent_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
 use taskagent_shared::{
-    time, AgentId, AgentSessionId, CoreError, DocumentId, PlanId, RelationId, Result, RunId,
-    RunNoteId, SessionArtifactId, TaskId,
+    time, AgentId, AgentSessionId, CoreError, DocumentId, PlanId, ProjectId, RelationId, Result,
+    RunId, RunNoteId, SessionArtifactId, TaskId,
 };
 use taskagent_storage::{
-    ActivityRepo, CommentRepo, ProjectRepo, RelationRepo, TaskRepo, TenantQuotaRepo,
+    ActivityRepo, CommentRepo, ProjectRepo, ProjectSettingsRepo, RelationRepo, TaskRepo,
+    TenantQuotaRepo, WorkUnitRepo,
 };
 
 use crate::{
@@ -48,6 +49,12 @@ pub struct CommandHandler {
     pub sessions: Option<Arc<dyn SessionRepository>>,
     pub claims: Option<Arc<dyn AgentClaimRepository>>,
     pub work_leases: Option<Arc<dyn WorkLeaseRepository>>,
+    /// Per-project settings projection (auto-append toggles). `None` only in
+    /// minimal test harnesses; when absent, defaults apply and the settings
+    /// command is rejected.
+    pub project_settings: Option<Arc<ProjectSettingsRepo>>,
+    /// WorkUnit projection (P3). `None` until wired by the server.
+    pub work_units: Option<Arc<WorkUnitRepo>>,
     pub external_refs: Option<Arc<dyn ExternalRefRepository>>,
     pub tenant_quotas: Option<Arc<TenantQuotaRepo>>,
 
@@ -88,6 +95,8 @@ impl CommandHandler {
             external_refs: None,
             tenant_quotas: None,
             documents: None,
+            project_settings: None,
+            work_units: None,
             search_provider: None,
         }
     }
@@ -131,6 +140,18 @@ impl CommandHandler {
     /// Wire a `WorkLeaseRepository` implementation.
     pub fn with_work_leases(mut self, repo: Arc<dyn WorkLeaseRepository>) -> Self {
         self.work_leases = Some(repo);
+        self
+    }
+
+    /// Wire the per-project settings projection (auto-append toggles).
+    pub fn with_project_settings(mut self, repo: Arc<ProjectSettingsRepo>) -> Self {
+        self.project_settings = Some(repo);
+        self
+    }
+
+    /// Wire the WorkUnit projection (P3).
+    pub fn with_work_units(mut self, repo: Arc<WorkUnitRepo>) -> Self {
+        self.work_units = Some(repo);
         self
     }
 
@@ -206,9 +227,20 @@ impl CommandHandler {
             if let Some(documents) = &self.documents {
                 documents.apply_event(env).await?;
             }
+            if let Some(settings) = &self.project_settings {
+                settings.apply_event(env).await?;
+            }
+            if let Some(work_units) = &self.work_units {
+                work_units.apply_event(env).await?;
+            }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
         }
+
+        // Best-effort auto-append into the project's Interview / Human Log
+        // documents (toggleable per project, ON by default). Never fails the
+        // command; emits its own DocumentContentAppended events.
+        self.auto_append_logs(&persisted).await;
 
         Ok(persisted)
     }
@@ -358,11 +390,247 @@ impl CommandHandler {
         Ok(emitted)
     }
 
+    /// Due-date watchdog: emit `TaskDueElapsed` (webhook kind `task.due`)
+    /// for every active task whose `due_at` has passed and that has not
+    /// been notified for this deadline value yet. Returns the number of
+    /// events emitted. Idempotent per (task, due_at): the projection in
+    /// `task_due_notifications` dedupes across ticks and restarts.
+    pub async fn tick_due_tasks(&self, now: taskagent_shared::Timestamp) -> Result<usize> {
+        let due = self.tasks.list_due_unnotified(now, 100).await?;
+        let mut emitted = 0usize;
+        for (task_id, due_at) in due {
+            self.persist_signal_event(Event::TaskDueElapsed {
+                task_id,
+                due_at,
+                at: now,
+            })
+            .await?;
+            emitted += 1;
+        }
+        Ok(emitted)
+    }
+
+    /// Route freshly persisted events into the project's auto-created
+    /// `Interview` (agent activity) / `Human Log` (human milestones)
+    /// documents, honoring the per-project [`AutoAppendSettings`] toggles
+    /// (ON by default). Best-effort: failures are logged, never propagated,
+    /// so observability cannot break a command. Document and settings
+    /// events themselves are excluded to prevent recursion.
+    ///
+    /// [`AutoAppendSettings`]: taskagent_domain::AutoAppendSettings
+    async fn auto_append_logs(&self, persisted: &[EventEnvelope]) {
+        let Some(documents) = &self.documents else {
+            return;
+        };
+        for env in persisted {
+            let Some((project_id, kind, line)) = self.render_log_line(env).await else {
+                continue;
+            };
+            let enabled = match &self.project_settings {
+                Some(repo) => {
+                    let settings = repo.auto_append(project_id).await.unwrap_or_default();
+                    match kind {
+                        DocumentKind::Interview => settings.interview,
+                        DocumentKind::HumanLog => settings.human_log,
+                    }
+                }
+                None => true,
+            };
+            if !enabled {
+                continue;
+            }
+            let doc = match documents
+                .list_by_project(project_id, Some(kind), false)
+                .await
+            {
+                // The auto-created log is the oldest doc of its kind.
+                Ok(docs) => docs.into_iter().next(),
+                Err(e) => {
+                    tracing::warn!(err = %e, "auto-append: document lookup failed");
+                    continue;
+                }
+            };
+            let Some(doc) = doc else { continue };
+            if let Err(e) = self
+                .persist_signal_event(Event::DocumentContentAppended {
+                    document_id: doc.id,
+                    append: line,
+                    at: env.occurred_at,
+                })
+                .await
+            {
+                tracing::warn!(err = %e, "auto-append: write failed");
+            }
+        }
+    }
+
+    /// Decide whether an event lands in a log, and render the line.
+    /// `Interview` lines are machine-ish (`[ts] agent=… action=… target=…`);
+    /// `Human Log` lines are plain prose with a short local timestamp.
+    async fn render_log_line(
+        &self,
+        env: &EventEnvelope,
+    ) -> Option<(ProjectId, DocumentKind, String)> {
+        use taskagent_domain::Actor as A;
+        let ts_iso = env.occurred_at.format("%Y-%m-%dT%H:%M:%SZ");
+        let ts_human = env.occurred_at.format("%Y-%m-%d %H:%M");
+        let agent_name = match &env.actor {
+            A::Agent { name, .. } => name.clone(),
+            A::User => "user".to_string(),
+        };
+
+        match &env.payload {
+            Event::TaskCreated { task } => {
+                let project_id = task.project_id?;
+                let title = task.title.trim();
+                if env.actor.is_agent() {
+                    Some((
+                        project_id,
+                        DocumentKind::Interview,
+                        format!(
+                            "[{ts_iso}] agent={agent_name} action=task_created target={} \"{title}\"",
+                            task.id.unwrap_or_default()
+                        ),
+                    ))
+                } else {
+                    Some((
+                        project_id,
+                        DocumentKind::HumanLog,
+                        format!("{ts_human} — Created task '{title}'"),
+                    ))
+                }
+            }
+            Event::TaskStatusChanged { task_id, from, to } => {
+                let task = self.tasks.get(*task_id).await.ok().flatten()?;
+                let project_id = task.project_id?;
+                if env.actor.is_agent() {
+                    Some((
+                        project_id,
+                        DocumentKind::Interview,
+                        format!(
+                            "[{ts_iso}] agent={agent_name} action=status_changed target={task_id} {from:?}->{to:?}"
+                        ),
+                    ))
+                } else {
+                    Some((
+                        project_id,
+                        DocumentKind::HumanLog,
+                        format!(
+                            "{ts_human} — Task '{}' status: {from:?} → {to:?}",
+                            task.title.trim()
+                        ),
+                    ))
+                }
+            }
+            Event::RunStarted { run } => {
+                let project_id = self.project_for_plan(run.plan_id).await?;
+                Some((
+                    project_id,
+                    DocumentKind::Interview,
+                    format!(
+                        "[{ts_iso}] agent={agent_name} action=run_started target={} plan={}",
+                        run.id, run.plan_id
+                    ),
+                ))
+            }
+            Event::RunCompleted { run_id, .. } => {
+                let project_id = self.project_for_run(*run_id).await?;
+                Some((
+                    project_id,
+                    DocumentKind::Interview,
+                    format!("[{ts_iso}] agent={agent_name} action=run_completed target={run_id}"),
+                ))
+            }
+            Event::RunAborted { run_id, reason, .. } => {
+                let project_id = self.project_for_run(*run_id).await?;
+                Some((
+                    project_id,
+                    DocumentKind::Interview,
+                    format!(
+                        "[{ts_iso}] agent={agent_name} action=run_aborted target={run_id} reason={reason}"
+                    ),
+                ))
+            }
+            Event::RunNoteAppended { run_id, body, .. } => {
+                let project_id = self.project_for_run(*run_id).await?;
+                let body = body.trim().replace('\n', " ");
+                let preview: String = body.chars().take(120).collect();
+                Some((
+                    project_id,
+                    DocumentKind::Interview,
+                    format!(
+                        "[{ts_iso}] agent={agent_name} action=run_note target={run_id} {preview}"
+                    ),
+                ))
+            }
+            Event::PlanStatusChanged { plan_id, to, .. }
+                if *to == taskagent_domain::PlanStatus::Completed =>
+            {
+                let plan = self.plans.as_ref()?.get(*plan_id).await.ok().flatten()?;
+                Some((
+                    plan.project_id,
+                    DocumentKind::HumanLog,
+                    format!("{ts_human} — Plan '{}' completed", plan.title.trim()),
+                ))
+            }
+            Event::ProjectUpdated {
+                project_id,
+                title: Some(title),
+                ..
+            } => Some((
+                *project_id,
+                DocumentKind::HumanLog,
+                format!("{ts_human} — Project renamed to '{}'", title.trim()),
+            )),
+            _ => None,
+        }
+    }
+
+    async fn work_unit(
+        &self,
+        id: taskagent_shared::WorkUnitId,
+    ) -> Result<taskagent_domain::WorkUnit> {
+        let repo = self
+            .work_units
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("work unit repository not configured"))?;
+        repo.get(id)
+            .await?
+            .ok_or_else(|| CoreError::not_found(format!("work unit {id}")))
+    }
+
+    async fn project_for_plan(&self, plan_id: PlanId) -> Option<ProjectId> {
+        let plan = self.plans.as_ref()?.get(plan_id).await.ok().flatten()?;
+        Some(plan.project_id)
+    }
+
+    async fn project_for_run(&self, run_id: RunId) -> Option<ProjectId> {
+        let run = self.runs.as_ref()?.get(run_id).await.ok().flatten()?;
+        self.project_for_plan(run.plan_id).await
+    }
+
+    /// Public wrapper over [`Self::persist_signal_event`] for transports
+    /// that push system-authored progress signals (e.g. §3.8.12 async AI
+    /// operation events on `Channel::AiOps`).
+    pub async fn emit_system_event(&self, payload: Event) -> Result<()> {
+        self.persist_signal_event(payload).await
+    }
+
     /// Persist a single system-authored event (no command validation), apply
     /// it to all projections, and publish on the bus. Used by background
     /// signals such as the liveness watchdog (§3.7.4).
     async fn persist_signal_event(&self, payload: Event) -> Result<()> {
-        let envelope = EventEnvelope::new(Actor::user(), payload);
+        self.persist_signal_event_as(Actor::user(), payload).await
+    }
+
+    /// [`Self::persist_signal_event`] with an explicit actor (e.g. the
+    /// claiming agent for work-unit dispatch events).
+    pub async fn emit_system_event_as(&self, actor: Actor, payload: Event) -> Result<()> {
+        self.persist_signal_event_as(actor, payload).await
+    }
+
+    async fn persist_signal_event_as(&self, actor: Actor, payload: Event) -> Result<()> {
+        let envelope = EventEnvelope::new(actor, payload);
         let persisted = self.store.append_batch(vec![envelope]).await?;
         for env in &persisted {
             self.tasks.apply_event(env).await?;
@@ -395,6 +663,12 @@ impl CommandHandler {
             }
             if let Some(documents) = &self.documents {
                 documents.apply_event(env).await?;
+            }
+            if let Some(settings) = &self.project_settings {
+                settings.apply_event(env).await?;
+            }
+            if let Some(work_units) = &self.work_units {
+                work_units.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -844,6 +1118,102 @@ impl CommandHandler {
                     title,
                     description,
                 }])
+            }
+
+            Command::UpdateProjectSettings {
+                project_id,
+                auto_append,
+            } => {
+                self.projects
+                    .get(project_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("project {project_id}")))?;
+                let repo = self.project_settings.as_ref().ok_or_else(|| {
+                    CoreError::storage("project settings repository not configured")
+                })?;
+                let current = repo.auto_append(project_id).await?;
+                Ok(vec![Event::ProjectSettingsChanged {
+                    project_id,
+                    auto_append: current.apply(auto_append),
+                    at: taskagent_shared::time::now(),
+                }])
+            }
+
+            Command::CreateWorkUnit { work_unit } => {
+                self.tasks
+                    .get(work_unit.task_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("task {}", work_unit.task_id)))?;
+                let mut wu = work_unit.into_work_unit(time::now());
+                if wu.id == taskagent_shared::WorkUnitId::default() {
+                    wu.id = taskagent_shared::WorkUnitId::new();
+                }
+                if wu.title.trim().is_empty() {
+                    return Err(CoreError::validation("work unit title must not be empty"));
+                }
+                Ok(vec![Event::WorkUnitCreated { work_unit: wu }])
+            }
+
+            Command::CompleteWorkUnit {
+                id,
+                outcome,
+                produced_artifacts,
+            } => {
+                let unit = self.work_unit(id).await?;
+                if unit.status.is_terminal() {
+                    return Err(CoreError::conflict(format!(
+                        "work unit {id} already closed"
+                    )));
+                }
+                Ok(vec![Event::WorkUnitCompleted {
+                    work_unit_id: id,
+                    outcome: outcome.unwrap_or_else(|| "ok".into()),
+                    produced_artifacts,
+                    at: time::now(),
+                }])
+            }
+
+            Command::ReleaseWorkUnit { id } => {
+                self.work_unit(id).await?;
+                Ok(vec![Event::WorkUnitReleased {
+                    work_unit_id: id,
+                    at: time::now(),
+                }])
+            }
+
+            Command::SetWorkUnitStatus { id, status, reason } => {
+                use taskagent_domain::WorkUnitStatus as WUS;
+                let unit = self.work_unit(id).await?;
+                if unit.status.is_terminal() {
+                    return Err(CoreError::conflict(format!(
+                        "work unit {id} already closed"
+                    )));
+                }
+                let now = time::now();
+                match status {
+                    WUS::InProgress => Ok(vec![Event::WorkUnitStarted {
+                        work_unit_id: id,
+                        at: now,
+                    }]),
+                    WUS::Blocked => Ok(vec![Event::WorkUnitBlocked {
+                        work_unit_id: id,
+                        reason: reason.unwrap_or_else(|| "blocked".into()),
+                        at: now,
+                    }]),
+                    WUS::Done => Ok(vec![Event::WorkUnitCompleted {
+                        work_unit_id: id,
+                        outcome: "ok".into(),
+                        produced_artifacts: vec![],
+                        at: now,
+                    }]),
+                    WUS::Ready | WUS::Todo => Ok(vec![Event::WorkUnitReleased {
+                        work_unit_id: id,
+                        at: now,
+                    }]),
+                    other => Err(CoreError::validation(format!(
+                        "unsupported work unit transition to {other:?}                          (review/cancelled land with the handoff layer)"
+                    ))),
+                }
             }
 
             Command::DeleteProject { id } => {

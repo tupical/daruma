@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Comment, CommentPatch, Document,
     NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome,
-    SessionArtifact, Status, TaskPatch, WorkLease,
+    SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{
-    AgentId, AgentSessionId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId, RunId,
-    RunNoteId, TaskId, Timestamp,
+    AgentId, AgentSessionId, AiOpId, CommentId, DocumentId, EventId, PlanId, ProjectId, RelationId,
+    RunId, RunNoteId, TaskId, Timestamp, WorkUnitId,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -386,6 +386,16 @@ pub enum Event {
         occurred_at: Timestamp,
     },
 
+    /// An active task's `due_at` has passed without the task closing.
+    /// Emitted once per (task, due_at) value by the server's due-date
+    /// watchdog tick; webhook subscribers receive it as `task.due`.
+    TaskDueElapsed {
+        task_id: TaskId,
+        /// The deadline that elapsed (the task's `due_at` at notification time).
+        due_at: Timestamp,
+        at: Timestamp,
+    },
+
     /// An existing relation's `kind` was transitioned (§3.7.2 / LIN A.3).
     ///
     /// Today this is emitted alongside `TaskUnblocked` when a blocker reaches
@@ -399,6 +409,78 @@ pub enum Event {
         from_kind: RelationKind,
         to_kind: RelationKind,
         occurred_at: Timestamp,
+    },
+
+    /// Per-project settings changed (currently the Interview/Human Log
+    /// auto-append toggles). Carries the full new state for replay.
+    ProjectSettingsChanged {
+        project_id: ProjectId,
+        auto_append: taskagent_domain::AutoAppendSettings,
+        at: Timestamp,
+    },
+
+    // ── Async AI operations (§3.8.12 / CTM B.6) ──────────────────────────────
+    /// A server-side AI operation (decompose / analyze_complexity / …)
+    /// started. Subscribers on `Channel::AiOps` get push-based progress
+    /// instead of polling.
+    AiOperationStarted {
+        op_id: AiOpId,
+        /// Operation kind: `decompose`, `analyze_complexity`, `scope`, …
+        kind: String,
+        /// Target entity id (task/plan) as a display string.
+        target_id: String,
+        at: Timestamp,
+    },
+    /// The operation moved to a new phase (e.g. `llm_call`, `apply`).
+    AiOperationPhaseChanged {
+        op_id: AiOpId,
+        phase: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        at: Timestamp,
+    },
+    /// The operation finished. `outcome` is `ok` or `error: <message>`.
+    AiOperationCompleted {
+        op_id: AiOpId,
+        outcome: String,
+        at: Timestamp,
+    },
+
+    // ── Work units (P3, ADR work-units-and-artifacts) ────────────────────────
+    /// A work unit was created under a task.
+    WorkUnitCreated {
+        work_unit: WorkUnit,
+    },
+    /// An agent atomically claimed a dispatchable work unit.
+    WorkUnitClaimed {
+        work_unit_id: WorkUnitId,
+        agent_id: AgentId,
+        expires_at: Timestamp,
+    },
+    /// The holder started executing the unit.
+    WorkUnitStarted {
+        work_unit_id: WorkUnitId,
+        at: Timestamp,
+    },
+    /// The unit cannot proceed; carries a human/agent-readable reason.
+    WorkUnitBlocked {
+        work_unit_id: WorkUnitId,
+        reason: String,
+        at: Timestamp,
+    },
+    /// The unit finished. Payload is mineable (P6): outcome + produced
+    /// artifact URIs.
+    WorkUnitCompleted {
+        work_unit_id: WorkUnitId,
+        outcome: String,
+        #[serde(default)]
+        produced_artifacts: Vec<String>,
+        at: Timestamp,
+    },
+    /// The holder's claim was released (explicit or TTL expiry).
+    WorkUnitReleased {
+        work_unit_id: WorkUnitId,
+        at: Timestamp,
     },
 
     // ── Documents (PR1 §1-2) ──────────────────────────────────────────────────
@@ -453,6 +535,16 @@ impl Event {
             Event::ConflictResolved { .. } => "conflict_resolved",
             Event::ProjectCreated { .. } => "project_created",
             Event::ProjectUpdated { .. } => "project_updated",
+            Event::ProjectSettingsChanged { .. } => "project_settings_changed",
+            Event::AiOperationStarted { .. } => "ai_operation_started",
+            Event::AiOperationPhaseChanged { .. } => "ai_operation_phase_changed",
+            Event::AiOperationCompleted { .. } => "ai_operation_completed",
+            Event::WorkUnitCreated { .. } => "work_unit_created",
+            Event::WorkUnitClaimed { .. } => "work_unit_claimed",
+            Event::WorkUnitStarted { .. } => "work_unit_started",
+            Event::WorkUnitBlocked { .. } => "work_unit_blocked",
+            Event::WorkUnitCompleted { .. } => "work_unit_completed",
+            Event::WorkUnitReleased { .. } => "work_unit_released",
             Event::ProjectDeleted { .. } => "project_deleted",
             Event::AgentActionRecorded { .. } => "agent_action_recorded",
             Event::CommentAdded { .. } => "comment_added",
@@ -502,6 +594,7 @@ impl Event {
             Event::TaskLinked { .. } => "task.linked",
             Event::TaskUnlinked { .. } => "task.unlinked",
             Event::TaskUnblocked { .. } => "task.unblocked",
+            Event::TaskDueElapsed { .. } => "task.due",
             Event::TaskRelationKindChanged { .. } => "task.relation_kind_changed",
             // Documents (PR1)
             Event::DocumentCreated { .. } => "document_created",
@@ -551,6 +644,7 @@ impl Event {
             | Event::TaskUnlinked { from, .. }
             | Event::TaskRelationKindChanged { from, .. } => Some(*from),
             Event::TaskUnblocked { task_id, .. } => Some(*task_id),
+            Event::TaskDueElapsed { task_id, .. } => Some(*task_id),
             // All remaining plan/run/session/signal events do not resolve to a single task.
             _ => None,
         }
@@ -567,6 +661,7 @@ impl Event {
             Event::ConflictResolved { .. } => None,
             Event::ProjectCreated { project } => Some(project.id),
             Event::ProjectUpdated { project_id, .. } => Some(*project_id),
+            Event::ProjectSettingsChanged { project_id, .. } => Some(*project_id),
             Event::ProjectDeleted { project_id } => Some(*project_id),
             // Plans carry their project id inline.
             Event::PlanCreated { plan } => Some(plan.project_id),
@@ -595,10 +690,12 @@ impl Event {
             | Event::TaskClosed { .. }
             | Event::ProjectCreated { .. }
             | Event::ProjectUpdated { .. }
+            | Event::ProjectSettingsChanged { .. }
             | Event::ProjectDeleted { .. }
             | Event::TaskLinked { .. }
             | Event::TaskUnlinked { .. }
             | Event::TaskUnblocked { .. }
+            | Event::TaskDueElapsed { .. }
             | Event::TaskRelationKindChanged { .. } => Channel::Tasks,
 
             // ── Comments channel ──────────────────────────────────────────────
@@ -651,6 +748,19 @@ impl Event {
             | Event::RunElicitationRequested { .. }
             | Event::RunAuthRequired { .. }
             | Event::RunInterventionAccepted { .. } => Channel::Runs,
+            // ── WorkUnits channel ─────────────────────────────────────────────
+            Event::WorkUnitCreated { .. }
+            | Event::WorkUnitClaimed { .. }
+            | Event::WorkUnitStarted { .. }
+            | Event::WorkUnitBlocked { .. }
+            | Event::WorkUnitCompleted { .. }
+            | Event::WorkUnitReleased { .. } => Channel::WorkUnits,
+
+            // ── AiOps channel ─────────────────────────────────────────────────
+            Event::AiOperationStarted { .. }
+            | Event::AiOperationPhaseChanged { .. }
+            | Event::AiOperationCompleted { .. } => Channel::AiOps,
+
 
             // ── Documents channel (PR1) ───────────────────────────────────────
             Event::DocumentCreated { .. }
@@ -684,6 +794,11 @@ pub enum Channel {
     Runs,
     /// Document lifecycle and content events (PR1).
     Documents,
+    /// Async AI operation progress (§3.8.12): started / phase / completed.
+    AiOps,
+    /// Work-unit lifecycle (P3): created / claimed / started / blocked /
+    /// completed / released.
+    WorkUnits,
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use taskagent_domain::{PlanStatus, Status};
 use taskagent_shared::{time, AgentId, CoreError, PlanId, Result, RunId, TaskId, Timestamp};
-use taskagent_storage::{AgentClaimRepo, TaskRepo};
+use taskagent_storage::{AgentClaimRepo, RelationRepo, TaskRepo};
 
+use crate::relation_enforcement::list_active_blockers;
 use crate::repos::PlanRepository;
 
 /// Maximum allowed nesting depth for `parent_plan_id` chains (§3.1 §9).
@@ -36,12 +37,19 @@ pub struct NextTask {
 /// 2. List `plan_tasks` ordered by `position`.
 /// 3. Skip tasks whose `status == Done`.
 /// 4. Skip tasks whose `depends_on` contains any non-Done task.
-/// 5. Skip tasks already claimed by a *different* agent (claim-aware).
-/// 6. Return the first survivor + (optionally) compute `claim_expires_at`.
+/// 5. Skip tasks with an active cross-task `Blocks` blocker (same
+///    semantics as `can_start`) — without this, two agents can grab
+///    tasks that block each other.
+/// 6. Skip tasks already claimed by a *different* agent (claim-aware).
+/// 7. Return the first survivor + (optionally) compute `claim_expires_at`.
 pub struct NextTaskResolver<'a> {
     pub plans: &'a dyn PlanRepository,
     pub tasks: &'a TaskRepo,
     pub claims: &'a AgentClaimRepo,
+    /// Cross-task `Blocks` relations. `None` only in legacy/unit contexts;
+    /// production call sites must pass the relation repo so the resolver
+    /// honors blockers that live outside `plan_tasks.depends_on`.
+    pub relations: Option<&'a RelationRepo>,
 }
 
 impl NextTaskResolver<'_> {
@@ -94,7 +102,19 @@ impl NextTaskResolver<'_> {
                 continue;
             }
 
-            // 5. Skip tasks already claimed by a different agent so concurrent
+            // 5. Cross-task Blocks relations must be satisfied too (matches
+            //    can_start): a candidate with a live blocker is not ready,
+            //    even when its plan-level depends_on list is clear.
+            if let Some(relations) = self.relations {
+                if !list_active_blockers(relations, self.tasks, pt.task_id)
+                    .await?
+                    .is_empty()
+                {
+                    continue;
+                }
+            }
+
+            // 6. Skip tasks already claimed by a different agent so concurrent
             //    resolvers don't all return the same task.
             if self
                 .claims
@@ -105,7 +125,7 @@ impl NextTaskResolver<'_> {
                 continue;
             }
 
-            // 6. Found candidate — compute optional claim expiry
+            // 7. Found candidate — compute optional claim expiry
             let claim_expires_at = claim_ttl.map(|ttl| {
                 let secs = ttl.as_secs().min(i64::MAX as u64) as i64;
                 time::now() + chrono::Duration::seconds(secs)

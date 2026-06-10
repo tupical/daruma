@@ -9,12 +9,14 @@ pub mod document;
 pub mod external_ref;
 pub mod plan;
 pub mod project;
+pub mod project_settings;
 pub mod relation;
 pub mod run;
 pub mod session;
 pub mod signal;
 pub mod task;
 pub mod work_lease;
+pub mod work_unit;
 
 pub use activity::{Activity, Verb};
 pub use agent::{Actor, AgentAction, AgentActionKind};
@@ -28,6 +30,7 @@ pub use plan::{
     PlanGraphNode, PlanPatch, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask,
 };
 pub use project::{slugify_title, Project, DEFAULT_TENANT_ID};
+pub use project_settings::{AutoAppendPatch, AutoAppendSettings};
 pub use relation::{Relation, RelationKind, TaskRelations};
 pub use run::{Run, RunNote, RunOutcome, RunStatus};
 pub use session::{
@@ -35,4 +38,5 @@ pub use session::{
 };
 pub use signal::SignalKind;
 pub use task::{NewTask, Priority, Status, Task, TaskPatch, TriageState};
-pub use work_lease::WorkLease;
+pub use work_lease::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
+pub use work_unit::{NewWorkUnit, WorkUnit, WorkUnitStatus};

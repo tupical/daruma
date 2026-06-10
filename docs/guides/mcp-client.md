@@ -32,7 +32,7 @@ For IDE chat traceability (`taskagent_session_start` + `metadata`), see
 ## Tool profiles
 
 The advertised tool surface is profile-gated: `default` (compact,
-workflow-first, 30 tools) or `full` (the complete catalogue). Select with
+workflow-first, 31 tools) or `full` (the complete catalogue). Select with
 `taskagent mcp --profile full`, `TASKAGENT_MCP_PROFILE=full`, or
 `/v1/mcp?profile=full`; unset means `default`. Hidden tools are not
 callable in `default` — the error names the fix. Composition, migration

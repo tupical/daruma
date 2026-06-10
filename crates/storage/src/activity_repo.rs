@@ -368,6 +368,27 @@ impl ActivityRepo {
                 .await?;
             }
 
+            Event::ProjectSettingsChanged {
+                project_id,
+                auto_append,
+                ..
+            } => {
+                self.insert_row(Activity {
+                    id: ActivityId::new(),
+                    task_id: None,
+                    project_id: Some(*project_id),
+                    actor: actor.clone(),
+                    verb: Verb::ProjectUpdated,
+                    field: Some("settings.auto_append".into()),
+                    old_value: None,
+                    new_value: serde_json::to_string(auto_append).ok(),
+                    occurred_at,
+                    event_id,
+                    seq,
+                })
+                .await?;
+            }
+
             Event::ProjectDeleted { project_id } => {
                 self.insert_row(Activity {
                     id: ActivityId::new(),
@@ -761,7 +782,19 @@ impl ActivityRepo {
             | Event::DocumentContentReplaced { .. }
             | Event::DocumentContentAppended { .. }
             | Event::DocumentRenamed { .. }
-            | Event::DocumentArchived { .. } => {}
+            | Event::DocumentArchived { .. }
+            // AI operation progress (§3.8.12): ephemeral WS push, no feed rows.
+            | Event::AiOperationStarted { .. }
+            | Event::AiOperationPhaseChanged { .. }
+            | Event::AiOperationCompleted { .. }
+            // Work units (P3): WorkUnitRepo owns the projection; the task
+            // activity feed stays task-level.
+            | Event::WorkUnitCreated { .. }
+            | Event::WorkUnitClaimed { .. }
+            | Event::WorkUnitStarted { .. }
+            | Event::WorkUnitBlocked { .. }
+            | Event::WorkUnitCompleted { .. }
+            | Event::WorkUnitReleased { .. } => {}
 
             // ── Relation events (§3.2 W2.2) ──────────────────────────────────
             Event::TaskLinked {
@@ -843,6 +876,26 @@ impl ActivityRepo {
                     field: None,
                     old_value: None,
                     new_value: Some(payload),
+                    occurred_at,
+                    event_id,
+                    seq,
+                })
+                .await?;
+            }
+
+            Event::TaskDueElapsed {
+                task_id, due_at, ..
+            } => {
+                let project_id = self.inherit_project_id(*task_id).await?;
+                self.insert_row(Activity {
+                    id: ActivityId::new(),
+                    task_id: Some(*task_id),
+                    project_id,
+                    actor: actor.clone(),
+                    verb: Verb::DueElapsed,
+                    field: Some("due_at".into()),
+                    old_value: None,
+                    new_value: Some(due_at.to_rfc3339()),
                     occurred_at,
                     event_id,
                     seq,

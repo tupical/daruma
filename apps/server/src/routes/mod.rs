@@ -204,12 +204,20 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/projects/{id}", axum::routing::delete(delete_project))
         .route("/projects/{id}/workspace", patch(move_project_to_workspace))
         .route(
+            "/projects/{id}/settings",
+            get(get_project_settings).patch(patch_project_settings),
+        )
+        .route(
             "/projects/{id}/triage",
             get(list_project_triage).patch(patch_project_triage),
         )
         .route(
             "/workspace-registry",
             get(list_logical_workspaces).post(create_logical_workspace),
+        )
+        .route(
+            "/workspace-registry/resolve",
+            post(resolve_workspace_context),
         )
         .route("/mcp", post(mcp_http))
         .route("/commands", post(dispatch_command))
@@ -293,6 +301,11 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/claims/{agent_id}/{task_id}", delete(release_claim))
         // ── Work-lease routes (parallel-agent file coordination) ────────────
         .route("/leases", post(reserve_files).get(active_work))
+        .route("/work-units", post(create_work_unit))
+        .route("/work-units/drain-next", post(work_unit_drain_next))
+        .route("/work-units/{id}/complete", post(complete_work_unit))
+        .route("/work-units/{id}/release", post(release_work_unit))
+        .route("/tasks/{id}/work-units", get(list_task_work_units))
         .route("/leases/{agent_id}/{task_id}", delete(release_files))
         .route("/leases/suggest", get(suggest_files))
         // ── Project-wide ready pool (drain across all active plans) ──────────
@@ -1033,6 +1046,545 @@ async fn move_project_to_workspace(
     Ok(Json(project))
 }
 
+#[derive(Deserialize)]
+struct CreateWorkUnitBody {
+    work_unit: taskagent_domain::NewWorkUnit,
+}
+
+/// `POST /v1/work-units` — create a work unit under a task (lazy
+/// activation: only callers that opted into the work-unit layer use this;
+/// plain tasks are untouched).
+async fn create_work_unit(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<CreateWorkUnitBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CreateWorkUnit {
+                work_unit: body.work_unit,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let unit = envs.iter().find_map(|e| match &e.payload {
+        taskagent_events::Event::WorkUnitCreated { work_unit } => Some(work_unit.clone()),
+        _ => None,
+    });
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "work_unit": unit }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `GET /v1/tasks/{id}/work-units` — full decomposition state of a task.
+async fn list_task_work_units(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let task_id = id_str
+        .parse::<TaskId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id_str}"))))?;
+    let units = state
+        .work_units
+        .list_by_task(task_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(units))
+}
+
+#[derive(Deserialize)]
+struct WorkUnitDrainBody {
+    task_id: TaskId,
+    #[serde(default)]
+    ttl_secs: Option<u32>,
+}
+
+/// `POST /v1/work-units/drain-next` — atomically claim the next
+/// dispatchable work unit under a task and acquire its declared resource
+/// leases (exclusive, P1). Concurrent callers each get a distinct unit.
+///
+/// Returns the dispatch briefing `{ work_unit, leases, acceptance }`, or
+/// `{ work_unit: null }` when nothing is dispatchable, or
+/// `{ work_unit: null, lease_conflict: {...} }` when the unit's declared
+/// resources are held by another agent — the claim is reverted so the
+/// lease holder (or anyone after release) can take the unit.
+async fn work_unit_drain_next(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<WorkUnitDrainBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let agent_id = auth.agent_id;
+    let ttl_secs = body.ttl_secs.unwrap_or(300);
+    let ttl = chrono::Duration::seconds(ttl_secs as i64);
+
+    let Some(unit) = state
+        .work_units
+        .try_claim_next(body.task_id, agent_id, ttl)
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(Json(serde_json::json!({ "work_unit": null })));
+    };
+
+    // Atomically take the unit's declared exclusive resource leases. On
+    // conflict the claim is reverted: the unit stays dispatchable for the
+    // current lease holder.
+    let mut leases = serde_json::Value::Null;
+    if !unit.artifact_refs.is_empty() {
+        let project_id = state
+            .tasks
+            .get(unit.task_id)
+            .await
+            .map_err(ApiError::from)?
+            .and_then(|t| t.project_id);
+        match state
+            .work_leases
+            .try_reserve_targets(
+                agent_id,
+                unit.task_id,
+                project_id,
+                unit.artifact_refs.clone(),
+                taskagent_domain::LeaseMode::Exclusive,
+                ttl,
+            )
+            .await
+            .map_err(ApiError::from)?
+        {
+            ReserveOutcome::Conflict {
+                path,
+                holder,
+                holder_task,
+            } => {
+                state
+                    .work_units
+                    .revert_claim(unit.id, agent_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                return Ok(Json(serde_json::json!({
+                    "work_unit": null,
+                    "lease_conflict": {
+                        "work_unit_id": unit.id,
+                        "path": path,
+                        "holder": holder,
+                        "holder_task": holder_task,
+                    },
+                })));
+            }
+            ReserveOutcome::Reserved { leases: granted } => {
+                leases = serde_json::json!(granted);
+            }
+        }
+    }
+
+    // Project the claim into the event log (audit + WS).
+    let handler = state.commands.handler();
+    let _ = handler
+        .emit_system_event_as(
+            actor_from(&auth, None),
+            taskagent_events::Event::WorkUnitClaimed {
+                work_unit_id: unit.id,
+                agent_id,
+                expires_at: chrono::Utc::now() + ttl,
+            },
+        )
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "work_unit": unit,
+        "leases": leases,
+        "acceptance": unit.acceptance,
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct CompleteWorkUnitBody {
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    produced_artifacts: Vec<String>,
+}
+
+/// `POST /v1/work-units/{id}/complete`
+async fn complete_work_unit(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    body: Option<Json<CompleteWorkUnitBody>>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_work_unit_id(&id_str)?;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CompleteWorkUnit {
+                id,
+                outcome: body.outcome,
+                produced_artifacts: body.produced_artifacts,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "work_unit_id": id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `POST /v1/work-units/{id}/release`
+async fn release_work_unit(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_work_unit_id(&id_str)?;
+    let envs = state
+        .commands
+        .dispatch(Command::ReleaseWorkUnit { id }, actor_from(&auth, None))
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "work_unit_id": id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+fn parse_work_unit_id(id_str: &str) -> Result<taskagent_shared::WorkUnitId, ApiError> {
+    id_str.parse::<taskagent_shared::WorkUnitId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid work unit id: {id_str}"
+        )))
+    })
+}
+
+#[derive(Deserialize)]
+struct ResolveWorkspaceContextBody {
+    /// Filesystem root the agent started in (absolute path).
+    root_path: String,
+    /// When true (default), an unknown root creates-or-binds a logical
+    /// workspace and a default project; when false, resolve only.
+    #[serde(default = "default_resolve_create")]
+    create: bool,
+    /// Bind the root into this existing workspace instead of deriving one.
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
+fn default_resolve_create() -> bool {
+    true
+}
+
+/// `POST /v1/workspace-registry/resolve` — map a filesystem root onto its
+/// logical workspace + default project, creating both on first contact.
+///
+/// Resolution order: longest `project_roots` prefix → that project (+ its
+/// workspace); else longest `workspace_roots` prefix → that workspace, with
+/// a default project created and bound on demand; else (with `create`)
+/// a new logical workspace named after the folder. Idempotent per root.
+async fn resolve_workspace_context(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ResolveWorkspaceContextBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let root = body.root_path.trim().trim_end_matches('/').to_string();
+    if root.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "root_path must not be empty",
+        )));
+    }
+    let inside = |path: &str, base: &str| -> bool {
+        path == base
+            || path
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    let pool = state.projects.pool();
+
+    // 1. Longest project_roots prefix wins.
+    let project_rows = sqlx::query("SELECT project_id, root_path FROM project_roots")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    let mut best: Option<(usize, String)> = None;
+    for row in &project_rows {
+        let pr: String = row
+            .try_get("root_path")
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        let base = pr.trim_end_matches('/');
+        if inside(&root, base) && best.as_ref().is_none_or(|(len, _)| base.len() > *len) {
+            let pid: String = row
+                .try_get("project_id")
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            best = Some((base.len(), pid));
+        }
+    }
+    if let Some((_, project_id)) = best {
+        let tenant: Option<String> =
+            sqlx::query_scalar("SELECT tenant_id FROM projects WHERE id = ?")
+                .bind(&project_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        // DB stores display-prefixed ids; the JSON API serializes plain.
+        let project_id = project_id.parse::<ProjectId>().map_err(|e| {
+            ApiError::from(CoreError::storage(format!("bad project_roots id: {e}")))
+        })?;
+        return Ok(Json(json!({
+            "resolved": true,
+            "workspace_id": tenant,
+            "project_id": project_id,
+            "created_workspace": false,
+            "created_project": false,
+        })));
+    }
+
+    // 2. Longest workspace_roots prefix → existing logical workspace.
+    let ws_rows = sqlx::query("SELECT tenant_id, root_path FROM workspace_roots")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    let mut ws_best: Option<(usize, String)> = None;
+    for row in &ws_rows {
+        let wr: String = row
+            .try_get("root_path")
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        let base = wr.trim_end_matches('/');
+        if inside(&root, base) && ws_best.as_ref().is_none_or(|(len, _)| base.len() > *len) {
+            let tid: String = row
+                .try_get("tenant_id")
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            ws_best = Some((base.len(), tid));
+        }
+    }
+    let explicit_ws = body
+        .workspace_id
+        .as_deref()
+        .map(validate_workspace_id)
+        .transpose()?;
+    let mut created_workspace = false;
+    let had_explicit_ws = explicit_ws.is_some();
+    let workspace_id = match explicit_ws.or(ws_best.map(|(_, t)| t)) {
+        Some(t) => {
+            let exists: Option<String> = sqlx::query_scalar("SELECT id FROM tenants WHERE id = ?")
+                .bind(&t)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            if exists.is_none() {
+                return Err(ApiError::from(CoreError::not_found(format!(
+                    "workspace {t}"
+                ))));
+            }
+            t
+        }
+        None => {
+            if !body.create {
+                return Ok(Json(json!({ "resolved": false })));
+            }
+            let name = std::path::Path::new(&root)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+                .to_string();
+            let id = taskagent_domain::slugify_title(&name);
+            let id = validate_workspace_id(&id)?;
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query(
+                "INSERT INTO tenants (id, name, status, created_at, updated_at) \
+                 VALUES (?, ?, 'active', ?, ?) ON CONFLICT(id) DO NOTHING",
+            )
+            .bind(&id)
+            .bind(&name)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+            created_workspace = true;
+            id
+        }
+    };
+    if !body.create {
+        return Ok(Json(json!({
+            "resolved": true,
+            "workspace_id": workspace_id,
+            "project_id": Value::Null,
+            "created_workspace": false,
+            "created_project": false,
+        })));
+    }
+
+    // Bind the workspace root (idempotent) and create the default project.
+    let now = chrono::Utc::now().to_rfc3339();
+    {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+        if created_workspace || had_explicit_ws {
+            upsert_workspace_root(&mut tx, &workspace_id, &root, &now).await?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    }
+
+    let title = std::path::Path::new(&root)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CreateProject {
+                title: title.clone(),
+                description: Some(format!("Auto-created for workspace root {root}")),
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let project_id = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            taskagent_events::Event::ProjectCreated { project } => Some(project.id),
+            _ => None,
+        })
+        .ok_or_else(|| ApiError::from(CoreError::storage("project_created event missing")))?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    sqlx::query("UPDATE projects SET tenant_id = ?, updated_at = ? WHERE id = ?")
+        .bind(&workspace_id)
+        .bind(&now)
+        .bind(project_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+    upsert_project_root(&mut tx, project_id, &root, &now).await?;
+    tx.commit()
+        .await
+        .map_err(|e| ApiError::from(CoreError::storage(e.to_string())))?;
+
+    Ok(Json(json!({
+        "resolved": true,
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "created_workspace": created_workspace,
+        "created_project": true,
+    })))
+}
+
+/// `GET /v1/projects/{id}/settings` — per-project settings (auto-append
+/// toggles, ON by default including for pre-migration projects).
+async fn get_project_settings(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_project_id(&id_str)?;
+    state
+        .projects
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {id}"))))?;
+    let auto_append = state
+        .project_settings
+        .auto_append(id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "auto_append": auto_append })))
+}
+
+#[derive(Deserialize)]
+struct ProjectSettingsPatchBody {
+    #[serde(default)]
+    auto_append: taskagent_domain::AutoAppendPatch,
+}
+
+/// `PATCH /v1/projects/{id}/settings` — partial update of the auto-append
+/// toggles, dispatched through the command bus (event-sourced).
+async fn patch_project_settings(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<ProjectSettingsPatchBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_project_id(&id_str)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::UpdateProjectSettings {
+                project_id: id,
+                auto_append: body.auto_append,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let auto_append = state
+        .project_settings
+        .auto_append(id)
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "auto_append": auto_append }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+fn parse_project_id(id_str: &str) -> Result<ProjectId, ApiError> {
+    id_str.parse::<ProjectId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid project id: {id_str}"
+        )))
+    })
+}
+
 fn validate_workspace_name(name: &str) -> Result<String, ApiError> {
     let trimmed = name.trim();
     if trimmed.is_empty() || trimmed.len() > 120 {
@@ -1661,9 +2213,41 @@ async fn ai_decompose(
     };
 
     let hint = body.and_then(|Json(b)| b.hint);
-    let cmd = taskagent_ai::decompose_task(client, task_id, &context, hint.as_deref())
-        .await
-        .map_err(ApiError::from)?;
+
+    // §3.8.12: push-based progress on Channel::AiOps (started → llm_call →
+    // completed) so big decompositions don't need polling. Best-effort.
+    let handler = state.commands.handler();
+    let op_id = taskagent_shared::AiOpId::new();
+    let now = chrono::Utc::now();
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationStarted {
+            op_id,
+            kind: "decompose".into(),
+            target_id: task_id.to_string(),
+            at: now,
+        })
+        .await;
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+            op_id,
+            phase: "llm_call".into(),
+            detail: None,
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let result = taskagent_ai::decompose_task(client, task_id, &context, hint.as_deref()).await;
+    let outcome = match &result {
+        Ok(_) => "ok".to_string(),
+        Err(e) => format!("error: {e}"),
+    };
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+            op_id,
+            outcome,
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let cmd = result.map_err(ApiError::from)?;
     Ok(Json(cmd))
 }
 
@@ -1898,15 +2482,64 @@ async fn ai_analyze_complexity(
         })));
     }
 
-    let hints = taskagent_ai::analyze_complexity_batch(client, briefs)
-        .await
-        .map_err(ApiError::from)?;
+    // §3.8.12: push-based progress on Channel::AiOps. Best-effort.
+    let handler = state.commands.handler();
+    let op_id = taskagent_shared::AiOpId::new();
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationStarted {
+            op_id,
+            kind: "analyze_complexity".into(),
+            target_id: plan_id.to_string(),
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+            op_id,
+            phase: "llm_call".into(),
+            detail: Some(format!("{} task(s)", briefs.len())),
+            at: chrono::Utc::now(),
+        })
+        .await;
+    let result = taskagent_ai::analyze_complexity_batch(client, briefs).await;
+    let outcome = match &result {
+        Ok(_) => "ok".to_string(),
+        Err(e) => format!("error: {e}"),
+    };
+    let hints = match result {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = handler
+                .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+                    op_id,
+                    outcome,
+                    at: chrono::Utc::now(),
+                })
+                .await;
+            return Err(ApiError::from(e));
+        }
+    };
 
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+            op_id,
+            phase: "apply".into(),
+            detail: None,
+            at: chrono::Utc::now(),
+        })
+        .await;
     state
         .complexity_hints
         .upsert_batch(&hints)
         .await
         .map_err(ApiError::from)?;
+    let _ = handler
+        .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+            op_id,
+            outcome,
+            at: chrono::Utc::now(),
+        })
+        .await;
 
     let batch_id = hints.first().map(|h| h.batch_id.clone());
     Ok(Json(serde_json::json!({
@@ -2500,6 +3133,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::SplitTask { .. }
         | Command::BulkSetStatus { .. } => Capability::TaskWrite,
         Command::CreateProject { .. }
+        | Command::UpdateProjectSettings { .. }
         | Command::UpdateProject { .. }
         | Command::DeleteProject { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,
@@ -2529,7 +3163,11 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::AcquireClaim { .. }
         | Command::ReleaseClaim { .. }
         | Command::ReserveFiles { .. }
-        | Command::ReleaseFiles { .. } => Capability::RunWrite,
+        | Command::ReleaseFiles { .. }
+        | Command::CompleteWorkUnit { .. }
+        | Command::ReleaseWorkUnit { .. }
+        | Command::SetWorkUnitStatus { .. } => Capability::RunWrite,
+        Command::CreateWorkUnit { .. } => Capability::TaskWrite,
         // Agent session commands
         Command::StartAgentSession { .. }
         | Command::EndAgentSession { .. }
@@ -2706,6 +3344,7 @@ async fn get_plan_progress(
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
         claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
     };
     if let Some(next) = resolver
         .next(plan_id, RunId::new(), auth.agent_id, None)
@@ -3101,6 +3740,7 @@ async fn get_next_task(
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
         claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
     };
     let result = resolver
         .next(plan_id, run_id, auth.agent_id, claim_ttl)
@@ -3144,6 +3784,7 @@ async fn drain_one_plan(
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
         claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
     };
 
     for _ in 0..max_attempts {
@@ -4173,7 +4814,16 @@ struct ReserveFilesBody {
     task_id: TaskId,
     #[serde(default)]
     project_id: Option<ProjectId>,
+    /// Repo-relative path globs (legacy field; becomes `file://` targets).
+    #[serde(default)]
     paths: Vec<String>,
+    /// Resource URIs (`file://`, `artifact://`, `contract://`, `env://`).
+    /// Merged with `paths`; at least one of the two must be non-empty.
+    #[serde(default)]
+    targets: Vec<String>,
+    /// Lease mode: `exclusive` (default) | `shared_read` | `review` | `intent`.
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     ttl_secs: Option<u32>,
 }
@@ -4188,20 +4838,31 @@ async fn reserve_files(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    if body.paths.is_empty() {
+    let mut targets = body.paths.clone();
+    targets.extend(body.targets.iter().cloned());
+    if targets.is_empty() {
         return Err(ApiError::from(CoreError::validation(
-            "paths must not be empty",
+            "paths/targets must not be empty",
         )));
     }
+    let mode = match body.mode.as_deref() {
+        None => taskagent_domain::LeaseMode::Exclusive,
+        Some(raw) => taskagent_domain::LeaseMode::parse(raw).ok_or_else(|| {
+            ApiError::from(CoreError::validation(format!(
+                "unknown lease mode `{raw}` — expected exclusive|shared_read|review|intent"
+            )))
+        })?,
+    };
     let ttl_secs = body.ttl_secs.unwrap_or(300);
 
     match state
         .work_leases
-        .try_reserve(
+        .try_reserve_targets(
             body.agent_id,
             body.task_id,
             body.project_id,
-            body.paths,
+            targets,
+            mode,
             chrono::Duration::seconds(ttl_secs as i64),
         )
         .await
