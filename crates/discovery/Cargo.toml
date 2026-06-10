@@ -1,0 +1,42 @@
+[package]
+name = "taskagent-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# mDNS service discovery
+mdns-sd    = { workspace = true }
+
+# TLS certificate generation and runtime
+rcgen        = { workspace = true }
+rustls       = { workspace = true }
+tokio-rustls = { workspace = true }
+
+# QR code
+qrcode = { workspace = true }
+image  = { workspace = true }
+
+# Async / error handling
+tokio     = { workspace = true }
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+
+# Serde for pairing payloads
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+# Crypto (constant-time token comparison, SHA-256 fingerprint)
+sha2      = { workspace = true }
+hex       = { workspace = true }
+rand      = { workspace = true }
+base64    = { workspace = true }
+hmac      = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
