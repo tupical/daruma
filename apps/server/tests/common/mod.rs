@@ -207,6 +207,10 @@ impl TestAppBuilder {
             workspace_graph,
             mcp_downloads: taskagent_server::mcp_downloads::McpDownloads::default(),
             rate_limiter: taskagent_server::middleware::rate_limit::RateLimiter::default(),
+            pairing: taskagent_discovery::PairingStore::new(),
+            tls_host: "localhost:8443".to_string(),
+            tls_fingerprint: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
         };
         let router = router(state.clone());
 
