@@ -64,8 +64,8 @@ use taskagent_api_dto::{MutationResponse, MutationWarning};
 use crate::{
     error::ApiError,
     middleware::{
-        auth::require_auth, auth::AuthLayer, rate_limit::enforce_rate_limit,
-        request_id::request_id_middleware,
+        auth::require_auth, auth::AuthLayer, rate_limit::enforce_pairing_rate_limit,
+        rate_limit::enforce_rate_limit, request_id::request_id_middleware,
     },
     state::AppState,
     ws::ws_handler,
@@ -188,10 +188,20 @@ pub fn router(state: AppState) -> Router {
 /// `/ws` — the WS connection is authenticated through
 /// `Sec-WebSocket-Protocol` (W2.3).
 fn public_routes(state: AppState) -> Router {
+    // Pairing route gets its own IP-keyed rate limiter (5 req/min) because it
+    // is unauthenticated — the single-use token is the credential — and must
+    // not be brute-forced.  The WS route has no such concern.
+    let pairing_route = Router::new()
+        .route("/devices/pair", post(pairing::pair_device))
+        .layer(axum::middleware::from_fn_with_state(
+            state.rate_limiter.clone(),
+            enforce_pairing_rate_limit,
+        ))
+        .with_state(state.clone());
+
     Router::new()
         .route("/ws", get(ws_handler))
-        // Pairing: the single-use token IS the credential — no bearer needed.
-        .route("/devices/pair", post(pairing::pair_device))
+        .merge(pairing_route)
         .with_state(state)
 }
 

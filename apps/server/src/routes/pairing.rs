@@ -9,7 +9,8 @@
 //! 3. Issues a new long-lived bearer token and returns it.
 //!
 //! The endpoint is intentionally unauthenticated (the pairing token itself
-//! is the credential) but is rate-limited by the shared [`RateLimiter`].
+//! is the credential). It is protected by an IP-keyed rate limiter (5 req/min
+//! per source IP) applied in [`crate::routes::public_routes`].
 //!
 //! ## Security properties
 //!
@@ -23,6 +24,8 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use taskagent_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
 use taskagent_shared::AgentId;
+#[allow(unused_imports)]
+use chrono; // for Duration::days in token expiry
 
 use crate::{error::ApiError, state::AppState};
 
@@ -108,12 +111,15 @@ pub async fn pair_device(
         .take(80)
         .collect::<String>();
 
+    // Paired-device tokens expire in 90 days — bounded lifetime limits blast
+    // radius if a token is ever compromised.
+    let expires = taskagent_shared::time::now() + chrono::Duration::days(90);
     let secret = generate(NewTokenSpec {
         kind: TokenKind::Pat,
         agent_id: AgentId::new(),
         scope: TokenScope::default_user(),
         rate_limit_per_min: 120,
-        expired_at: None,
+        expired_at: Some(expires),
     })
     .map_err(|e| ApiError::from(taskagent_shared::CoreError::storage(e.to_string())))?;
 
