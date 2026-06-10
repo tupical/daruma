@@ -29,7 +29,17 @@ taskagent-server
 The server listens on `http://localhost:8080` by default.
 Health check: `curl http://localhost:8080/v1/healthz`
 
-### 2. Configure MCP
+### 2. Install via Claude Code Marketplace (recommended for Claude Code users)
+
+```bash
+/plugin marketplace add tupical/taskagent
+```
+
+This reads `.claude-plugin/marketplace.json` from the repo root and installs
+the `taskagent-claude` plugin (commands, skills, hooks, CLAUDE.md policy) in
+one step. The MCP server entry is still required — see §1 above.
+
+### 3. Configure MCP manually
 
 Pick your IDE:
 

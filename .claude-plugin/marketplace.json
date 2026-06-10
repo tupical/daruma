@@ -1,0 +1,17 @@
+{
+  "name": "taskagent",
+  "owner": {
+    "name": "tupical",
+    "url": "https://github.com/tupical"
+  },
+  "repository": "https://github.com/tupical/taskagent",
+  "description": "MCP-native task and plan tracker for AI agent IDEs. Replaces ad-hoc in-session task lists with a durable, multi-agent-safe tracker that persists across sessions, IDEs, and agents.",
+  "plugins": [
+    {
+      "name": "taskagent-claude",
+      "source": "./clients/claude-plugin",
+      "description": "Claude Code + oh-my-claudecode integration. Full parse/decompose/plan/execute pipeline, SessionStart/Stop hooks, and managed CLAUDE.md policy that makes taskagent the default tracker.",
+      "homepage": "https://github.com/tupical/taskagent/tree/main/clients/claude-plugin"
+    }
+  ]
+}
