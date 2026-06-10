@@ -935,6 +935,11 @@ impl ActivityRepo {
                 })
                 .await?;
             }
+
+            // Artifact Registry events (P4) and any future variants do not
+            // produce activity-log rows; they have their own projection in
+            // artifact_repo.
+            _ => {}
         }
 
         Ok(())

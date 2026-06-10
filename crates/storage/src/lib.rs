@@ -19,6 +19,7 @@
 
 pub mod activity_repo;
 pub mod agent_inbox_repo;
+pub mod artifact_repo;
 pub mod claim_repo;
 pub mod comment_repo;
 pub mod db;
@@ -46,6 +47,7 @@ pub mod workspace_graph_repo;
 
 pub use activity_repo::ActivityRepo;
 pub use agent_inbox_repo::AgentInboxRepo;
+pub use artifact_repo::ArtifactRepo;
 pub use claim_repo::{AgentClaimRepo, ClaimOutcome};
 pub use comment_repo::CommentRepo;
 pub use db::Db;
