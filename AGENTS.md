@@ -33,7 +33,7 @@ Health check: `curl http://localhost:8080/v1/healthz`
 
 ```bash
 /plugin marketplace add tupical/taskagent
-/plugin install taskagent@taskagent
+/plugin install taskagent-claude@taskagent
 ```
 
 The first command fetches `.claude-plugin/marketplace.json` from the repo root.
