@@ -22,6 +22,11 @@ taskagent-sync       = { workspace = true }
 taskagent-ai         = { workspace = true }
 taskagent-discovery  = { workspace = true }
 mdns-sd              = { workspace = true }
+rustls               = { workspace = true }
+tokio-rustls         = { workspace = true }
+sha2                 = { workspace = true }
+hex                  = { workspace = true }
+subtle               = { workspace = true }
 tokio       = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }

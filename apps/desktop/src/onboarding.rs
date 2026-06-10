@@ -12,8 +12,8 @@
 //!
 //! Accepts a `taskagent://pair?host=…&token=…&fpr=sha256:…` URL (paste from
 //! QR code or copy from the server's `/v1/devices/pair/ticket` output), sends
-//! `POST /v1/devices/pair` to the server, verifies the response fingerprint,
-//! and persists the returned bearer token + server URL to the local config.
+//! `POST /v1/devices/pair` to the server over TLS, and persists the returned
+//! bearer token + server URL to the local config.
 //!
 //! ### Camera / QR scan
 //!
@@ -21,12 +21,19 @@
 //! version.  The feature is gated by the `camera-pairing` feature flag (off by
 //! default) so it can be added later without breaking the build.
 //!
-//! ## Security note
+//! ## Security model
 //!
-//! The client explicitly verifies that the TLS fingerprint in the pairing URL
-//! matches what the server returns in the `POST /v1/devices/pair` response.
-//! A mismatch means the client connected to a different server than the one
-//! that issued the QR code, and pairing is aborted with an error.
+//! The server uses a self-signed TLS certificate.  Standard CA verification
+//! would reject it, so this client implements *fingerprint pinning* instead:
+//!
+//! 1. The pairing URL carries `fpr=sha256:<hex>` — the expected SHA-256 digest
+//!    of the server's leaf certificate DER bytes.
+//! 2. A custom `rustls::client::ServerCertVerifier` computes the digest of the
+//!    actual leaf cert that arrives in the TLS handshake and compares it with
+//!    the expected value using a constant-time equality check.
+//! 3. If the digests differ the TLS handshake is aborted before any HTTP bytes
+//!    are exchanged; a MITM cannot forge the cert even if they intercept DNS /
+//!    mDNS because they do not possess the server's private key.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -148,8 +155,9 @@ fn parse_timeout(args: &[String]) -> Option<u64> {
 
 /// `taskagent pair <taskagent://pair?…>`
 ///
-/// Parse the pairing URL, call `POST /v1/devices/pair`, and persist the
-/// returned credentials.
+/// Parse the pairing URL, call `POST /v1/devices/pair` over a TLS connection
+/// whose leaf-certificate fingerprint is pinned to the value in the URL, and
+/// persist the returned credentials.
 pub async fn cmd_pair(args: &[String]) -> Result<()> {
     let url_str = args
         .first()
@@ -167,43 +175,17 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
     println!("Pairing with {}…", params.host);
     println!("  Expected TLS fingerprint: {}", params.fpr);
 
-    // Build an HTTPS client that accepts the self-signed cert only if the
-    // fingerprint matches.  We use a custom `reqwest` connector via
-    // `danger_accept_invalid_certs` for now and verify the fingerprint via the
-    // server's response; full TLS pinning requires a custom connector which is
-    // deferred to a future PR.
-    //
-    // SECURITY NOTE: the server's `/v1/devices/pair` response includes the
-    // fingerprint it used when generating the pairing URL, so a MITM would
-    // need to forge both the TLS certificate AND the pairing URL — the latter
-    // requires access to the server's in-process PairingStore.
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .context("build HTTP client")?;
+    // Strip "sha256:" prefix to get the raw hex string expected.
+    let expected_hex = params
+        .fpr
+        .strip_prefix("sha256:")
+        .unwrap_or(&params.fpr)
+        .to_string();
 
-    let server_url = format!("https://{}/v1/devices/pair", params.host);
-
-    let body = serde_json::json!({
-        "token": params.token,
-        "tls_fingerprint": params.fpr,
-        "device_label": hostname_label(),
-    });
-
-    let resp = client
-        .post(&server_url)
-        .json(&body)
-        .send()
+    // Build and send the pairing request over a fingerprint-pinned TLS channel.
+    let pair_resp = post_pair_pinned(&params.host, &params.token, &expected_hex)
         .await
         .context("POST /v1/devices/pair")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        bail!("pairing failed ({status}): {text}");
-    }
-
-    let pair_resp: PairResponse = resp.json().await.context("parse pairing response")?;
 
     // Persist credentials.
     persist_credentials(&params.host, &pair_resp.access_token)
@@ -218,6 +200,200 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
     println!("Run `taskagent sync` to pull tasks from the server.");
 
     Ok(())
+}
+
+// ── TLS fingerprint-pinned HTTP client ────────────────────────────────────────
+
+/// Send `POST /v1/devices/pair` over a rustls connection that pins the server's
+/// leaf certificate to `expected_sha256_hex`.
+///
+/// The custom verifier computes SHA-256 of the raw leaf DER during the TLS
+/// handshake and aborts with an error if it does not match `expected_sha256_hex`
+/// (constant-time comparison).  This is the correct way to handle self-signed
+/// certificates: CA chain verification is replaced by fingerprint pinning.
+async fn post_pair_pinned(
+    host: &str,
+    token: &str,
+    expected_sha256_hex: &str,
+) -> Result<PairResponse> {
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::TlsConnector;
+
+    // Build a rustls ClientConfig that skips CA verification and instead
+    // delegates to our fingerprint verifier.
+    let verifier = Arc::new(FingerprintVerifier::new(expected_sha256_hex)?);
+    let tls_cfg = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(tls_cfg));
+
+    // Resolve host and port.
+    let (hostname, port) = split_host_port(host)?;
+    let addr_str = format!("{hostname}:{port}");
+    let addrs: Vec<_> = tokio::net::lookup_host(&addr_str)
+        .await
+        .with_context(|| format!("DNS lookup failed for {addr_str}"))?
+        .collect();
+    let addr = addrs
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no address for {addr_str}"))?;
+
+    let tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .with_context(|| format!("TCP connect to {addr}"))?;
+
+    let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())
+        .map_err(|e| anyhow::anyhow!("invalid server name {hostname}: {e}"))?;
+
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .context("TLS handshake (fingerprint mismatch aborts here)")?;
+
+    // Build a minimal HTTP/1.1 POST request by hand — avoids pulling in a
+    // second HTTP client stack just for this one call.
+    let body_bytes = serde_json::to_vec(&serde_json::json!({
+        "token": token,
+        "device_label": hostname_label(),
+    }))?;
+    let request = format!(
+        "POST /v1/devices/pair HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n",
+        body_bytes.len()
+    );
+
+    let mut tls = tls;
+    tls.write_all(request.as_bytes()).await?;
+    tls.write_all(&body_bytes).await?;
+    tls.flush().await?;
+
+    // Read the full response.
+    let mut raw = Vec::new();
+    tls.read_to_end(&mut raw).await?;
+    let response = String::from_utf8_lossy(&raw);
+
+    // Split status line from body.
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("malformed HTTP response"))?;
+
+    let status_line = head.lines().next().unwrap_or("");
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("cannot parse HTTP status from: {status_line}"))?;
+
+    if !(200..300).contains(&status_code) {
+        bail!("pairing failed (HTTP {status_code}): {body}");
+    }
+
+    let pair_resp: PairResponse =
+        serde_json::from_str(body).context("parse pairing response JSON")?;
+    Ok(pair_resp)
+}
+
+/// Parse `"host:port"` or `"host"` (defaulting to port 8443).
+fn split_host_port(host: &str) -> Result<(&str, u16)> {
+    if let Some((h, p)) = host.rsplit_once(':') {
+        let port: u16 = p
+            .parse()
+            .with_context(|| format!("invalid port in {host}"))?;
+        Ok((h, port))
+    } else {
+        Ok((host, 8443))
+    }
+}
+
+// ── Custom rustls ServerCertVerifier — fingerprint pinning ────────────────────
+
+/// A `rustls` [`ServerCertVerifier`] that accepts **any** certificate whose
+/// SHA-256 digest of the raw DER bytes matches `expected_hex`.
+///
+/// All other certificates are rejected regardless of issuer or expiry.
+/// The comparison uses `subtle::ConstantTimeEq` to prevent timing attacks.
+#[derive(Debug)]
+struct FingerprintVerifier {
+    /// Lower-case hex SHA-256 of the expected leaf cert DER.
+    expected: Vec<u8>,
+}
+
+impl FingerprintVerifier {
+    fn new(expected_hex: &str) -> Result<Self> {
+        let expected = hex::decode(expected_hex)
+            .with_context(|| format!("invalid fingerprint hex: {expected_hex}"))?;
+        if expected.len() != 32 {
+            bail!("SHA-256 fingerprint must be 32 bytes (64 hex chars), got {}", expected.len());
+        }
+        Ok(Self { expected })
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for FingerprintVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        use sha2::Digest;
+        use subtle::ConstantTimeEq;
+
+        let actual = sha2::Sha256::digest(end_entity.as_ref());
+
+        if actual.ct_eq(&self.expected).into() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(format!(
+                "TLS fingerprint mismatch: expected sha256:{}, got sha256:{}",
+                hex::encode(&self.expected),
+                hex::encode(actual),
+            )))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 #[derive(Debug)]
