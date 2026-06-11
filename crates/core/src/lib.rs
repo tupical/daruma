@@ -14,6 +14,7 @@ pub mod command;
 pub mod conflict;
 pub mod embed;
 pub mod handler;
+pub mod lifecycle_gate;
 pub mod path_lease;
 pub mod plan_concurrency;
 pub mod plan_readiness;
@@ -24,5 +25,8 @@ pub mod search;
 pub use bus::CommandBus;
 pub use command::{Command, CommandEnvelope};
 pub use handler::CommandHandler;
+pub use lifecycle_gate::{
+    DispatchOutcome, GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
+};
 pub use plan_concurrency::{detect_parent_cycle, NextTask, NextTaskResolver, MAX_PARENT_DEPTH};
 pub use plan_readiness::{can_start, plan_fanout, plan_graph};

@@ -1857,15 +1857,20 @@ async fn dispatch_command(
         }
     }
 
-    let warnings = mutation_warnings(&state, &envelope.command)
+    let mut warnings = mutation_warnings(&state, &envelope.command)
         .await
         .map_err(ApiError::from)?;
 
-    let envelopes = state
+    // Lifecycle-gate warnings (docs/LIFECYCLE_RULES_SPEC.md §1.5) ride the
+    // same `warnings` channel; blocked checks surface as a Conflict error
+    // ("rule_blocked: …") from dispatch itself.
+    let outcome = state
         .commands
-        .dispatch(envelope.command, envelope.actor)
+        .dispatch_with_warnings(envelope.command, envelope.actor)
         .await
         .map_err(ApiError::from)?;
+    warnings.extend(outcome.warnings);
+    let envelopes = outcome.events;
 
     // Persist idempotency record for future retries.
     if let Some(ccid) = envelope.client_command_id {
@@ -3853,7 +3858,7 @@ async fn drain_one_plan(
             .map_err(ApiError::from)?
         {
             if task.status != taskagent_domain::Status::InProgress && !task.status.is_terminal() {
-                let _ = state
+                let status_result = state
                     .commands
                     .dispatch(
                         Command::SetStatus {
@@ -3863,8 +3868,25 @@ async fn drain_one_plan(
                         },
                         actor_from(auth, None),
                     )
-                    .await
-                    .map_err(ApiError::from)?;
+                    .await;
+                if let Err(err) = status_result {
+                    // Gate compensation (docs/LIFECYCLE_RULES_SPEC.md §3,
+                    // invariant 7): the claim was acquired BEFORE the gated
+                    // transition; release it so a rule-blocked task does not
+                    // stay claimed with no work happening. Best-effort — the
+                    // claim TTL remains the fallback.
+                    let _ = state
+                        .commands
+                        .dispatch(
+                            Command::ReleaseClaim {
+                                agent_id: auth.agent_id,
+                                task_id: next.task_id,
+                            },
+                            actor_from(auth, None),
+                        )
+                        .await;
+                    return Err(ApiError::from(err));
+                }
             }
         }
 

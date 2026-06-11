@@ -23,7 +23,7 @@ use serde_json::Value;
 use taskagent_auth::{
     generate, Capabilities, NewTokenSpec, ProjectFilter, TokenKind, TokenScope, TokenStore,
 };
-use taskagent_core::{CommandBus, CommandHandler};
+use taskagent_core::{CommandBus, CommandHandler, LifecycleGate};
 use taskagent_events::{EventBus, EventStore};
 use taskagent_server::{routes::router, state::AppState, workspace_graph};
 use taskagent_shared::AgentId;
@@ -65,6 +65,7 @@ pub struct TestAppBuilder {
     bus_capacity: usize,
     mint_admin: bool,
     admin_agent_id: Option<AgentId>,
+    lifecycle_gate: Option<Arc<dyn LifecycleGate>>,
 }
 
 impl Default for TestAppBuilder {
@@ -73,6 +74,7 @@ impl Default for TestAppBuilder {
             bus_capacity: DEFAULT_BUS_CAPACITY,
             mint_admin: true,
             admin_agent_id: None,
+            lifecycle_gate: None,
         }
     }
 }
@@ -87,6 +89,13 @@ impl TestAppBuilder {
     /// that need to address the agent's cursor by id).
     pub fn admin_agent_id(mut self, id: AgentId) -> Self {
         self.admin_agent_id = Some(id);
+        self
+    }
+
+    /// Wire a lifecycle gate into the command handler
+    /// (docs/LIFECYCLE_RULES_SPEC.md §1.5).
+    pub fn lifecycle_gate(mut self, gate: Arc<dyn LifecycleGate>) -> Self {
+        self.lifecycle_gate = Some(gate);
         self
     }
 
@@ -145,28 +154,30 @@ impl TestAppBuilder {
         };
 
         let bus = EventBus::new(self.bus_capacity);
-        let handler = Arc::new(
-            CommandHandler::new(
-                store.clone(),
-                tasks.clone(),
-                projects.clone(),
-                comments.clone(),
-                activity.clone(),
-                bus.clone(),
-            )
-            .with_plans(plans.clone())
-            .with_runs(runs.clone())
-            .with_run_notes(run_notes.clone())
-            .with_sessions(sessions.clone())
-            .with_claims(claims.clone())
-            .with_work_leases(work_leases.clone())
-            .with_external_refs(external_refs.clone())
-            .with_tenant_quotas(tenant_quotas.clone())
-            .with_documents(documents.clone())
-            .with_project_settings(project_settings.clone())
-            .with_work_units(work_units.clone())
-            .with_relations(relations.clone()),
-        );
+        let mut handler = CommandHandler::new(
+            store.clone(),
+            tasks.clone(),
+            projects.clone(),
+            comments.clone(),
+            activity.clone(),
+            bus.clone(),
+        )
+        .with_plans(plans.clone())
+        .with_runs(runs.clone())
+        .with_run_notes(run_notes.clone())
+        .with_sessions(sessions.clone())
+        .with_claims(claims.clone())
+        .with_work_leases(work_leases.clone())
+        .with_external_refs(external_refs.clone())
+        .with_tenant_quotas(tenant_quotas.clone())
+        .with_documents(documents.clone())
+        .with_project_settings(project_settings.clone())
+        .with_work_units(work_units.clone())
+        .with_relations(relations.clone());
+        if let Some(gate) = self.lifecycle_gate.clone() {
+            handler = handler.with_lifecycle_gate(gate);
+        }
+        let handler = Arc::new(handler);
         let command_bus = CommandBus::new(handler);
         let hub = Arc::new(Hub::new(bus.clone(), Arc::new(command_bus.clone())));
 

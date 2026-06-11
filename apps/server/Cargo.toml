@@ -55,6 +55,7 @@ base64      = { workspace = true }
 actor_strict = []
 
 [dev-dependencies]
+async-trait = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tower      = { workspace = true }
 url        = "2"

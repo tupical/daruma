@@ -9,7 +9,7 @@ use taskagent_domain::Actor;
 use taskagent_events::EventEnvelope;
 use taskagent_shared::Result;
 
-use crate::{Command, CommandHandler};
+use crate::{lifecycle_gate::DispatchOutcome, Command, CommandHandler};
 
 /// Entry point for every command in the system.
 ///
@@ -33,5 +33,16 @@ impl CommandBus {
     /// Dispatch a command and return the persisted event envelopes.
     pub async fn dispatch(&self, cmd: Command, actor: Actor) -> Result<Vec<EventEnvelope>> {
         self.handler.handle(cmd, actor).await
+    }
+
+    /// Dispatch a command and additionally return lifecycle-gate warnings so
+    /// transports can surface them in `MutationResponse.warnings`
+    /// (docs/LIFECYCLE_RULES_SPEC.md §1.5). [`Self::dispatch`] discards them.
+    pub async fn dispatch_with_warnings(
+        &self,
+        cmd: Command,
+        actor: Actor,
+    ) -> Result<DispatchOutcome> {
+        self.handler.handle_with_warnings(cmd, actor).await
     }
 }

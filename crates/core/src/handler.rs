@@ -28,6 +28,10 @@ use crate::{
     Command,
 };
 
+use crate::lifecycle_gate::{
+    derive_gate_checks, gate_override_of, DispatchOutcome, GateDecision, LifecycleGate,
+};
+
 /// Processes commands: validate → build events → persist → apply → publish.
 pub struct CommandHandler {
     pub store: Arc<dyn EventStore>,
@@ -65,6 +69,11 @@ pub struct CommandHandler {
     // Optional async search indexing pipeline. Failures are logged and do not
     // make command dispatch fail.
     pub search_provider: Option<Arc<dyn SearchProvider>>,
+
+    // Lifecycle gate (docs/LIFECYCLE_RULES_SPEC.md §1.5) — pre-persist
+    // allowed/warning/blocked checks on derived trigger points. `None`
+    // (the default) is zero-cost: no derivation, no lookups.
+    pub lifecycle_gate: Option<Arc<dyn LifecycleGate>>,
 }
 
 impl CommandHandler {
@@ -98,6 +107,7 @@ impl CommandHandler {
             project_settings: None,
             work_units: None,
             search_provider: None,
+            lifecycle_gate: None,
         }
     }
 
@@ -178,14 +188,58 @@ impl CommandHandler {
         self
     }
 
+    /// Wire a lifecycle gate (rules engine). See docs/LIFECYCLE_RULES_SPEC.md.
+    pub fn with_lifecycle_gate(mut self, gate: Arc<dyn LifecycleGate>) -> Self {
+        self.lifecycle_gate = Some(gate);
+        self
+    }
+
     /// Validate the command, persist resulting events, update projections, and
     /// broadcast via the event bus. Returns the persisted envelopes (with seq
     /// assigned).  Returns an empty Vec for no-op commands (e.g. SetStatus
     /// when the status is already the requested value).
     pub async fn handle(&self, cmd: Command, actor: Actor) -> Result<Vec<EventEnvelope>> {
+        self.handle_with_warnings(cmd, actor)
+            .await
+            .map(|outcome| outcome.events)
+    }
+
+    /// Like [`Self::handle`], but also returns lifecycle-gate warnings so
+    /// transports can surface them in `MutationResponse.warnings`
+    /// (docs/LIFECYCLE_RULES_SPEC.md §1.5). Blocked checks abort BEFORE
+    /// persist with `CoreError::Conflict("rule_blocked: …")`; trigger points
+    /// are derived from the built (not yet persisted) events, so every path
+    /// to a transition — `SetStatus`, `CompleteTask`, bulk, drain — is
+    /// covered by this single call site (spec §3, invariant 7).
+    pub async fn handle_with_warnings(
+        &self,
+        cmd: Command,
+        actor: Actor,
+    ) -> Result<DispatchOutcome> {
+        let gate_override = self
+            .lifecycle_gate
+            .as_ref()
+            .map(|_| gate_override_of(&cmd));
         let events = self.build_events(cmd, &actor).await?;
         if events.is_empty() {
-            return Ok(vec![]);
+            return Ok(DispatchOutcome {
+                events: vec![],
+                warnings: vec![],
+            });
+        }
+
+        let mut warnings = Vec::new();
+        if let Some(gate) = &self.lifecycle_gate {
+            let gate_override = gate_override.unwrap_or_default();
+            for check in derive_gate_checks(&events) {
+                match gate.check(&actor, &check, &gate_override).await? {
+                    GateDecision::Allowed => {}
+                    GateDecision::Warning(mut batch) => warnings.append(&mut batch),
+                    GateDecision::Blocked { message, .. } => {
+                        return Err(CoreError::conflict(format!("rule_blocked: {message}")));
+                    }
+                }
+            }
         }
 
         let envelopes: Vec<EventEnvelope> = events
@@ -242,7 +296,10 @@ impl CommandHandler {
         // command; emits its own DocumentContentAppended events.
         self.auto_append_logs(&persisted).await;
 
-        Ok(persisted)
+        Ok(DispatchOutcome {
+            events: persisted,
+            warnings,
+        })
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

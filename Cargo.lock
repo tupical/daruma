@@ -2949,6 +2949,7 @@ name = "taskagent-server"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64",
  "chrono",
