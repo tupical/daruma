@@ -53,7 +53,7 @@ impl MdnsAdvertiser {
             SERVICE_TYPE,
             instance_name,
             &format!("{instance_name}.local."),
-            "",  // let mdns-sd resolve local IPs automatically
+            "", // let mdns-sd resolve local IPs automatically
             port,
             properties,
         )
@@ -103,6 +103,10 @@ mod tests {
             8443u16,
             props,
         );
-        assert!(result.is_ok(), "ServiceInfo::new failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "ServiceInfo::new failed: {:?}",
+            result.err()
+        );
     }
 }

@@ -23,11 +23,7 @@ struct ParseCtx<'a> {
 /// maps the returned arguments onto [`NewTask`].
 pub async fn parse_task(client: &OpenAiClient, input: &str) -> Result<Command, CoreError> {
     let input = crate::untrusted::wrap_untrusted("task description to parse", input);
-    let prompt = PromptRegistry::load(
-        "parse",
-        "default",
-        &ParseCtx { input: &input },
-    )?;
+    let prompt = PromptRegistry::load("parse", "default", &ParseCtx { input: &input })?;
 
     let req = ResponseRequest {
         input: Value::String(prompt),

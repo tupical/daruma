@@ -183,8 +183,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── TLS certificate (self-signed, persisted) ──────────────────────────────
-    let hostname = std::env::var("TASKAGENT_HOSTNAME")
-        .unwrap_or_else(|_| hostname_or_localhost());
+    let hostname = std::env::var("TASKAGENT_HOSTNAME").unwrap_or_else(|_| hostname_or_localhost());
     let tls_bundle = CertBundle::load_or_generate(&data_path, &hostname)
         .await
         .map_err(|e| anyhow::anyhow!("TLS init failed: {e}"))?;
@@ -551,4 +550,3 @@ fn hostname_or_localhost() -> String {
         })
         .unwrap_or_else(|_| "localhost".to_string())
 }
-

@@ -24,11 +24,7 @@ pub async fn suggest_next_action(
     context: &str,
 ) -> Result<String, CoreError> {
     let context = crate::untrusted::wrap_untrusted("project context", context);
-    let prompt = PromptRegistry::load(
-        "suggest",
-        "default",
-        &SuggestCtx { context: &context },
-    )?;
+    let prompt = PromptRegistry::load("suggest", "default", &SuggestCtx { context: &context })?;
 
     let req = ResponseRequest {
         input: Value::String(prompt),

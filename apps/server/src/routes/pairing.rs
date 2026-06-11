@@ -21,11 +21,11 @@
 //! - No secret material is logged.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+#[allow(unused_imports)]
+use chrono;
 use serde::{Deserialize, Serialize};
 use taskagent_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
-use taskagent_shared::AgentId;
-#[allow(unused_imports)]
-use chrono; // for Duration::days in token expiry
+use taskagent_shared::AgentId; // for Duration::days in token expiry
 
 use crate::{error::ApiError, state::AppState};
 
@@ -89,7 +89,10 @@ pub async fn pair_device(
         })?;
 
     // 3. Verify TLS fingerprint (the client must prefix it with "sha256:").
-    let expected = format!("sha256:{}", ticket.tls_fingerprint.trim_start_matches("sha256:"));
+    let expected = format!(
+        "sha256:{}",
+        ticket.tls_fingerprint.trim_start_matches("sha256:")
+    );
     let provided = claimed_fpr.to_string();
     if !constant_eq_str(&expected, &provided) {
         tracing::warn!(
@@ -164,8 +167,7 @@ pub async fn issue_pairing_ticket(
     let pairing_url = ticket.pairing_url();
 
     // Generate QR PNG — fall back gracefully if image encoding fails.
-    let qr_png = taskagent_discovery::qr::encode_png(&pairing_url)
-        .unwrap_or_default();
+    let qr_png = taskagent_discovery::qr::encode_png(&pairing_url).unwrap_or_default();
 
     let response = serde_json::json!({
         "pairing_url": pairing_url,
@@ -186,7 +188,10 @@ fn constant_eq_str(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 fn base64_encode(data: &[u8]) -> String {

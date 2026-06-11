@@ -102,15 +102,13 @@ impl ArtifactRepo {
                 owner_agent_id,
                 ..
             } => {
-                sqlx::query(
-                    "UPDATE artifacts SET owner_agent_id = ?, updated_at = ? WHERE id = ?",
-                )
-                .bind(owner_agent_id.to_string())
-                .bind(at.to_rfc3339())
-                .bind(artifact_id.to_string())
-                .execute(&self.pool)
-                .await
-                .map_err(|e| CoreError::storage(e.to_string()))?;
+                sqlx::query("UPDATE artifacts SET owner_agent_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(owner_agent_id.to_string())
+                    .bind(at.to_rfc3339())
+                    .bind(artifact_id.to_string())
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
                 Ok(())
             }
 
@@ -392,9 +390,11 @@ fn row_to_relation(r: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRelation> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
+    use taskagent_domain::{
+        Actor, Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus,
+    };
     use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{ArtifactId, ArtifactRelationId, AgentId};
+    use taskagent_shared::{AgentId, ArtifactId, ArtifactRelationId};
 
     async fn repo() -> (Db, ArtifactRepo) {
         let db = Db::memory().await.unwrap();
@@ -425,7 +425,9 @@ mod tests {
         let a = sample_artifact(uri);
         let env = EventEnvelope::new(
             Actor::user(),
-            Event::ArtifactRegistered { artifact: a.clone() },
+            Event::ArtifactRegistered {
+                artifact: a.clone(),
+            },
         );
         r.apply_event(&env).await.unwrap();
         a
@@ -439,7 +441,11 @@ mod tests {
         let by_id = r.get(a.id).await.unwrap().expect("found by id");
         assert_eq!(by_id.uri, "artifact://api/users");
 
-        let by_uri = r.get_by_uri("artifact://api/users").await.unwrap().expect("found by uri");
+        let by_uri = r
+            .get_by_uri("artifact://api/users")
+            .await
+            .unwrap()
+            .expect("found by uri");
         assert_eq!(by_uri.id, a.id);
     }
 

@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use sha2::{Digest, Sha256};
-use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use tokio_rustls::rustls::ServerConfig;
 
 /// PEM + DER representation of the server certificate and its private key.
 #[derive(Clone)]
@@ -77,9 +77,9 @@ impl CertBundle {
         let key_pair = KeyPair::generate().context("generate key pair")?;
 
         let mut params = CertificateParams::default();
-        params.subject_alt_names = vec![
-            SanType::DnsName(hostname.to_string().try_into().context("SAN hostname")?),
-        ];
+        params.subject_alt_names = vec![SanType::DnsName(
+            hostname.to_string().try_into().context("SAN hostname")?,
+        )];
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, format!("taskagent@{hostname}"));
         params.distinguished_name = dn;
@@ -151,11 +151,10 @@ impl CertBundle {
         let key_der = pem_to_pkcs8_der(&self.key_pem).context("parse key PEM")?;
         let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
 
-        let mut server_config =
-            ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(vec![cert_der], private_key)
-                .context("build rustls ServerConfig")?;
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], private_key)
+            .context("build rustls ServerConfig")?;
 
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
-    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, NewTask,
-    Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome, SessionArtifact,
+    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, NewTask, Plan,
+    PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome, SessionArtifact,
     Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{

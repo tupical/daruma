@@ -21,11 +21,8 @@ pub fn encode_png(url: &str) -> Result<Vec<u8>> {
         .build();
 
     let mut buf = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut buf),
-        image::ImageFormat::Png,
-    )
-    .context("write QR PNG")?;
+    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+        .context("write QR PNG")?;
 
     let _ = image; // suppress unused warning from SVG path above
 

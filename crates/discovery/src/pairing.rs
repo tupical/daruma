@@ -120,7 +120,13 @@ impl PairingStore {
         let mut store = self.inner.lock().await;
         // Sweep expired entries while we hold the lock.
         store.retain(|_, e| !e.ticket.is_expired());
-        store.insert(token, Entry { ticket: ticket.clone(), used: false });
+        store.insert(
+            token,
+            Entry {
+                ticket: ticket.clone(),
+                used: false,
+            },
+        );
         ticket
     }
 
@@ -176,7 +182,10 @@ impl PairingStore {
     /// Number of active (non-expired, non-consumed) tickets.
     pub async fn active_count(&self) -> usize {
         let store = self.inner.lock().await;
-        store.values().filter(|e| !e.used && !e.ticket.is_expired()).count()
+        store
+            .values()
+            .filter(|e| !e.used && !e.ticket.is_expired())
+            .count()
     }
 }
 
@@ -209,7 +218,10 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[cfg(test)]
