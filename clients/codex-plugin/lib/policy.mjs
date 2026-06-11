@@ -55,7 +55,16 @@ Codex plugin manages this block; do not hand-edit between the markers.
    (multi-step refactors, cross-session work, decomposition output)
    goes into taskagent.
 
-5. **If taskagent is unreachable** (\`taskagent_healthz\` fails), stop
+5. **Verify real taskagent state before acting.** A user mention of a
+   task, plan, TODO file, checklist, or id-shaped string is not proof the
+   item exists. Before commenting, completing, reopening, or claiming
+   work, resolve the actual task/plan via \`taskagent_list\`,
+   \`taskagent_get\`, \`taskagent_plan_list\`, or \`taskagent_plan_get\`
+   with a narrow scope. Never invent ids, never mark guessed work done,
+   and create new taskagent state only when the user asked to create or
+   track durable work.
+
+6. **If taskagent is unreachable** (\`taskagent_healthz\` fails), stop
    and tell the user how to start the server — do not silently route
    to \`.omc/plans/\` or ad-hoc markdown:
 
@@ -63,7 +72,7 @@ Codex plugin manages this block; do not hand-edit between the markers.
    ./target/release/taskagent-server
    \`\`\`
 
-6. **\`status=all\` on list tools requires user confirmation.** Never call
+7. **\`status=all\` on list tools requires user confirmation.** Never call
    \`taskagent_list\` or \`taskagent_plan_list\` with \`status=all\` unless the
    user explicitly asked for the full archive in this turn. \`all\` returns
    every task/plan (including \`done\`/\`cancelled\`/\`abandoned\`) and can
@@ -132,12 +141,13 @@ When the user mentions any of the following, the conversation is about
 and do not reach for \`.omc/plans/\` or markdown TODO files.
 
 - **Russian:** «трекер», «таск-трекер», «трекер задач», «бэклог»,
-  «список задач», «план», «задача», «подзадача», «декомпозиция»,
-  «декомпозировать», «спланируй», «что дальше», «прогресс»,
-  «закрыть задачу».
+  «список задач», «список дел», «план», «задача», «подзадача»,
+  «туду», «todo», «чеклист», «декомпозиция», «декомпозировать»,
+  «спланируй», «что дальше», «прогресс», «закрыть задачу».
 - **English:** "tracker", "issue tracker", "task tracker", "backlog",
-  "todo system", "plan", "task", "subtask", "decompose", "break into
-  subtasks", "what's next", "mark this done", "track progress".
+  "todo system", "todo", "to-do", "checklist", "plan", "task",
+  "subtask", "decompose", "break into subtasks", "what's next",
+  "mark this done", "track progress".
 
 If the user says "the tracker" / «наш трекер» without naming a tool,
 **assume taskagent**. Only ask for clarification when they explicitly

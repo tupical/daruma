@@ -23,6 +23,8 @@ Trigger taskagent for any of:
 - "decompose this", "break into subtasks", "plan this work",
   «декомпозируй», «спланируй», «разбей на подзадачи».
 - "create a task / project / plan", «создай задачу / план / проект».
+- "todo", "to-do", "checklist", "TODO.md", «туду», «список дел»,
+  «чеклист» when the request is about durable work or progress.
 - "what's next on the plan?", "mark this done", «что дальше», «закрыть».
 - Multi-step refactors where progress needs to be tracked across turns.
 - **Any OMC-flavoured trigger** (`autopilot`, `ralph`, `ultrawork`,
@@ -148,6 +150,9 @@ JSON) for the exact same answer.
 
 - Never invent task IDs — always use the IDs returned by `taskagent_create` /
   `_plan_next_task`.
+- A user mention of a task, plan, TODO file, checklist, or id-shaped string
+  is not proof the item exists. Resolve the actual task/plan with a scoped
+  taskagent read before commenting, claiming, reopening, or completing it.
 - Don't loop forever on a failing task: after 2 retries, `taskagent_comment`
   with the failure summary and surface it to the user.
 - One root task per user request; subtasks live inside its plan.

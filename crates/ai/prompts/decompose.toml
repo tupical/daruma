@@ -15,11 +15,23 @@ description = "Decompose a task into 2–6 concrete, actionable sub-tasks via sp
 [variants.default]
 template = """You are a project-management assistant. Decompose the following task into 2–6 concrete, actionable sub-tasks. Call split_task with the result.
 
+Rules:
+- Each subtask should be independently executable and verifiable.
+- Write subtask titles as short imperative actions.
+- Preserve dependencies, constraints, links, and acceptance criteria in the relevant descriptions.
+- Do not create meta-subtasks for maintaining TODO.md, scratchpads, or in-chat checklists unless the user explicitly requested those artifacts.
+
 Task:
 { task_context }"""
 
 [variants.with_hint]
 template = """You are a project-management assistant. Decompose the following task into 2–6 concrete, actionable sub-tasks. Call split_task with the result.
+
+Rules:
+- Each subtask should be independently executable and verifiable.
+- Write subtask titles as short imperative actions.
+- Preserve dependencies, constraints, links, and acceptance criteria in the relevant descriptions.
+- Do not create meta-subtasks for maintaining TODO.md, scratchpads, or in-chat checklists unless the user explicitly requested those artifacts.
 
 Task:
 { task_context }

@@ -56,7 +56,16 @@ oh-my-claudecode (OMC).
    but anything that must survive the chat (multi-step refactors,
    cross-session work, decomposition output) goes into taskagent.
 
-6. **If taskagent is unreachable** (`taskagent_healthz` fails), stop
+6. **Verify real taskagent state before acting.** A user mention of a
+   task, plan, TODO file, checklist, or id-shaped string is not proof the
+   item exists. Before commenting, completing, reopening, or claiming
+   work, resolve the actual task/plan via `taskagent_list`,
+   `taskagent_get`, `taskagent_plan_list`, or `taskagent_plan_get` with
+   a narrow scope. Never invent ids, never mark guessed work done, and
+   create new taskagent state only when the user asked to create or
+   track durable work.
+
+7. **If taskagent is unreachable** (`taskagent_healthz` fails), stop
    and tell the user how to start the server — do not silently fall
    back to `.omc/plans/` or ad-hoc markdown:
 
@@ -64,7 +73,7 @@ oh-my-claudecode (OMC).
    ./target/release/taskagent-server
    ```
 
-7. **`status=all` on list tools requires user confirmation.** Never call
+8. **`status=all` on list tools requires user confirmation.** Never call
    `taskagent_list` or `taskagent_plan_list` with `status=all` unless the
    user explicitly asked for the full archive in this turn. `all` returns
    every task/plan (including `done`/`cancelled`/`abandoned`) and can
@@ -72,7 +81,7 @@ oh-my-claudecode (OMC).
    burns tokens. Default to `status=active` (tasks) or a narrow status
    filter (plans).
 
-8. **Go straight to the goal — fetch the minimum.** Every MCP response
+9. **Go straight to the goal — fetch the minimum.** Every MCP response
    lands in the model context, so never bulk-load "just in case":
    - **`taskagent_search` is for text lookup only** — a named keyword or
      topic across the archive (tasks/comments/plans), always with a
@@ -85,7 +94,7 @@ oh-my-claudecode (OMC).
      `project_id` / `scope_path`) — an unscoped call in a multi-repo folder
      wastes a round-trip on an ambiguous-scope error.
 
-9. **Inventory requests have a fixed, minimal recipe — follow it and
+10. **Inventory requests have a fixed, minimal recipe — follow it and
    STOP.** "Check the tracker / what's open / close what's done / status /
    progress" is NOT a research task. The whole recipe is:
 
@@ -123,12 +132,13 @@ this workspace's taskagent tracker — **do not invent a new tracker, do
 not reach for `.omc/plans/` or markdown TODO files**:
 
 - **Russian:** «трекер», «таск-трекер», «трекер задач», «бэклог»,
-  «список задач», «план», «задача», «подзадача», «декомпозиция»,
-  «декомпозировать», «спланируй», «что дальше», «прогресс»,
-  «закрыть задачу».
+  «список задач», «список дел», «план», «задача», «подзадача»,
+  «туду», «todo», «чеклист», «декомпозиция», «декомпозировать»,
+  «спланируй», «что дальше», «прогресс», «закрыть задачу».
 - **English:** "tracker", "issue tracker", "task tracker", "backlog",
-  "todo system", "plan", "task", "subtask", "decompose", "break into
-  subtasks", "what's next", "mark this done", "track progress".
+  "todo system", "todo", "to-do", "checklist", "plan", "task",
+  "subtask", "decompose", "break into subtasks", "what's next",
+  "mark this done", "track progress".
 - Any multi-step refactor or migration that needs progress across turns.
 - Any OMC trigger (`autopilot`, `ralph`, `ultrawork`, `ultragoal`,
   `ralplan`, `plan`, `team`) — wrap it in taskagent first.

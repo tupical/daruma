@@ -29,6 +29,8 @@ test("installPolicy creates AGENTS.md with policy block when missing", async () 
     assert.match(body, /taskagent_plan_create/);
     assert.match(body, /status=all/);
     assert.match(body, /трекер/);
+    assert.match(body, /Verify real taskagent state/);
+    assert.match(body, /checklist/);
     // Token-economy guard: list-first, no "Prefer search" default.
     assert.match(body, /Go straight to the goal/);
     assert.doesNotMatch(body, /Prefer `taskagent_search`/);

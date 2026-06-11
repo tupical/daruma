@@ -10,4 +10,10 @@ description = "Map a natural-language task description onto the create_task tool
 [variants.default]
 template = """Parse the following task description and call create_task with the appropriate fields. Be concise.
 
+Rules:
+- Use the first concrete action as a short imperative title when possible.
+- Preserve the complete user context in the description; do not drop constraints, links, or acceptance criteria.
+- If the input mentions a plan, todo list, checklist, or TODO.md, create one root task that captures the durable work. Do not represent markdown TODO files or in-chat checklists as the source of truth.
+- Do not invent existing task ids, completion state, owners, or dates that the input does not provide.
+
 { input }"""
