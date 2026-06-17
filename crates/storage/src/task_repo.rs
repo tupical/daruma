@@ -15,6 +15,15 @@ pub struct TaskRepo {
     pub(crate) pool: SqlitePool,
 }
 
+/// A task flagged by the "stuck in current status" audit heuristic, paired with
+/// the timestamp it entered that status (the denormalised `status_changed_at`,
+/// which is not part of the `Task` domain struct).
+#[derive(Clone, Debug)]
+pub struct StuckTask {
+    pub task: Task,
+    pub status_changed_at: DateTime<Utc>,
+}
+
 impl TaskRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -98,6 +107,58 @@ impl TaskRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         rows.iter().map(row_to_task).collect()
+    }
+
+    /// Heuristic (Audit primitives task C·1): tasks in `status` whose current
+    /// status was entered before `cutoff` — i.e. stuck in that status longer than
+    /// the caller's threshold. Reads the denormalised `status_changed_at` column
+    /// (migration 0040) so it stays a single indexed scan, not an event walk.
+    /// Optionally scoped to a project. Ordered oldest-transition first (most
+    /// stuck first).
+    ///
+    /// Complements `taskagent_doctor`, which only catches `in_progress` tasks
+    /// without a live claim: this catches anything wedged in *any* status
+    /// (e.g. `in_review` no one is reviewing), regardless of claim state.
+    pub async fn list_stuck_in_status(
+        &self,
+        project_id: Option<ProjectId>,
+        status: Status,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<StuckTask>> {
+        let (where_clause, project_bind) = match project_id {
+            Some(pid) => ("AND project_id = ?", Some(pid.to_string())),
+            None => ("", None),
+        };
+        let sql = format!(
+            "SELECT id, project_id, title, description, status, priority, \
+             due_at, created_at, updated_at, started_at, completed_at, \
+             created_by_json, completed_by_json, updated_by_json, updated_event_id, \
+             updated_event_seq, source_event_id, triage_state, status_changed_at \
+             FROM tasks \
+             WHERE status = ? AND status_changed_at IS NOT NULL AND status_changed_at < ? \
+             {where_clause} \
+             ORDER BY status_changed_at ASC"
+        );
+        let mut q = sqlx::query(&sql).bind(status.as_str()).bind(cutoff.to_rfc3339());
+        if let Some(pid) = project_bind {
+            q = q.bind(pid);
+        }
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter()
+            .map(|row| {
+                let task = row_to_task(row)?;
+                let changed: String = row
+                    .try_get("status_changed_at")
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                Ok(StuckTask {
+                    task,
+                    status_changed_at: parse_ts(&changed)?,
+                })
+            })
+            .collect()
     }
 
     pub async fn get(&self, id: TaskId) -> Result<Option<Task>> {
@@ -267,6 +328,7 @@ impl TaskRepo {
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
                     self.upsert_task_tx(&mut tx, &task).await?;
+                    stamp_status_changed_at(&mut tx, *task_id, occurred_at).await?;
                     insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
@@ -706,6 +768,25 @@ fn stamp_last_change(task: &mut Task, envelope: &EventEnvelope) {
     task.updated_event_seq = Some(envelope.seq);
 }
 
+/// Stamp the denormalised `status_changed_at` projection column (migration 0040,
+/// Audit primitives task C heuristic 1). Kept off the `Task` domain struct — it
+/// is pure audit telemetry read only by the "stuck in status" query — so it is
+/// written here, in the same transaction as the row, rather than threaded
+/// through every `Task` constructor.
+async fn stamp_status_changed_at(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: TaskId,
+    at: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query("UPDATE tasks SET status_changed_at = ? WHERE id = ?")
+        .bind(at.to_rfc3339())
+        .bind(task_id.to_string())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(())
+}
+
 fn parse_status(s: &str) -> Result<Status> {
     match s {
         "inbox" => Ok(Status::Inbox),
@@ -776,6 +857,62 @@ mod tests {
 
         let all = repo.list_all().await.unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_stuck_in_status_uses_status_changed_at() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = TaskRepo::new(db.pool().clone());
+        let project = ProjectId::new();
+
+        // Create a task and move it to in_review.
+        let id = TaskId::new();
+        let new_task = taskagent_domain::NewTask {
+            id: Some(id),
+            project_id: Some(project),
+            ..taskagent_domain::NewTask::new("review me")
+        };
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated { task: new_task },
+        ))
+        .await
+        .unwrap();
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskStatusChanged {
+                task_id: id,
+                from: Status::Inbox,
+                to: Status::InReview,
+            },
+        ))
+        .await
+        .unwrap();
+
+        // status_changed_at is stamped → a cutoff in the future flags it as stuck.
+        let future = chrono::Utc::now() + chrono::Duration::hours(1);
+        let stuck = repo
+            .list_stuck_in_status(Some(project), Status::InReview, future)
+            .await
+            .unwrap();
+        assert_eq!(stuck.len(), 1);
+        assert_eq!(stuck[0].task.id, id);
+
+        // A cutoff in the past flags nothing (just transitioned).
+        let past = chrono::Utc::now() - chrono::Duration::hours(1);
+        let none = repo
+            .list_stuck_in_status(Some(project), Status::InReview, past)
+            .await
+            .unwrap();
+        assert!(none.is_empty());
+
+        // Wrong status → no match.
+        let other = repo
+            .list_stuck_in_status(Some(project), Status::InProgress, future)
+            .await
+            .unwrap();
+        assert!(other.is_empty());
     }
 
     #[tokio::test]

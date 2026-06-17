@@ -58,6 +58,19 @@ pub struct GraphSearchHit {
     pub score: f64,
 }
 
+/// A candidate-duplicate task pair from the lexical heuristic (Audit primitives
+/// task C·2). `score` is the FTS5 bm25 rank of `b` against `a`'s title — lower
+/// (more negative) is a stronger lexical match. These are *lexical* candidates
+/// for a human/Cloud pass to confirm, not semantic duplicates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DuplicateTaskPair {
+    pub task_a: String,
+    pub title_a: String,
+    pub task_b: String,
+    pub title_b: String,
+    pub score: f64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GraphStatus {
     pub schema_version: u32,
@@ -807,6 +820,89 @@ impl WorkspaceGraphRepo {
             .await
     }
 
+    /// Lexical duplicate-task candidates within a project (Audit primitives task
+    /// C·2). Reuses the existing `workspacegraph_fts` index — no second index is
+    /// built. For each Task node, the title is turned into an FTS OR-query and
+    /// matched against other Task nodes; pairs whose bm25 `rank <= threshold`
+    /// (stronger = more negative) are emitted once, with `task_a < task_b` so a
+    /// pair never appears twice. `limit` caps the candidate scan per task.
+    ///
+    /// Semantic (embedding) duplicates are explicitly out of scope; this is a
+    /// cheap lexical pre-filter for a human or Cloud pass to confirm.
+    pub async fn duplicate_task_candidates(
+        &self,
+        project_id: &str,
+        threshold: f64,
+        limit: u32,
+    ) -> Result<Vec<DuplicateTaskPair>> {
+        self.ensure_schema().await?;
+        // All task nodes in the project (source_id = TaskId string, title).
+        let tasks = sqlx::query(
+            "SELECT source_id, title FROM workspacegraph_nodes \
+             WHERE kind = 'Task' AND project_id = ? ORDER BY source_id ASC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_err)?;
+
+        let mut pairs: Vec<DuplicateTaskPair> = Vec::new();
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        for trow in &tasks {
+            let a_id: String = trow.try_get("source_id").map_err(storage_err)?;
+            let a_title: String = trow.try_get("title").map_err(storage_err)?;
+            let Some(fts_query) = title_to_fts_or_query(&a_title) else {
+                continue; // no usable tokens (e.g. punctuation-only title)
+            };
+            let hits = sqlx::query(
+                "SELECT n.source_id, n.title, bm25(workspacegraph_fts) AS rank \
+                 FROM workspacegraph_fts \
+                 JOIN workspacegraph_nodes n ON n.id = workspacegraph_fts.node_id \
+                 WHERE workspacegraph_fts MATCH ? \
+                   AND n.kind = 'Task' AND n.project_id = ? AND n.source_id != ? \
+                 ORDER BY rank ASC LIMIT ?",
+            )
+            .bind(format!("title : ({fts_query})"))
+            .bind(project_id)
+            .bind(&a_id)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_err)?;
+
+            for hit in &hits {
+                let b_id: String = hit.try_get("source_id").map_err(storage_err)?;
+                let b_title: String = hit.try_get("title").map_err(storage_err)?;
+                let rank: f64 = hit.try_get("rank").map_err(storage_err)?;
+                if rank > threshold {
+                    continue; // weaker than the caller's bar
+                }
+                // Canonical (low, high) ordering so each pair is emitted once.
+                let (lo, lo_t, hi, hi_t) = if a_id < b_id {
+                    (a_id.clone(), a_title.clone(), b_id, b_title)
+                } else {
+                    (b_id, b_title, a_id.clone(), a_title.clone())
+                };
+                if seen.insert((lo.clone(), hi.clone())) {
+                    pairs.push(DuplicateTaskPair {
+                        task_a: lo,
+                        title_a: lo_t,
+                        task_b: hi,
+                        title_b: hi_t,
+                        score: rank,
+                    });
+                }
+            }
+        }
+        pairs.sort_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.task_a.cmp(&b.task_a))
+        });
+        Ok(pairs)
+    }
+
     pub async fn status(&self) -> Result<GraphStatus> {
         self.ensure_schema().await?;
         let node_count =
@@ -1345,6 +1441,23 @@ fn task_node_id(id: &impl ToString) -> String {
     format!("task:{}", id.to_string())
 }
 
+/// Turn a free-text title into a safe FTS5 OR-query: split on non-alphanumerics,
+/// drop 1-char tokens, double-quote each remaining token (so FTS operators in
+/// the title can't break the query), and join with ` OR `. Returns `None` when
+/// no usable token survives. Used by the duplicate-task heuristic.
+fn title_to_fts_or_query(title: &str) -> Option<String> {
+    let tokens: Vec<String> = title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.chars().count() > 1)
+        .map(|t| format!("\"{}\"", t.to_lowercase()))
+        .collect();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" OR "))
+    }
+}
+
 fn document_node_id(id: &impl ToString) -> String {
     format!("document:{}", id.to_string())
 }
@@ -1507,6 +1620,9 @@ mod tests {
                     created_at: now,
                     updated_at: now,
                     archived_at: None,
+                    last_read_at: None,
+                    last_read_by: None,
+                    read_count: 0,
                 },
             },
         ))
@@ -1688,6 +1804,9 @@ mod tests {
                     created_at: now,
                     updated_at: now,
                     archived_at: None,
+                    last_read_at: None,
+                    last_read_by: None,
+                    read_count: 0,
                 },
             },
         ))
@@ -1789,5 +1908,87 @@ mod tests {
                 .any(|hit| hit.node.id == task_node_id(&unrelated)),
             "unrelated FTS hit should still be present: {hits:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_task_candidates_pairs_similar_titles_once() {
+        let repo = repo().await;
+        let project_id = ProjectId::new();
+        let dup_a = TaskId::new();
+        let dup_b = TaskId::new();
+        let other = TaskId::new();
+        for (id, title) in [
+            (dup_a, "Fix login button alignment"),
+            (dup_b, "Fix the login button alignment bug"),
+            (other, "Migrate database to Postgres"),
+        ] {
+            repo.apply_event(&env(
+                1,
+                Event::TaskCreated {
+                    task: NewTask {
+                        id: Some(id),
+                        project_id: Some(project_id),
+                        title: title.into(),
+                        description: Some(String::new()),
+                        status: Some(Status::Todo),
+                        priority: Some(Priority::P2),
+                        triage_state: None,
+                        due_at: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        }
+
+        // Loose threshold so the lexically-close pair is captured.
+        let pairs = repo
+            .duplicate_task_candidates(&project_id.to_string(), 0.0, 50)
+            .await
+            .unwrap();
+        // The two "login button alignment" tasks pair; the Postgres task does not.
+        assert_eq!(pairs.len(), 1, "exactly one candidate pair: {pairs:?}");
+        let p = &pairs[0];
+        let got: std::collections::HashSet<&str> =
+            [p.task_a.as_str(), p.task_b.as_str()].into_iter().collect();
+        let want: std::collections::HashSet<String> =
+            [dup_a.to_string(), dup_b.to_string()].into_iter().collect();
+        let want_refs: std::collections::HashSet<&str> = want.iter().map(|s| s.as_str()).collect();
+        assert_eq!(got, want_refs);
+        // Canonical ordering: task_a < task_b.
+        assert!(p.task_a < p.task_b);
+    }
+
+    #[tokio::test]
+    async fn duplicate_task_candidates_empty_when_no_overlap() {
+        let repo = repo().await;
+        let project_id = ProjectId::new();
+        for (id, title) in [
+            (TaskId::new(), "Alpha unique title"),
+            (TaskId::new(), "Beta different words"),
+        ] {
+            repo.apply_event(&env(
+                1,
+                Event::TaskCreated {
+                    task: NewTask {
+                        id: Some(id),
+                        project_id: Some(project_id),
+                        title: title.into(),
+                        description: Some(String::new()),
+                        status: Some(Status::Todo),
+                        priority: Some(Priority::P2),
+                        triage_state: None,
+                        due_at: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        let pairs = repo
+            .duplicate_task_candidates(&project_id.to_string(), 0.0, 50)
+            .await
+            .unwrap();
+        assert!(pairs.is_empty(), "no lexical overlap → no pairs: {pairs:?}");
     }
 }

@@ -20,6 +20,7 @@
 pub mod activity_repo;
 pub mod agent_inbox_repo;
 pub mod artifact_repo;
+pub mod audit_finding_repo;
 pub mod claim_repo;
 pub mod comment_repo;
 pub mod db;
@@ -50,6 +51,7 @@ pub mod workspace_graph_repo;
 pub use activity_repo::ActivityRepo;
 pub use agent_inbox_repo::AgentInboxRepo;
 pub use artifact_repo::ArtifactRepo;
+pub use audit_finding_repo::{AuditFindingRepo, FindingFilter};
 pub use claim_repo::{AgentClaimRepo, ClaimOutcome};
 pub use comment_repo::CommentRepo;
 pub use db::Db;
@@ -68,7 +70,7 @@ pub use run_note_repo::RunNoteRepo;
 pub use run_repo::RunRepo;
 pub use session_repo::SessionRepo;
 pub use task_complexity_repo::TaskComplexityRepo;
-pub use task_repo::TaskRepo;
+pub use task_repo::{StuckTask, TaskRepo};
 pub use tenant_quota_repo::TenantQuotaRepo;
 pub use token_repo::TokenRepo;
 pub use webhook_enrichment::WebhookEnrichment;
@@ -76,6 +78,6 @@ pub use webhook_repo::WebhookRepo;
 pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
 pub use work_unit_repo::WorkUnitRepo;
 pub use workspace_graph_repo::{
-    GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode, GraphSearchHit,
-    GraphStatus, WorkspaceGraphRepo,
+    DuplicateTaskPair, GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode,
+    GraphSearchHit, GraphStatus, WorkspaceGraphRepo,
 };

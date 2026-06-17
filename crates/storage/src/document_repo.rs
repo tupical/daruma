@@ -30,7 +30,8 @@ impl DocumentRepo {
     /// Fetch a document by id; `None` if not found.
     pub async fn get(&self, id: DocumentId) -> Result<Option<Document>> {
         let row = sqlx::query(
-            "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at \
+            "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+             last_read_at, last_read_by, read_count \
              FROM documents WHERE id = ?",
         )
         .bind(id.to_string())
@@ -57,7 +58,8 @@ impl DocumentRepo {
         // statement per shape (no dynamic SQL string concatenation).
         let rows = match (kind_filter, include_archived) {
             (Some(kind), true) => sqlx::query(
-                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at \
+                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+                     last_read_at, last_read_by, read_count \
                      FROM documents \
                      WHERE project_id = ? AND kind = ? \
                      ORDER BY created_at ASC, id ASC",
@@ -67,7 +69,8 @@ impl DocumentRepo {
             .fetch_all(&self.pool)
             .await,
             (Some(kind), false) => sqlx::query(
-                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at \
+                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+                     last_read_at, last_read_by, read_count \
                      FROM documents \
                      WHERE project_id = ? AND kind = ? AND archived_at IS NULL \
                      ORDER BY created_at ASC, id ASC",
@@ -77,7 +80,8 @@ impl DocumentRepo {
             .fetch_all(&self.pool)
             .await,
             (None, true) => sqlx::query(
-                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at \
+                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+                     last_read_at, last_read_by, read_count \
                      FROM documents \
                      WHERE project_id = ? \
                      ORDER BY created_at ASC, id ASC",
@@ -86,7 +90,8 @@ impl DocumentRepo {
             .fetch_all(&self.pool)
             .await,
             (None, false) => sqlx::query(
-                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at \
+                "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+                     last_read_at, last_read_by, read_count \
                      FROM documents \
                      WHERE project_id = ? AND archived_at IS NULL \
                      ORDER BY created_at ASC, id ASC",
@@ -238,10 +243,14 @@ impl DocumentRepo {
         tx: &mut Transaction<'_, Sqlite>,
         doc: &Document,
     ) -> Result<()> {
+        // Read-tracking columns are carried through so content/title/archive
+        // mutations (fetch-then-upsert) preserve them. `DocumentCreated` builds a
+        // fresh `Document` with read_count = 0 / NULLs, which is correct.
         sqlx::query(
             "INSERT OR REPLACE INTO documents \
-             (id, project_id, kind, title, content, created_at, updated_at, archived_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+              last_read_at, last_read_by, read_count) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(doc.id.to_string())
         .bind(doc.project_id.to_string())
@@ -251,11 +260,78 @@ impl DocumentRepo {
         .bind(doc.created_at.to_rfc3339())
         .bind(doc.updated_at.to_rfc3339())
         .bind(doc.archived_at.as_ref().map(|t| t.to_rfc3339()))
+        .bind(doc.last_read_at.as_ref().map(|t| t.to_rfc3339()))
+        .bind(doc.last_read_by.as_deref())
+        .bind(doc.read_count as i64)
         .execute(&mut **tx)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         Ok(())
+    }
+
+    // ── read-tracking (migration 0039, Audit primitives task A) ────────────────
+
+    /// Record a read of `id` by `actor`, throttled per (document, actor): a read
+    /// within `throttle` of the last read *by the same actor* is a no-op, so
+    /// repeated polling doesn't churn the row. Returns `true` when the row was
+    /// updated (read counted), `false` when throttled or the document is unknown.
+    ///
+    /// Not event-sourced: a read is usage telemetry, not a domain fact. The
+    /// throttle keeps writes cheap; the indexed `last_read_at` powers the
+    /// "documents not read in N days" heuristic.
+    pub async fn mark_read(
+        &self,
+        id: DocumentId,
+        actor: &str,
+        now: DateTime<Utc>,
+        throttle: std::time::Duration,
+    ) -> Result<bool> {
+        let throttle = chrono::Duration::from_std(throttle)
+            .map_err(|e| CoreError::validation(e.to_string()))?;
+        // Throttle only against a read by the *same* actor: a different reader
+        // always counts, so per-actor recency is preserved.
+        let cutoff = (now - throttle).to_rfc3339();
+        let res = sqlx::query(
+            "UPDATE documents \
+             SET last_read_at = ?, last_read_by = ?, read_count = read_count + 1 \
+             WHERE id = ? \
+               AND NOT (last_read_by = ? AND last_read_at IS NOT NULL AND last_read_at >= ?)",
+        )
+        .bind(now.to_rfc3339())
+        .bind(actor)
+        .bind(id.to_string())
+        .bind(actor)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Documents in `project_id` not read since `cutoff` (or never read), oldest
+    /// read first. Backward compatible: rows with NULL `last_read_at` (never
+    /// read, including pre-0039 documents) are always included. Archived rows are
+    /// excluded — a stale archived doc is not an actionable hygiene finding.
+    pub async fn list_unread_since(
+        &self,
+        project_id: ProjectId,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<Document>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+             last_read_at, last_read_by, read_count \
+             FROM documents \
+             WHERE project_id = ? AND archived_at IS NULL \
+               AND (last_read_at IS NULL OR last_read_at < ?) \
+             ORDER BY last_read_at ASC NULLS FIRST, created_at ASC, id ASC",
+        )
+        .bind(project_id.to_string())
+        .bind(cutoff.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_document).collect()
     }
 }
 
@@ -264,7 +340,8 @@ async fn get_document_tx(
     id: DocumentId,
 ) -> Result<Option<Document>> {
     let row = sqlx::query(
-        "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at \
+        "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+         last_read_at, last_read_by, read_count \
          FROM documents WHERE id = ?",
     )
     .bind(id.to_string())
@@ -326,6 +403,15 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
     let archived_at_s: Option<String> = row
         .try_get("archived_at")
         .map_err(|e| CoreError::storage(e.to_string()))?;
+    let last_read_at_s: Option<String> = row
+        .try_get("last_read_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let last_read_by: Option<String> = row
+        .try_get("last_read_by")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let read_count: i64 = row
+        .try_get("read_count")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
 
     let id = id_s
         .parse::<DocumentId>()
@@ -335,6 +421,7 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
         .map_err(|e| CoreError::serde(e.to_string()))?;
     let kind = parse_kind(&kind_s)?;
     let archived_at = archived_at_s.as_deref().map(parse_ts).transpose()?;
+    let last_read_at = last_read_at_s.as_deref().map(parse_ts).transpose()?;
 
     Ok(Document {
         id,
@@ -345,6 +432,9 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
         created_at: parse_ts(&created_at_s)?,
         updated_at: parse_ts(&updated_at_s)?,
         archived_at,
+        last_read_at,
+        last_read_by,
+        read_count: read_count.max(0) as u64,
     })
 }
 
@@ -697,6 +787,102 @@ mod tests {
             .await
             .unwrap();
         assert!(docs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mark_read_updates_tracking_and_throttles_same_actor() {
+        let (_db, repo) = make_repo().await;
+        let project_id = ProjectId::new();
+        let doc = seed_doc(project_id, DocumentKind::Interview, "Interview");
+        let id = doc.id;
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::DocumentCreated { document: doc },
+        ))
+        .await
+        .unwrap();
+
+        // Precondition: never read.
+        let before = repo.get(id).await.unwrap().unwrap();
+        assert!(before.last_read_at.is_none());
+        assert_eq!(before.read_count, 0);
+
+        let throttle = std::time::Duration::from_secs(3600);
+        // First read counts.
+        let now = time::now();
+        assert!(repo.mark_read(id, "user", now, throttle).await.unwrap());
+        let after = repo.get(id).await.unwrap().unwrap();
+        assert_eq!(after.read_count, 1);
+        assert_eq!(after.last_read_by.as_deref(), Some("user"));
+        assert!(after.last_read_at.is_some());
+
+        // Same actor within the throttle window → no-op (no churn).
+        assert!(!repo
+            .mark_read(id, "user", now + chrono::Duration::minutes(5), throttle)
+            .await
+            .unwrap());
+        assert_eq!(repo.get(id).await.unwrap().unwrap().read_count, 1);
+
+        // A different actor always counts.
+        assert!(repo
+            .mark_read(id, "agent", now + chrono::Duration::minutes(5), throttle)
+            .await
+            .unwrap());
+        assert_eq!(repo.get(id).await.unwrap().unwrap().read_count, 2);
+
+        // Same actor past the throttle window counts again.
+        assert!(repo
+            .mark_read(id, "user", now + chrono::Duration::hours(2), throttle)
+            .await
+            .unwrap());
+        assert_eq!(repo.get(id).await.unwrap().unwrap().read_count, 3);
+    }
+
+    #[tokio::test]
+    async fn list_unread_since_includes_never_read_and_stale() {
+        let (_db, repo) = make_repo().await;
+        let project_id = ProjectId::new();
+        let fresh = seed_doc(project_id, DocumentKind::Interview, "fresh");
+        let stale = seed_doc(project_id, DocumentKind::HumanLog, "stale");
+        let never = seed_doc(project_id, DocumentKind::Interview, "never");
+        for d in [&fresh, &stale, &never] {
+            repo.apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::DocumentCreated { document: d.clone() },
+            ))
+            .await
+            .unwrap();
+        }
+        let throttle = std::time::Duration::from_secs(3600);
+        let now = time::now();
+        // `fresh` read just now, `stale` read long ago, `never` untouched.
+        repo.mark_read(fresh.id, "user", now, throttle).await.unwrap();
+        repo.mark_read(stale.id, "user", now - chrono::Duration::days(30), throttle)
+            .await
+            .unwrap();
+
+        // Unread for 7 days → stale + never, not fresh.
+        let cutoff = now - chrono::Duration::days(7);
+        let unread = repo.list_unread_since(project_id, cutoff).await.unwrap();
+        let ids: Vec<_> = unread.iter().map(|d| d.id).collect();
+        assert!(ids.contains(&stale.id), "stale doc should be unread");
+        assert!(ids.contains(&never.id), "never-read doc should be unread");
+        assert!(!ids.contains(&fresh.id), "freshly read doc should be excluded");
+    }
+
+    #[tokio::test]
+    async fn mark_read_unknown_id_is_noop() {
+        let (_db, repo) = make_repo().await;
+        let updated = repo
+            .mark_read(
+                DocumentId::new(),
+                "user",
+                time::now(),
+                std::time::Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+        assert!(!updated, "unknown document id must not count a read");
     }
 
     #[tokio::test]

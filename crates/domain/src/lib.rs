@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod agent;
 pub mod artifact;
+pub mod audit_finding;
 pub mod comment;
 pub mod complexity;
 pub mod device;
@@ -24,6 +25,9 @@ pub mod work_unit;
 pub use activity::{Activity, Verb};
 pub use agent::{Actor, AgentAction, AgentActionKind};
 pub use artifact::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus, NewArtifact};
+pub use audit_finding::{
+    AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus, NewFinding,
+};
 pub use comment::{Comment, CommentKind, CommentPatch, NewComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;

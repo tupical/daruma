@@ -51,6 +51,18 @@ pub struct Document {
     pub updated_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Timestamp>,
+    /// Passive read-tracking (migration 0039). `None` = never read. Updated in
+    /// place by `doc_get`, throttled per (document, actor); *not* event-sourced.
+    /// Distinct from the explicit, immutable evidence `document_read_ack`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_at: Option<Timestamp>,
+    /// Who last read it (the `ActorRef` "user"|"agent" kind string, or an agent
+    /// display name). `None` = never read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_by: Option<String>,
+    /// Monotonic count of throttled read events; `0` = never read.
+    #[serde(default)]
+    pub read_count: u64,
 }
 
 /// Input for creating a new Document.
@@ -84,6 +96,9 @@ impl NewDocument {
             created_at: now,
             updated_at: now,
             archived_at: None,
+            last_read_at: None,
+            last_read_by: None,
+            read_count: 0,
         }
     }
 }
@@ -106,6 +121,9 @@ mod tests {
             created_at: now,
             updated_at: now,
             archived_at: None,
+            last_read_at: None,
+            last_read_by: None,
+            read_count: 0,
         }
     }
 
