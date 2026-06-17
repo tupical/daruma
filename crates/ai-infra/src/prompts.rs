@@ -105,6 +105,74 @@ pub fn render_variant<P: Serialize>(
         .map_err(|e| CoreError::ai(format!("prompt {label}: render failed: {e}")))
 }
 
+/// A parsed catalogue of `prompts/<name>.toml` files, keyed by prompt name.
+///
+/// Each crate that owns a set of operation prompts embeds its `*.toml` via
+/// `include_str!` and builds one process-wide registry in a `Lazy`:
+///
+/// ```ignore
+/// use once_cell::sync::Lazy;
+/// use taskagent_ai_infra::prompts::PromptRegistry;
+///
+/// static PROMPTS: Lazy<PromptRegistry> = Lazy::new(|| {
+///     PromptRegistry::new(&[("parse", include_str!("../prompts/parse.toml"))])
+/// });
+/// ```
+pub struct PromptRegistry(HashMap<&'static str, PromptFile>);
+
+impl PromptRegistry {
+    /// Parse every `(name, toml_body)` pair into the catalogue. Sources are
+    /// bundled at build time, so a parse failure or a duplicate name is a
+    /// programmer error: this panics with the offending name rather than
+    /// returning a `Result` no caller could recover from.
+    pub fn new(raw: &[(&'static str, &'static str)]) -> Self {
+        let mut out = HashMap::with_capacity(raw.len());
+        for (name, body) in raw {
+            let parsed = PromptFile::parse(name, body)
+                .unwrap_or_else(|e| panic!("prompts/{name}.toml: {e}"));
+            if out.insert(*name, parsed).is_some() {
+                panic!("prompts: duplicate prompt name {name}");
+            }
+        }
+        Self(out)
+    }
+
+    /// Render `name` / `variant` against `params`. `params` must implement
+    /// `Serialize`; tinytemplate accesses fields via dot-notation.
+    ///
+    /// `CoreError::Validation` is returned for an unknown prompt or
+    /// variant. `CoreError::Ai` wraps tinytemplate render failures (e.g.
+    /// a referenced variable that the params struct doesn't expose).
+    pub fn load<P: Serialize>(
+        &self,
+        name: &str,
+        variant: &str,
+        params: &P,
+    ) -> Result<String, CoreError> {
+        let prompt = self
+            .0
+            .get(name)
+            .ok_or_else(|| CoreError::validation(format!("unknown prompt: {name}")))?;
+        render_variant(name, variant, prompt, params)
+    }
+
+    /// Iterate over `(name, file)` pairs. Used by crate smoke tests that want
+    /// to assert their bundled sources all parsed.
+    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &PromptFile)> {
+        self.0.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Number of prompts in the catalogue.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the catalogue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +209,46 @@ template = "hello { name }"
     fn malformed_toml_returns_validation_error() {
         let err = PromptFile::parse("bad", "this is not = valid toml [[[").unwrap_err();
         assert_eq!(err.code(), "validation");
+    }
+
+    #[test]
+    fn registry_loads_and_renders() {
+        let reg = PromptRegistry::new(&[("sample", SAMPLE)]);
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+        let s = reg
+            .load("sample", "default", &Ctx { name: "world" })
+            .unwrap();
+        assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn registry_unknown_prompt_returns_validation_error() {
+        let reg = PromptRegistry::new(&[("sample", SAMPLE)]);
+        let err = reg
+            .load("does_not_exist", "default", &Ctx { name: "x" })
+            .unwrap_err();
+        assert_eq!(err.code(), "validation");
+    }
+
+    #[test]
+    fn registry_unknown_variant_returns_validation_error() {
+        let reg = PromptRegistry::new(&[("sample", SAMPLE)]);
+        let err = reg
+            .load("sample", "missing", &Ctx { name: "x" })
+            .unwrap_err();
+        assert_eq!(err.code(), "validation");
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate prompt name")]
+    fn registry_rejects_duplicate_names() {
+        let _ = PromptRegistry::new(&[("sample", SAMPLE), ("sample", SAMPLE)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "prompts/bad.toml")]
+    fn registry_panics_on_malformed_source() {
+        let _ = PromptRegistry::new(&[("bad", "not = valid [[[")]);
     }
 }
