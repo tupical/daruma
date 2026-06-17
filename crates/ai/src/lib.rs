@@ -3,8 +3,8 @@
 //! The provider-neutral infrastructure (Responses API client, config,
 //! [`AiProvider`] abstraction, prompt rendering engine, tool schemas,
 //! prompt-injection hardening) lives in `taskagent-ai-infra`. This crate
-//! holds the task operations — parse, decompose, scope, research,
-//! analyze-complexity, suggest, summarize — that turn model output into
+//! holds the task operations — parse, research, analyze-complexity,
+//! suggest, summarize — that turn model output into
 //! [`taskagent_core::Command`]s or plain strings, plus the operation
 //! prompt catalogue ([`prompts`]) those operations render.
 //!
@@ -27,11 +27,9 @@
 //! ```
 
 pub mod analyze_complexity;
-pub mod decompose;
 pub mod parse;
 pub mod prompts;
 pub mod research;
-pub mod scope;
 pub mod suggest;
 pub mod summarize;
 
@@ -48,8 +46,6 @@ pub use prompts::PromptRegistry;
 // ── Operation re-exports ────────────────────────────────────────────────────────
 
 pub use analyze_complexity::{analyze_complexity_batch, MAX_BATCH_TASKS};
-pub use decompose::decompose_task;
 pub use parse::parse_task;
-pub use scope::{scope_task, ScopeDirection};
 pub use suggest::suggest_next_action;
 pub use summarize::summarize_project;

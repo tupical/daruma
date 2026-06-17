@@ -13,7 +13,6 @@
 //! taskagent done <id|prefix>
 //! taskagent delete <id|prefix>
 //! taskagent ai parse "<input>"
-//! taskagent ai decompose <id|prefix>
 //! ```
 
 mod cmds;
@@ -113,7 +112,6 @@ fn print_help() {
          delete <id|prefix>                   delete a task\n  \
          sync [--limit N]                     flush offline events to server\n  \
          ai parse \"<input>\"                   parse natural language → CreateTask\n  \
-         ai decompose <id|prefix>             split a task into subtasks\n  \
          discover [--timeout <secs>]          scan LAN for taskagent servers (mDNS)\n  \
          pair <taskagent://pair?…>            pair with a server via QR/paste URL\n  \
          where                                print the DB path\n  \

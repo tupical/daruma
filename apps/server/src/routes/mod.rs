@@ -248,12 +248,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/history/{id}", get(get_history_version))
         .route("/history/{id}/rollback", post(rollback_history_version))
         .route("/ai/parse", post(ai_parse))
-        .route("/ai/decompose/{task_id}", post(ai_decompose))
         .route(
             "/ai/analyze-complexity/{plan_id}",
             post(ai_analyze_complexity),
         )
-        .route("/ai/scope/{task_id}", post(ai_scope))
         .route("/ai/research", post(ai_research))
         .route("/tasks/{task_id}/activity", get(list_task_activity))
         .route(
@@ -2367,147 +2365,6 @@ async fn ai_parse(
         ApiError::from(CoreError::ai("AI not configured (OPENAI_API_KEY not set)"))
     })?;
     let cmd = taskagent_ai::parse_task(client, &body.input)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(cmd))
-}
-
-/// Optional body for `POST /v1/ai/decompose/{task_id}`.
-///
-/// All fields are optional so legacy callers that send `{}` keep working
-/// (back-compat with the pre-§3.8.4 wire shape).
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct AiDecomposeBody {
-    /// Free-form guidance forwarded to the decomposition prompt
-    /// (e.g. `expansion_hint` from `taskagent_ai_analyze_complexity`).
-    hint: Option<String>,
-    /// §3.8.13: per-tool opt-in for a future research-capable provider.
-    /// See `AiParseBody::use_research_provider`.
-    #[allow(dead_code)]
-    use_research_provider: Option<bool>,
-}
-
-async fn ai_decompose(
-    auth: axum::Extension<AuthContext>,
-    State(state): State<AppState>,
-    Path(task_id_str): Path<String>,
-    body: Option<Json<AiDecomposeBody>>,
-) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
-
-    let task = state
-        .tasks
-        .get(task_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {task_id_str}"))))?;
-
-    let client = state.ai.as_ref().ok_or_else(|| {
-        ApiError::from(CoreError::ai("AI not configured (OPENAI_API_KEY not set)"))
-    })?;
-
-    let context = if task.description.is_empty() {
-        task.title.clone()
-    } else {
-        format!("{}\n{}", task.title, task.description)
-    };
-
-    let hint = body.and_then(|Json(b)| b.hint);
-
-    // §3.8.12: push-based progress on Channel::AiOps (started → llm_call →
-    // completed) so big decompositions don't need polling. Best-effort.
-    let handler = state.commands.handler();
-    let op_id = taskagent_shared::AiOpId::new();
-    let now = chrono::Utc::now();
-    let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationStarted {
-            op_id,
-            kind: "decompose".into(),
-            target_id: task_id.to_string(),
-            at: now,
-        })
-        .await;
-    let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
-            op_id,
-            phase: "llm_call".into(),
-            detail: None,
-            at: chrono::Utc::now(),
-        })
-        .await;
-    let result = taskagent_ai::decompose_task(client, task_id, &context, hint.as_deref()).await;
-    let outcome = match &result {
-        Ok(_) => "ok".to_string(),
-        Err(e) => format!("error: {e}"),
-    };
-    let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationCompleted {
-            op_id,
-            outcome,
-            at: chrono::Utc::now(),
-        })
-        .await;
-    let cmd = result.map_err(ApiError::from)?;
-    Ok(Json(cmd))
-}
-
-/// Body for `POST /v1/ai/scope/{task_id}` — §3.8.7.
-///
-/// `direction` is required and accepts `"up"`/`"broaden"` or
-/// `"down"`/`"narrow"`. `strength` is reserved for §3.8.7a and silently
-/// ignored today. `use_research_provider` follows §3.8.13's convention.
-#[derive(Deserialize)]
-struct AiScopeBody {
-    direction: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    strength: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    use_research_provider: Option<bool>,
-}
-
-/// `POST /v1/ai/scope/{task_id}` — §3.8.7.
-///
-/// Loads the task, asks the model to rewrite its title + description at
-/// a broader or narrower scope, and returns the proposed
-/// `Command::UpdateTask`. The server does not dispatch — the caller
-/// decides whether to apply the patch via `POST /v1/commands`.
-async fn ai_scope(
-    auth: axum::Extension<AuthContext>,
-    State(state): State<AppState>,
-    Path(task_id_str): Path<String>,
-    Json(body): Json<AiScopeBody>,
-) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
-
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
-    let task = state
-        .tasks
-        .get(task_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {task_id_str}"))))?;
-
-    let direction = taskagent_ai::ScopeDirection::parse(&body.direction).map_err(ApiError::from)?;
-
-    let client = state.ai.as_ref().ok_or_else(|| {
-        ApiError::from(CoreError::ai("AI not configured (OPENAI_API_KEY not set)"))
-    })?;
-
-    let cmd = taskagent_ai::scope_task(client, &task, direction)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(cmd))

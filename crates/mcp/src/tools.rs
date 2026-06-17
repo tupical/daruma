@@ -460,25 +460,11 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::Ai, F, Ann::AiRead,
         ),
         tool(
-            "taskagent_ai_decompose",
-            "AI: decompose task",
-            "Have the AI decompose a task into subtasks. Optional `hint` (typically an `expansion_hint` from `taskagent_ai_analyze_complexity`) is appended to the prompt as guidance.",
-            schema_ai_decompose(),
-            Dom::Ai, F, Ann::AiWrite,
-        ),
-        tool(
             "taskagent_ai_analyze_complexity",
             "AI: analyze plan complexity",
             "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `taskagent_ai_decompose { hint }` to chain analyze → decompose.",
             schema_ai_analyze_complexity(),
             Dom::Ai, F, Ann::AiWrite,
-        ),
-        tool(
-            "taskagent_ai_scope",
-            "AI: rescope task",
-            "Rewrite a task's title + description at a broader (`up`) or narrower (`down`) scope. Returns the proposed `Command::UpdateTask` JSON; the caller decides whether to dispatch.",
-            schema_ai_scope(),
-            Dom::Ai, F, Ann::AiRead,
         ),
         tool(
             "taskagent_research",
@@ -1476,19 +1462,6 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/ai/parse", body).await
         }
-        "taskagent_ai_decompose" => {
-            let task_id = required_string(&args, "task_id")?;
-            let mut body = json!({});
-            if let Some(hint) = args.get("hint").and_then(|v| v.as_str()) {
-                body["hint"] = json!(hint);
-            }
-            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
-                body["use_research_provider"] = json!(flag);
-            }
-            client
-                .post_json(&format!("/v1/ai/decompose/{task_id}"), body)
-                .await
-        }
         "taskagent_ai_analyze_complexity" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
@@ -1497,20 +1470,6 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client
                 .post_json(&format!("/v1/ai/analyze-complexity/{plan_id}"), body)
-                .await
-        }
-        "taskagent_ai_scope" => {
-            let task_id = required_string(&args, "task_id")?;
-            let direction = required_string(&args, "direction")?;
-            let mut body = json!({"direction": direction});
-            if let Some(s) = args.get("strength").and_then(|v| v.as_str()) {
-                body["strength"] = json!(s);
-            }
-            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
-                body["use_research_provider"] = json!(flag);
-            }
-            client
-                .post_json(&format!("/v1/ai/scope/{task_id}"), body)
                 .await
         }
         "taskagent_research" => {
@@ -2745,21 +2704,6 @@ fn schema_ai_analyze_complexity() -> Value {
     })
 }
 
-fn schema_ai_decompose() -> Value {
-    json!({
-        "type":"object",
-        "properties": {
-            "task_id": {"type":"string","description":"Task identifier"},
-            "hint": {
-                "type":"string",
-                "description":"Optional free-form guidance appended to the prompt (e.g. `expansion_hint` from `taskagent_ai_analyze_complexity`)."
-            },
-            "use_research_provider": use_research_provider_property(),
-        },
-        "required":["task_id"]
-    })
-}
-
 fn schema_ai_research() -> Value {
     json!({
         "type":"object",
@@ -2777,27 +2721,6 @@ fn schema_ai_research() -> Value {
             "use_research_provider": use_research_provider_property(),
         },
         "required":["query"]
-    })
-}
-
-fn schema_ai_scope() -> Value {
-    json!({
-        "type":"object",
-        "properties": {
-            "task_id": {"type":"string", "description":"Task identifier"},
-            "direction": {
-                "type":"string",
-                "enum": ["up", "down", "broaden", "narrow"],
-                "description":"`up`/`broaden` widens the task into an epic-style framing; `down`/`narrow` collapses it into a single concrete action."
-            },
-            "strength": {
-                "type":"string",
-                "enum": ["light", "regular", "heavy"],
-                "description":"Reserved for §3.8.7a — currently accepted but ignored by the server."
-            },
-            "use_research_provider": use_research_provider_property(),
-        },
-        "required":["task_id", "direction"]
     })
 }
 
@@ -4171,7 +4094,6 @@ mod profile_tests {
             "taskagent_project_delete",
             "taskagent_history_rollback",
             "taskagent_workspacegraph_search",
-            "taskagent_ai_decompose",
             "taskagent_session_start",
         ] {
             assert!(
@@ -4229,9 +4151,7 @@ mod profile_tests {
             .collect();
         for expected in [
             "taskagent_ai_parse",
-            "taskagent_ai_decompose",
             "taskagent_ai_analyze_complexity",
-            "taskagent_ai_scope",
             "taskagent_research",
         ] {
             assert!(

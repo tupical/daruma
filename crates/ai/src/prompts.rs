@@ -3,7 +3,7 @@
 //! The prompt *rendering engine* lives in `taskagent-ai-infra`
 //! ([`PromptFile`] / [`render_variant`]). This module owns the catalogue
 //! of operation prompts — one `crates/ai/prompts/*.toml` per operation
-//! (parse, decompose, scope, research, analyze_complexity, suggest,
+//! (parse, research, analyze_complexity, suggest,
 //! summarize) — because those prompts are operational, not infrastructure.
 //!
 //! All known prompts are baked into the binary via `include_str!`; the
@@ -34,13 +34,11 @@ static PROMPTS: Lazy<HashMap<&'static str, PromptFile>> = Lazy::new(|| {
     let raw: &[(&str, &str)] = &[
         ("parse", include_str!("../prompts/parse.toml")),
         ("suggest", include_str!("../prompts/suggest.toml")),
-        ("decompose", include_str!("../prompts/decompose.toml")),
         ("summarize", include_str!("../prompts/summarize.toml")),
         (
             "analyze_complexity",
             include_str!("../prompts/analyze_complexity.toml"),
         ),
-        ("scope", include_str!("../prompts/scope.toml")),
         ("research", include_str!("../prompts/research.toml")),
     ];
     let mut out = HashMap::with_capacity(raw.len());
@@ -106,26 +104,5 @@ mod tests {
         let s = PromptRegistry::load("parse", "default", &Ctx { input: "buy milk" }).unwrap();
         assert!(s.contains("buy milk"), "{s}");
         assert!(s.contains("create_task"), "{s}");
-    }
-
-    #[test]
-    fn decompose_with_hint_includes_guidance_block() {
-        #[derive(Serialize)]
-        struct Ctx<'a> {
-            task_context: &'a str,
-            hint: &'a str,
-        }
-        let s = PromptRegistry::load(
-            "decompose",
-            "with_hint",
-            &Ctx {
-                task_context: "Build login page",
-                hint: "OAuth first",
-            },
-        )
-        .unwrap();
-        assert!(s.contains("Build login page"));
-        assert!(s.contains("Additional guidance:"));
-        assert!(s.contains("OAuth first"));
     }
 }

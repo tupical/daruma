@@ -101,7 +101,7 @@ pub async fn ai(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 
     let sub = args
         .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: taskagent ai <parse|decompose> ..."))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: taskagent ai <parse> ..."))?;
 
     match sub.as_str() {
         "parse" => {
@@ -109,30 +109,6 @@ pub async fn ai(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
                 .get(1)
                 .ok_or_else(|| anyhow::anyhow!("usage: taskagent ai parse \"<input>\""))?;
             let cmd = taskagent_ai::parse_task(client, input)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            println!("AI proposed: {}", cmd.kind());
-            let envs = ctx
-                .local
-                .dispatch(cmd, Actor::agent("openai-responses"))
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            for e in &envs {
-                println!("✓ {} ({})", e.kind(), e.id);
-            }
-        }
-        "decompose" => {
-            let raw_id = args
-                .get(1)
-                .ok_or_else(|| anyhow::anyhow!("usage: taskagent ai decompose <task_id>"))?;
-            let id = parse_task_id(ctx, raw_id).await?;
-            let task = ctx
-                .tasks
-                .get(id)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                .ok_or_else(|| anyhow::anyhow!("task not found: {id}"))?;
-            let cmd = taskagent_ai::decompose_task(client, task.id, &task.title, None)
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             println!("AI proposed: {}", cmd.kind());
