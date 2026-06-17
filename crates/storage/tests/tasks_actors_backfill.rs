@@ -152,6 +152,7 @@ async fn completing_task_populates_completed_by() {
             Event::TaskCompleted {
                 task_id,
                 completed_at: now,
+                completion_note: None,
             },
         )],
     )

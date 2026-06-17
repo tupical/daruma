@@ -57,7 +57,7 @@ async fn closed_tasks_do_not_fire() {
 
     let id = create_task(&app, "done and overdue", Some(Duration::seconds(-60))).await;
     handler
-        .handle(Command::CompleteTask { id }, Actor::user())
+        .handle(Command::CompleteTask { id, note: None }, Actor::user())
         .await
         .expect("complete");
 

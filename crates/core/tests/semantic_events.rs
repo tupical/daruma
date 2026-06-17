@@ -180,7 +180,7 @@ async fn complete_task_emits_task_closed() {
     let id = create_task(&handler, Some(Status::InProgress)).await;
 
     let envs = handler
-        .handle(Command::CompleteTask { id }, Actor::user())
+        .handle(Command::CompleteTask { id, note: None }, Actor::user())
         .await
         .unwrap();
 

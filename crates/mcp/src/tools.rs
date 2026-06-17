@@ -295,8 +295,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "taskagent_complete",
             "Complete task",
-            "Mark a task as completed.",
-            schema_with_id("id"),
+            "Mark a task as completed. Optionally attach a completion note (reason / result_summary / acceptance_criteria_status / related_artifacts); the completing actor (user vs agent) is recorded automatically.",
+            schema_complete(),
             Dom::Tasks, D, Ann::WriteIdem,
         ),
         tool(
@@ -1406,9 +1406,25 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "taskagent_complete" => {
             let id = required_string(&args, "id")?;
-            client
-                .post_command(json!({"type":"complete_task","id": id}))
-                .await
+            // Assemble an optional completion note from the loose args. Only
+            // include `note` when at least one field is present, so a bare
+            // `{id}` call stays byte-identical to the legacy command.
+            let mut note = serde_json::Map::new();
+            for key in ["reason", "result_summary", "acceptance_criteria_status"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    note.insert(key.to_string(), json!(v));
+                }
+            }
+            if let Some(arts) = args.get("related_artifacts").and_then(|v| v.as_array()) {
+                if !arts.is_empty() {
+                    note.insert("related_artifacts".to_string(), json!(arts));
+                }
+            }
+            let mut cmd = json!({"type":"complete_task","id": id});
+            if !note.is_empty() {
+                cmd["note"] = Value::Object(note);
+            }
+            client.post_command(cmd).await
         }
         "taskagent_delete" => {
             let id = required_string(&args, "id")?;
@@ -2430,6 +2446,22 @@ fn schema_with_id(field: &str) -> Value {
         "type":"object",
         "properties": {field: {"type":"string","description":"Task identifier"}},
         "required": [field]
+    })
+}
+
+/// Complete a task with an optional completion note. The note fields are all
+/// optional and omittable — calling with just `id` is the legacy behaviour.
+fn schema_complete() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string","description":"Task identifier"},
+            "reason": {"type":"string","description":"Optional: why the task is done."},
+            "result_summary": {"type":"string","description":"Optional: what was produced / the outcome."},
+            "acceptance_criteria_status": {"type":"string","description":"Optional: e.g. \"3/3 met\", \"AC2 waived\"."},
+            "related_artifacts": {"type":"array","items":{"type":"string"},"description":"Optional: paths/URLs/doc refs/PR links produced."}
+        },
+        "required": ["id"]
     })
 }
 

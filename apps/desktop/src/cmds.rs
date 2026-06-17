@@ -69,7 +69,7 @@ pub async fn done(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 
     let envelopes = ctx
         .local
-        .dispatch(Command::CompleteTask { id }, Actor::user())
+        .dispatch(Command::CompleteTask { id, note: None }, Actor::user())
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 

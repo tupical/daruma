@@ -286,7 +286,7 @@ async fn complete_task_blocked_returns_conflict() {
     link_blocks(&handler, a, b).await;
 
     let err = handler
-        .handle(Command::CompleteTask { id: b }, Actor::user())
+        .handle(Command::CompleteTask { id: b, note: None }, Actor::user())
         .await
         .unwrap_err();
 

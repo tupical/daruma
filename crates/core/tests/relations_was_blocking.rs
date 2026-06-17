@@ -165,7 +165,7 @@ async fn complete_task_transitions_blocks_to_was_blocking() {
     link_blocks(&handler, a, b).await;
 
     let envs = handler
-        .handle(Command::CompleteTask { id: a }, Actor::user())
+        .handle(Command::CompleteTask { id: a, note: None }, Actor::user())
         .await
         .unwrap();
 

@@ -159,6 +159,7 @@ fn task_completed_env(task_id: TaskId, seq: u64) -> EventEnvelope {
             Event::TaskCompleted {
                 task_id,
                 completed_at: time::now(),
+                completion_note: None,
             },
         )
     }

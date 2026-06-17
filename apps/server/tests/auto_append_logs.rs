@@ -200,7 +200,13 @@ async fn status_changes_route_by_actor() {
         .unwrap();
 
     handler
-        .handle(Command::CompleteTask { id: task_id }, Actor::user())
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
         .await
         .unwrap();
 

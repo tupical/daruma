@@ -19,13 +19,18 @@ use taskagent_shared::{CoreError, PlanId, RunId, TaskId};
 use taskagent_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
 
 /// Recording stub: allows everything unless `block_trigger` matches; can
-/// emit a fixed warning on every check.
+/// emit a fixed warning on every check. When `identified` is set, decisions
+/// carry a real `rule_id`/`rule_key` in `details` so the handler emits a
+/// `RuleFired` audit event (the real engine always identifies its rules).
 #[derive(Default)]
 struct TestGate {
     block_trigger: Option<TriggerEvent>,
     warn: bool,
+    identified: bool,
     seen: Mutex<Vec<(TriggerEvent, bool)>>,
 }
+
+const TEST_RULE_ID: &str = "rule_00000000-0000-7000-8000-000000000001";
 
 #[async_trait]
 impl LifecycleGate for TestGate {
@@ -39,17 +44,22 @@ impl LifecycleGate for TestGate {
             .lock()
             .unwrap()
             .push((check.trigger, gate_override.force));
+        let details = if self.identified {
+            serde_json::json!({"rule_id": TEST_RULE_ID, "rule_key": "test.rule"})
+        } else {
+            serde_json::Value::Null
+        };
         if self.block_trigger == Some(check.trigger) {
             return Ok(GateDecision::Blocked {
                 message: format!("{} requires evidence", check.trigger.as_str()),
-                details: serde_json::Value::Null,
+                details,
             });
         }
         if self.warn {
             return Ok(GateDecision::Warning(vec![MutationWarning {
                 code: "rule_warning".to_string(),
                 message: "test warning".to_string(),
-                details: serde_json::Value::Null,
+                details,
             }]));
         }
         Ok(GateDecision::Allowed)
@@ -125,7 +135,13 @@ async fn gate_sees_task_and_project_triggers_with_force() {
         .await
         .unwrap();
     handler
-        .handle(Command::CompleteTask { id: task_id }, Actor::user())
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
         .await
         .unwrap();
 
@@ -161,7 +177,10 @@ async fn warning_rides_dispatch_outcome_and_persists() {
 
     assert_eq!(outcome.warnings.len(), 1);
     assert_eq!(outcome.warnings[0].code, "rule_warning");
-    assert!(!outcome.events.is_empty(), "mutation must persist on warning");
+    assert!(
+        !outcome.events.is_empty(),
+        "mutation must persist on warning"
+    );
     assert_eq!(store.load_since(0, 100).await.unwrap().len(), 1);
 }
 
@@ -189,7 +208,13 @@ async fn blocked_aborts_before_persist_on_both_complete_paths() {
 
     // Path 1: CompleteTask.
     let err = handler
-        .handle(Command::CompleteTask { id: task_id }, Actor::user())
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
         .await
         .unwrap_err();
     match err {
@@ -227,7 +252,13 @@ async fn no_gate_keeps_existing_behavior() {
     let (handler, _store, tasks) = stack_with_gate(None).await;
     let task_id = create_task(&handler, "Ungated").await;
     handler
-        .handle(Command::CompleteTask { id: task_id }, Actor::user())
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
         .await
         .unwrap();
     let task = tasks.get(task_id).await.unwrap().unwrap();
@@ -292,4 +323,211 @@ fn derive_checks_maps_transitions_and_skips_non_lifecycle_events() {
     assert_eq!(checks[1].run_id, Some(run_id));
     assert_eq!(checks[2].status_to, Some(Status::InProgress));
     assert_eq!(checks[3].status_from, Some(Status::InProgress));
+}
+
+// ── Completion note + rule-fired audit (OSS task 019eb65a-86d0) ───────────────
+
+#[tokio::test]
+async fn complete_task_without_note_is_backward_compatible() {
+    // A legacy `CompleteTask { id }` (note omitted) emits the same three events
+    // and carries no completion_note on TaskCompleted.
+    let (handler, _store, tasks) = stack_with_gate(None).await;
+    let task_id = create_task(&handler, "No note").await;
+
+    let envs = handler
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 3, "status_changed + completed + closed");
+    let completed = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::TaskCompleted {
+                completion_note, ..
+            } => Some(completion_note.clone()),
+            _ => None,
+        })
+        .expect("TaskCompleted present");
+    assert!(completed.is_none(), "no note → None on the event");
+    assert_eq!(
+        tasks.get(task_id).await.unwrap().unwrap().status,
+        Status::Done
+    );
+}
+
+#[tokio::test]
+async fn complete_task_with_note_carries_note_and_actor_kind() {
+    use taskagent_domain::CompletionNote;
+
+    let (handler, _store, _tasks) = stack_with_gate(None).await;
+    let task_id = create_task(&handler, "With note").await;
+
+    let note = CompletionNote {
+        reason: Some("acceptance criteria met".into()),
+        result_summary: Some("shipped v1".into()),
+        acceptance_criteria_status: Some("3/3 met".into()),
+        related_artifacts: vec!["PR#42".into()],
+        ..CompletionNote::default()
+    };
+    // Complete as an agent so the stamped actor_kind is "agent" (human-vs-agent
+    // distinction is the task's audit risk note).
+    let envs = handler
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: Some(note),
+            },
+            Actor::agent("test-agent"),
+        )
+        .await
+        .unwrap();
+
+    let completion = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::TaskCompleted {
+                completion_note, ..
+            } => completion_note.clone(),
+            _ => None,
+        })
+        .expect("note rides TaskCompleted");
+    assert_eq!(
+        completion.reason.as_deref(),
+        Some("acceptance criteria met")
+    );
+    assert_eq!(completion.result_summary.as_deref(), Some("shipped v1"));
+    assert_eq!(
+        completion.acceptance_criteria_status.as_deref(),
+        Some("3/3 met")
+    );
+    assert_eq!(completion.related_artifacts, vec!["PR#42".to_string()]);
+    let actor = completion
+        .actor
+        .expect("handler stamps the completing actor");
+    assert_eq!(actor.kind, "agent", "agent-self-reported completion");
+    assert_eq!(actor.name.as_deref(), Some("test-agent"));
+}
+
+#[tokio::test]
+async fn rule_fired_audit_persists_on_blocked_and_is_visible_in_event_log() {
+    use taskagent_events::event::RuleDecision;
+
+    let gate = Arc::new(TestGate {
+        block_trigger: Some(TriggerEvent::TaskBeforeComplete),
+        identified: true,
+        ..TestGate::default()
+    });
+    let (handler, store, tasks) = stack_with_gate(Some(gate)).await;
+
+    let task_id = create_task(&handler, "Audited block").await;
+    handler
+        .handle(
+            Command::SetStatus {
+                id: task_id,
+                status: Status::InProgress,
+                force: false,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let before = store.load_since(0, 100).await.unwrap().len();
+
+    let err = handler
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::Conflict(_)));
+
+    // The block left an audit trail (one RuleFired) even though the mutation
+    // was rejected — but the task itself did NOT transition.
+    let events = store.load_since(0, 100).await.unwrap();
+    assert_eq!(
+        events.len(),
+        before + 1,
+        "exactly one audit event persisted"
+    );
+    let fired = events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::RuleFired {
+                decision,
+                rule_key,
+                task_id: t,
+                ..
+            } => Some((*decision, rule_key.clone(), *t)),
+            _ => None,
+        })
+        .expect("RuleFired present");
+    assert_eq!(fired.0, RuleDecision::Blocked);
+    assert_eq!(fired.1, "test.rule");
+    assert_eq!(fired.2, Some(task_id));
+    assert_eq!(
+        tasks.get(task_id).await.unwrap().unwrap().status,
+        Status::InProgress,
+        "blocked transition did not land"
+    );
+}
+
+#[tokio::test]
+async fn rule_fired_audit_rides_ahead_of_the_warned_mutation() {
+    use taskagent_events::event::RuleDecision;
+
+    let gate = Arc::new(TestGate {
+        warn: true,
+        identified: true,
+        ..TestGate::default()
+    });
+    let (handler, store, _tasks) = stack_with_gate(Some(gate)).await;
+
+    let outcome = handler
+        .handle_with_warnings(
+            Command::CreateTask {
+                task: NewTask::new("Warned + audited"),
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.warnings.len(), 1);
+
+    // RuleFired(warning) is persisted before the TaskCreated it warned on.
+    let events = store.load_since(0, 100).await.unwrap();
+    assert_eq!(events.len(), 2);
+    match &events[0].payload {
+        Event::RuleFired { decision, .. } => assert_eq!(*decision, RuleDecision::Warning),
+        other => panic!("audit must precede the mutation, got {other:?}"),
+    }
+    assert!(matches!(events[1].payload, Event::TaskCreated { .. }));
+}
+
+#[tokio::test]
+async fn allowed_decision_emits_no_audit_noise() {
+    // identified=true but neither warn nor block → Allowed → no RuleFired.
+    let gate = Arc::new(TestGate {
+        identified: true,
+        ..TestGate::default()
+    });
+    let (handler, store, _tasks) = stack_with_gate(Some(gate)).await;
+    let _ = create_task(&handler, "Allowed").await;
+
+    let events = store.load_since(0, 100).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|e| !matches!(e.payload, Event::RuleFired { .. })),
+        "allowed transitions must not emit RuleFired"
+    );
 }

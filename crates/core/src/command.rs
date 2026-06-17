@@ -28,10 +28,20 @@ mod tests {
     #[test]
     fn complete_task_uses_snake_case_tag() {
         let id = TaskId::new();
-        let cmd = Command::CompleteTask { id };
+        let cmd = Command::CompleteTask { id, note: None };
         let v = serde_json::to_value(&cmd).unwrap();
         assert_eq!(v["type"], "complete_task");
         assert_eq!(v["id"], json!(id));
+        // Backward compatible wire format: an omitted note adds no `note` key,
+        // so the JSON is byte-identical to the legacy two-field command.
+        assert!(
+            v.get("note").is_none(),
+            "omitted note must not appear on the wire"
+        );
+        // And legacy JSON (no `note` key) still deserializes.
+        let back: Command =
+            serde_json::from_value(json!({"type":"complete_task","id": id})).unwrap();
+        assert!(matches!(back, Command::CompleteTask { note: None, .. }));
     }
 
     #[test]
