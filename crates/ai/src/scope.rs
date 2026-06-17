@@ -17,7 +17,11 @@ use taskagent_core::Command;
 use taskagent_domain::{Task, TaskPatch};
 use taskagent_shared::CoreError;
 
-use crate::{client::OpenAiClient, prompts::PromptRegistry, provider::AiProvider, tools};
+use taskagent_ai_infra::{
+    client::OpenAiClient, provider::AiProvider, tools, untrusted::wrap_untrusted,
+};
+
+use crate::prompts::PromptRegistry;
 
 /// Direction the rewrite should move in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,8 +57,8 @@ struct ScopeCtx<'a> {
 
 /// Build the scope prompt. Pure — exposed for tests.
 pub fn build_scope_prompt(task: &Task, direction: ScopeDirection) -> String {
-    let title = crate::untrusted::wrap_untrusted("task title", &task.title);
-    let description = crate::untrusted::wrap_untrusted("task description", &task.description);
+    let title = wrap_untrusted("task title", &task.title);
+    let description = wrap_untrusted("task description", &task.description);
     PromptRegistry::load(
         "scope",
         direction.as_variant(),

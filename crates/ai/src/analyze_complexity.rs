@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use taskagent_domain::{ComplexityHint, TaskBrief};
 use taskagent_shared::{time, CoreError, TaskId};
 
-use crate::client::{OpenAiClient, ResponseOutput, ResponseRequest};
+use taskagent_ai_infra::client::{OpenAiClient, ResponseOutput, ResponseRequest};
+use taskagent_ai_infra::untrusted::wrap_untrusted;
+
+use crate::prompts::PromptRegistry;
 
 /// Hard cap on tasks per batch. Keeps prompt size predictable and the
 /// model's per-task attention non-degenerate. Callers with more tasks
@@ -72,12 +75,12 @@ fn build_prompt(tasks: &[TaskBrief]) -> String {
             }
         }
     }
-    let tasks_list = crate::untrusted::wrap_untrusted("task list", &tasks_list);
+    let tasks_list = wrap_untrusted("task list", &tasks_list);
     #[derive(serde::Serialize)]
     struct Ctx<'a> {
         tasks_list: &'a str,
     }
-    crate::prompts::PromptRegistry::load(
+    PromptRegistry::load(
         "analyze_complexity",
         "default",
         &Ctx {

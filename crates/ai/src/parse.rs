@@ -6,11 +6,13 @@ use taskagent_core::Command;
 use taskagent_domain::{NewTask, Priority, Status};
 use taskagent_shared::CoreError;
 
-use crate::{
+use taskagent_ai_infra::{
     client::{OpenAiClient, ResponseOutput, ResponseRequest},
-    prompts::PromptRegistry,
     tools::create_task_tool,
+    wrap_untrusted,
 };
+
+use crate::prompts::PromptRegistry;
 
 #[derive(Serialize)]
 struct ParseCtx<'a> {
@@ -22,7 +24,7 @@ struct ParseCtx<'a> {
 /// Calls the OpenAI Responses API with the `create_task` function tool and
 /// maps the returned arguments onto [`NewTask`].
 pub async fn parse_task(client: &OpenAiClient, input: &str) -> Result<Command, CoreError> {
-    let input = crate::untrusted::wrap_untrusted("task description to parse", input);
+    let input = wrap_untrusted("task description to parse", input);
     let prompt = PromptRegistry::load("parse", "default", &ParseCtx { input: &input })?;
 
     let req = ResponseRequest {

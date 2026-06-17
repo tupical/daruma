@@ -4,10 +4,12 @@ use serde::Serialize;
 use serde_json::Value;
 use taskagent_shared::CoreError;
 
-use crate::{
+use taskagent_ai_infra::{
     client::{OpenAiClient, ResponseOutput, ResponseRequest},
-    prompts::PromptRegistry,
+    untrusted::wrap_untrusted,
 };
+
+use crate::prompts::PromptRegistry;
 
 #[derive(Serialize)]
 struct SuggestCtx<'a> {
@@ -23,7 +25,7 @@ pub async fn suggest_next_action(
     client: &OpenAiClient,
     context: &str,
 ) -> Result<String, CoreError> {
-    let context = crate::untrusted::wrap_untrusted("project context", context);
+    let context = wrap_untrusted("project context", context);
     let prompt = PromptRegistry::load("suggest", "default", &SuggestCtx { context: &context })?;
 
     let req = ResponseRequest {

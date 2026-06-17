@@ -5,10 +5,12 @@ use serde_json::Value;
 use taskagent_events::EventEnvelope;
 use taskagent_shared::{CoreError, ProjectId};
 
-use crate::{
+use taskagent_ai_infra::{
     client::{OpenAiClient, ResponseOutput, ResponseRequest},
-    prompts::PromptRegistry,
+    untrusted::wrap_untrusted,
 };
+
+use crate::prompts::PromptRegistry;
 
 #[derive(Serialize)]
 struct SummarizeCtx<'a> {
@@ -34,7 +36,7 @@ pub async fn summarize_project(
         "default",
         &SummarizeCtx {
             project_id: project_id.to_string(),
-            events_json: &crate::untrusted::wrap_untrusted("event log", &events_json),
+            events_json: &wrap_untrusted("event log", &events_json),
         },
     )?;
 

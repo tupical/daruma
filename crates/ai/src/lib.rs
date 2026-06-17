@@ -1,4 +1,12 @@
-//! `taskagent-ai` — OpenAI Responses API client + NL→Command parsers.
+//! `taskagent-ai` — NL→Command operations on top of [`taskagent_ai_infra`].
+//!
+//! The provider-neutral infrastructure (Responses API client, config,
+//! [`AiProvider`] abstraction, prompt rendering engine, tool schemas,
+//! prompt-injection hardening) lives in `taskagent-ai-infra`. This crate
+//! holds the task operations — parse, decompose, scope, research,
+//! analyze-complexity, suggest, summarize — that turn model output into
+//! [`taskagent_core::Command`]s or plain strings, plus the operation
+//! prompt catalogue ([`prompts`]) those operations render.
 //!
 //! # Contract
 //! - The AI layer **never** writes to storage. Every output is a
@@ -19,31 +27,29 @@
 //! ```
 
 pub mod analyze_complexity;
-pub mod client;
-pub mod config;
 pub mod decompose;
-pub mod error;
 pub mod parse;
 pub mod prompts;
-pub mod provider;
 pub mod research;
 pub mod scope;
 pub mod suggest;
 pub mod summarize;
-pub mod tools;
-pub mod untrusted;
 
-// ── Flat re-exports ───────────────────────────────────────────────────────────
+// ── Re-export the infrastructure layer ─────────────────────────────────────────
+//
+// Preserves `taskagent-ai`'s public surface (`OpenAiClient`, `AiConfig`,
+// `AiProvider`, …) so existing consumers (server, mcp, desktop) keep
+// compiling against `taskagent_ai::*`.
+pub use taskagent_ai_infra::{wrap_untrusted, AiConfig, AiError, AiProvider, OpenAiClient};
+
+// `PromptRegistry` is the operation prompt catalogue, owned by this crate.
+pub use prompts::PromptRegistry;
+
+// ── Operation re-exports ────────────────────────────────────────────────────────
 
 pub use analyze_complexity::{analyze_complexity_batch, MAX_BATCH_TASKS};
-pub use client::OpenAiClient;
-pub use config::AiConfig;
 pub use decompose::decompose_task;
-pub use error::AiError;
 pub use parse::parse_task;
-pub use prompts::PromptRegistry;
-pub use provider::AiProvider;
 pub use scope::{scope_task, ScopeDirection};
 pub use suggest::suggest_next_action;
 pub use summarize::summarize_project;
-pub use untrusted::wrap_untrusted;
