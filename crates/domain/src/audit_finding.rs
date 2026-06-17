@@ -88,9 +88,10 @@ impl FindingStatus {
 
 /// Who produced a finding. `Script` = a deterministic server-side check;
 /// `Ai` = a (Cloud-side) LLM pass. Stored in the `source` column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingSource {
+    #[default]
     Script,
     Ai,
 }
@@ -109,12 +110,6 @@ impl FindingSource {
             "ai" => FindingSource::Ai,
             _ => return None,
         })
-    }
-}
-
-impl Default for FindingSource {
-    fn default() -> Self {
-        FindingSource::Script
     }
 }
 

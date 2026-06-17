@@ -37,6 +37,20 @@ impl Status {
             Status::Cancelled => "cancelled",
         }
     }
+
+    /// Parse a stable status discriminant (the `as_str` form). `None` for an
+    /// unknown string.
+    pub fn parse_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "inbox" => Status::Inbox,
+            "todo" => Status::Todo,
+            "in_progress" => Status::InProgress,
+            "in_review" => Status::InReview,
+            "done" => Status::Done,
+            "cancelled" => Status::Cancelled,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

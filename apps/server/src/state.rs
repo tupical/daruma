@@ -8,7 +8,8 @@ use taskagent_core::CommandBus;
 use taskagent_discovery::PairingStore;
 use taskagent_events::EventStore;
 use taskagent_storage::{
-    ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, DocumentRepo, EntityVersionRepo,
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, DocumentRepo,
+    EntityVersionRepo,
     EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo,
     RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
     WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
@@ -83,6 +84,10 @@ pub struct AppState {
     pub rules: Arc<RuleRepo>,
     /// Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3).
     pub evidence: Arc<EvidenceRepo>,
+    /// Audit findings store (Audit primitives task B). Not event-sourced:
+    /// written directly by the audit HTTP routes, read with severity/category/
+    /// status filters. Feeds the Cloud Workspace Audit surface.
+    pub audit_findings: Arc<AuditFindingRepo>,
     /// Immutable task/document version history repo.
     pub entity_versions: Arc<EntityVersionRepo>,
     // ── AI-derived projection (§3.8.3) ───────────────────────────────────────

@@ -8,7 +8,8 @@ use taskagent_core::{search::FtsSearchProvider, CommandBus, CommandHandler};
 use taskagent_events::{EventBus, EventStore};
 use taskagent_shared::AgentId;
 use taskagent_storage::{
-    ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, Db, DocumentRepo, EntityVersionRepo,
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, Db, DocumentRepo,
+    EntityVersionRepo,
     ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
     SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
     WebhookEnrichment, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
@@ -91,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
     let rules = Arc::new(taskagent_storage::RuleRepo::new(pool.clone()));
     let evidence = Arc::new(taskagent_storage::EvidenceRepo::new(pool.clone()));
+    let audit_findings = Arc::new(AuditFindingRepo::new(pool.clone()));
     let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
     let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
     let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
@@ -286,6 +288,7 @@ async fn main() -> anyhow::Result<()> {
         work_units,
         rules,
         evidence,
+        audit_findings,
         entity_versions,
         complexity_hints,
         workspace_graph,

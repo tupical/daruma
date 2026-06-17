@@ -463,6 +463,42 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_evidence_list(),
             Dom::Admin, F, Ann::Read,
         ),
+        // ── Audit primitives ───────────────────────────────────────────────
+        tool(
+            "taskagent_audit_findings",
+            "List audit findings",
+            "List audit findings for a project (problems a server-side check raised: stale docs, stuck tasks, missing owners, …). Filter by `severity` (error|warn|info), `category`, or `status` (open|acknowledged|muted|resolved). Newest activity first.",
+            schema_audit_findings(),
+            Dom::Coordination, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_audit_finding_ack",
+            "Acknowledge/mute/resolve a finding",
+            "Set the status of an audit finding (operator action): `open`, `acknowledged`, `muted`, or `resolved`. Use `acknowledged` to mark it seen, `muted` to silence it, `resolved` to close it.",
+            schema_audit_finding_ack(),
+            Dom::Coordination, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_audit_stuck_tasks",
+            "Tasks stuck in a status",
+            "Tasks stuck in a status longer than a threshold (heuristic, no LLM). `status` defaults to `in_progress`; `threshold_hours` defaults to 72. Complements taskagent_doctor — this catches tasks wedged in *any* status, not just claim-less in_progress.",
+            schema_audit_stuck_tasks(),
+            Dom::Coordination, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_audit_duplicate_tasks",
+            "Duplicate-task candidates",
+            "Lexical duplicate-task candidates within a project (heuristic, no LLM): title-similar task pairs to review. Not semantic duplicates — a cheap pre-filter for a human pass.",
+            schema_audit_duplicate_tasks(),
+            Dom::Coordination, D, Ann::Read,
+        ),
+        tool(
+            "taskagent_audit_unread_documents",
+            "Documents not read recently",
+            "Documents in a project not read in the last N `days` (default 30); documents never read always qualify. Built on passive read-tracking, distinct from the explicit evidence document_read_ack.",
+            schema_audit_unread_documents(),
+            Dom::Coordination, D, Ann::Read,
+        ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "taskagent_ai_analyze_complexity",
@@ -2011,6 +2047,71 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             };
             client.get_json(&path).await
         }
+        // ── Audit primitives ─────────────────────────────────────────────
+        "taskagent_audit_findings" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut qs = vec![format!("project_id={project_id}")];
+            for key in ["severity", "category", "status"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    qs.push(format!("{key}={v}"));
+                }
+            }
+            client
+                .get_json(&format!("/v1/audit/findings?{}", qs.join("&")))
+                .await
+        }
+        "taskagent_audit_finding_ack" => {
+            let id = required_string(&args, "id")?;
+            let status = required_string(&args, "status")?;
+            client
+                .post_json(
+                    &format!("/v1/audit/findings/{id}/status"),
+                    json!({ "status": status }),
+                )
+                .await
+        }
+        "taskagent_audit_stuck_tasks" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut qs = vec![format!("project_id={project_id}")];
+            if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
+                qs.push(format!("status={s}"));
+            }
+            if let Some(h) = args.get("threshold_hours").and_then(|v| v.as_i64()) {
+                qs.push(format!("threshold_hours={h}"));
+            }
+            client
+                .get_json(&format!("/v1/audit/heuristics/stuck-tasks?{}", qs.join("&")))
+                .await
+        }
+        "taskagent_audit_duplicate_tasks" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut qs = vec![format!("project_id={project_id}")];
+            if let Some(t) = args.get("threshold").and_then(|v| v.as_f64()) {
+                qs.push(format!("threshold={t}"));
+            }
+            if let Some(l) = args.get("limit").and_then(|v| v.as_u64()) {
+                qs.push(format!("limit={l}"));
+            }
+            client
+                .get_json(&format!(
+                    "/v1/audit/heuristics/duplicate-tasks?{}",
+                    qs.join("&")
+                ))
+                .await
+        }
+        "taskagent_audit_unread_documents" => {
+            let project_id = required_string(&args, "project_id")?;
+            let mut qs = vec![format!("project_id={project_id}")];
+            if let Some(d) = args.get("days").and_then(|v| v.as_i64()) {
+                qs.push(format!("days={d}"));
+            }
+            client
+                .get_json(&format!(
+                    "/v1/audit/heuristics/unread-documents?{}",
+                    qs.join("&")
+                ))
+                .await
+        }
         "taskagent_workspace_resolve" => {
             let ws = workspace::global();
             let raw_path = args.get("scope_path").and_then(|v| v.as_str());
@@ -2557,6 +2658,65 @@ fn schema_evidence_list() -> Value {
             "task_id": {"type":"string","description":"List evidence at this task scope."},
             "include_superseded": {"type":"boolean","description":"Include superseded records (default false)."}
         }
+    })
+}
+
+fn schema_audit_findings() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string","description":"Project to list findings for."},
+            "severity": {"type":"string","enum":["error","warn","info"],"description":"Filter by severity."},
+            "category": {"type":"string","description":"Filter by category bucket."},
+            "status": {"type":"string","enum":["open","acknowledged","muted","resolved"],"description":"Filter by status."}
+        },
+        "required": ["project_id"]
+    })
+}
+
+fn schema_audit_finding_ack() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string","description":"Finding id."},
+            "status": {"type":"string","enum":["open","acknowledged","muted","resolved"],"description":"New status."}
+        },
+        "required": ["id","status"]
+    })
+}
+
+fn schema_audit_stuck_tasks() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string","description":"Project to inspect."},
+            "status": {"type":"string","enum":["inbox","todo","in_progress","in_review","done","cancelled"],"description":"Status to inspect (default in_progress)."},
+            "threshold_hours": {"type":"integer","description":"Stuck threshold in hours (default 72)."}
+        },
+        "required": ["project_id"]
+    })
+}
+
+fn schema_audit_duplicate_tasks() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string","description":"Project to inspect."},
+            "threshold": {"type":"number","description":"bm25 threshold; pairs with rank <= this are returned (lower = stronger; default -1.0)."},
+            "limit": {"type":"integer","description":"Per-task candidate cap (default 20)."}
+        },
+        "required": ["project_id"]
+    })
+}
+
+fn schema_audit_unread_documents() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string","description":"Project to inspect."},
+            "days": {"type":"integer","description":"Days since last read (default 30); never-read documents always qualify."}
+        },
+        "required": ["project_id"]
     })
 }
 

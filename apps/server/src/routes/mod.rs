@@ -231,6 +231,17 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         )
         .route("/evidence", get(list_evidence).post(record_evidence))
         .route("/evidence/{id}", get(get_evidence))
+        // ── Audit primitives ────────────────────────────────────────────────
+        .route(
+            "/audit/findings",
+            get(list_audit_findings).post(record_audit_finding),
+        )
+        .route("/audit/findings/{id}", get(get_audit_finding))
+        .route("/audit/findings/{id}/status", post(set_audit_finding_status))
+        .route("/audit/findings/resolve-missing", post(resolve_missing_findings))
+        .route("/audit/heuristics/stuck-tasks", get(audit_stuck_tasks))
+        .route("/audit/heuristics/duplicate-tasks", get(audit_duplicate_tasks))
+        .route("/audit/heuristics/unread-documents", get(audit_unread_documents))
         .route(
             "/workspace-registry",
             get(list_logical_workspaces).post(create_logical_workspace),
@@ -1878,6 +1889,352 @@ async fn record_evidence(
         warnings: vec![],
         client_command_id: None,
     }))
+}
+
+// ── Audit primitives ────────────────────────────────────────────────────────
+
+/// Parse a `FindingSeverity` from a query/body string, or a 400.
+fn parse_severity(s: &str) -> Result<taskagent_domain::FindingSeverity, ApiError> {
+    taskagent_domain::FindingSeverity::parse_str(s)
+        .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid severity: {s}"))))
+}
+
+/// Parse a `FindingStatus` from a query/body string, or a 400.
+fn parse_finding_status(s: &str) -> Result<taskagent_domain::FindingStatus, ApiError> {
+    taskagent_domain::FindingStatus::parse_str(s)
+        .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid status: {s}"))))
+}
+
+#[derive(Deserialize)]
+struct FindingListQuery {
+    project_id: String,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// `GET /v1/audit/findings?project_id=&severity=&category=&status=` — list
+/// findings in a project, newest activity first. Read access (default profile).
+async fn list_audit_findings(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<FindingListQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = parse_project_id(&q.project_id)?;
+    let filter = taskagent_storage::FindingFilter {
+        severity: q.severity.as_deref().map(parse_severity).transpose()?,
+        category: q.category,
+        status: q.status.as_deref().map(parse_finding_status).transpose()?,
+    };
+    let findings = state
+        .audit_findings
+        .list(project_id, &filter)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "findings": findings })))
+}
+
+/// `GET /v1/audit/findings/{id}` — fetch one finding.
+async fn get_audit_finding(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = id_str.parse::<taskagent_shared::AuditFindingId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!("invalid finding id: {id_str}")))
+    })?;
+    let finding = state
+        .audit_findings
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("finding {id}"))))?;
+    Ok(Json(json!({ "finding": finding })))
+}
+
+/// Wire shape for a recorded finding. Ids are accepted as strings and parsed
+/// with `FromStr` (which strips the `prj_`/`tsk_`/… prefix) so callers pass the
+/// natural prefixed ids every other endpoint returns — the typed `NewFinding`
+/// fields are `#[serde(transparent)]` over bare UUIDs and would reject those.
+#[derive(Deserialize)]
+struct FindingInput {
+    project_id: String,
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    document_id: Option<String>,
+    #[serde(default)]
+    artifact_id: Option<String>,
+    check_key: String,
+    category: String,
+    severity: String,
+    title: String,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    remediation: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RecordFindingBody {
+    finding: FindingInput,
+}
+
+/// Parse an optional prefixed id string into a typed id, or a 400.
+fn parse_opt_id<T: std::str::FromStr>(
+    raw: &Option<String>,
+    label: &str,
+) -> Result<Option<T>, ApiError> {
+    raw.as_deref()
+        .map(|s| {
+            s.parse::<T>()
+                .map_err(|_| ApiError::from(CoreError::validation(format!("invalid {label}: {s}"))))
+        })
+        .transpose()
+}
+
+/// `POST /v1/audit/findings` — record (upsert) a finding from a check. The
+/// audit engine (Cloud-side) calls this; idempotent on the dedup key. Write
+/// access.
+async fn record_audit_finding(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<RecordFindingBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let f = body.finding;
+    let source = match f.source.as_deref() {
+        Some(s) => taskagent_domain::FindingSource::parse_str(s)
+            .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid source: {s}"))))?,
+        None => taskagent_domain::FindingSource::Script,
+    };
+    let new = taskagent_domain::NewFinding {
+        project_id: parse_project_id(&f.project_id)?,
+        entity: taskagent_domain::FindingEntity {
+            plan_id: parse_opt_id(&f.plan_id, "plan id")?,
+            task_id: parse_opt_id(&f.task_id, "task id")?,
+            document_id: parse_opt_id(&f.document_id, "document id")?,
+            artifact_id: parse_opt_id(&f.artifact_id, "artifact id")?,
+        },
+        check_key: f.check_key,
+        category: f.category,
+        severity: parse_severity(&f.severity)?,
+        title: f.title,
+        detail: f.detail,
+        remediation: f.remediation,
+        source,
+    };
+    let id = state
+        .audit_findings
+        .upsert(&new)
+        .await
+        .map_err(ApiError::from)?;
+    let finding = state.audit_findings.get(id).await.map_err(ApiError::from)?;
+    Ok(Json(json!({ "finding": finding })))
+}
+
+#[derive(Deserialize)]
+struct SetFindingStatusBody {
+    status: String,
+}
+
+/// `POST /v1/audit/findings/{id}/status` — operator action: acknowledge / mute /
+/// resolve / re-open a finding.
+async fn set_audit_finding_status(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<SetFindingStatusBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = id_str.parse::<taskagent_shared::AuditFindingId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!("invalid finding id: {id_str}")))
+    })?;
+    let status = parse_finding_status(&body.status)?;
+    let actor = taskagent_domain::ActorRef::from_actor(&actor_from(&auth, None));
+    let updated = state
+        .audit_findings
+        .set_status(id, status, &actor, taskagent_shared::time::now())
+        .await
+        .map_err(ApiError::from)?;
+    if !updated {
+        return Err(ApiError::from(CoreError::not_found(format!("finding {id}"))));
+    }
+    Ok(Json(json!({ "success": true })))
+}
+
+#[derive(Deserialize)]
+struct ResolveMissingBody {
+    project_id: String,
+    check_key: String,
+    /// Finding ids re-seen in this run; everything else of `check_key` resolves.
+    #[serde(default)]
+    seen: Vec<String>,
+}
+
+/// `POST /v1/audit/findings/resolve-missing` — auto-resolve every still-open
+/// finding of a `check_key` in a project that was not re-seen this run. The
+/// audit engine calls this after a full check pass.
+async fn resolve_missing_findings(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ResolveMissingBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = parse_project_id(&body.project_id)?;
+    let seen = body
+        .seen
+        .iter()
+        .map(|s| {
+            s.parse::<taskagent_shared::AuditFindingId>()
+                .map_err(|_| ApiError::from(CoreError::validation(format!("invalid finding id: {s}"))))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let actor = taskagent_domain::ActorRef::from_actor(&actor_from(&auth, None));
+    let resolved = state
+        .audit_findings
+        .resolve_missing(
+            project_id,
+            &body.check_key,
+            &seen,
+            &actor,
+            taskagent_shared::time::now(),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "resolved": resolved })))
+}
+
+#[derive(Deserialize)]
+struct StuckTasksQuery {
+    project_id: String,
+    /// Status to inspect (default `in_progress`).
+    #[serde(default)]
+    status: Option<String>,
+    /// Stuck threshold in hours (default 72).
+    #[serde(default)]
+    threshold_hours: Option<i64>,
+}
+
+/// `GET /v1/audit/heuristics/stuck-tasks` — tasks stuck in a status longer than
+/// the threshold (Audit primitives task C·1). Read-only, no LLM.
+async fn audit_stuck_tasks(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<StuckTasksQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = parse_project_id(&q.project_id)?;
+    let status = match q.status.as_deref() {
+        Some(s) => Status::parse_str(s)
+            .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid status: {s}"))))?,
+        None => Status::InProgress,
+    };
+    let hours = q.threshold_hours.unwrap_or(72).max(0);
+    let cutoff = taskagent_shared::time::now() - chrono::Duration::hours(hours);
+    let stuck = state
+        .tasks
+        .list_stuck_in_status(Some(project_id), status, cutoff)
+        .await
+        .map_err(ApiError::from)?;
+    let items: Vec<_> = stuck
+        .into_iter()
+        .map(|s| {
+            json!({
+                "task_id": s.task.id,
+                "title": s.task.title,
+                "status": s.task.status.as_str(),
+                "status_changed_at": s.status_changed_at.to_rfc3339(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "status": status.as_str(), "threshold_hours": hours, "stuck": items })))
+}
+
+#[derive(Deserialize)]
+struct DuplicateTasksQuery {
+    project_id: String,
+    /// bm25 threshold (pairs with rank <= this are emitted; default -1.0).
+    #[serde(default)]
+    threshold: Option<f64>,
+    /// Per-task candidate cap (default 20).
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+/// `GET /v1/audit/heuristics/duplicate-tasks` — lexical duplicate-task
+/// candidates, reusing the WorkspaceGraph FTS index (Audit primitives task C·2).
+async fn audit_duplicate_tasks(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<DuplicateTasksQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = parse_project_id(&q.project_id)?;
+    let threshold = q.threshold.unwrap_or(-1.0);
+    let limit = q.limit.unwrap_or(20).clamp(1, 200);
+    let pairs = state
+        .workspace_graph
+        .duplicate_task_candidates(&project_id.to_string(), threshold, limit)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "candidates": pairs })))
+}
+
+#[derive(Deserialize)]
+struct UnreadDocumentsQuery {
+    project_id: String,
+    /// Days since last read (default 30); documents never read always qualify.
+    #[serde(default)]
+    days: Option<i64>,
+}
+
+/// `GET /v1/audit/heuristics/unread-documents` — documents not read in N days
+/// (Audit primitives task C·3), built on task A's read-tracking column.
+async fn audit_unread_documents(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<UnreadDocumentsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::DocumentRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = parse_project_id(&q.project_id)?;
+    let days = q.days.unwrap_or(30).max(0);
+    let cutoff = taskagent_shared::time::now() - chrono::Duration::days(days);
+    let docs = state
+        .documents
+        .list_unread_since(project_id, cutoff)
+        .await
+        .map_err(ApiError::from)?;
+    let items: Vec<_> = docs
+        .into_iter()
+        .map(|d| {
+            json!({
+                "document_id": d.id,
+                "title": d.title,
+                "kind": d.kind.as_str(),
+                "last_read_at": d.last_read_at.map(|t| t.to_rfc3339()),
+                "read_count": d.read_count,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "days": days, "unread": items })))
 }
 
 fn validate_workspace_name(name: &str) -> Result<String, ApiError> {
@@ -5104,7 +5461,32 @@ async fn get_document(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("document {id_str}"))))?;
+
+    // Passive read-tracking (Audit primitives task A): record the read,
+    // throttled per (document, actor) to ≤ once/hour so repeated fetches don't
+    // churn the row. Best-effort — a tracking write must never fail the read.
+    let reader = read_actor_label(&actor_from(&auth, None));
+    if let Err(e) = state
+        .documents
+        .mark_read(id, &reader, taskagent_shared::time::now(), READ_THROTTLE)
+        .await
+    {
+        tracing::warn!(error = %e, document_id = %id, "doc read-tracking update failed");
+    }
+
     Ok(Json(serde_json::json!({ "document": doc })))
+}
+
+/// Throttle window for document read-tracking: a read by the same actor within
+/// this window of the last is not re-counted (keeps the projection write rate low).
+const READ_THROTTLE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Stable label for "who read this document": the agent's display name when
+/// present, else the actor kind (`user` / `agent`). Mirrors the `ActorRef`
+/// triple the rest of the system stores.
+fn read_actor_label(actor: &Actor) -> String {
+    let aref = taskagent_domain::ActorRef::from_actor(actor);
+    aref.name.unwrap_or(aref.kind)
 }
 
 #[derive(Deserialize)]

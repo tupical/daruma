@@ -124,6 +124,7 @@ impl TestAppBuilder {
         let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
         let rules = Arc::new(taskagent_storage::RuleRepo::new(pool.clone()));
         let evidence = Arc::new(taskagent_storage::EvidenceRepo::new(pool.clone()));
+        let audit_findings = Arc::new(taskagent_storage::AuditFindingRepo::new(pool.clone()));
         let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
         let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
         let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
@@ -219,6 +220,7 @@ impl TestAppBuilder {
             work_units,
             rules,
             evidence,
+            audit_findings,
             entity_versions,
             complexity_hints,
             workspace_graph,
