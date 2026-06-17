@@ -11,7 +11,8 @@ pub mod time;
 pub use error::CoreError;
 pub use ids::{
     ActivityId, AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId,
-    DeviceId, DocumentId, EventId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId,
+    DeviceId, DocumentId, EventId, EvidenceId, PlanId, ProjectId, RelationId, RuleId, RunId,
+    RunNoteId,
     SessionArtifactId, TaskId, TokenId, VersionId, WebhookDeliveryId, WebhookId, WorkLeaseId,
     WorkUnitId,
 };

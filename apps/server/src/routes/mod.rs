@@ -53,8 +53,8 @@ use taskagent_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
 use taskagent_shared::{
-    AgentId, AgentSessionId, CommentId, CoreError, DocumentId, PlanId, ProjectId, RuleId, RunId,
-    TaskId, TokenId, WebhookId,
+    AgentId, AgentSessionId, CommentId, CoreError, DocumentId, EvidenceId, PlanId, ProjectId,
+    RuleId, RunId, TaskId, TokenId, WebhookId,
 };
 use taskagent_storage::{ClaimOutcome, ReserveOutcome};
 use taskagent_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
@@ -229,6 +229,8 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/rules/{id}",
             get(get_rule).patch(patch_rule).delete(disable_rule),
         )
+        .route("/evidence", get(list_evidence).post(record_evidence))
+        .route("/evidence/{id}", get(get_evidence))
         .route(
             "/workspace-registry",
             get(list_logical_workspaces).post(create_logical_workspace),
@@ -1783,6 +1785,101 @@ fn parse_rule_id(id_str: &str) -> Result<RuleId, ApiError> {
         .map_err(|_| ApiError::from(CoreError::validation(format!("invalid rule id: {id_str}"))))
 }
 
+// ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ───────────────────────
+
+/// Query for listing evidence: scope selector plus `include_superseded`.
+#[derive(Deserialize)]
+struct EvidenceListQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    include_superseded: bool,
+}
+
+/// `GET /v1/evidence` — list evidence at a scope (tenant by default).
+async fn list_evidence(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<EvidenceListQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let scope = RuleScopeQuery {
+        project_id: q.project_id,
+        plan_id: q.plan_id,
+        task_id: q.task_id,
+    }
+    .into_scope()?;
+    let evidence = state
+        .evidence
+        .list_for_scope(&scope, q.include_superseded)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "evidence": evidence })))
+}
+
+/// `GET /v1/evidence/{id}` — fetch a single evidence record.
+async fn get_evidence(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = id_str.parse::<EvidenceId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!("invalid evidence id: {id_str}")))
+    })?;
+    let evidence = state
+        .evidence
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("evidence {id}"))))?;
+    Ok(Json(json!({ "evidence": evidence })))
+}
+
+#[derive(Deserialize)]
+struct RecordEvidenceBody {
+    evidence: taskagent_domain::NewEvidence,
+}
+
+/// `POST /v1/evidence` — record evidence (event-sourced via the command bus).
+async fn record_evidence(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<RecordEvidenceBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::RecordEvidence {
+                evidence: body.evidence,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let evidence = envs.iter().find_map(|e| match &e.payload {
+        Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
+        _ => None,
+    });
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "evidence": evidence }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
 fn validate_workspace_name(name: &str) -> Result<String, ApiError> {
     let trimmed = name.trim();
     if trimmed.is_empty() || trimmed.len() > 120 {
@@ -3070,10 +3167,12 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::UpdateProjectSettings { .. }
         | Command::UpdateProject { .. }
         | Command::DeleteProject { .. }
-        // Lifecycle rules are project/tenant-scoped configuration.
+        // Lifecycle rules are project/tenant-scoped configuration; evidence is
+        // recorded against the same scopes.
         | Command::CreateRule { .. }
         | Command::UpdateRule { .. }
-        | Command::DisableRule { .. } => Capability::ProjectWrite,
+        | Command::DisableRule { .. }
+        | Command::RecordEvidence { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,
         Command::AddComment { .. }
         | Command::EditComment { .. }

@@ -10,36 +10,75 @@
 //! - `recommendation` → [`GateDecision::Warning`]
 //!
 //! Determinism (spec invariant 8): no clock, no network — the only inputs are
-//! the check and the stored rules. Evidence-based *satisfaction* (spec §1.3)
-//! lands with the evidence registry (OSS task `019eb65a-3185`); until then a
-//! requirement is treated as unsatisfied, so `required` blocks and
-//! `recommendation` warns — honest, and it only gets stricter once evidence
-//! can be recorded. Override (`force` + `override_reason`) is honoured per
-//! spec §1.5 for rules with `override_allowed=true`.
+//! the check, the stored rules, and recorded evidence. Evidence-based
+//! *satisfaction* (spec §1.3) is wired through an [`EvidenceRepository`]: for
+//! each `required` rule whose condition matches, the gate maps the rule's
+//! [`Requirement`] to the evidence kind that satisfies it and asks the registry
+//! whether live (non-superseded) evidence exists anywhere in the scope chain. A
+//! satisfied requirement drops the rule (the transition is allowed); an
+//! unsatisfied one blocks. With no evidence repo wired the gate degrades to the
+//! honest v1 behaviour (every requirement unsatisfied → `required` blocks).
+//! Override (`force` + `override_reason`) is honoured per spec §1.5 for rules
+//! with `override_allowed=true`.
 //!
 //! Zero-cost when no rules exist: a check whose scope chain has no matching
 //! rows resolves to `Allowed` after one indexed query (the handler only calls
-//! the gate at all when one is wired).
+//! the gate at all when one is wired). Evidence is only queried for rules that
+//! both match and would otherwise block, so an unconstrained workspace pays
+//! nothing extra.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
 use taskagent_api_dto::MutationWarning;
-use taskagent_domain::{Actor, Condition, Rule, RuleMode, RuleScope, RuleTrigger};
+use taskagent_domain::{
+    Actor, Condition, EvidenceKind, Requirement, Rule, RuleMode, RuleScope, RuleTrigger,
+};
 use taskagent_shared::Result;
 
 use crate::lifecycle_gate::{GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent};
-use crate::repos::RuleRepository;
+use crate::repos::{EvidenceRepository, RuleRepository};
 
-/// Rule engine over a [`RuleRepository`].
+/// Rule engine over a [`RuleRepository`] and, optionally, an
+/// [`EvidenceRepository`] for requirement satisfaction.
 pub struct RuleEngineGate {
     rules: Arc<dyn RuleRepository>,
+    evidence: Option<Arc<dyn EvidenceRepository>>,
 }
 
 impl RuleEngineGate {
+    /// Construct without evidence: every requirement is treated as unsatisfied
+    /// (honest v1 behaviour). Prefer [`RuleEngineGate::with_evidence`].
     pub fn new(rules: Arc<dyn RuleRepository>) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            evidence: None,
+        }
+    }
+
+    /// Construct with an evidence registry so satisfied `required` requirements
+    /// unblock the transition (spec §1.3).
+    pub fn with_evidence(
+        rules: Arc<dyn RuleRepository>,
+        evidence: Arc<dyn EvidenceRepository>,
+    ) -> Self {
+        Self {
+            rules,
+            evidence: Some(evidence),
+        }
+    }
+
+    /// Is `rule`'s requirement satisfied by recorded evidence in `chain`? With
+    /// no evidence repo wired, nothing is ever satisfied (returns `false`).
+    async fn requirement_satisfied(&self, rule: &Rule, chain: &[RuleScope]) -> Result<bool> {
+        let Some(evidence) = &self.evidence else {
+            return Ok(false);
+        };
+        let (kind, target) = requirement_evidence(&rule.requirement);
+        evidence
+            .has_live_evidence(chain, kind, target.as_deref())
+            .await
     }
 
     /// Build the scope chain (outermost → innermost) for a check. Tenant is
@@ -80,6 +119,12 @@ impl LifecycleGate for RuleEngineGate {
 
         for rule in &candidates {
             if !condition_matches(rule.condition.as_ref(), check) {
+                continue;
+            }
+            // Spec §1.3: a requirement backed by recorded evidence is satisfied,
+            // so the rule neither blocks nor warns. Only consult the registry
+            // for rules that would otherwise act (`off` is inert).
+            if rule.mode != RuleMode::Off && self.requirement_satisfied(rule, &chain).await? {
                 continue;
             }
             match rule.mode {
@@ -148,6 +193,34 @@ impl LifecycleGate for RuleEngineGate {
                 "outcomes": outcomes,
             }),
         })
+    }
+}
+
+/// Map a [`Requirement`] to the evidence kind (and optional target) that
+/// satisfies it. The kind strings match `EvidenceKind::as_str()`, so a rule and
+/// the evidence proving it line up without translation (spec §1.3). The target
+/// narrows the match (e.g. the document a `read_artifact` rule names); `None`
+/// means any evidence of that kind in scope satisfies the rule.
+fn requirement_evidence(req: &Requirement) -> (EvidenceKind, Option<String>) {
+    match req {
+        Requirement::ReadArtifact { doc_ref, .. } => {
+            (EvidenceKind::DocumentReadAck, Some(doc_ref.clone()))
+        }
+        Requirement::CreateArtifact { artifact_kind } => {
+            (EvidenceKind::ArtifactCreated, Some(artifact_kind.clone()))
+        }
+        Requirement::ImpactCheck { target, .. } => {
+            (EvidenceKind::ImpactAssessment, Some(target.clone()))
+        }
+        Requirement::DecisionRecord { .. } => (EvidenceKind::DecisionRecord, None),
+        Requirement::CompletionNote { .. } => (EvidenceKind::CompletionNote, None),
+        Requirement::OwnerRequired => (EvidenceKind::OwnerAssigned, None),
+        Requirement::AcceptanceCriteriaRequired => {
+            (EvidenceKind::AcceptanceCriteriaDefined, None)
+        }
+        Requirement::RiskCheck { target, .. } => {
+            (EvidenceKind::RiskCheckCompleted, Some(target.clone()))
+        }
     }
 }
 

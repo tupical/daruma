@@ -15,13 +15,14 @@ use std::sync::Arc;
 use taskagent_core::rule_engine::RuleEngineGate;
 use taskagent_core::{Command, CommandHandler};
 use taskagent_domain::{
-    Actor, NewPlan, NewRule, PlanStatus, Requirement, Rule, RuleMode, RuleScope, RuleTrigger,
-    Status,
+    Actor, EvidenceKind, NewEvidence, NewPlan, NewRule, PlanStatus, Requirement, Rule, RuleMode,
+    RuleScope, RuleTrigger, Status,
 };
 use taskagent_events::{Event, EventBus, EventStore};
 use taskagent_shared::{CoreError, PlanId, ProjectId, TaskId};
 use taskagent_storage::{
-    ActivityRepo, CommentRepo, Db, PlanRepo, ProjectRepo, RuleRepo, SqliteEventStore, TaskRepo,
+    ActivityRepo, CommentRepo, Db, EvidenceRepo, PlanRepo, ProjectRepo, RuleRepo, SqliteEventStore,
+    TaskRepo,
 };
 
 struct Stack {
@@ -39,6 +40,7 @@ async fn stack() -> Stack {
     let activity = Arc::new(ActivityRepo::new(pool.clone()));
     let plans = Arc::new(PlanRepo::new(pool.clone()));
     let rules = Arc::new(RuleRepo::new(pool.clone()));
+    let evidence = Arc::new(EvidenceRepo::new(pool.clone()));
 
     let handler = CommandHandler::new(
         store,
@@ -50,9 +52,43 @@ async fn stack() -> Stack {
     )
     .with_plans(plans)
     .with_rules(rules.clone())
-    .with_lifecycle_gate(Arc::new(RuleEngineGate::new(rules.clone())));
+    .with_evidence(evidence.clone())
+    // The gate reads evidence so a satisfied `required` requirement unblocks.
+    .with_lifecycle_gate(Arc::new(RuleEngineGate::with_evidence(
+        rules.clone(),
+        evidence.clone(),
+    )));
 
     Stack { handler }
+}
+
+/// Record a piece of evidence through the command bus (so it lands in the same
+/// projection the gate reads).
+async fn record_evidence(stack: &Stack, evidence: NewEvidence) {
+    stack
+        .handler
+        .handle(Command::RecordEvidence { evidence }, Actor::user())
+        .await
+        .expect("record evidence");
+}
+
+fn new_evidence(kind: EvidenceKind, scope: RuleScope, target: Option<&str>) -> NewEvidence {
+    NewEvidence {
+        id: None,
+        kind,
+        scope,
+        target: target.map(|s| s.to_string()),
+        doc_version: None,
+        reason: "test evidence".into(),
+        payload: serde_json::Value::Null,
+        project_id: None,
+        plan_id: None,
+        task_id: None,
+        run_id: None,
+        artifact_id: None,
+        rule_id: None,
+        supersedes: None,
+    }
 }
 
 fn new_rule(
@@ -408,4 +444,174 @@ async fn decision_is_deterministic() {
             .expect_err("same inputs, same block");
         assert!(is_blocked(&err, "completion-note"));
     }
+}
+
+// ── Evidence satisfaction (spec §1.3; OSS task 019eb65a-3185) ────────────────────
+
+/// required + matching evidence → the requirement is satisfied → allowed.
+#[tokio::test]
+async fn required_with_evidence_allows_complete() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    // Evidence of the matching kind at the (tenant) scope the rule fires in.
+    record_evidence(
+        &stack,
+        new_evidence(EvidenceKind::CompletionNote, RuleScope::Tenant, None),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: false,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("evidence satisfies the requirement → allowed");
+    assert!(outcome.warnings.is_empty(), "satisfied → no warning");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Done,
+        "requirement satisfied by evidence — transition proceeds"
+    );
+}
+
+/// required + NO evidence → still blocked (the v1-equivalent honest behaviour).
+#[tokio::test]
+async fn required_without_evidence_blocks_complete() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: false,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("no evidence → required still blocks");
+    assert!(is_blocked(&err, "completion-note"), "got: {err}");
+}
+
+/// Evidence of the wrong kind does not satisfy a requirement.
+#[tokio::test]
+async fn evidence_of_wrong_kind_does_not_satisfy() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    // Wrong kind: a risk check does not satisfy a completion-note requirement.
+    record_evidence(
+        &stack,
+        new_evidence(EvidenceKind::RiskCheckCompleted, RuleScope::Tenant, None),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: false,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("mismatched evidence kind → still blocked");
+    assert!(is_blocked(&err, "completion-note"), "got: {err}");
+}
+
+/// A targeted requirement (read_artifact for a named doc) is satisfied only by
+/// evidence naming the same target.
+#[tokio::test]
+async fn targeted_read_artifact_satisfied_by_matching_target() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    install(
+        &stack,
+        new_rule(
+            "read-architecture-md",
+            RuleScope::Tenant,
+            RuleTrigger::PlanBeforeApprove,
+            Requirement::ReadArtifact {
+                doc_ref: "architecture.md".into(),
+                min_version: "latest".into(),
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Tenant,
+            Some("architecture.md"),
+        ),
+    )
+    .await;
+
+    let plan = create_plan(&stack, project).await;
+    stack
+        .handler
+        .handle(
+            Command::SetPlanStatus {
+                plan_id: plan,
+                status: PlanStatus::Active,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("matching read-ack satisfies the requirement → approve allowed");
 }

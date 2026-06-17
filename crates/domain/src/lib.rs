@@ -7,6 +7,7 @@ pub mod comment;
 pub mod complexity;
 pub mod device;
 pub mod document;
+pub mod evidence;
 pub mod external_ref;
 pub mod plan;
 pub mod project;
@@ -27,6 +28,7 @@ pub use comment::{Comment, CommentKind, CommentPatch, NewComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;
 pub use document::{Document, DocumentKind, NewDocument};
+pub use evidence::{ActorRef, Evidence, EvidenceKind, NewEvidence};
 pub use external_ref::ExternalRef;
 pub use plan::{
     CanStart, CanStartBlocker, NewPlan, Plan, PlanFanoutWave, PlanGraph, PlanGraphEdge,

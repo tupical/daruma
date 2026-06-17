@@ -448,6 +448,21 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_with_id("id"),
             Dom::Admin, F, Ann::Destructive,
         ),
+        // ── Evidence registry (OSS task 019eb65a-3185) ─────────────────────
+        tool(
+            "taskagent_evidence_submit",
+            "Record lifecycle evidence",
+            "Record evidence that a lifecycle requirement is satisfied, so a `required` rule unblocks the transition. Pass the `evidence` object: `kind` (document_read_ack | impact_assessment | decision_record | completion_note | artifact_created | owner_assigned | acceptance_criteria_defined | risk_check_completed), `scope` (tenant/project/plan/task — same shape as a rule scope), an optional `target` (the doc/module the requirement names; omit to satisfy any target), plus optional bindings (project_id/plan_id/task_id/run_id/artifact_id/rule_id), `reason`, `payload`, and `doc_version` (for document_read_ack). Evidence is immutable; set `supersedes` to replace an earlier record.",
+            schema_evidence_submit(),
+            Dom::Admin, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_evidence_list",
+            "List lifecycle evidence",
+            "List evidence recorded at a scope (tenant by default; pass `project_id`, `plan_id`, or `task_id` for a narrower scope). Superseded records are hidden unless `include_superseded` is true.",
+            schema_evidence_list(),
+            Dom::Admin, F, Ann::Read,
+        ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "taskagent_ai_analyze_complexity",
@@ -1954,6 +1969,32 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let id = required_string(&args, "id")?;
             client.delete_json(&format!("/v1/rules/{id}")).await
         }
+        "taskagent_evidence_submit" => {
+            let evidence = args
+                .get("evidence")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`evidence` is required"))?;
+            client
+                .post_json("/v1/evidence", json!({ "evidence": evidence }))
+                .await
+        }
+        "taskagent_evidence_list" => {
+            let mut qs = Vec::new();
+            for key in ["project_id", "plan_id", "task_id"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    qs.push(format!("{key}={v}"));
+                }
+            }
+            if let Some(true) = args.get("include_superseded").and_then(|v| v.as_bool()) {
+                qs.push("include_superseded=true".to_string());
+            }
+            let path = if qs.is_empty() {
+                "/v1/evidence".to_string()
+            } else {
+                format!("/v1/evidence?{}", qs.join("&"))
+            };
+            client.get_json(&path).await
+        }
         "taskagent_workspace_resolve" => {
             let ws = workspace::global();
             let raw_path = args.get("scope_path").and_then(|v| v.as_str());
@@ -2443,6 +2484,47 @@ fn schema_rule_update() -> Value {
             "enabled": {"type":"boolean"}
         },
         "required": ["id"]
+    })
+}
+
+fn schema_evidence_submit() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "evidence": {
+                "type":"object",
+                "description":"Evidence record (immutable). See the evidence registry.",
+                "properties": {
+                    "kind": {"type":"string","enum":["document_read_ack","impact_assessment","decision_record","completion_note","artifact_created","owner_assigned","acceptance_criteria_defined","risk_check_completed"]},
+                    "scope": {"type":"object","description":"{\"kind\":\"tenant\"} | {\"kind\":\"project\",\"id\":...} | plan | task."},
+                    "target": {"type":"string","description":"Optional discriminator matching a requirement target / doc_ref; omit to satisfy any target."},
+                    "doc_version": {"type":"string","description":"For document_read_ack: the document version that was read."},
+                    "reason": {"type":"string"},
+                    "payload": {"description":"Optional structured payload (any JSON)."},
+                    "project_id": {"type":"string"},
+                    "plan_id": {"type":"string"},
+                    "task_id": {"type":"string"},
+                    "run_id": {"type":"string"},
+                    "artifact_id": {"type":"string"},
+                    "rule_id": {"type":"string"},
+                    "supersedes": {"type":"string","description":"Id of an earlier record this one supersedes (immutability: the old row is marked, not edited)."}
+                },
+                "required": ["kind","scope"]
+            }
+        },
+        "required": ["evidence"]
+    })
+}
+
+fn schema_evidence_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string","description":"List evidence at this project scope."},
+            "plan_id": {"type":"string","description":"List evidence at this plan scope."},
+            "task_id": {"type":"string","description":"List evidence at this task scope."},
+            "include_superseded": {"type":"boolean","description":"Include superseded records (default false)."}
+        }
     })
 }
 

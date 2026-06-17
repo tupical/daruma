@@ -123,6 +123,7 @@ impl TestAppBuilder {
         let project_settings = Arc::new(taskagent_storage::ProjectSettingsRepo::new(pool.clone()));
         let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
         let rules = Arc::new(taskagent_storage::RuleRepo::new(pool.clone()));
+        let evidence = Arc::new(taskagent_storage::EvidenceRepo::new(pool.clone()));
         let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
         let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
         let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
@@ -175,6 +176,7 @@ impl TestAppBuilder {
         .with_project_settings(project_settings.clone())
         .with_work_units(work_units.clone())
         .with_rules(rules.clone())
+        .with_evidence(evidence.clone())
         .with_relations(relations.clone());
         if let Some(gate) = self.lifecycle_gate.clone() {
             handler = handler.with_lifecycle_gate(gate);
@@ -216,6 +218,7 @@ impl TestAppBuilder {
             project_settings,
             work_units,
             rules,
+            evidence,
             entity_versions,
             complexity_hints,
             workspace_graph,

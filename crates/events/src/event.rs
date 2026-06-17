@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
-    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, NewTask, Plan,
+    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, Evidence, NewTask, Plan,
     PlanPatch, PlanStatus, Priority, Project, RelationKind, Rule, Run, RunOutcome, SessionArtifact,
     Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
-    EventId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId, TaskId, Timestamp,
-    WorkUnitId,
+    EventId, EvidenceId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId, TaskId,
+    Timestamp, WorkUnitId,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -608,6 +608,22 @@ pub enum Event {
         rule_id: RuleId,
         at: Timestamp,
     },
+
+    // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ─────────────────
+    /// A piece of evidence was recorded. Carries the full record for replay.
+    /// Evidence is immutable; corrections are a new record that supersedes the
+    /// old via [`Event::EvidenceSuperseded`].
+    EvidenceRecorded {
+        evidence: Evidence,
+    },
+
+    /// An earlier evidence record was superseded by a newer one. The old row is
+    /// marked (`superseded_by`), never edited or deleted (immutability).
+    EvidenceSuperseded {
+        evidence_id: EvidenceId,
+        superseded_by: EvidenceId,
+        at: Timestamp,
+    },
 }
 
 impl Event {
@@ -704,6 +720,9 @@ impl Event {
             Event::RuleCreated { .. } => "rule_created",
             Event::RuleUpdated { .. } => "rule_updated",
             Event::RuleDisabled { .. } => "rule_disabled",
+            // Evidence registry
+            Event::EvidenceRecorded { .. } => "evidence_recorded",
+            Event::EvidenceSuperseded { .. } => "evidence_superseded",
         }
     }
 
@@ -881,10 +900,12 @@ impl Event {
             | Event::ArtifactRelationAdded { .. }
             | Event::ArtifactRelationRemoved { .. } => Channel::Artifacts,
 
-            // ── Rules channel (lifecycle rules) ───────────────────────────────
+            // ── Rules channel (lifecycle rules + evidence registry) ───────────
             Event::RuleCreated { .. }
             | Event::RuleUpdated { .. }
-            | Event::RuleDisabled { .. } => Channel::Rules,
+            | Event::RuleDisabled { .. }
+            | Event::EvidenceRecorded { .. }
+            | Event::EvidenceSuperseded { .. } => Channel::Rules,
         }
     }
 }
@@ -919,7 +940,8 @@ pub enum Channel {
     /// Artifact registry lifecycle (P4): registered / owner assigned /
     /// status changed / write committed / deprecated / relations.
     Artifacts,
-    /// Lifecycle-rule definition events: created / updated / disabled.
+    /// Lifecycle-rule definition events (created / updated / disabled) and
+    /// evidence-registry events (recorded / superseded).
     Rules,
 }
 

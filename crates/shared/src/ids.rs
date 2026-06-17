@@ -82,6 +82,7 @@ newtype_id!(WorkLeaseId, "wls");
 newtype_id!(ArtifactId, "art");
 newtype_id!(ArtifactRelationId, "artrel");
 newtype_id!(RuleId, "rule");
+newtype_id!(EvidenceId, "ev");
 
 #[cfg(test)]
 mod tests {

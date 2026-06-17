@@ -183,6 +183,39 @@ pub trait RuleRepository: Send + Sync {
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
 
+// ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ───────────────────────
+
+/// Read / projection interface for the `evidence` table. Used by the rule-engine
+/// gate (to decide whether a `required` rule's requirement is satisfied) and by
+/// the evidence CRUD endpoints (get / list).
+#[async_trait]
+pub trait EvidenceRepository: Send + Sync {
+    /// Fetch evidence by id; `None` if not found.
+    async fn get(
+        &self,
+        id: taskagent_shared::EvidenceId,
+    ) -> Result<Option<taskagent_domain::Evidence>>;
+
+    /// Evidence recorded directly at a scope level (newest first).
+    async fn list_for_scope(
+        &self,
+        scope: &taskagent_domain::RuleScope,
+        include_superseded: bool,
+    ) -> Result<Vec<taskagent_domain::Evidence>>;
+
+    /// Gate hot path: does live (non-superseded) evidence of `kind` exist
+    /// anywhere in the scope chain, optionally matching `target`?
+    async fn has_live_evidence(
+        &self,
+        chain: &[taskagent_domain::RuleScope],
+        kind: taskagent_domain::EvidenceKind,
+        target: Option<&str>,
+    ) -> Result<bool>;
+
+    /// Apply a persisted event to the projection.
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
+}
+
 // ── Concrete implementations ──────────────────────────────────────────────────
 //
 // `taskagent-core` already depends on `taskagent-storage`, so we implement the
@@ -192,9 +225,37 @@ pub trait RuleRepository: Send + Sync {
 
 use taskagent_events::Event;
 use taskagent_storage::{
-    AgentClaimRepo, DocumentRepo, ExternalRefRepo, PlanRepo, RuleRepo, RunNoteRepo, RunRepo,
-    SessionRepo, WorkLeaseRepo,
+    AgentClaimRepo, DocumentRepo, EvidenceRepo, ExternalRefRepo, PlanRepo, RuleRepo, RunNoteRepo,
+    RunRepo, SessionRepo, WorkLeaseRepo,
 };
+
+#[async_trait]
+impl EvidenceRepository for EvidenceRepo {
+    async fn get(
+        &self,
+        id: taskagent_shared::EvidenceId,
+    ) -> Result<Option<taskagent_domain::Evidence>> {
+        EvidenceRepo::get(self, id).await
+    }
+    async fn list_for_scope(
+        &self,
+        scope: &taskagent_domain::RuleScope,
+        include_superseded: bool,
+    ) -> Result<Vec<taskagent_domain::Evidence>> {
+        EvidenceRepo::list_for_scope(self, scope, include_superseded).await
+    }
+    async fn has_live_evidence(
+        &self,
+        chain: &[taskagent_domain::RuleScope],
+        kind: taskagent_domain::EvidenceKind,
+        target: Option<&str>,
+    ) -> Result<bool> {
+        EvidenceRepo::has_live_evidence(self, chain, kind, target).await
+    }
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
+        EvidenceRepo::apply_event(self, env).await
+    }
+}
 
 #[async_trait]
 impl RuleRepository for RuleRepo {

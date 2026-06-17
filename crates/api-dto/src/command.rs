@@ -357,6 +357,14 @@ pub enum Command {
     DisableRule {
         id: RuleId,
     },
+
+    // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ─────────────────
+    /// Record a piece of evidence (immutable). When `supersedes` is set the
+    /// older record is marked superseded (not edited). Evidence is what
+    /// satisfies a `required` rule's requirement at the lifecycle gate.
+    RecordEvidence {
+        evidence: taskagent_domain::NewEvidence,
+    },
 }
 
 impl Command {
@@ -427,6 +435,8 @@ impl Command {
             Command::CreateRule { .. } => "create_rule",
             Command::UpdateRule { .. } => "update_rule",
             Command::DisableRule { .. } => "disable_rule",
+            // Evidence registry
+            Command::RecordEvidence { .. } => "record_evidence",
         }
     }
 }

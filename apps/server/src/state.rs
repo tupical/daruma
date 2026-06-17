@@ -9,9 +9,9 @@ use taskagent_discovery::PairingStore;
 use taskagent_events::EventStore;
 use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, DocumentRepo, EntityVersionRepo,
-    ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo, RunNoteRepo,
-    RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo, WebhookRepo,
-    WorkLeaseRepo, WorkspaceGraphRepo,
+    EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo,
+    RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
+    WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use taskagent_sync::Hub;
 use taskagent_webhooks::WebhookStore;
@@ -81,6 +81,8 @@ pub struct AppState {
     pub work_units: Arc<taskagent_storage::WorkUnitRepo>,
     /// Lifecycle-rule projection (docs/LIFECYCLE_RULES_SPEC.md §4).
     pub rules: Arc<RuleRepo>,
+    /// Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3).
+    pub evidence: Arc<EvidenceRepo>,
     /// Immutable task/document version history repo.
     pub entity_versions: Arc<EntityVersionRepo>,
     // ── AI-derived projection (§3.8.3) ───────────────────────────────────────

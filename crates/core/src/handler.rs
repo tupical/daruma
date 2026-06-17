@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use taskagent_domain::{
-    Actor, AgentSession, Comment, DocumentKind, PlanPatch, PlanStatus, Project, Relation, Run,
-    RunOutcome, RunStatus, SessionArtifact, SignalKind, Status, Task,
+    Actor, ActorRef, AgentSession, Comment, DocumentKind, PlanPatch, PlanStatus, Project, Relation,
+    Run, RunOutcome, RunStatus, SessionArtifact, SignalKind, Status, Task,
 };
 use taskagent_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
 use taskagent_shared::{
@@ -21,8 +21,9 @@ use crate::{
     plan_concurrency::detect_parent_cycle,
     relation_enforcement,
     repos::{
-        AgentClaimRepository, DocumentRepository, ExternalRefRepository, PlanRepository,
-        RuleRepository, RunNoteRepository, RunRepository, SessionRepository, WorkLeaseRepository,
+        AgentClaimRepository, DocumentRepository, EvidenceRepository, ExternalRefRepository,
+        PlanRepository, RuleRepository, RunNoteRepository, RunRepository, SessionRepository,
+        WorkLeaseRepository,
     },
     search::{index_items_for_event, SearchProvider},
     Command,
@@ -79,6 +80,11 @@ pub struct CommandHandler {
     // until wired; the rule CRUD commands return CoreError::Storage when
     // absent. The gate above reads through this same repo.
     pub rules: Option<Arc<dyn RuleRepository>>,
+
+    // Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3). `None`
+    // until wired; `RecordEvidence` returns CoreError::Storage when absent. The
+    // gate reads through this repo to satisfy `required` requirements.
+    pub evidence: Option<Arc<dyn EvidenceRepository>>,
 }
 
 impl CommandHandler {
@@ -114,6 +120,7 @@ impl CommandHandler {
             search_provider: None,
             lifecycle_gate: None,
             rules: None,
+            evidence: None,
         }
     }
 
@@ -197,6 +204,12 @@ impl CommandHandler {
     /// Wire the lifecycle-rule projection (CRUD + gate reads).
     pub fn with_rules(mut self, repo: Arc<dyn RuleRepository>) -> Self {
         self.rules = Some(repo);
+        self
+    }
+
+    /// Wire the evidence-registry projection (`RecordEvidence` + gate reads).
+    pub fn with_evidence(mut self, repo: Arc<dyn EvidenceRepository>) -> Self {
+        self.evidence = Some(repo);
         self
     }
 
@@ -298,6 +311,9 @@ impl CommandHandler {
             }
             if let Some(rules) = &self.rules {
                 rules.apply_event(env).await?;
+            }
+            if let Some(evidence) = &self.evidence {
+                evidence.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -741,6 +757,9 @@ impl CommandHandler {
             }
             if let Some(rules) = &self.rules {
                 rules.apply_event(env).await?;
+            }
+            if let Some(evidence) = &self.evidence {
+                evidence.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -2177,6 +2196,28 @@ impl CommandHandler {
                     at: time::now(),
                 }])
             }
+
+            // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ──────────
+            Command::RecordEvidence { evidence } => {
+                let _repo = require_evidence(&self.evidence)?;
+                let supersedes = evidence.supersedes;
+                let mut record =
+                    evidence.into_evidence(ActorRef::from_actor(actor), time::now());
+                if record.id == taskagent_shared::EvidenceId::default() {
+                    record.id = taskagent_shared::EvidenceId::new();
+                }
+                let new_id = record.id;
+                let mut events = vec![Event::EvidenceRecorded { evidence: record }];
+                // Immutability: a correction marks the old record, never edits.
+                if let Some(old) = supersedes {
+                    events.push(Event::EvidenceSuperseded {
+                        evidence_id: old,
+                        superseded_by: new_id,
+                        at: time::now(),
+                    });
+                }
+                Ok(events)
+            }
         }
     }
 }
@@ -2187,6 +2228,15 @@ fn require_rules(rules: &Option<Arc<dyn RuleRepository>>) -> Result<&Arc<dyn Rul
     rules
         .as_ref()
         .ok_or_else(|| CoreError::storage("rule repository not configured"))
+}
+
+/// Borrow the evidence repo or return a clean "not configured" error.
+fn require_evidence(
+    evidence: &Option<Arc<dyn EvidenceRepository>>,
+) -> Result<&Arc<dyn EvidenceRepository>> {
+    evidence
+        .as_ref()
+        .ok_or_else(|| CoreError::storage("evidence repository not configured"))
 }
 
 /// Fetch the document or return `not_found`. Used by every Document-mutation
