@@ -202,8 +202,18 @@ impl ActivityRepo {
                 .await?;
             }
 
-            Event::TaskCompleted { task_id, .. } => {
+            Event::TaskCompleted {
+                task_id,
+                completion_note,
+                ..
+            } => {
                 let project_id = self.inherit_project_id(*task_id).await?;
+                // Carry a short completion-note summary so the feed shows *why*
+                // a task was completed; `None` for legacy/bulk completes.
+                let new_value = completion_note
+                    .as_ref()
+                    .filter(|n| n.is_substantive())
+                    .and_then(|n| serde_json::to_string(n).ok());
                 self.insert_row(Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
@@ -212,7 +222,38 @@ impl ActivityRepo {
                     verb: Verb::Completed,
                     field: None,
                     old_value: None,
-                    new_value: None,
+                    new_value,
+                    occurred_at,
+                    event_id,
+                    seq,
+                })
+                .await?;
+            }
+
+            Event::RuleFired {
+                rule_key,
+                decision,
+                task_id,
+                project_id,
+                message,
+                ..
+            } => {
+                // The gate may fire on project/plan-level triggers too; resolve
+                // the project from the task when the rule was task-scoped.
+                let project_id = match (project_id, task_id) {
+                    (Some(p), _) => Some(*p),
+                    (None, Some(t)) => self.inherit_project_id(*t).await?,
+                    (None, None) => None,
+                };
+                self.insert_row(Activity {
+                    id: ActivityId::new(),
+                    task_id: *task_id,
+                    project_id,
+                    actor: actor.clone(),
+                    verb: Verb::RuleFired,
+                    field: Some(rule_key.clone()),
+                    old_value: Some(decision.as_str().to_string()),
+                    new_value: Some(message.clone()),
                     occurred_at,
                     event_id,
                     seq,

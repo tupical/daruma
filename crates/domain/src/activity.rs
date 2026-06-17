@@ -116,6 +116,11 @@ pub enum Verb {
     /// `TaskRelationKindChanged` — an existing relation's kind was transitioned
     /// (e.g. `Blocks → WasBlocking` when the blocker resolved; §3.7.2 / LIN A.3).
     RelationKindChanged,
+
+    // ── Lifecycle rules ───────────────────────────────────────────────────
+    /// `RuleFired` — a lifecycle rule warned or blocked a gated transition
+    /// (the rule-engine audit trail; the decision rides `new_value`).
+    RuleFired,
 }
 
 impl std::fmt::Display for Verb {

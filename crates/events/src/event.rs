@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
-    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, Evidence, NewTask, Plan,
-    PlanPatch, PlanStatus, Priority, Project, RelationKind, Rule, Run, RunOutcome, SessionArtifact,
-    Status, TaskPatch, WorkLease, WorkUnit,
+    ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, CompletionNote, Document,
+    Evidence, NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Rule, Run,
+    RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
@@ -52,6 +52,11 @@ pub enum Event {
     TaskCompleted {
         task_id: TaskId,
         completed_at: Timestamp,
+        /// Optional completion note (reason / result / acceptance status /
+        /// artifacts + the actor that completed). `None` for legacy completes
+        /// and bulk/drain paths — backward compatible with every prior event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion_note: Option<CompletionNote>,
     },
     TaskDeleted {
         task_id: TaskId,
@@ -624,6 +629,56 @@ pub enum Event {
         superseded_by: EvidenceId,
         at: Timestamp,
     },
+
+    /// A lifecycle rule acted on a pre-transition gate check: it warned
+    /// (`recommendation`) or blocked (`required`) the mutation. The audit
+    /// trail of rule-engine *decisions* — distinct from `RuleCreated` /
+    /// `RuleUpdated`, which record rule *definition* changes.
+    ///
+    /// Emitted by the core (not the gate) only when a rule actually acts:
+    /// `allowed` decisions and unconstrained transitions emit nothing, so an
+    /// idle workspace pays zero audit noise (spec §1.5; task risk note).
+    RuleFired {
+        rule_id: RuleId,
+        /// Stable rule key (e.g. `task.completion_note_required`).
+        rule_key: String,
+        /// `warning` | `blocked`.
+        decision: RuleDecision,
+        /// The lifecycle trigger that was checked (e.g.
+        /// `task.before_complete`).
+        trigger: String,
+        /// Who attempted the gated transition.
+        actor: Actor,
+        /// Scope refs of the checked transition, when carried.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<ProjectId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_id: Option<PlanId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
+        /// Human-readable reason shown to the executor.
+        message: String,
+        at: Timestamp,
+    },
+}
+
+/// The decision a lifecycle rule reached for a gate check. `allowed` is never
+/// recorded (no rule acted), so the audit log only carries the two that change
+/// behaviour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleDecision {
+    Warning,
+    Blocked,
+}
+
+impl RuleDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleDecision::Warning => "warning",
+            RuleDecision::Blocked => "blocked",
+        }
+    }
 }
 
 impl Event {
@@ -723,6 +778,7 @@ impl Event {
             // Evidence registry
             Event::EvidenceRecorded { .. } => "evidence_recorded",
             Event::EvidenceSuperseded { .. } => "evidence_superseded",
+            Event::RuleFired { .. } => "rule_fired",
         }
     }
 
@@ -766,6 +822,9 @@ impl Event {
             | Event::TaskRelationKindChanged { from, .. } => Some(*from),
             Event::TaskUnblocked { task_id, .. } => Some(*task_id),
             Event::TaskDueElapsed { task_id, .. } => Some(*task_id),
+            // Rule-engine audit: resolves to the gated task when the check was
+            // task-scoped (None for project/plan-level triggers).
+            Event::RuleFired { task_id, .. } => *task_id,
             // All remaining plan/run/session/signal events do not resolve to a single task.
             _ => None,
         }
@@ -905,7 +964,8 @@ impl Event {
             | Event::RuleUpdated { .. }
             | Event::RuleDisabled { .. }
             | Event::EvidenceRecorded { .. }
-            | Event::EvidenceSuperseded { .. } => Channel::Rules,
+            | Event::EvidenceSuperseded { .. }
+            | Event::RuleFired { .. } => Channel::Rules,
         }
     }
 }

@@ -30,8 +30,9 @@ use crate::{
 };
 
 use crate::lifecycle_gate::{
-    derive_gate_checks, gate_override_of, DispatchOutcome, GateDecision, LifecycleGate,
+    derive_gate_checks, gate_override_of, DispatchOutcome, GateCheck, GateDecision, LifecycleGate,
 };
+use taskagent_events::event::RuleDecision as EventRuleDecision;
 
 /// Processes commands: validate → build events → persist → apply → publish.
 pub struct CommandHandler {
@@ -251,21 +252,58 @@ impl CommandHandler {
         }
 
         let mut warnings = Vec::new();
+        // Rule-engine audit trail: a `RuleFired` event per acting rule. Only
+        // warnings/blocks act, so `Allowed` decisions add nothing — an
+        // unconstrained workspace stays silent (spec §1.5; task risk note).
+        let mut rule_audit: Vec<Event> = Vec::new();
         if let Some(gate) = &self.lifecycle_gate {
             let gate_override = gate_override.unwrap_or_default();
             for check in derive_gate_checks(&events) {
                 match gate.check(&actor, &check, &gate_override).await? {
                     GateDecision::Allowed => {}
-                    GateDecision::Warning(mut batch) => warnings.append(&mut batch),
-                    GateDecision::Blocked { message, .. } => {
+                    GateDecision::Warning(mut batch) => {
+                        rule_audit.extend(rule_fired_events(
+                            &check,
+                            &actor,
+                            EventRuleDecision::Warning,
+                            batch.iter().map(|w| (&w.details, w.message.as_str())),
+                        ));
+                        warnings.append(&mut batch);
+                    }
+                    GateDecision::Blocked { message, details } => {
+                        // Persist the block's audit trail before aborting, so a
+                        // rejected transition is still visible in the event log
+                        // / webhooks even though the mutation never lands.
+                        let blocked = blocked_outcomes(&details, &message);
+                        let audit = rule_fired_events(
+                            &check,
+                            &actor,
+                            EventRuleDecision::Blocked,
+                            blocked.iter().map(|(d, m)| (d, m.as_str())),
+                        );
+                        if !audit.is_empty() {
+                            let envs = audit
+                                .into_iter()
+                                .map(|payload| EventEnvelope::new(actor.clone(), payload))
+                                .collect();
+                            let persisted = self.store.append_batch(envs).await?;
+                            for env in &persisted {
+                                self.activity.apply_event(env).await?;
+                                self.spawn_search_index(env.clone());
+                                self.bus.publish(env.clone());
+                            }
+                        }
                         return Err(CoreError::conflict(format!("rule_blocked: {message}")));
                     }
                 }
             }
         }
 
-        let envelopes: Vec<EventEnvelope> = events
+        // Audit events ride ahead of the mutation they describe (same actor),
+        // so a subscriber sees "rule warned" then the transition it warned on.
+        let envelopes: Vec<EventEnvelope> = rule_audit
             .into_iter()
+            .chain(events)
             .map(|payload| EventEnvelope::new(actor.clone(), payload))
             .collect();
 
@@ -837,7 +875,7 @@ impl CommandHandler {
                 Ok(vec![Event::TaskUpdated { task_id: id, patch }])
             }
 
-            Command::CompleteTask { id } => {
+            Command::CompleteTask { id, note } => {
                 let task = self
                     .tasks
                     .get(id)
@@ -863,6 +901,15 @@ impl CommandHandler {
 
                 let from = task.status;
                 let now = time::now();
+                // Stamp the completing actor onto the note (human vs agent) so
+                // the audit trail can tell a human-verified completion from an
+                // agent-self-reported one. Empty notes carry no payload — only
+                // a substantive note (or one with a meaningful actor) rides the
+                // event; a bare `Some(default)` collapses to `None`.
+                let completion_note = note.map(|mut n| {
+                    n.actor = Some(taskagent_domain::ActorRef::from_actor(actor));
+                    n
+                });
                 let mut events = vec![
                     Event::TaskStatusChanged {
                         task_id: id,
@@ -872,6 +919,7 @@ impl CommandHandler {
                     Event::TaskCompleted {
                         task_id: id,
                         completed_at: now,
+                        completion_note,
                     },
                     Event::TaskClosed {
                         task_id: id,
@@ -2201,8 +2249,7 @@ impl CommandHandler {
             Command::RecordEvidence { evidence } => {
                 let _repo = require_evidence(&self.evidence)?;
                 let supersedes = evidence.supersedes;
-                let mut record =
-                    evidence.into_evidence(ActorRef::from_actor(actor), time::now());
+                let mut record = evidence.into_evidence(ActorRef::from_actor(actor), time::now());
                 if record.id == taskagent_shared::EvidenceId::default() {
                     record.id = taskagent_shared::EvidenceId::new();
                 }
@@ -2228,6 +2275,76 @@ fn require_rules(rules: &Option<Arc<dyn RuleRepository>>) -> Result<&Arc<dyn Rul
     rules
         .as_ref()
         .ok_or_else(|| CoreError::storage("rule repository not configured"))
+}
+
+/// Build one `RuleFired` audit event per acting rule from a gate decision.
+///
+/// `outcomes` yields `(details, message)` for each rule that warned or blocked;
+/// `details` is the per-rule JSON the gate already assembled (`rule_id`,
+/// `rule_key`). A rule whose `details` carries no parseable `rule_id` is
+/// skipped — the audit log records identified rules, never guesses.
+fn rule_fired_events<'a>(
+    check: &GateCheck,
+    actor: &Actor,
+    decision: EventRuleDecision,
+    outcomes: impl Iterator<Item = (&'a serde_json::Value, &'a str)>,
+) -> Vec<Event> {
+    let now = time::now();
+    let trigger = check.trigger.as_str().to_string();
+    outcomes
+        .filter_map(|(details, message)| {
+            let rule_id: taskagent_shared::RuleId = details
+                .get("rule_id")
+                .and_then(|v| v.as_str())?
+                .parse()
+                .ok()?;
+            let rule_key = details
+                .get("rule_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some(Event::RuleFired {
+                rule_id,
+                rule_key,
+                decision,
+                trigger: trigger.clone(),
+                actor: actor.clone(),
+                project_id: check.project_id,
+                plan_id: check.plan_id,
+                task_id: check.task_id,
+                message: message.to_string(),
+                at: now,
+            })
+        })
+        .collect()
+}
+
+/// Flatten a `GateDecision::Blocked` `details` into `(per-rule details, message)`
+/// pairs for [`rule_fired_events`]. The gate packs every blocked rule into
+/// `details.outcomes`; falling back to the top-level `details` keeps a single
+/// `RuleFired` when the structured list is absent.
+fn blocked_outcomes(
+    details: &serde_json::Value,
+    message: &str,
+) -> Vec<(serde_json::Value, String)> {
+    if let Some(outcomes) = details.get("outcomes").and_then(|v| v.as_array()) {
+        let blocked: Vec<_> = outcomes
+            .iter()
+            .filter(|o| o.get("decision").and_then(|d| d.as_str()) == Some("blocked"))
+            .map(|o| {
+                let msg = o
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(message)
+                    .to_string();
+                (o.clone(), msg)
+            })
+            .collect();
+        if !blocked.is_empty() {
+            return blocked;
+        }
+    }
+    vec![(details.clone(), message.to_string())]
 }
 
 /// Borrow the evidence repo or return a clean "not configured" error.
@@ -2700,7 +2817,13 @@ mod tests {
         };
 
         let complete_envs = handler
-            .handle(Command::CompleteTask { id: task_id }, Actor::user())
+            .handle(
+                Command::CompleteTask {
+                    id: task_id,
+                    note: None,
+                },
+                Actor::user(),
+            )
             .await
             .unwrap();
         assert_eq!(complete_envs.len(), 3);
@@ -2712,7 +2835,13 @@ mod tests {
         assert!(task.completed_at.is_some());
 
         let err = handler
-            .handle(Command::CompleteTask { id: task_id }, Actor::user())
+            .handle(
+                Command::CompleteTask {
+                    id: task_id,
+                    note: None,
+                },
+                Actor::user(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, taskagent_shared::CoreError::Conflict(_)));

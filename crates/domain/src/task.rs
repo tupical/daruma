@@ -250,6 +250,46 @@ impl TaskPatch {
     }
 }
 
+/// Optional, human- or agent-supplied note attached to a `CompleteTask`
+/// command. Backward compatible: omitted by legacy clients, in which case
+/// `TaskCompleted` carries `completion_note: None` exactly as before.
+///
+/// The `actor` triple distinguishes a human-verified completion (`kind="user"`)
+/// from an agent self-reported one (`kind="agent"`) at zero extra cost — it is
+/// projected from the command's [`Actor`](crate::Actor) by the handler, so the
+/// audit trail can tell the two apart (task risk note). Every field is
+/// optional so a caller can supply just a `reason`, just a `result_summary`,
+/// or the full set.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionNote {
+    /// Who recorded the completion — user vs agent (filled by the handler).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<crate::ActorRef>,
+    /// Why the task is considered done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What was produced / the outcome summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    /// Free-form acceptance-criteria status (e.g. "3/3 met", "AC2 waived").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_criteria_status: Option<String>,
+    /// References to artifacts produced (paths, URLs, doc refs, PR links).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_artifacts: Vec<String>,
+}
+
+impl CompletionNote {
+    /// True when the note carries nothing beyond a possibly-filled actor — a
+    /// caller passed an empty note. Used to avoid persisting noise.
+    pub fn is_substantive(&self) -> bool {
+        self.reason.is_some()
+            || self.result_summary.is_some()
+            || self.acceptance_criteria_status.is_some()
+            || !self.related_artifacts.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

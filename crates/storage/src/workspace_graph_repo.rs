@@ -271,6 +271,7 @@ impl WorkspaceGraphRepo {
             Event::TaskCompleted {
                 task_id,
                 completed_at,
+                ..
             } => {
                 self.merge_node_metadata(
                     &task_node_id(task_id),

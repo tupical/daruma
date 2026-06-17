@@ -295,6 +295,7 @@ impl TaskRepo {
             Event::TaskCompleted {
                 task_id,
                 completed_at,
+                ..
             } => {
                 let mut tx = self.begin_tx().await?;
                 if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {

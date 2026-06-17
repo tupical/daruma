@@ -6,9 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 use taskagent_domain::{
-    AgentAction, AgentSessionPlanStep, CommentPatch, NewComment, NewDocument, NewPlan, NewTask,
-    PlanPatch, PlanStatus, Priority, RelationKind, RunOutcome, SessionArtifactKind, SignalKind,
-    Status, TaskPatch, WorkLease,
+    AgentAction, AgentSessionPlanStep, CommentPatch, CompletionNote, NewComment, NewDocument,
+    NewPlan, NewTask, PlanPatch, PlanStatus, Priority, RelationKind, RunOutcome,
+    SessionArtifactKind, SignalKind, Status, TaskPatch, WorkLease,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RuleId, RunId,
@@ -29,6 +29,14 @@ pub enum Command {
     },
     CompleteTask {
         id: TaskId,
+        /// Optional completion note (reason / result summary / acceptance
+        /// status / artifacts). Omitted by legacy clients — `CompleteTask`
+        /// stays backward compatible: no note means the same single-arg
+        /// command as before. The handler stamps the completing actor onto
+        /// the note so human-verified and agent-self-reported completions are
+        /// distinguishable in the audit trail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<CompletionNote>,
     },
     DeleteTask {
         id: TaskId,
