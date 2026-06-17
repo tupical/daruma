@@ -2320,9 +2320,10 @@ fn rule_fired_events<'a>(
 }
 
 /// Flatten a `GateDecision::Blocked` `details` into `(per-rule details, message)`
-/// pairs for [`rule_fired_events`]. The gate packs every blocked rule into
-/// `details.outcomes`; falling back to the top-level `details` keeps a single
-/// `RuleFired` when the structured list is absent.
+/// pairs for [`rule_fired_events`]. The bundled `RuleEngine` packs every blocked
+/// rule into `details.outcomes`; the fallback to the top-level `details` keeps a
+/// single `RuleFired` for any other `LifecycleGate` impl whose `Blocked` payload
+/// has no structured outcomes (e.g. a custom gate, exercised by the tests).
 fn blocked_outcomes(
     details: &serde_json::Value,
     message: &str,
