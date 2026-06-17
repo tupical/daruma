@@ -239,10 +239,9 @@ fn map_trigger(t: TriggerEvent) -> RuleTrigger {
 
 /// Match a rule condition against a check (spec §1.2 v1 fields). Empty / `None`
 /// condition matches everything. Semantics: AND across fields, OR within a
-/// list. Fields whose carrier the check does not provide (e.g. `changed_paths`
-/// before the evidence registry) are treated as *not constraining* in v1 —
-/// the spec marks them as activating with their carrier; a condition that
-/// relies solely on such a field still fires (the requirement then governs).
+/// list. Only the status-transition fields exist in v1; the spec's other
+/// targeting fields (priority, changed_paths, …) are omitted from
+/// [`Condition`] until their carrier reaches `GateCheck`.
 fn condition_matches(condition: Option<&Condition>, check: &GateCheck) -> bool {
     let Some(cond) = condition else {
         return true;
@@ -270,8 +269,6 @@ fn condition_matches(condition: Option<&Condition>, check: &GateCheck) -> bool {
             None => return false,
         }
     }
-    // `priority` and `changed_paths` carriers are not on GateCheck in v1;
-    // they round-trip in storage and activate with their carrier (spec §1.2).
     true
 }
 

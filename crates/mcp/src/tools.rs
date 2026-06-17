@@ -2589,7 +2589,7 @@ fn schema_rule_create() -> Value {
                     "title": {"type":"string"},
                     "scope": {"type":"object","description":"{\"kind\":\"tenant\"} | {\"kind\":\"project\",\"id\":...} | plan | task."},
                     "trigger": {"type":"string","enum":["project.created","plan.created","plan.before_approve","task.created","task.before_start","task.before_complete","run.before_execute","run.before_complete"]},
-                    "condition": {"type":["object","null"],"description":"Optional targeting: status_from/status_to/priority/changed_paths."},
+                    "condition": {"type":["object","null"],"description":"Optional targeting: status_from/status_to."},
                     "requirement": {"type":"object","description":"Tagged by `type` (read_artifact, impact_check, completion_note, …)."},
                     "mode": {"type":"string","enum":["off","recommendation","required"]},
                     "message": {"type":"string"},
