@@ -156,6 +156,33 @@ pub trait ExternalRefRepository: Send + Sync {
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
 
+// ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ───────────────────────────
+
+/// Read / projection interface for the `lifecycle_rules` table. Used by the
+/// rule-engine gate (effective rules) and CRUD endpoints (get / list).
+#[async_trait]
+pub trait RuleRepository: Send + Sync {
+    /// Fetch a rule by id; `None` if not found.
+    async fn get(&self, id: taskagent_shared::RuleId) -> Result<Option<taskagent_domain::Rule>>;
+
+    /// All rules defined directly at a scope level (any enabled state).
+    async fn list_for_scope(
+        &self,
+        scope: &taskagent_domain::RuleScope,
+    ) -> Result<Vec<taskagent_domain::Rule>>;
+
+    /// Effective enabled rules for a scope chain firing on `trigger`
+    /// (inheritance/override resolved by `rule_key`).
+    async fn effective_rules(
+        &self,
+        chain: &[taskagent_domain::RuleScope],
+        trigger: taskagent_domain::RuleTrigger,
+    ) -> Result<Vec<taskagent_domain::Rule>>;
+
+    /// Apply a persisted event to the projection.
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
+}
+
 // ── Concrete implementations ──────────────────────────────────────────────────
 //
 // `taskagent-core` already depends on `taskagent-storage`, so we implement the
@@ -165,9 +192,32 @@ pub trait ExternalRefRepository: Send + Sync {
 
 use taskagent_events::Event;
 use taskagent_storage::{
-    AgentClaimRepo, DocumentRepo, ExternalRefRepo, PlanRepo, RunNoteRepo, RunRepo, SessionRepo,
-    WorkLeaseRepo,
+    AgentClaimRepo, DocumentRepo, ExternalRefRepo, PlanRepo, RuleRepo, RunNoteRepo, RunRepo,
+    SessionRepo, WorkLeaseRepo,
 };
+
+#[async_trait]
+impl RuleRepository for RuleRepo {
+    async fn get(&self, id: taskagent_shared::RuleId) -> Result<Option<taskagent_domain::Rule>> {
+        RuleRepo::get(self, id).await
+    }
+    async fn list_for_scope(
+        &self,
+        scope: &taskagent_domain::RuleScope,
+    ) -> Result<Vec<taskagent_domain::Rule>> {
+        RuleRepo::list_for_scope(self, scope).await
+    }
+    async fn effective_rules(
+        &self,
+        chain: &[taskagent_domain::RuleScope],
+        trigger: taskagent_domain::RuleTrigger,
+    ) -> Result<Vec<taskagent_domain::Rule>> {
+        RuleRepo::effective_rules(self, chain, trigger).await
+    }
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
+        RuleRepo::apply_event(self, env).await
+    }
+}
 
 #[async_trait]
 impl PlanRepository for PlanRepo {

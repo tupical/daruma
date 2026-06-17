@@ -22,7 +22,7 @@ use crate::{
     relation_enforcement,
     repos::{
         AgentClaimRepository, DocumentRepository, ExternalRefRepository, PlanRepository,
-        RunNoteRepository, RunRepository, SessionRepository, WorkLeaseRepository,
+        RuleRepository, RunNoteRepository, RunRepository, SessionRepository, WorkLeaseRepository,
     },
     search::{index_items_for_event, SearchProvider},
     Command,
@@ -74,6 +74,11 @@ pub struct CommandHandler {
     // allowed/warning/blocked checks on derived trigger points. `None`
     // (the default) is zero-cost: no derivation, no lookups.
     pub lifecycle_gate: Option<Arc<dyn LifecycleGate>>,
+
+    // Lifecycle-rule projection (docs/LIFECYCLE_RULES_SPEC.md §4). `None`
+    // until wired; the rule CRUD commands return CoreError::Storage when
+    // absent. The gate above reads through this same repo.
+    pub rules: Option<Arc<dyn RuleRepository>>,
 }
 
 impl CommandHandler {
@@ -108,6 +113,7 @@ impl CommandHandler {
             work_units: None,
             search_provider: None,
             lifecycle_gate: None,
+            rules: None,
         }
     }
 
@@ -188,6 +194,12 @@ impl CommandHandler {
         self
     }
 
+    /// Wire the lifecycle-rule projection (CRUD + gate reads).
+    pub fn with_rules(mut self, repo: Arc<dyn RuleRepository>) -> Self {
+        self.rules = Some(repo);
+        self
+    }
+
     /// Wire a lifecycle gate (rules engine). See docs/LIFECYCLE_RULES_SPEC.md.
     pub fn with_lifecycle_gate(mut self, gate: Arc<dyn LifecycleGate>) -> Self {
         self.lifecycle_gate = Some(gate);
@@ -216,10 +228,7 @@ impl CommandHandler {
         cmd: Command,
         actor: Actor,
     ) -> Result<DispatchOutcome> {
-        let gate_override = self
-            .lifecycle_gate
-            .as_ref()
-            .map(|_| gate_override_of(&cmd));
+        let gate_override = self.lifecycle_gate.as_ref().map(|_| gate_override_of(&cmd));
         let events = self.build_events(cmd, &actor).await?;
         if events.is_empty() {
             return Ok(DispatchOutcome {
@@ -286,6 +295,9 @@ impl CommandHandler {
             }
             if let Some(work_units) = &self.work_units {
                 work_units.apply_event(env).await?;
+            }
+            if let Some(rules) = &self.rules {
+                rules.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -726,6 +738,9 @@ impl CommandHandler {
             }
             if let Some(work_units) = &self.work_units {
                 work_units.apply_event(env).await?;
+            }
+            if let Some(rules) = &self.rules {
+                rules.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -2108,8 +2123,70 @@ impl CommandHandler {
                     at: time::now(),
                 }])
             }
+
+            // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ──────────────
+            Command::CreateRule { rule } => {
+                let repo = require_rules(&self.rules)?;
+                if rule.rule_key.trim().is_empty() {
+                    return Err(CoreError::validation("rule_key must not be empty"));
+                }
+                // Spec §2: one rule_key per scope level (also enforced by the
+                // unique index; checked here for a clean error).
+                if repo
+                    .list_for_scope(&rule.scope)
+                    .await?
+                    .iter()
+                    .any(|r| r.rule_key == rule.rule_key)
+                {
+                    return Err(CoreError::conflict(format!(
+                        "rule_key `{}` already exists at this scope",
+                        rule.rule_key
+                    )));
+                }
+                let mut rule = rule.into_rule(time::now());
+                if rule.id == taskagent_shared::RuleId::default() {
+                    rule.id = taskagent_shared::RuleId::new();
+                }
+                Ok(vec![Event::RuleCreated { rule }])
+            }
+
+            Command::UpdateRule { id, patch } => {
+                let repo = require_rules(&self.rules)?;
+                if patch.is_empty() {
+                    return Err(CoreError::validation("update must set at least one field"));
+                }
+                let current = repo
+                    .get(id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("rule {id}")))?;
+                let updated = patch.apply(current, time::now());
+                Ok(vec![Event::RuleUpdated { rule: updated }])
+            }
+
+            Command::DisableRule { id } => {
+                let repo = require_rules(&self.rules)?;
+                let current = repo
+                    .get(id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("rule {id}")))?;
+                if !current.enabled {
+                    return Ok(vec![]); // already disabled — no-op
+                }
+                Ok(vec![Event::RuleDisabled {
+                    rule_id: id,
+                    at: time::now(),
+                }])
+            }
         }
     }
+}
+
+/// Borrow the rule repo or return a clean "not configured" error. Every rule
+/// CRUD command needs it; centralised so the message stays consistent.
+fn require_rules(rules: &Option<Arc<dyn RuleRepository>>) -> Result<&Arc<dyn RuleRepository>> {
+    rules
+        .as_ref()
+        .ok_or_else(|| CoreError::storage("rule repository not configured"))
 }
 
 /// Fetch the document or return `not_found`. Used by every Document-mutation

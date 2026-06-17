@@ -53,8 +53,8 @@ use taskagent_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
 use taskagent_shared::{
-    AgentId, AgentSessionId, CommentId, CoreError, DocumentId, PlanId, ProjectId, RunId, TaskId,
-    TokenId, WebhookId,
+    AgentId, AgentSessionId, CommentId, CoreError, DocumentId, PlanId, ProjectId, RuleId, RunId,
+    TaskId, TokenId, WebhookId,
 };
 use taskagent_storage::{ClaimOutcome, ReserveOutcome};
 use taskagent_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
@@ -223,6 +223,11 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route(
             "/projects/{id}/triage",
             get(list_project_triage).patch(patch_project_triage),
+        )
+        .route("/rules", get(list_rules).post(create_rule))
+        .route(
+            "/rules/{id}",
+            get(get_rule).patch(patch_rule).delete(disable_rule),
         )
         .route(
             "/workspace-registry",
@@ -1598,6 +1603,188 @@ fn parse_project_id(id_str: &str) -> Result<ProjectId, ApiError> {
             "invalid project id: {id_str}"
         )))
     })
+}
+
+// ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ───────────────────────────
+
+/// Scope selector for listing rules. No params = tenant scope; otherwise the
+/// most specific of project/plan/task wins. Mirrors the spec's nested-path
+/// design as flat query params (Command-based, event-sourced under the hood).
+#[derive(Deserialize)]
+struct RuleScopeQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+}
+
+impl RuleScopeQuery {
+    fn into_scope(self) -> Result<taskagent_domain::RuleScope, ApiError> {
+        use taskagent_domain::RuleScope;
+        if let Some(t) = self.task_id {
+            Ok(RuleScope::Task {
+                id: t
+                    .parse()
+                    .map_err(|_| ApiError::from(CoreError::validation("invalid task id")))?,
+            })
+        } else if let Some(p) = self.plan_id {
+            Ok(RuleScope::Plan {
+                id: p
+                    .parse()
+                    .map_err(|_| ApiError::from(CoreError::validation("invalid plan id")))?,
+            })
+        } else if let Some(p) = self.project_id {
+            Ok(RuleScope::Project {
+                id: parse_project_id(&p)?,
+            })
+        } else {
+            Ok(RuleScope::Tenant)
+        }
+    }
+}
+
+/// `GET /v1/rules` — list rules defined at a scope (tenant by default; pass
+/// `project_id` / `plan_id` / `task_id` for a narrower scope).
+async fn list_rules(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<RuleScopeQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let scope = q.into_scope()?;
+    let rules = state
+        .rules
+        .list_for_scope(&scope)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "rules": rules })))
+}
+
+/// `GET /v1/rules/{id}` — fetch a single rule.
+async fn get_rule(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_rule_id(&id_str)?;
+    let rule = state
+        .rules
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("rule {id}"))))?;
+    Ok(Json(json!({ "rule": rule })))
+}
+
+#[derive(Deserialize)]
+struct CreateRuleBody {
+    rule: taskagent_domain::NewRule,
+}
+
+/// `POST /v1/rules` — create a rule (event-sourced via the command bus).
+async fn create_rule(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<CreateRuleBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CreateRule { rule: body.rule },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let rule = match envs.last().map(|e| &e.payload) {
+        Some(Event::RuleCreated { rule }) => Some(rule.clone()),
+        _ => None,
+    };
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "rule": rule }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct PatchRuleBody {
+    #[serde(default, flatten)]
+    patch: taskagent_domain::RulePatch,
+}
+
+/// `PATCH /v1/rules/{id}` — partial update.
+async fn patch_rule(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<PatchRuleBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_rule_id(&id_str)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::UpdateRule {
+                id,
+                patch: body.patch,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let rule = state.rules.get(id).await.map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "rule": rule }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `DELETE /v1/rules/{id}` — disable a rule (`enabled=false`; not evaluated).
+async fn disable_rule(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = parse_rule_id(&id_str)?;
+    let envs = state
+        .commands
+        .dispatch(Command::DisableRule { id }, actor_from(&auth, None))
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "disabled": id.to_string() }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+fn parse_rule_id(id_str: &str) -> Result<RuleId, ApiError> {
+    id_str
+        .parse::<RuleId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid rule id: {id_str}"))))
 }
 
 fn validate_workspace_name(name: &str) -> Result<String, ApiError> {
@@ -3155,7 +3342,11 @@ fn capability_for_command(cmd: &Command) -> Capability {
         Command::CreateProject { .. }
         | Command::UpdateProjectSettings { .. }
         | Command::UpdateProject { .. }
-        | Command::DeleteProject { .. } => Capability::ProjectWrite,
+        | Command::DeleteProject { .. }
+        // Lifecycle rules are project/tenant-scoped configuration.
+        | Command::CreateRule { .. }
+        | Command::UpdateRule { .. }
+        | Command::DisableRule { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,
         Command::AddComment { .. }
         | Command::EditComment { .. }

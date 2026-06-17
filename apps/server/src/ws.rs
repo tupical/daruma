@@ -637,7 +637,10 @@ fn channel_required_capability(ch: Channel) -> Option<Capability> {
         // P4: Artifacts channel has no dedicated WS gate yet — same
         // treatment as Documents/WorkUnits until a SubscribeArtifacts
         // capability is introduced.
-        | Channel::Artifacts => None,
+        | Channel::Artifacts
+        // Lifecycle-rule events have no dedicated WS gate yet — same
+        // treatment until a SubscribeRules capability is introduced.
+        | Channel::Rules => None,
     }
 }
 

@@ -12,6 +12,7 @@ pub mod plan;
 pub mod project;
 pub mod project_settings;
 pub mod relation;
+pub mod rule;
 pub mod run;
 pub mod session;
 pub mod signal;
@@ -34,6 +35,9 @@ pub use plan::{
 pub use project::{slugify_title, Project, DEFAULT_TENANT_ID};
 pub use project_settings::{AutoAppendPatch, AutoAppendSettings};
 pub use relation::{Relation, RelationKind, TaskRelations};
+pub use rule::{
+    Condition, NewRule, Requirement, Rule, RuleMode, RulePatch, RuleScope, RuleTrigger,
+};
 pub use run::{Run, RunNote, RunOutcome, RunStatus};
 pub use session::{
     AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind, SessionStepStatus,

@@ -89,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let documents = Arc::new(DocumentRepo::new(pool.clone()));
     let project_settings = Arc::new(taskagent_storage::ProjectSettingsRepo::new(pool.clone()));
     let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
+    let rules = Arc::new(taskagent_storage::RuleRepo::new(pool.clone()));
     let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
     let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
     let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
@@ -144,6 +145,9 @@ async fn main() -> anyhow::Result<()> {
         .with_documents(documents.clone())
         .with_project_settings(project_settings.clone())
         .with_work_units(work_units.clone())
+        .with_rules(rules.clone())
+        // Rule engine reads through the same projection (zero-cost when empty).
+        .with_lifecycle_gate(Arc::new(taskagent_core::RuleEngineGate::new(rules.clone())))
         .with_relations(relations.clone())
         .with_search_provider(Arc::new(FtsSearchProvider::new(
             tasks.clone(),
@@ -274,6 +278,7 @@ async fn main() -> anyhow::Result<()> {
         documents,
         project_settings,
         work_units,
+        rules,
         entity_versions,
         complexity_hints,
         workspace_graph,

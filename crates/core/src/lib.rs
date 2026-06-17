@@ -20,6 +20,7 @@ pub mod plan_concurrency;
 pub mod plan_readiness;
 pub mod relation_enforcement;
 pub mod repos;
+pub mod rule_engine;
 pub mod search;
 
 pub use bus::CommandBus;
@@ -30,3 +31,4 @@ pub use lifecycle_gate::{
 };
 pub use plan_concurrency::{detect_parent_cycle, NextTask, NextTaskResolver, MAX_PARENT_DEPTH};
 pub use plan_readiness::{can_start, plan_fanout, plan_graph};
+pub use rule_engine::RuleEngineGate;

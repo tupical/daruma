@@ -11,8 +11,8 @@ use taskagent_domain::{
     Status, TaskPatch, WorkLease,
 };
 use taskagent_shared::{
-    AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RunId, TaskId,
-    WorkUnitId,
+    AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RuleId, RunId,
+    TaskId, WorkUnitId,
 };
 
 /// All mutations are commands. Tagged-union JSON for stable wire format.
@@ -338,6 +338,25 @@ pub enum Command {
     ArchiveDocument {
         document_id: DocumentId,
     },
+
+    // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ─────────────────────
+    /// Create a lifecycle rule. Rejected if a rule with the same `rule_key`
+    /// already exists at the same scope level.
+    CreateRule {
+        rule: taskagent_domain::NewRule,
+    },
+
+    /// Patch an existing lifecycle rule (mode/condition/requirement/…).
+    UpdateRule {
+        id: RuleId,
+        patch: taskagent_domain::RulePatch,
+    },
+
+    /// Disable a lifecycle rule (`enabled=false`). A disabled rule is not
+    /// evaluated by the gate.
+    DisableRule {
+        id: RuleId,
+    },
 }
 
 impl Command {
@@ -404,6 +423,10 @@ impl Command {
             Command::AppendDocumentContent { .. } => "append_document_content",
             Command::RenameDocument { .. } => "rename_document",
             Command::ArchiveDocument { .. } => "archive_document",
+            // Lifecycle rules
+            Command::CreateRule { .. } => "create_rule",
+            Command::UpdateRule { .. } => "update_rule",
+            Command::DisableRule { .. } => "disable_rule",
         }
     }
 }

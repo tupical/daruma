@@ -415,6 +415,42 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_project_settings_update(),
             Dom::Projects, F, Ann::WriteIdem,
         ),
+        // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md) ──────────────────
+        tool(
+            "taskagent_rule_list",
+            "List lifecycle rules",
+            "List lifecycle rules at a scope. No scope params = tenant (workspace) rules; pass `project_id`, `plan_id`, or `task_id` for a narrower scope. Rules declare what evidence a lifecycle transition requires (read a doc, check impact, attach a completion note). At transition time the gate already reports the active requirement in `rule_warnings`/`rule_blocked`, so this admin tool is for managing rules, not for the hot path.",
+            schema_rule_list(),
+            Dom::Admin, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_rule_get",
+            "Get a lifecycle rule",
+            "Fetch a single lifecycle rule by id.",
+            schema_with_id("id"),
+            Dom::Admin, F, Ann::Read,
+        ),
+        tool(
+            "taskagent_rule_create",
+            "Create a lifecycle rule",
+            "Create a lifecycle rule (admin). A rule is `event → condition → requirement → allowed|warning|blocked`; it has no actions. Pass the `rule` object (rule_key, title, scope, trigger, requirement, mode, message, override_allowed). `mode: required` blocks the transition until satisfied; `recommendation` warns; `off` is inert.",
+            schema_rule_create(),
+            Dom::Admin, F, Ann::Write,
+        ),
+        tool(
+            "taskagent_rule_update",
+            "Update a lifecycle rule",
+            "Patch a lifecycle rule (admin): any of mode, condition, requirement, message, override_allowed, enabled, title. `scope`, `trigger` and `rule_key` are immutable.",
+            schema_rule_update(),
+            Dom::Admin, F, Ann::WriteIdem,
+        ),
+        tool(
+            "taskagent_rule_disable",
+            "Disable a lifecycle rule",
+            "Disable a lifecycle rule (admin). A disabled rule is not evaluated by the gate.",
+            schema_with_id("id"),
+            Dom::Admin, F, Ann::Destructive,
+        ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "taskagent_ai_parse",
@@ -1963,6 +1999,43 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
+        "taskagent_rule_list" => {
+            let mut qs = Vec::new();
+            for key in ["project_id", "plan_id", "task_id"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    qs.push(format!("{key}={v}"));
+                }
+            }
+            let path = if qs.is_empty() {
+                "/v1/rules".to_string()
+            } else {
+                format!("/v1/rules?{}", qs.join("&"))
+            };
+            client.get_json(&path).await
+        }
+        "taskagent_rule_get" => {
+            let id = required_string(&args, "id")?;
+            client.get_json(&format!("/v1/rules/{id}")).await
+        }
+        "taskagent_rule_create" => {
+            let rule = args
+                .get("rule")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`rule` is required"))?;
+            client.post_json("/v1/rules", json!({ "rule": rule })).await
+        }
+        "taskagent_rule_update" => {
+            let id = required_string(&args, "id")?;
+            let mut patch = args.clone();
+            patch.remove("id");
+            client
+                .patch_json(&format!("/v1/rules/{id}"), Value::Object(patch))
+                .await
+        }
+        "taskagent_rule_disable" => {
+            let id = required_string(&args, "id")?;
+            client.delete_json(&format!("/v1/rules/{id}")).await
+        }
         "taskagent_workspace_resolve" => {
             let ws = workspace::global();
             let raw_path = args.get("scope_path").and_then(|v| v.as_str());
@@ -2398,6 +2471,60 @@ fn schema_with_id(field: &str) -> Value {
         "type":"object",
         "properties": {field: {"type":"string","description":"Task identifier"}},
         "required": [field]
+    })
+}
+
+fn schema_rule_list() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "project_id": {"type":"string","description":"List rules at this project scope."},
+            "plan_id": {"type":"string","description":"List rules at this plan scope."},
+            "task_id": {"type":"string","description":"List rules at this task scope."}
+        }
+    })
+}
+
+fn schema_rule_create() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "rule": {
+                "type":"object",
+                "description":"Lifecycle rule (see docs/LIFECYCLE_RULES_SPEC.md).",
+                "properties": {
+                    "rule_key": {"type":"string","description":"Stable key for inheritance/override, e.g. completion-note."},
+                    "title": {"type":"string"},
+                    "scope": {"type":"object","description":"{\"kind\":\"tenant\"} | {\"kind\":\"project\",\"id\":...} | plan | task."},
+                    "trigger": {"type":"string","enum":["project.created","plan.created","plan.before_approve","task.created","task.before_start","task.before_complete","run.before_execute","run.before_complete"]},
+                    "condition": {"type":["object","null"],"description":"Optional targeting: status_from/status_to/priority/changed_paths."},
+                    "requirement": {"type":"object","description":"Tagged by `type` (read_artifact, impact_check, completion_note, …)."},
+                    "mode": {"type":"string","enum":["off","recommendation","required"]},
+                    "message": {"type":"string"},
+                    "override_allowed": {"type":"boolean"},
+                    "enabled": {"type":"boolean"}
+                },
+                "required": ["rule_key","title","scope","trigger","requirement"]
+            }
+        },
+        "required": ["rule"]
+    })
+}
+
+fn schema_rule_update() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string","description":"Rule identifier."},
+            "title": {"type":"string"},
+            "condition": {"type":["object","null"]},
+            "requirement": {"type":"object"},
+            "mode": {"type":"string","enum":["off","recommendation","required"]},
+            "message": {"type":"string"},
+            "override_allowed": {"type":"boolean"},
+            "enabled": {"type":"boolean"}
+        },
+        "required": ["id"]
     })
 }
 

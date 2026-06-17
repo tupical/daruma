@@ -2,12 +2,13 @@ use serde::{Deserialize, Serialize};
 use taskagent_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
     ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, Document, NewTask, Plan,
-    PlanPatch, PlanStatus, Priority, Project, RelationKind, Run, RunOutcome, SessionArtifact,
+    PlanPatch, PlanStatus, Priority, Project, RelationKind, Rule, Run, RunOutcome, SessionArtifact,
     Status, TaskPatch, WorkLease, WorkUnit,
 };
 use taskagent_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
-    EventId, PlanId, ProjectId, RelationId, RunId, RunNoteId, TaskId, Timestamp, WorkUnitId,
+    EventId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId, TaskId, Timestamp,
+    WorkUnitId,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -588,6 +589,25 @@ pub enum Event {
         kind: ArtifactRelationKind,
         at: Timestamp,
     },
+
+    // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §1) ─────────────────────
+    /// A lifecycle rule was created. Carries the full rule for replay.
+    RuleCreated {
+        rule: Rule,
+    },
+
+    /// A lifecycle rule was updated. Carries the full new state for replay
+    /// (mirrors `ProjectSettingsChanged`).
+    RuleUpdated {
+        rule: Rule,
+    },
+
+    /// A lifecycle rule was disabled (`enabled=false`). A disabled rule is not
+    /// loaded into evaluation (spec invariant 2).
+    RuleDisabled {
+        rule_id: RuleId,
+        at: Timestamp,
+    },
 }
 
 impl Event {
@@ -680,6 +700,10 @@ impl Event {
             Event::ArtifactDeprecated { .. } => "artifact_deprecated",
             Event::ArtifactRelationAdded { .. } => "artifact_relation_added",
             Event::ArtifactRelationRemoved { .. } => "artifact_relation_removed",
+            // Lifecycle rules
+            Event::RuleCreated { .. } => "rule_created",
+            Event::RuleUpdated { .. } => "rule_updated",
+            Event::RuleDisabled { .. } => "rule_disabled",
         }
     }
 
@@ -856,6 +880,11 @@ impl Event {
             | Event::ArtifactDeprecated { .. }
             | Event::ArtifactRelationAdded { .. }
             | Event::ArtifactRelationRemoved { .. } => Channel::Artifacts,
+
+            // ── Rules channel (lifecycle rules) ───────────────────────────────
+            Event::RuleCreated { .. }
+            | Event::RuleUpdated { .. }
+            | Event::RuleDisabled { .. } => Channel::Rules,
         }
     }
 }
@@ -890,6 +919,8 @@ pub enum Channel {
     /// Artifact registry lifecycle (P4): registered / owner assigned /
     /// status changed / write committed / deprecated / relations.
     Artifacts,
+    /// Lifecycle-rule definition events: created / updated / disabled.
+    Rules,
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
