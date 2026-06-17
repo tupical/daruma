@@ -87,8 +87,15 @@ impl AiProvider for OpenAiClient {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+/// Test doubles for the [`AiProvider`] trait, shared across crates.
+///
+/// Gated behind the `testing` feature so downstream crates
+/// (`taskagent-ai`, future upper layers) can reuse [`FakeProvider`] in
+/// their own tests without re-implementing it. Always compiled — not
+/// `#[cfg(test)]` — because a dependent crate's tests cannot see this
+/// crate's `cfg(test)` items.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
     use super::*;
     use std::sync::Mutex;
 
@@ -127,6 +134,12 @@ pub(crate) mod tests {
             Ok(self.canned_object.clone())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use testing::FakeProvider;
 
     #[tokio::test]
     async fn fake_provider_round_trips_text() {

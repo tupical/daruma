@@ -1,15 +1,13 @@
-//! Prompt registry — central catalogue of LLM prompts (§3.8.5).
+//! Operation prompt catalogue (§3.8.5).
 //!
-//! Each prompt lives in its own `crates/ai/prompts/*.toml` file. The
-//! file is parsed at first use into a [`Prompt`] with named variants,
-//! cached in a process-wide [`PromptRegistry`]. Rendering goes through
-//! [`tinytemplate`] for `{ var }` substitution against a serde-able
-//! params struct.
+//! The prompt *rendering engine* lives in `taskagent-ai-infra`
+//! ([`PromptFile`] / [`render_variant`]). This module owns the catalogue
+//! of operation prompts — one `crates/ai/prompts/*.toml` per operation
+//! (parse, decompose, scope, research, analyze_complexity, suggest,
+//! summarize) — because those prompts are operational, not infrastructure.
 //!
-//! No hot-reload yet — the prompt sources are embedded with
-//! `include_str!` so the binary is self-contained. Hot-reload (read
-//! from `$TASKAGENT_PROMPT_DIR`) is tracked separately if/when it's
-//! needed for prompt iteration without rebuild.
+//! All known prompts are baked into the binary via `include_str!`; the
+//! first [`PromptRegistry::load`] call parses them.
 //!
 //! ```ignore
 //! use serde::Serialize;
@@ -24,33 +22,12 @@
 use std::collections::HashMap;
 
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use taskagent_ai_infra::prompts::{render_variant, PromptFile};
 use taskagent_shared::CoreError;
-use tinytemplate::{format_unescaped, TinyTemplate};
 
-/// Parsed TOML shape of a single `prompts/<name>.toml` file.
-#[derive(Debug, Deserialize)]
-struct PromptFile {
-    #[allow(dead_code)]
-    meta: PromptMeta,
-    variants: HashMap<String, PromptVariant>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PromptMeta {
-    #[allow(dead_code)]
-    name: String,
-    #[allow(dead_code)]
-    description: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PromptVariant {
-    template: String,
-}
-
-/// Process-wide prompt registry. All known prompts are baked into the
-/// binary via `include_str!`; the first `load` call parses them.
+/// Process-wide catalogue of operation prompts. All sources are baked into
+/// the binary via `include_str!`; the first `load` call parses them.
 pub struct PromptRegistry;
 
 static PROMPTS: Lazy<HashMap<&'static str, PromptFile>> = Lazy::new(|| {
@@ -68,8 +45,8 @@ static PROMPTS: Lazy<HashMap<&'static str, PromptFile>> = Lazy::new(|| {
     ];
     let mut out = HashMap::with_capacity(raw.len());
     for (name, body) in raw {
-        let parsed: PromptFile = toml::from_str(body)
-            .unwrap_or_else(|e| panic!("crates/ai/prompts/{name}.toml: parse error: {e}"));
+        let parsed = PromptFile::parse(name, body)
+            .unwrap_or_else(|e| panic!("crates/ai/prompts/{name}.toml: {e}"));
         out.insert(*name, parsed);
     }
     out
@@ -86,27 +63,7 @@ impl PromptRegistry {
         let prompt = PROMPTS
             .get(name)
             .ok_or_else(|| CoreError::validation(format!("unknown prompt: {name}")))?;
-        let variant_def = prompt.variants.get(variant).ok_or_else(|| {
-            CoreError::validation(format!(
-                "prompt {name}: unknown variant {variant} (have: {:?})",
-                prompt.variants.keys().collect::<Vec<_>>()
-            ))
-        })?;
-
-        // tinytemplate caches compiled templates per registry instance;
-        // we recompile per call because the input strings are small
-        // and rendering already happens at LLM-call cadence (slow path).
-        //
-        // Disable the default HTML formatter — these are LLM prompts,
-        // not browser-bound text, so apostrophes / quotes / angle
-        // brackets must survive verbatim.
-        let mut tt = TinyTemplate::new();
-        tt.set_default_formatter(&format_unescaped);
-        let label = format!("{name}.{variant}");
-        tt.add_template(&label, &variant_def.template)
-            .map_err(|e| CoreError::ai(format!("prompt {label}: bad template: {e}")))?;
-        tt.render(&label, params)
-            .map_err(|e| CoreError::ai(format!("prompt {label}: render failed: {e}")))
+        render_variant(name, variant, prompt, params)
     }
 }
 
@@ -119,17 +76,11 @@ mod tests {
 
     #[test]
     fn every_bundled_prompt_loads() {
-        // Validates that the include_str! sources parse and every
-        // declared variant compiles into a tinytemplate template.
-        for (name, file) in PROMPTS.iter() {
-            for (variant, _) in file.variants.iter() {
-                // We don't render here — variant-specific params live in
-                // the call sites — but we confirm parsing didn't fail
-                // by virtue of reaching this loop. An assert keeps the
-                // test honest if the lazy ever returns an empty map.
-                assert!(!name.is_empty());
-                assert!(!variant.is_empty());
-            }
+        // Validates that the include_str! sources parse (reaching this
+        // loop means the lazy didn't panic). An assert keeps the test
+        // honest if the lazy ever returns an empty map.
+        for (name, _file) in PROMPTS.iter() {
+            assert!(!name.is_empty());
         }
         assert!(!PROMPTS.is_empty(), "no prompts loaded");
     }

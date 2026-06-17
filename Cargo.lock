@@ -2754,22 +2754,34 @@ dependencies = [
 name = "taskagent-ai"
 version = "0.2.0"
 dependencies = [
- "async-trait",
  "chrono",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "taskagent-ai-infra",
+ "taskagent-core",
+ "taskagent-domain",
+ "taskagent-events",
+ "taskagent-shared",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "taskagent-ai-infra"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
  "once_cell",
  "reqwest",
  "serde",
  "serde_json",
- "taskagent-core",
- "taskagent-domain",
- "taskagent-events",
  "taskagent-shared",
  "thiserror",
  "tinytemplate",
  "tokio",
  "toml",
  "tracing",
- "uuid",
 ]
 
 [[package]]

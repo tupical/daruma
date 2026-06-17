@@ -8,6 +8,7 @@ members = [
     "crates/core",
     "crates/sync",
     "crates/ai",
+    "crates/ai-infra",
     "crates/auth",
     "crates/webhooks",
     "crates/mcp",
@@ -36,6 +37,7 @@ taskagent-storage = { path = "crates/storage" }
 taskagent-core    = { path = "crates/core" }
 taskagent-sync    = { path = "crates/sync" }
 taskagent-ai      = { path = "crates/ai" }
+taskagent-ai-infra = { path = "crates/ai-infra" }
 taskagent-auth    = { path = "crates/auth" }
 taskagent-webhooks = { path = "crates/webhooks" }
 taskagent-mcp     = { path = "crates/mcp" }

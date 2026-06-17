@@ -13,7 +13,9 @@ use serde::Serialize;
 use taskagent_domain::Task;
 use taskagent_shared::CoreError;
 
-use crate::{provider::AiProvider, PromptRegistry};
+use taskagent_ai_infra::{provider::AiProvider, untrusted::wrap_untrusted};
+
+use crate::prompts::PromptRegistry;
 
 /// Format a task list into a single block suitable for inclusion in
 /// the research prompt. Tasks are numbered; descriptions (when
@@ -50,7 +52,7 @@ pub fn build_research_prompt(query: &str, context: &[Task]) -> String {
             .expect("bundled research prompt is well-formed")
     } else {
         let tasks_block =
-            crate::untrusted::wrap_untrusted("task context", &format_task_context(context));
+            wrap_untrusted("task context", &format_task_context(context));
         PromptRegistry::load(
             "research",
             "with_context",
@@ -81,7 +83,7 @@ pub async fn research(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::tests::FakeProvider;
+    use taskagent_ai_infra::provider::testing::FakeProvider;
     use taskagent_domain::{Priority, Status};
     use taskagent_shared::{time, ProjectId, TaskId};
 

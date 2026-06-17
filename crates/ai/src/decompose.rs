@@ -6,11 +6,13 @@ use taskagent_core::Command;
 use taskagent_domain::NewTask;
 use taskagent_shared::{CoreError, TaskId};
 
-use crate::{
+use taskagent_ai_infra::{
     client::{OpenAiClient, ResponseOutput, ResponseRequest},
-    prompts::PromptRegistry,
     tools::split_task_tool,
+    untrusted::wrap_untrusted,
 };
+
+use crate::prompts::PromptRegistry;
 
 #[derive(Serialize)]
 struct DecomposeCtx<'a> {
@@ -31,7 +33,7 @@ struct DecomposeCtx<'a> {
 /// Panics only if the bundled `prompts/decompose.toml` is malformed — a
 /// build-time invariant covered by `PromptRegistry`'s test suite.
 pub fn build_decompose_prompt(task_context: &str, hint: Option<&str>) -> String {
-    let task_context = &crate::untrusted::wrap_untrusted("task context", task_context);
+    let task_context = &wrap_untrusted("task context", task_context);
     let trimmed = hint.map(str::trim).filter(|s| !s.is_empty());
     let (variant, ctx) = match trimmed {
         Some(h) => (
@@ -122,9 +124,18 @@ pub async fn decompose_task(
 mod tests {
     use super::*;
 
+    // Mirrors the `default` variant head of crates/ai/prompts/decompose.toml
+    // up to (and including) the `Task:` label — the standard instruction
+    // framing every decompose prompt opens with, including the Rules block.
     const BASE_HEAD: &str = "You are a project-management assistant. Decompose the following task \
          into 2–6 concrete, actionable sub-tasks. Call split_task with the \
-         result.\n\nTask:\n";
+         result.\n\n\
+         Rules:\n\
+         - Each subtask should be independently executable and verifiable.\n\
+         - Write subtask titles as short imperative actions.\n\
+         - Preserve dependencies, constraints, links, and acceptance criteria in the relevant descriptions.\n\
+         - Do not create meta-subtasks for maintaining TODO.md, scratchpads, or in-chat checklists unless the user explicitly requested those artifacts.\n\n\
+         Task:\n";
 
     #[test]
     fn prompt_without_hint_keeps_legacy_framing_and_fences_context() {
@@ -133,8 +144,8 @@ mod tests {
         // now fenced as untrusted data (prompt-injection hardening).
         assert!(p.starts_with(BASE_HEAD));
         assert!(p.contains("Build login page"));
-        assert!(p.contains(crate::untrusted::UNTRUSTED_OPEN));
-        assert!(p.contains(crate::untrusted::UNTRUSTED_CLOSE));
+        assert!(p.contains(taskagent_ai_infra::untrusted::UNTRUSTED_OPEN));
+        assert!(p.contains(taskagent_ai_infra::untrusted::UNTRUSTED_CLOSE));
         assert!(!p.contains("Additional guidance"));
     }
 
