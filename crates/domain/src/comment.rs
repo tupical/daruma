@@ -27,8 +27,9 @@ pub enum CommentKind {
     /// Explicit blocker call-out (orthogonal to `Relation::Blocks` — used when
     /// the blocker isn't another tracked task, e.g. waiting on a human reply).
     Blocker,
-    /// Research note / link-dump / external-context capture (used by
-    /// `taskagent_research { save_to_task_id }` per §3.8.6).
+    /// Research note / link-dump / external-context capture (e.g. an
+    /// answer produced by the sensemaking layer, saved back as a comment
+    /// by the caller).
     Research,
 }
 

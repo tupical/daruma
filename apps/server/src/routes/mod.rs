@@ -6,7 +6,7 @@
 //! |----------|------------------------------------------------------------------|---------------|
 //! | (root)   | `/healthz`                                                       | none          |
 //! | `/v1`    | `/healthz`, `/ws`                                                | none / subproto |
-//! | `/v1`    | `/tokens`, `/downloads/taskagent/{platform}`, `/ai/parse`, …   | bearer        |
+//! | `/v1`    | `/tokens`, `/downloads/taskagent/{platform}`, `/ai/analyze-complexity`, …   | bearer        |
 //! | (legacy) | same paths without `/v1` prefix                                  | bearer        |
 //! |          | (also carry `Deprecation: true` + `Sunset` headers)              |               |
 //!
@@ -247,12 +247,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/history/compare", get(compare_history_versions))
         .route("/history/{id}", get(get_history_version))
         .route("/history/{id}/rollback", post(rollback_history_version))
-        .route("/ai/parse", post(ai_parse))
         .route(
             "/ai/analyze-complexity/{plan_id}",
             post(ai_analyze_complexity),
         )
-        .route("/ai/research", post(ai_research))
         .route("/tasks/{task_id}/activity", get(list_task_activity))
         .route(
             "/tasks/{task_id}/comments",
@@ -2340,134 +2338,6 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
         .await
         .map_err(ApiError::from)?;
     Ok(())
-}
-
-#[derive(Deserialize)]
-struct AiParseBody {
-    input: String,
-    /// §3.8.13: per-tool opt-in for a future research-capable provider.
-    /// Silently ignored until §3.8.9 (provider abstraction trait) lands —
-    /// the field is accepted now so MCP callers can author against the
-    /// final shape and not need a wire-bump later.
-    #[allow(dead_code)]
-    #[serde(default)]
-    use_research_provider: Option<bool>,
-}
-
-async fn ai_parse(
-    auth: axum::Extension<AuthContext>,
-    State(state): State<AppState>,
-    Json(body): Json<AiParseBody>,
-) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
-    let client = state.ai.as_ref().ok_or_else(|| {
-        ApiError::from(CoreError::ai("AI not configured (OPENAI_API_KEY not set)"))
-    })?;
-    let cmd = taskagent_ai::parse_task(client, &body.input)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(Json(cmd))
-}
-
-/// Body for `POST /v1/ai/research` — §3.8.6.
-///
-/// `context_task_ids` is optional; when present, the server loads those
-/// tasks and includes their title/description in the prompt. When
-/// `save_to_task_id` is set, the answer is persisted as a comment of
-/// `kind: Research` on that task (uses the §3.8.8 CommentKind taxonomy).
-#[derive(Deserialize)]
-struct AiResearchBody {
-    query: String,
-    #[serde(default)]
-    context_task_ids: Vec<String>,
-    #[serde(default)]
-    save_to_task_id: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    use_research_provider: Option<bool>,
-}
-
-async fn ai_research(
-    auth: axum::Extension<AuthContext>,
-    State(state): State<AppState>,
-    Json(body): Json<AiResearchBody>,
-) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
-    if body.query.trim().is_empty() {
-        return Err(ApiError::from(CoreError::validation(
-            "ai_research: query is required",
-        )));
-    }
-
-    let client = state.ai.as_ref().ok_or_else(|| {
-        ApiError::from(CoreError::ai("AI not configured (OPENAI_API_KEY not set)"))
-    })?;
-
-    // Resolve context tasks. Unknown ids 404 — we'd rather surface that
-    // to the caller than silently drop context.
-    let mut context_tasks: Vec<taskagent_domain::Task> =
-        Vec::with_capacity(body.context_task_ids.len());
-    for raw in &body.context_task_ids {
-        let id = raw.parse::<TaskId>().map_err(|_| {
-            ApiError::from(CoreError::validation(format!("invalid task id: {raw}")))
-        })?;
-        let task = state
-            .tasks
-            .get(id)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {raw}"))))?;
-        context_tasks.push(task);
-    }
-
-    let answer = taskagent_ai::research::research(client, &body.query, &context_tasks)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Optional persistence as a Research comment.
-    let mut saved: Option<serde_json::Value> = None;
-    if let Some(raw) = body.save_to_task_id.as_deref() {
-        let task_id = raw.parse::<TaskId>().map_err(|_| {
-            ApiError::from(CoreError::validation(format!(
-                "invalid save_to_task_id: {raw}"
-            )))
-        })?;
-        let new_comment = NewComment {
-            id: None,
-            task_id,
-            body: answer.clone(),
-            parent_id: None,
-            kind: Some(CommentKind::Research),
-        };
-        let envs = state
-            .commands
-            .dispatch(
-                Command::AddComment {
-                    comment: new_comment,
-                },
-                actor_from(&auth, None),
-            )
-            .await
-            .map_err(ApiError::from)?;
-        let comment = envs.into_iter().find_map(|e| {
-            if let Event::CommentAdded { comment } = e.payload {
-                Some(comment)
-            } else {
-                None
-            }
-        });
-        if let Some(c) = comment {
-            saved = Some(serde_json::to_value(&c).unwrap_or(serde_json::Value::Null));
-        }
-    }
-
-    Ok(Json(serde_json::json!({
-        "query": body.query,
-        "answer": answer,
-        "saved_comment": saved,
-    })))
 }
 
 /// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.

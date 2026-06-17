@@ -3,8 +3,8 @@
 //! The prompt *rendering engine* lives in `taskagent-ai-infra`
 //! ([`PromptFile`] / [`render_variant`]). This module owns the catalogue
 //! of operation prompts — one `crates/ai/prompts/*.toml` per operation
-//! (parse, research, analyze_complexity, suggest,
-//! summarize) — because those prompts are operational, not infrastructure.
+//! (analyze_complexity, suggest, summarize) — because those prompts are
+//! operational, not infrastructure.
 //!
 //! All known prompts are baked into the binary via `include_str!`; the
 //! first [`PromptRegistry::load`] call parses them.
@@ -14,9 +14,9 @@
 //! use taskagent_ai::prompts::PromptRegistry;
 //!
 //! #[derive(Serialize)]
-//! struct ParseCtx<'a> { input: &'a str }
+//! struct SuggestCtx<'a> { context: &'a str }
 //!
-//! let s = PromptRegistry::load("parse", "default", &ParseCtx { input: "buy milk" })?;
+//! let s = PromptRegistry::load("suggest", "default", &SuggestCtx { context: "3 open tasks" })?;
 //! ```
 
 use std::collections::HashMap;
@@ -32,14 +32,12 @@ pub struct PromptRegistry;
 
 static PROMPTS: Lazy<HashMap<&'static str, PromptFile>> = Lazy::new(|| {
     let raw: &[(&str, &str)] = &[
-        ("parse", include_str!("../prompts/parse.toml")),
         ("suggest", include_str!("../prompts/suggest.toml")),
         ("summarize", include_str!("../prompts/summarize.toml")),
         (
             "analyze_complexity",
             include_str!("../prompts/analyze_complexity.toml"),
         ),
-        ("research", include_str!("../prompts/research.toml")),
     ];
     let mut out = HashMap::with_capacity(raw.len());
     for (name, body) in raw {
@@ -91,18 +89,18 @@ mod tests {
 
     #[test]
     fn unknown_variant_returns_validation_error() {
-        let err = PromptRegistry::load("parse", "no_such_variant", &Empty {}).unwrap_err();
+        let err = PromptRegistry::load("suggest", "no_such_variant", &Empty {}).unwrap_err();
         assert_eq!(err.code(), "validation");
     }
 
     #[test]
-    fn parse_default_substitutes_input() {
+    fn suggest_default_substitutes_context() {
         #[derive(Serialize)]
         struct Ctx<'a> {
-            input: &'a str,
+            context: &'a str,
         }
-        let s = PromptRegistry::load("parse", "default", &Ctx { input: "buy milk" }).unwrap();
-        assert!(s.contains("buy milk"), "{s}");
-        assert!(s.contains("create_task"), "{s}");
+        let s =
+            PromptRegistry::load("suggest", "default", &Ctx { context: "3 open tasks" }).unwrap();
+        assert!(s.contains("3 open tasks"), "{s}");
     }
 }

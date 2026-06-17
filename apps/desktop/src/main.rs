@@ -12,7 +12,6 @@
 //! taskagent add  "<title>"  [--p0|--p1|--p2|--p3]
 //! taskagent done <id|prefix>
 //! taskagent delete <id|prefix>
-//! taskagent ai parse "<input>"
 //! ```
 
 mod cmds;
@@ -59,10 +58,6 @@ async fn main() -> anyhow::Result<()> {
         "delete" | "rm" => {
             let ctx = context::Context::open().await?;
             cmds::delete(&ctx, &rest).await?;
-        }
-        "ai" => {
-            let ctx = context::Context::open().await?;
-            cmds::ai(&ctx, &rest).await?;
         }
         "sync" => {
             let ctx = context::Context::open().await?;
@@ -111,7 +106,6 @@ fn print_help() {
          done <id|prefix>                     mark complete\n  \
          delete <id|prefix>                   delete a task\n  \
          sync [--limit N]                     flush offline events to server\n  \
-         ai parse \"<input>\"                   parse natural language → CreateTask\n  \
          discover [--timeout <secs>]          scan LAN for taskagent servers (mDNS)\n  \
          pair <taskagent://pair?…>            pair with a server via QR/paste URL\n  \
          where                                print the DB path\n  \

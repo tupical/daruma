@@ -93,39 +93,6 @@ pub async fn delete(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn ai(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
-    let client = ctx
-        .ai
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("OPENAI_API_KEY not set — AI commands unavailable"))?;
-
-    let sub = args
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: taskagent ai <parse> ..."))?;
-
-    match sub.as_str() {
-        "parse" => {
-            let input = args
-                .get(1)
-                .ok_or_else(|| anyhow::anyhow!("usage: taskagent ai parse \"<input>\""))?;
-            let cmd = taskagent_ai::parse_task(client, input)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            println!("AI proposed: {}", cmd.kind());
-            let envs = ctx
-                .local
-                .dispatch(cmd, Actor::agent("openai-responses"))
-                .await
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            for e in &envs {
-                println!("✓ {} ({})", e.kind(), e.id);
-            }
-        }
-        other => anyhow::bail!("unknown ai subcommand: {other}"),
-    }
-    Ok(())
-}
-
 pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     let limit = parse_limit(args)?;
     let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;

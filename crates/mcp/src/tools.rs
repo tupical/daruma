@@ -144,8 +144,6 @@ enum Ann {
     WriteIdem,
     /// Deletes/archives/overwrites user-visible data.
     Destructive,
-    /// LLM-backed, talks to an external model, no persistent write.
-    AiRead,
     /// LLM-backed, talks to an external model, persists results.
     AiWrite,
 }
@@ -157,7 +155,6 @@ impl Ann {
             Ann::Write => (false, false, false, false),
             Ann::WriteIdem => (false, false, true, false),
             Ann::Destructive => (false, true, false, false),
-            Ann::AiRead => (true, false, false, true),
             Ann::AiWrite => (false, false, false, true),
         };
         ToolAnnotations {
@@ -453,24 +450,10 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
-            "taskagent_ai_parse",
-            "AI: parse text into command",
-            "Have the AI parse free-form text into a Command (returned as JSON; nothing is dispatched).",
-            schema_ai_parse(),
-            Dom::Ai, F, Ann::AiRead,
-        ),
-        tool(
             "taskagent_ai_analyze_complexity",
             "AI: analyze plan complexity",
             "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `taskagent_ai_decompose { hint }` to chain analyze → decompose.",
             schema_ai_analyze_complexity(),
-            Dom::Ai, F, Ann::AiWrite,
-        ),
-        tool(
-            "taskagent_research",
-            "AI: research query",
-            "Run a free-form research query against the AI provider, optionally grounded in the bodies of existing tasks (`context_task_ids`). When `save_to_task_id` is set, the answer is persisted as a Research comment on that task.",
-            schema_ai_research(),
             Dom::Ai, F, Ann::AiWrite,
         ),
         // ── Events / health ───────────────────────────────────────────────
@@ -1453,15 +1436,6 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }))
                 .await
         }
-        "taskagent_ai_parse" => {
-            let input = required_string(&args, "input")?;
-            let mut body = json!({"input": input});
-            // §3.8.13: forward use_research_provider transparently.
-            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
-                body["use_research_provider"] = json!(flag);
-            }
-            client.post_json("/v1/ai/parse", body).await
-        }
         "taskagent_ai_analyze_complexity" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
@@ -1471,21 +1445,6 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client
                 .post_json(&format!("/v1/ai/analyze-complexity/{plan_id}"), body)
                 .await
-        }
-        "taskagent_research" => {
-            let query = required_string(&args, "query")?;
-            let mut body = json!({"query": query});
-            if let Some(ids) = args.get("context_task_ids").and_then(|v| v.as_array()) {
-                body["context_task_ids"] =
-                    json!(ids.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
-            }
-            if let Some(save) = args.get("save_to_task_id").and_then(|v| v.as_str()) {
-                body["save_to_task_id"] = json!(save);
-            }
-            if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
-                body["use_research_provider"] = json!(flag);
-            }
-            client.post_json("/v1/ai/research", body).await
         }
         "taskagent_comment" => {
             let task_id = required_string(&args, "task_id")?;
@@ -2679,17 +2638,6 @@ fn use_research_provider_property() -> Value {
     })
 }
 
-fn schema_ai_parse() -> Value {
-    json!({
-        "type":"object",
-        "properties": {
-            "input": {"type":"string"},
-            "use_research_provider": use_research_provider_property(),
-        },
-        "required":["input"]
-    })
-}
-
 fn schema_ai_analyze_complexity() -> Value {
     json!({
         "type":"object",
@@ -2701,26 +2649,6 @@ fn schema_ai_analyze_complexity() -> Value {
             "use_research_provider": use_research_provider_property(),
         },
         "required":["plan_id"]
-    })
-}
-
-fn schema_ai_research() -> Value {
-    json!({
-        "type":"object",
-        "properties": {
-            "query": {"type":"string", "description":"Free-form research question."},
-            "context_task_ids": {
-                "type":"array",
-                "items": {"type":"string"},
-                "description":"Optional list of task ids whose title+description are added to the prompt as grounding context."
-            },
-            "save_to_task_id": {
-                "type":"string",
-                "description":"When set, the answer is also persisted as a Research comment on this task (uses §3.8.8 CommentKind)."
-            },
-            "use_research_provider": use_research_provider_property(),
-        },
-        "required":["query"]
     })
 }
 
@@ -4149,11 +4077,7 @@ mod profile_tests {
             .filter(|t| t.annotations.open_world_hint)
             .map(|t| t.name)
             .collect();
-        for expected in [
-            "taskagent_ai_parse",
-            "taskagent_ai_analyze_complexity",
-            "taskagent_research",
-        ] {
+        for expected in ["taskagent_ai_analyze_complexity"] {
             assert!(
                 open_world.contains(&expected),
                 "{expected} must be open-world"
