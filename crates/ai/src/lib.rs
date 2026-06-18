@@ -3,10 +3,9 @@
 //! The provider-neutral infrastructure (Responses API client, config,
 //! [`AiProvider`] abstraction, prompt rendering engine, tool schemas,
 //! prompt-injection hardening) lives in `taskagent-ai-infra`. This crate
-//! holds the task operations — analyze-complexity, suggest, summarize —
-//! that turn model output into [`taskagent_core::Command`]s or plain
-//! strings, plus the operation prompt catalogue ([`prompts`]) those
-//! operations render.
+//! holds the task operations — currently analyze-complexity — that turn
+//! model output into [`taskagent_core::Command`]s or plain strings, plus
+//! the operation prompt catalogue ([`prompts`]) those operations render.
 //!
 //! # Contract
 //! - The AI layer **never** writes to storage. Every output is a
@@ -16,20 +15,18 @@
 //!
 //! # Quick start
 //! ```no_run
-//! use taskagent_ai::{AiConfig, OpenAiClient, suggest_next_action};
+//! use taskagent_ai::{AiConfig, OpenAiClient, analyze_complexity_batch};
 //!
 //! # async fn example() -> taskagent_shared::Result<()> {
 //! let config = AiConfig::from_env()?;
 //! let client = OpenAiClient::new(config);
-//! let suggestion = suggest_next_action(&client, "3 open tasks, none started").await?;
+//! // let result = analyze_complexity_batch(&client, tasks).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 pub mod analyze_complexity;
 pub mod prompts;
-pub mod suggest;
-pub mod summarize;
 
 // ── Re-export the infrastructure layer ─────────────────────────────────────────
 //
@@ -44,5 +41,3 @@ pub use prompts::PromptRegistry;
 // ── Operation re-exports ────────────────────────────────────────────────────────
 
 pub use analyze_complexity::{analyze_complexity_batch, MAX_BATCH_TASKS};
-pub use suggest::suggest_next_action;
-pub use summarize::summarize_project;

@@ -113,6 +113,23 @@ they are trusted by virtue of running in the same address space. They
 must still respect the command/event invariant — UI never mutates state
 directly, only via `CommandBus::dispatch`.
 
+## AI layer primitive/product boundary
+
+`taskagent-ai-infra` is a **primitive** crate: provider-neutral infrastructure
+(HTTP client, config, prompt renderer, tool schemas, injection hardening) with
+no knowledge of task operations. It lives in the OSS core and is consumed by
+upper layers through `vendor/oss/crates/ai-infra`.
+
+`taskagent-ai` holds the one core AI operation (`analyze_complexity`) and the
+operation prompt catalogue. It depends on `ai-infra` and is also vendored via
+`vendor/oss`.
+
+AI operations that are **product** concerns — parse, decompose, scope,
+research — live in the upper-layer repos (`intake_oss`, `sensemaking_oss`,
+`planning_oss`). They depend on `ai-infra` through `vendor/oss`; the
+dependency arrow never reverses. Do not add parse/decompose/scope/research back
+to `taskagent-ai` or `taskagent-ai-infra`.
+
 ## Lifecycle
 
 - **Planned** — listed in [docs/MODULES.md](MODULES.md), no source tree
