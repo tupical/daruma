@@ -2080,7 +2080,10 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 qs.push(format!("threshold_hours={h}"));
             }
             client
-                .get_json(&format!("/v1/audit/heuristics/stuck-tasks?{}", qs.join("&")))
+                .get_json(&format!(
+                    "/v1/audit/heuristics/stuck-tasks?{}",
+                    qs.join("&")
+                ))
                 .await
         }
         "taskagent_audit_duplicate_tasks" => {

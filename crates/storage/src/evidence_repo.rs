@@ -251,7 +251,10 @@ fn row_to_evidence(row: &sqlx::sqlite::SqliteRow) -> Result<Evidence> {
     })
 }
 
-fn parse_opt_id<T: std::str::FromStr>(row: &sqlx::sqlite::SqliteRow, col: &str) -> Result<Option<T>> {
+fn parse_opt_id<T: std::str::FromStr>(
+    row: &sqlx::sqlite::SqliteRow,
+    col: &str,
+) -> Result<Option<T>> {
     let raw: Option<String> = row.try_get(col).map_err(map_row_err)?;
     raw.map(|s| s.parse())
         .transpose()
@@ -318,7 +321,10 @@ mod tests {
             rule_id: None,
             supersedes: None,
         }
-        .into_evidence(ActorRef::from_actor(&Actor::User), taskagent_shared::time::now())
+        .into_evidence(
+            ActorRef::from_actor(&Actor::User),
+            taskagent_shared::time::now(),
+        )
     }
 
     async fn repo() -> EvidenceRepo {
@@ -415,7 +421,11 @@ mod tests {
         let chain = [RuleScope::Tenant];
         // Exact target match.
         assert!(repo
-            .has_live_evidence(&chain, EvidenceKind::DocumentReadAck, Some("architecture.md"))
+            .has_live_evidence(
+                &chain,
+                EvidenceKind::DocumentReadAck,
+                Some("architecture.md")
+            )
             .await
             .unwrap());
         // Different target → not satisfied.

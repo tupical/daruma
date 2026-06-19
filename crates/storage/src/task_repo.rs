@@ -139,7 +139,9 @@ impl TaskRepo {
              {where_clause} \
              ORDER BY status_changed_at ASC"
         );
-        let mut q = sqlx::query(&sql).bind(status.as_str()).bind(cutoff.to_rfc3339());
+        let mut q = sqlx::query(&sql)
+            .bind(status.as_str())
+            .bind(cutoff.to_rfc3339());
         if let Some(pid) = project_bind {
             q = q.bind(pid);
         }

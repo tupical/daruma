@@ -1846,6 +1846,9 @@ mod tests {
             created_at: now,
             updated_at: now,
             archived_at: None,
+            last_read_at: None,
+            last_read_by: None,
+            read_count: 0,
         }
     }
 

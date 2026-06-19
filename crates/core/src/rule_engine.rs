@@ -215,9 +215,7 @@ fn requirement_evidence(req: &Requirement) -> (EvidenceKind, Option<String>) {
         Requirement::DecisionRecord { .. } => (EvidenceKind::DecisionRecord, None),
         Requirement::CompletionNote { .. } => (EvidenceKind::CompletionNote, None),
         Requirement::OwnerRequired => (EvidenceKind::OwnerAssigned, None),
-        Requirement::AcceptanceCriteriaRequired => {
-            (EvidenceKind::AcceptanceCriteriaDefined, None)
-        }
+        Requirement::AcceptanceCriteriaRequired => (EvidenceKind::AcceptanceCriteriaDefined, None),
         Requirement::RiskCheck { target, .. } => {
             (EvidenceKind::RiskCheckCompleted, Some(target.clone()))
         }

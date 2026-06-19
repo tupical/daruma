@@ -848,7 +848,9 @@ mod tests {
         for d in [&fresh, &stale, &never] {
             repo.apply_event(&EventEnvelope::new(
                 Actor::user(),
-                Event::DocumentCreated { document: d.clone() },
+                Event::DocumentCreated {
+                    document: d.clone(),
+                },
             ))
             .await
             .unwrap();
@@ -856,7 +858,9 @@ mod tests {
         let throttle = std::time::Duration::from_secs(3600);
         let now = time::now();
         // `fresh` read just now, `stale` read long ago, `never` untouched.
-        repo.mark_read(fresh.id, "user", now, throttle).await.unwrap();
+        repo.mark_read(fresh.id, "user", now, throttle)
+            .await
+            .unwrap();
         repo.mark_read(stale.id, "user", now - chrono::Duration::days(30), throttle)
             .await
             .unwrap();
@@ -867,7 +871,10 @@ mod tests {
         let ids: Vec<_> = unread.iter().map(|d| d.id).collect();
         assert!(ids.contains(&stale.id), "stale doc should be unread");
         assert!(ids.contains(&never.id), "never-read doc should be unread");
-        assert!(!ids.contains(&fresh.id), "freshly read doc should be excluded");
+        assert!(
+            !ids.contains(&fresh.id),
+            "freshly read doc should be excluded"
+        );
     }
 
     #[tokio::test]

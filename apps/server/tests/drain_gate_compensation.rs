@@ -119,9 +119,8 @@ async fn blocked_drain_releases_claim_for_other_agents() {
     .await;
     let pid = extract_id(&ev, "project_created", "project");
 
-    let plan_body = format!(
-        r#"{{"plan":{{"project_id":"{pid}","title":"Gated","owner":{{"kind":"user"}}}}}}"#
-    );
+    let plan_body =
+        format!(r#"{{"plan":{{"project_id":"{pid}","title":"Gated","owner":{{"kind":"user"}}}}}}"#);
     post_json(&h.router, admin, "/v1/plans", &plan_body).await;
     let (_s, list) = get_json(
         &h.router,
@@ -193,7 +192,11 @@ async fn blocked_drain_releases_claim_for_other_agents() {
         "{}",
     )
     .await;
-    assert_eq!(status_b, StatusCode::OK, "drain by agent B failed: {body_b}");
+    assert_eq!(
+        status_b,
+        StatusCode::OK,
+        "drain by agent B failed: {body_b}"
+    );
     assert_eq!(
         body_b["task_id"].as_str(),
         Some(task_id.as_str()),

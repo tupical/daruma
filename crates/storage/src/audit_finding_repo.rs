@@ -271,8 +271,9 @@ fn row_to_finding(row: &sqlx::sqlite::SqliteRow) -> Result<AuditFinding> {
         },
         check_key: row.try_get("check_key").map_err(map_err)?,
         category: row.try_get("category").map_err(map_err)?,
-        severity: FindingSeverity::parse_str(&severity_str)
-            .ok_or_else(|| CoreError::storage(format!("unknown finding severity: {severity_str}")))?,
+        severity: FindingSeverity::parse_str(&severity_str).ok_or_else(|| {
+            CoreError::storage(format!("unknown finding severity: {severity_str}"))
+        })?,
         title: row.try_get("title").map_err(map_err)?,
         detail: row.try_get("detail").map_err(map_err)?,
         remediation: row.try_get("remediation").map_err(map_err)?,
@@ -300,7 +301,10 @@ fn parse_id<T: std::str::FromStr>(row: &sqlx::sqlite::SqliteRow, col: &str) -> R
         .map_err(|_| CoreError::storage(format!("bad {col}")))
 }
 
-fn parse_opt_id<T: std::str::FromStr>(row: &sqlx::sqlite::SqliteRow, col: &str) -> Result<Option<T>> {
+fn parse_opt_id<T: std::str::FromStr>(
+    row: &sqlx::sqlite::SqliteRow,
+    col: &str,
+) -> Result<Option<T>> {
     let raw: Option<String> = row.try_get(col).map_err(map_err)?;
     raw.filter(|s| !s.is_empty())
         .map(|s| s.parse())
@@ -428,7 +432,10 @@ mod tests {
         let repo = repo().await;
         let project = ProjectId::new();
         let task = TaskId::new();
-        let id = repo.upsert(&sample(project, Some(task), "task.stuck")).await.unwrap();
+        let id = repo
+            .upsert(&sample(project, Some(task), "task.stuck"))
+            .await
+            .unwrap();
         repo.resolve_missing(
             project,
             "task.stuck",
@@ -438,10 +445,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(repo.get(id).await.unwrap().unwrap().status, FindingStatus::Resolved);
+        assert_eq!(
+            repo.get(id).await.unwrap().unwrap().status,
+            FindingStatus::Resolved
+        );
 
         // Problem comes back → upsert re-opens the same row.
-        let id2 = repo.upsert(&sample(project, Some(task), "task.stuck")).await.unwrap();
+        let id2 = repo
+            .upsert(&sample(project, Some(task), "task.stuck"))
+            .await
+            .unwrap();
         assert_eq!(id, id2);
         let row = repo.get(id).await.unwrap().unwrap();
         assert_eq!(row.status, FindingStatus::Open);
@@ -477,7 +490,10 @@ mod tests {
     async fn set_status_acknowledge_and_resolve() {
         let repo = repo().await;
         let project = ProjectId::new();
-        let id = repo.upsert(&sample(project, Some(TaskId::new()), "a")).await.unwrap();
+        let id = repo
+            .upsert(&sample(project, Some(TaskId::new()), "a"))
+            .await
+            .unwrap();
         let actor = ActorRef::from_actor(&Actor::User);
 
         assert!(repo
@@ -499,7 +515,12 @@ mod tests {
 
         // Unknown id → false.
         assert!(!repo
-            .set_status(AuditFindingId::new(), FindingStatus::Muted, &actor, time::now())
+            .set_status(
+                AuditFindingId::new(),
+                FindingStatus::Muted,
+                &actor,
+                time::now()
+            )
             .await
             .unwrap());
     }

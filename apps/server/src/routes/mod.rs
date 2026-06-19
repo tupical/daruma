@@ -237,11 +237,23 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             get(list_audit_findings).post(record_audit_finding),
         )
         .route("/audit/findings/{id}", get(get_audit_finding))
-        .route("/audit/findings/{id}/status", post(set_audit_finding_status))
-        .route("/audit/findings/resolve-missing", post(resolve_missing_findings))
+        .route(
+            "/audit/findings/{id}/status",
+            post(set_audit_finding_status),
+        )
+        .route(
+            "/audit/findings/resolve-missing",
+            post(resolve_missing_findings),
+        )
         .route("/audit/heuristics/stuck-tasks", get(audit_stuck_tasks))
-        .route("/audit/heuristics/duplicate-tasks", get(audit_duplicate_tasks))
-        .route("/audit/heuristics/unread-documents", get(audit_unread_documents))
+        .route(
+            "/audit/heuristics/duplicate-tasks",
+            get(audit_duplicate_tasks),
+        )
+        .route(
+            "/audit/heuristics/unread-documents",
+            get(audit_unread_documents),
+        )
         .route(
             "/workspace-registry",
             get(list_logical_workspaces).post(create_logical_workspace),
@@ -1842,7 +1854,9 @@ async fn get_evidence(
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
     let id = id_str.parse::<EvidenceId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid evidence id: {id_str}")))
+        ApiError::from(CoreError::validation(format!(
+            "invalid evidence id: {id_str}"
+        )))
     })?;
     let evidence = state
         .evidence
@@ -1947,9 +1961,13 @@ async fn get_audit_finding(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<taskagent_shared::AuditFindingId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid finding id: {id_str}")))
-    })?;
+    let id = id_str
+        .parse::<taskagent_shared::AuditFindingId>()
+        .map_err(|_| {
+            ApiError::from(CoreError::validation(format!(
+                "invalid finding id: {id_str}"
+            )))
+        })?;
     let finding = state
         .audit_findings
         .get(id)
@@ -2060,9 +2078,13 @@ async fn set_audit_finding_status(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<taskagent_shared::AuditFindingId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid finding id: {id_str}")))
-    })?;
+    let id = id_str
+        .parse::<taskagent_shared::AuditFindingId>()
+        .map_err(|_| {
+            ApiError::from(CoreError::validation(format!(
+                "invalid finding id: {id_str}"
+            )))
+        })?;
     let status = parse_finding_status(&body.status)?;
     let actor = taskagent_domain::ActorRef::from_actor(&actor_from(&auth, None));
     let updated = state
@@ -2071,7 +2093,9 @@ async fn set_audit_finding_status(
         .await
         .map_err(ApiError::from)?;
     if !updated {
-        return Err(ApiError::from(CoreError::not_found(format!("finding {id}"))));
+        return Err(ApiError::from(CoreError::not_found(format!(
+            "finding {id}"
+        ))));
     }
     Ok(Json(json!({ "success": true })))
 }
@@ -2100,8 +2124,9 @@ async fn resolve_missing_findings(
         .seen
         .iter()
         .map(|s| {
-            s.parse::<taskagent_shared::AuditFindingId>()
-                .map_err(|_| ApiError::from(CoreError::validation(format!("invalid finding id: {s}"))))
+            s.parse::<taskagent_shared::AuditFindingId>().map_err(|_| {
+                ApiError::from(CoreError::validation(format!("invalid finding id: {s}")))
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let actor = taskagent_domain::ActorRef::from_actor(&actor_from(&auth, None));
@@ -2163,7 +2188,9 @@ async fn audit_stuck_tasks(
             })
         })
         .collect();
-    Ok(Json(json!({ "status": status.as_str(), "threshold_hours": hours, "stuck": items })))
+    Ok(Json(
+        json!({ "status": status.as_str(), "threshold_hours": hours, "stuck": items }),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -9,10 +9,9 @@ use taskagent_events::{EventBus, EventStore};
 use taskagent_shared::AgentId;
 use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, Db, DocumentRepo,
-    EntityVersionRepo,
-    ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
-    SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
-    WebhookEnrichment, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
+    EntityVersionRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo,
+    RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo,
+    TenantQuotaRepo, TokenRepo, WebhookEnrichment, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use taskagent_sync::Hub;
 use taskagent_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};

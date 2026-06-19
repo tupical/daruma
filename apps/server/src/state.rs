@@ -9,10 +9,9 @@ use taskagent_discovery::PairingStore;
 use taskagent_events::EventStore;
 use taskagent_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, DocumentRepo,
-    EntityVersionRepo,
-    EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo,
-    RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
-    WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
+    EntityVersionRepo, EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo,
+    RelationRepo, RuleRepo, RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo,
+    TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use taskagent_sync::Hub;
 use taskagent_webhooks::WebhookStore;
