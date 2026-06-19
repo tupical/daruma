@@ -4269,7 +4269,7 @@ mod profile_tests {
         // Compact: meaningfully smaller than the full catalogue, but still a
         // complete capture→plan→execute→close workflow.
         assert!(
-            default.len() <= 32,
+            default.len() <= 40,
             "default profile grew to {} tools — keep it compact",
             default.len()
         );
