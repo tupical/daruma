@@ -1723,6 +1723,19 @@ impl CommandHandler {
                     return Ok(vec![]); // no-op
                 }
 
+                if status == PlanStatus::Completed {
+                    let plan_tasks = plan_repo.list_plan_tasks_ordered(plan_id).await?;
+                    for pt in &plan_tasks {
+                        if let Some(task) = self.tasks.get(pt.task_id).await? {
+                            if !task.status.is_terminal() {
+                                return Err(CoreError::validation(
+                                    "cannot complete plan: it has unfinished tasks (move them to done/cancelled first)",
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 Ok(vec![Event::PlanStatusChanged {
                     plan_id,
                     from: plan.status,
@@ -3401,6 +3414,140 @@ mod tests {
             &sig_envs[0].payload,
             Event::RunStopRequested { run_id: r, reason: Some(msg), .. }
             if *r == run_id && msg == "user request"
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_plan_status_completed_blocked_by_unfinished_task() {
+        let (handler, _, _, _, _, _tasks_repo) = build_plan_stack().await;
+        let project_id = ProjectId::new();
+
+        // Create a task (stays in default/non-terminal status)
+        let task_envs = handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("Unfinished task"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let task_id = match &task_envs[0].payload {
+            Event::TaskCreated { task } => task.id.unwrap(),
+            _ => panic!("expected TaskCreated"),
+        };
+
+        let plan_id = create_active_plan(&handler, project_id).await;
+
+        handler
+            .handle(
+                Command::AddPlanTask {
+                    plan_id,
+                    task_id,
+                    position: Some(0),
+                    depends_on: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let err = handler
+            .handle(
+                Command::SetPlanStatus {
+                    plan_id,
+                    status: PS::Completed,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, taskagent_shared::CoreError::Validation(_)),
+            "expected Validation error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_plan_status_completed_allowed_when_all_tasks_terminal() {
+        let (handler, _, _, _, _, _tasks_repo) = build_plan_stack().await;
+        let project_id = ProjectId::new();
+
+        // Create two tasks and move them to terminal states
+        let mut task_ids = Vec::new();
+        for title in ["Task A", "Task B"] {
+            let envs = handler
+                .handle(
+                    Command::CreateTask {
+                        task: NewTask::new(title),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            let id = match &envs[0].payload {
+                Event::TaskCreated { task } => task.id.unwrap(),
+                _ => panic!("expected TaskCreated"),
+            };
+            task_ids.push(id);
+        }
+
+        // Complete task A (Done), cancel task B (Cancelled)
+        handler
+            .handle(
+                Command::CompleteTask {
+                    id: task_ids[0],
+                    note: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        handler
+            .handle(
+                Command::SetStatus {
+                    id: task_ids[1],
+                    status: taskagent_domain::Status::Cancelled,
+                    force: false,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let plan_id = create_active_plan(&handler, project_id).await;
+
+        for (pos, &task_id) in task_ids.iter().enumerate() {
+            handler
+                .handle(
+                    Command::AddPlanTask {
+                        plan_id,
+                        task_id,
+                        position: Some(pos as u32),
+                        depends_on: None,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let envs = handler
+            .handle(
+                Command::SetPlanStatus {
+                    plan_id,
+                    status: PS::Completed,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(envs.len(), 1);
+        assert!(matches!(
+            &envs[0].payload,
+            Event::PlanStatusChanged { plan_id: p, to: PS::Completed, .. } if *p == plan_id
         ));
     }
 }
