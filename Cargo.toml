@@ -25,8 +25,9 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
 license = "Apache-2.0 WITH Commons-Clause"
-authors = ["TaskAgent contributors"]
-repository = "https://github.com/tupical/taskagent"
+authors = ["Daruma contributors"]
+repository = "https://github.com/tupical/daruma"
+description = "Daruma — execution layer of Meisei: an agent-native, local-first execution runtime."
 
 [workspace.dependencies]
 # Internal crates

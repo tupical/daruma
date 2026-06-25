@@ -1,19 +1,30 @@
-# TaskAgent
+# Daruma 達磨 — execution layer of Meisei
 
+> **Meisei** 明晰 (“clarity”) is an open pipeline that carries raw intent through
+> understanding → decision → plan → action to a finished result. **Daruma** is its
+> **execution** layer — the runtime that takes a plan and drives it to *done*.
+
+[![Meisei](https://img.shields.io/badge/meisei-明晰-1f2937.svg)](https://meisei.ru)
 [![License: Apache-2.0 WITH Commons-Clause](https://img.shields.io/badge/license-Apache--2.0%20WITH%20Commons--Clause-blue.svg)](LICENSE)
 
-### Your last next task manager — built for agents and humans to share.
+Daruma is **not a task manager** — no Jira/Notion/ClickUp clone with an AI bolt-on.
+It is an **agent-native, local-first execution runtime**: AI agents are first-class
+users, every change is a realtime event, and the desktop app runs **fully offline**.
+Keyboard-first, command-palette driven, and fast.
 
-TaskAgent is an **agent-native, local-first task runtime**. Not another
-Jira/Notion/ClickUp clone with an AI bolt-on: here AI agents are first-class
-users, every change is a realtime event, and the desktop app runs **fully
-offline**. Keyboard-first, command-palette driven, and fast.
+One binary — `taskagent` — is the CLI, the launcher, and the MCP server your agents
+talk to. Point Claude, Cursor, or Codex at it and they share the same plans, work
+items, and live activity stream as you do.
 
-One binary — `taskagent` — is the CLI, the launcher, and the MCP server your
-agents talk to. Point Claude, Cursor, or Codex at it and they share the same
-tasks, plans, and live activity stream as you do.
+> The binary and crate ids keep the `taskagent` name for now; the project, repo, and
+> brand are **Daruma** under the Meisei umbrella. A full id migration is tracked separately.
 
-## Why TaskAgent
+<sub>
+torii · satori · enma · yatagarasu · fujin · <b>daruma</b> · hyakki
+&nbsp;—&nbsp; intake · sensemaking · decisions · planning · actions · <b>execution</b> · clusterer
+</sub>
+
+## Why Daruma
 
 - **🤖 Agent-native.** Agents subscribe to semantic signals and act — they
   never poll. Tasks, plans, and decomposition are MCP-first, not an afterthought.
