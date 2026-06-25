@@ -1,7 +1,7 @@
 {
   "name": "taskagent-cursor",
   "version": "0.3.7",
-  "description": "Cursor plugin for tupical/taskagent. Registers the taskagent MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI, and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
+  "description": "Cursor plugin for tupical/daruma. Registers the taskagent MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI, and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
   "keywords": [
     "cursor",
     "cursor-plugin",
@@ -12,13 +12,13 @@
     "taskagent",
     "marketplace"
   ],
-  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/cursor-plugin#readme",
+  "homepage": "https://github.com/tupical/daruma/tree/main/clients/cursor-plugin#readme",
   "bugs": {
-    "url": "https://github.com/tupical/taskagent/issues"
+    "url": "https://github.com/tupical/daruma/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tupical/taskagent.git",
+    "url": "git+https://github.com/tupical/daruma.git",
     "directory": "clients/cursor-plugin"
   },
   "author": "tupical",

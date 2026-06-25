@@ -8,7 +8,7 @@
   <br/><br/>
   <strong>taskagent-claude</strong>
   <br/>
-  <sub>tupical/taskagent × oh-my-claudecode</sub>
+  <sub>tupical/daruma × oh-my-claudecode</sub>
   <br/><br/>
   ◯ ─────────── ◯
   <br/>
@@ -17,7 +17,7 @@
 <p align="center">
   <strong>Склеиваем, не форкаем.</strong>
   <br/>
-  <sub>Одна команда в шелле прогоняет пайплайн <code>tupical/taskagent</code> (parse → decompose → plan → execute), где исполнителем каждой задачи выступает <code>omc team</code> — параллельные агенты.</sub>
+  <sub>Одна команда в шелле прогоняет пайплайн <code>tupical/daruma</code> (parse → decompose → plan → execute), где исполнителем каждой задачи выступает <code>omc team</code> — параллельные агенты.</sub>
 </p>
 
 <p align="center">
@@ -42,11 +42,11 @@
 
 ---
 
-**Одна команда в шелле прогоняет весь пайплайн `tupical/taskagent` — парсит задачу, опционально декомпозирует её AI в план, а затем выполняет каждую готовую таску параллельными `/team`-агентами oh-my-claudecode. Никаких форков апстрима, склейных промптов или копи-пейста между сессиями.**
+**Одна команда в шелле прогоняет весь пайплайн `tupical/daruma` — парсит задачу, опционально декомпозирует её AI в план, а затем выполняет каждую готовую таску параллельными `/team`-агентами oh-my-claudecode. Никаких форков апстрима, склейных промптов или копи-пейста между сессиями.**
 
 `taskagent-claude` — это тонкий плагин для Claude Code и npm-CLI, который связывает два уже существующих проекта:
 
-- [**tupical/taskagent**](https://github.com/tupical/taskagent) — владеет **проектами / задачами / планами / AI-декомпозицией** (MCP-управляемое хранилище воркфлоу).
+- [**tupical/daruma**](https://github.com/tupical/daruma) — владеет **проектами / задачами / планами / AI-декомпозицией** (MCP-управляемое хранилище воркфлоу).
 - [**oh-my-claudecode**](https://github.com/Yeachan-Heo/oh-my-claudecode) — владеет **исполнением задач**, которое мы заменяем на `omc team`: каждая задача выполняется параллельными специализированными агентами вместо одного последовательного прохода.
 
 `taskagent-claude` **не добавляет ничего своего**. Детектит обе зависимости, подсказывает официальные команды установки если чего-то не хватает, и связывает их вместе.
@@ -59,8 +59,8 @@
 
 ```bash
 # 1. taskagent — собираем из исходников (Rust workspace)
-git clone https://github.com/tupical/taskagent.git
-cd taskagent
+git clone https://github.com/tupical/daruma.git
+cd daruma
 cargo build --release -p taskagent-server -p taskagent-cli
 
 # 2. поднимаем HTTP-сервер (оставляем висеть)
@@ -243,4 +243,4 @@ npm run release:patch   # 0.1.0 → 0.1.1
 
 MIT — см. [LICENSE](./LICENSE).
 
-Проект не аффилирован с апстрим-проектами. Полный кредит — [tupical/taskagent](https://github.com/tupical/taskagent) и [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).
+Проект не аффилирован с апстрим-проектами. Полный кредит — [tupical/daruma](https://github.com/tupical/daruma) и [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).

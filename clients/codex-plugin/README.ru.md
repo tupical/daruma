@@ -1,6 +1,6 @@
 # taskagent Codex plugin
 
-Codex-плагин для `tupical/taskagent`, собранный по аналогии с `clients/claude-plugin` и `clients/cursor-plugin`.
+Codex-плагин для `tupical/daruma`, собранный по аналогии с `clients/claude-plugin` и `clients/cursor-plugin`.
 
 ## Что внутри
 

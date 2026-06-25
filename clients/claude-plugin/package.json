@@ -1,7 +1,7 @@
 {
   "name": "taskagent-claude",
   "version": "0.3.0",
-  "description": "Glue between tupical/taskagent and oh-my-claudecode. Drives the taskagent pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
+  "description": "Glue between tupical/daruma and oh-my-claudecode. Drives the taskagent pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
   "keywords": [
     "claude-code",
     "claude-code-plugin",
@@ -13,13 +13,13 @@
     "agent",
     "plugin"
   ],
-  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/claude-plugin#readme",
+  "homepage": "https://github.com/tupical/daruma/tree/main/clients/claude-plugin#readme",
   "bugs": {
-    "url": "https://github.com/tupical/taskagent/issues"
+    "url": "https://github.com/tupical/daruma/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tupical/taskagent.git",
+    "url": "git+https://github.com/tupical/daruma.git",
     "directory": "clients/claude-plugin"
   },
   "author": "tupical",

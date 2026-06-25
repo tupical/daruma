@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tupical/taskagent.git",
+    "url": "git+https://github.com/tupical/daruma.git",
     "directory": "clients/cursor-extension"
   },
   "engines": {

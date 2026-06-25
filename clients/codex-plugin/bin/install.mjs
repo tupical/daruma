@@ -35,9 +35,9 @@ Options:
   --help | -h        This message.
 
 Install the \`taskagent\` binary first:
-  curl -fsSL https://raw.githubusercontent.com/tupical/taskagent/main/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/tupical/daruma/main/install.sh | sh
   # or: cargo install taskagent-cli
-  # or: download from https://github.com/tupical/taskagent/releases
+  # or: download from https://github.com/tupical/daruma/releases
 `;
 
 // ---------------------------------------------------------------------------
@@ -133,9 +133,9 @@ function main(argv) {
       process.stderr.write(
         `\ntaskagent-codex install: 'taskagent' binary not found on PATH.\n` +
         `Install it first:\n` +
-        `  curl -fsSL https://raw.githubusercontent.com/tupical/taskagent/main/install.sh | sh\n` +
+        `  curl -fsSL https://raw.githubusercontent.com/tupical/daruma/main/install.sh | sh\n` +
         `  # or: cargo install taskagent-cli\n` +
-        `  # or: https://github.com/tupical/taskagent/releases\n`
+        `  # or: https://github.com/tupical/daruma/releases\n`
       );
     } else {
       process.stderr.write(`taskagent-codex install: ${result.error.message}\n`);

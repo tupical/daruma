@@ -20,8 +20,8 @@ The detector prints install hints for each missing dependency. Show the output v
 Credentials may live at **`~/.agents/taskagent/credentials.json`** (Windows: `%USERPROFILE%\.agents\taskagent\credentials.json`). Override the directory with `TASKAGENT_AGENT_DIR`.
 
 ```bash
-git clone https://github.com/tupical/taskagent
-cd taskagent
+git clone https://github.com/tupical/daruma
+cd daruma
 cargo build --release -p taskagent-server -p taskagent-cli
 ./target/release/taskagent-server
 claude mcp add taskagent -- ./target/release/taskagent-mcp

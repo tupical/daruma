@@ -12,7 +12,7 @@ TaskAgent is an MCP-native task and plan server built for human–AI
 collaboration. It replaces ad-hoc in-session task lists with a durable,
 multi-agent-safe tracker that persists across sessions, IDEs, and agents.
 
-Source: [tupical/taskagent](https://github.com/tupical/taskagent)
+Source: [tupical/daruma](https://github.com/tupical/daruma)
 
 ---
 
@@ -32,7 +32,7 @@ Health check: `curl http://localhost:8080/v1/healthz`
 ### 2. Install via Claude Code Marketplace (recommended for Claude Code users)
 
 ```bash
-/plugin marketplace add tupical/taskagent
+/plugin marketplace add tupical/daruma
 /plugin install taskagent-claude@taskagent
 ```
 

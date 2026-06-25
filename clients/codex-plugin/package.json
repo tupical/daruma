@@ -1,7 +1,7 @@
 {
   "name": "taskagent-codex-plugin",
   "version": "0.1.0",
-  "description": "Codex plugin for tupical/taskagent. Ships taskagent command prompts and skills for parse/decompose/plan/execute workflows.",
+  "description": "Codex plugin for tupical/daruma. Ships taskagent command prompts and skills for parse/decompose/plan/execute workflows.",
   "keywords": [
     "codex",
     "codex-plugin",
@@ -10,13 +10,13 @@
     "planning",
     "multi-agent"
   ],
-  "homepage": "https://github.com/tupical/taskagent/tree/main/clients/codex-plugin#readme",
+  "homepage": "https://github.com/tupical/daruma/tree/main/clients/codex-plugin#readme",
   "bugs": {
-    "url": "https://github.com/tupical/taskagent/issues"
+    "url": "https://github.com/tupical/daruma/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tupical/taskagent.git",
+    "url": "git+https://github.com/tupical/daruma.git",
     "directory": "clients/codex-plugin"
   },
   "author": "tupical",

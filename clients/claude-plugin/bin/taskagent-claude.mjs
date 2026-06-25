@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // `taskagent-claude` — single-shell entry point for the
-// tupical/taskagent × oh-my-claudecode workflow.
+// tupical/daruma × oh-my-claudecode workflow.
 //
 // Subcommands:
 //   taskagent-claude doctor                      Check whether taskagent + omc are ready.
@@ -56,7 +56,7 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
 
-const HELP = `taskagent-claude v${pkg.version} — tupical/taskagent × oh-my-claudecode glue
+const HELP = `taskagent-claude v${pkg.version} — tupical/daruma × oh-my-claudecode glue
 
 Usage:
   taskagent-claude start "<task description>" [--workers N] [--max-retries M]

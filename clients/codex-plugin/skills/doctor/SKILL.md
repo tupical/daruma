@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Detect whether tupical/taskagent and oh-my-claudecode are installed and the taskagent MCP server is reachable. Triggered by /taskagent-claude:doctor or taskagent-claude doctor from the shell.
+description: Detect whether tupical/daruma and oh-my-claudecode are installed and the taskagent MCP server is reachable. Triggered by /taskagent-claude:doctor or taskagent-claude doctor from the shell.
 ---
 
 # taskagent-claude: doctor

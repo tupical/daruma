@@ -8,7 +8,7 @@
   <br/><br/>
   <strong>taskagent-claude</strong>
   <br/>
-  <sub>tupical/taskagent × oh-my-claudecode</sub>
+  <sub>tupical/daruma × oh-my-claudecode</sub>
   <br/><br/>
   ◯ ─────────── ◯
   <br/>
@@ -17,7 +17,7 @@
 <p align="center">
   <strong>Glue, not fork.</strong>
   <br/>
-  <sub>One shell command drives the <code>tupical/taskagent</code> pipeline (parse → decompose → plan → execute) with <code>omc team</code> as the parallel-agent executor for each task.</sub>
+  <sub>One shell command drives the <code>tupical/daruma</code> pipeline (parse → decompose → plan → execute) with <code>omc team</code> as the parallel-agent executor for each task.</sub>
 </p>
 
 <p align="center">
@@ -42,11 +42,11 @@
 
 ---
 
-**One shell command drives the full `tupical/taskagent` pipeline — parse a task, optionally AI-decompose it into a plan, then execute every eligible task with parallel oh-my-claudecode `/team` agents. No upstream forks, no glue prompts, no copy-paste between sessions.**
+**One shell command drives the full `tupical/daruma` pipeline — parse a task, optionally AI-decompose it into a plan, then execute every eligible task with parallel oh-my-claudecode `/team` agents. No upstream forks, no glue prompts, no copy-paste between sessions.**
 
 `taskagent-claude` is a thin Claude Code plugin plus an npm CLI that composes two existing projects:
 
-- [**tupical/taskagent**](https://github.com/tupical/taskagent) — owns **projects / tasks / plans / AI decomposition** (the MCP-driven workflow store).
+- [**tupical/daruma**](https://github.com/tupical/daruma) — owns **projects / tasks / plans / AI decomposition** (the MCP-driven workflow store).
 - [**oh-my-claudecode**](https://github.com/Yeachan-Heo/oh-my-claudecode) — owns **task execution**, replaced with `omc team` so each task runs on parallel specialized agents instead of one sequential pass.
 
 `taskagent-claude` adds **nothing of its own**. It detects both, points the user at the official install commands when they're missing, and orchestrates them.
@@ -59,8 +59,8 @@
 
 ```bash
 # 1. taskagent — build from source (Rust workspace)
-git clone https://github.com/tupical/taskagent.git
-cd taskagent
+git clone https://github.com/tupical/daruma.git
+cd daruma
 cargo build --release -p taskagent-server -p taskagent-cli
 
 # 2. start the HTTP server (keep this running)
@@ -255,4 +255,4 @@ Auth uses npm **Trusted Publishing** (OIDC). One-time setup: on npmjs.com → `t
 
 MIT — see [LICENSE](./LICENSE).
 
-This project is unaffiliated with the upstream projects. Full credit to [tupical/taskagent](https://github.com/tupical/taskagent) and [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).
+This project is unaffiliated with the upstream projects. Full credit to [tupical/daruma](https://github.com/tupical/daruma) and [Yeachan-Heo/oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode).

@@ -68,7 +68,7 @@ optional = ["AdminTokens"]
 
 [core]
 source       = "git"
-repo         = "https://github.com/tupical/taskagent"
+repo         = "https://github.com/tupical/daruma"
 version      = "0.1.0"
 tag          = "taskagent-v0.1.0"
 dev_override = "vendor/oss -> ../taskagent"

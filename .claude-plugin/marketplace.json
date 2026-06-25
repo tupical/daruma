@@ -7,7 +7,7 @@
     {
       "name": "taskagent-claude",
       "source": "./clients/claude-plugin",
-      "description": "Claude Code + oh-my-claudecode integration for tupical/taskagent. Drives the parse/decompose/plan/execute pipeline, ships /taskagent-claude:{tasks,plan,next,mine,start,sync,capture,status,close,doctor,setup} slash commands, SessionStart/Stop hooks, and a managed CLAUDE.md policy that makes taskagent the default tracker for tasks and plans."
+      "description": "Claude Code + oh-my-claudecode integration for tupical/daruma. Drives the parse/decompose/plan/execute pipeline, ships /taskagent-claude:{tasks,plan,next,mine,start,sync,capture,status,close,doctor,setup} slash commands, SessionStart/Stop hooks, and a managed CLAUDE.md policy that makes taskagent the default tracker for tasks and plans."
     }
   ]
 }

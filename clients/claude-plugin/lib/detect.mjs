@@ -1,4 +1,4 @@
-// Detection helpers for tupical/taskagent and oh-my-claudecode.
+// Detection helpers for tupical/daruma and oh-my-claudecode.
 // Used by both the `taskagent-claude` CLI and the /taskagent-claude:doctor skill.
 //
 // readiness gate = omc CLI present + taskagent MCP server registered in Claude
@@ -197,7 +197,7 @@ export async function detectTaskagent() {
     claudeMcp: mcpEntry,
     installHint: [
       "Self-host (build from source — server + MCP shim):",
-      "  git clone https://github.com/tupical/taskagent && cd taskagent",
+      "  git clone https://github.com/tupical/daruma && cd daruma",
       "  cargo build --release -p taskagent-server -p taskagent-cli",
       "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
       "Register the MCP shim with Claude Code:",

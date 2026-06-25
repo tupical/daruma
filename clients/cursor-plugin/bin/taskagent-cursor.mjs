@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `taskagent-cursor` — Cursor companion CLI for tupical/taskagent.
+// `taskagent-cursor` — Cursor companion CLI for tupical/daruma.
 //
 // Subcommands:
 //   install [--global|--project DIR] [--transport http|stdio] [--command CMD]
@@ -54,7 +54,7 @@ const marketplaceManifest = JSON.parse(
   readFileSync(join(__dirname, "..", ".taskagent-plugin", "plugin.json"), "utf8"),
 );
 
-const HELP = `taskagent-cursor v${pkg.version} — Cursor plugin for tupical/taskagent
+const HELP = `taskagent-cursor v${pkg.version} — Cursor plugin for tupical/daruma
 
 Usage:
   taskagent-cursor install [--global|--project DIR] [--transport http|stdio]

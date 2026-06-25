@@ -51,7 +51,7 @@ Each app repo must record its OSS dependency in `module.toml`:
 ```toml
 [core]
 source       = "git"
-repo         = "https://github.com/tupical/taskagent"
+repo         = "https://github.com/tupical/daruma"
 version      = "0.1.0"
 tag          = "taskagent-v0.1.0"
 dev_override = "vendor/oss -> ../taskagent"

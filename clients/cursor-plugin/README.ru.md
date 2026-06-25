@@ -7,7 +7,7 @@
   <br/><br/>
   <strong>taskagent-cursor</strong>
   <br/>
-  <sub>tupical/taskagent × Cursor</sub>
+  <sub>tupical/daruma × Cursor</sub>
   <br/><br/>
   ◯ ─────────── ◯
   <br/>
@@ -50,7 +50,7 @@ Default-путь Cursor использует HTTP MCP endpoint TaskAgent. Для
 ## Что делает
 
 `taskagent-cursor` — тонкий компаньон Cursor для
-[`tupical/taskagent`](https://github.com/tupical/taskagent). Делает три вещи:
+[`tupical/daruma`](https://github.com/tupical/daruma). Делает три вещи:
 
 1. **Регистрирует MCP-сервер** в `mcp.json` Cursor — глобально
    (`~/.cursor/mcp.json`) или для проекта (`./.cursor/mcp.json`).
@@ -177,7 +177,7 @@ clients/cursor-plugin/
 - Cursor (любой свежий, с поддержкой MCP)
 - Node.js ≥ 20 (только для CLI; в рантайме не нужен)
 - Запущенный taskagent HTTP server. Для локальной разработки собери его из
-  [tupical/taskagent](https://github.com/tupical/taskagent):
+  [tupical/daruma](https://github.com/tupical/daruma):
   `cargo build --release -p taskagent-server`.
 - `taskagent-mcp` нужен только для явного fallback `--transport stdio`.
 
