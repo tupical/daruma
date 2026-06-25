@@ -1,19 +1,19 @@
 # Agent session metadata (IDE traceability)
 
-When an MCP/IDE agent starts work, it should open a **TaskAgent session** with
+When an MCP/IDE agent starts work, it should open a **Daruma session** with
 `metadata` so tasks can be linked back to a client chat and transcript.
 
 ## MCP workflow
 
-1. `taskagent_workspace_info` — note `mcp_agent_id`.
-2. `taskagent_session_start` with `metadata` (see schema below).
-3. `taskagent_create` (or plan flow) — then `taskagent_comment` on the root task:
+1. `daruma_workspace_info` — note `mcp_agent_id`.
+2. `daruma_session_start` with `metadata` (see schema below).
+3. `daruma_create` (or plan flow) — then `daruma_comment` on the root task:
 
    ```text
    session: <session_id from step 2>
    ```
 
-4. On completion: `taskagent_session_end` with the same session id.
+4. On completion: `daruma_session_end` with the same session id.
 
 ## Recommended `metadata` object
 
@@ -23,15 +23,15 @@ When an MCP/IDE agent starts work, it should open a **TaskAgent session** with
 | `model` | `composer-2.5` | Model id or display name |
 | `chat_id` | opaque string | Client conversation id |
 | `transcript_path` | `/home/.../agent-transcripts/abc.jsonl` | Path to chat log |
-| `workspace_path` | `/home/.../projects/taskagent` | Repo root |
+| `workspace_path` | `/home/.../projects/daruma` | Repo root |
 
 Environment defaults (merged when omitted in the call):
 
-- `TASKAGENT_CLIENT`
-- `TASKAGENT_MODEL`
-- `TASKAGENT_CHAT_ID`
-- `TASKAGENT_TRANSCRIPT_PATH`
-- `TASKAGENT_WORKSPACE` (or process CWD)
+- `DARUMA_CLIENT`
+- `DARUMA_MODEL`
+- `DARUMA_CHAT_ID`
+- `DARUMA_TRANSCRIPT_PATH`
+- `DARUMA_WORKSPACE` (or process CWD)
 
 Caller-provided `metadata` fields override env defaults.
 
@@ -49,7 +49,7 @@ Content-Type: application/json
     "model": "composer-2.5",
     "chat_id": "composer-chat-42",
     "transcript_path": "/home/user/.cursor/projects/.../uuid.jsonl",
-    "workspace_path": "/home/user/projects/taskagent"
+    "workspace_path": "/home/user/projects/daruma"
   }
 }
 ```
@@ -73,14 +73,14 @@ To find context:
 3. Read `metadata.transcript_path` / `metadata.chat_id`.
 4. Or search task comments for `session: <session_id>`.
 
-TaskAgent does **not** store IDE transcripts; `transcript_path` is an opaque
-pointer for humans/tools outside TaskAgent.
+Daruma does **not** store IDE transcripts; `transcript_path` is an opaque
+pointer for humans/tools outside Daruma.
 
 ## MCP tools
 
 | Tool | Role |
 |------|------|
-| `taskagent_session_start` | Create session + metadata |
-| `taskagent_session_get` | Fetch session by id |
-| `taskagent_session_list` | List sessions for `agent_id` |
-| `taskagent_session_end` | Close session |
+| `daruma_session_start` | Create session + metadata |
+| `daruma_session_get` | Fetch session by id |
+| `daruma_session_list` | List sessions for `agent_id` |
+| `daruma_session_end` | Close session |

@@ -3,16 +3,16 @@
 
 use std::sync::Arc;
 
-use taskagent_domain::{
+use daruma_domain::{
     Actor, ActorRef, AgentSession, Comment, DocumentKind, PlanPatch, PlanStatus, Project, Relation,
     Run, RunOutcome, RunStatus, SessionArtifact, SignalKind, Status, Task,
 };
-use taskagent_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
-use taskagent_shared::{
+use daruma_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
+use daruma_shared::{
     time, AgentId, AgentSessionId, CoreError, DocumentId, PlanId, ProjectId, RelationId, Result,
     RunId, RunNoteId, SessionArtifactId, TaskId,
 };
-use taskagent_storage::{
+use daruma_storage::{
     ActivityRepo, CommentRepo, ProjectRepo, ProjectSettingsRepo, RelationRepo, TaskRepo,
     TenantQuotaRepo, WorkUnitRepo,
 };
@@ -32,7 +32,7 @@ use crate::{
 use crate::lifecycle_gate::{
     derive_gate_checks, gate_override_of, DispatchOutcome, GateCheck, GateDecision, LifecycleGate,
 };
-use taskagent_events::event::RuleDecision as EventRuleDecision;
+use daruma_events::event::RuleDecision as EventRuleDecision;
 
 /// Processes commands: validate → build events → persist → apply → publish.
 pub struct CommandHandler {
@@ -383,7 +383,7 @@ impl CommandHandler {
         task: &Task,
         to: Status,
         actor: &Actor,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
     ) -> Result<Vec<Event>> {
         let id = task.id;
         if task.status == to {
@@ -445,14 +445,14 @@ impl CommandHandler {
                 let outgoing = relations.list_blocks_targets(id).await?;
                 for rel in outgoing {
                     relations
-                        .update_kind(rel.id, taskagent_domain::RelationKind::WasBlocking)
+                        .update_kind(rel.id, daruma_domain::RelationKind::WasBlocking)
                         .await?;
                     events.push(Event::TaskRelationKindChanged {
                         relation_id: rel.id,
                         from: rel.from,
                         to: rel.to,
-                        from_kind: taskagent_domain::RelationKind::Blocks,
-                        to_kind: taskagent_domain::RelationKind::WasBlocking,
+                        from_kind: daruma_domain::RelationKind::Blocks,
+                        to_kind: daruma_domain::RelationKind::WasBlocking,
                         occurred_at: now,
                     });
                 }
@@ -482,7 +482,7 @@ impl CommandHandler {
     /// Returns the total number of liveness events emitted on this tick.
     pub async fn tick_liveness(
         &self,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
         ack_secs: u64,
         idle_secs: u64,
     ) -> Result<usize> {
@@ -518,7 +518,7 @@ impl CommandHandler {
     /// been notified for this deadline value yet. Returns the number of
     /// events emitted. Idempotent per (task, due_at): the projection in
     /// `task_due_notifications` dedupes across ticks and restarts.
-    pub async fn tick_due_tasks(&self, now: taskagent_shared::Timestamp) -> Result<usize> {
+    pub async fn tick_due_tasks(&self, now: daruma_shared::Timestamp) -> Result<usize> {
         let due = self.tasks.list_due_unnotified(now, 100).await?;
         let mut emitted = 0usize;
         for (task_id, due_at) in due {
@@ -540,7 +540,7 @@ impl CommandHandler {
     /// so observability cannot break a command. Document and settings
     /// events themselves are excluded to prevent recursion.
     ///
-    /// [`AutoAppendSettings`]: taskagent_domain::AutoAppendSettings
+    /// [`AutoAppendSettings`]: daruma_domain::AutoAppendSettings
     async fn auto_append_logs(&self, persisted: &[EventEnvelope]) {
         let Some(documents) = &self.documents else {
             return;
@@ -594,7 +594,7 @@ impl CommandHandler {
         &self,
         env: &EventEnvelope,
     ) -> Option<(ProjectId, DocumentKind, String)> {
-        use taskagent_domain::Actor as A;
+        use daruma_domain::Actor as A;
         let ts_iso = env.occurred_at.format("%Y-%m-%dT%H:%M:%SZ");
         let ts_human = env.occurred_at.format("%Y-%m-%d %H:%M");
         let agent_name = match &env.actor {
@@ -687,7 +687,7 @@ impl CommandHandler {
                 ))
             }
             Event::PlanStatusChanged { plan_id, to, .. }
-                if *to == taskagent_domain::PlanStatus::Completed =>
+                if *to == daruma_domain::PlanStatus::Completed =>
             {
                 let plan = self.plans.as_ref()?.get(*plan_id).await.ok().flatten()?;
                 Some((
@@ -711,8 +711,8 @@ impl CommandHandler {
 
     async fn work_unit(
         &self,
-        id: taskagent_shared::WorkUnitId,
-    ) -> Result<taskagent_domain::WorkUnit> {
+        id: daruma_shared::WorkUnitId,
+    ) -> Result<daruma_domain::WorkUnit> {
         let repo = self
             .work_units
             .as_ref()
@@ -907,7 +907,7 @@ impl CommandHandler {
                 // a substantive note (or one with a meaningful actor) rides the
                 // event; a bare `Some(default)` collapses to `None`.
                 let completion_note = note.map(|mut n| {
-                    n.actor = Some(taskagent_domain::ActorRef::from_actor(actor));
+                    n.actor = Some(daruma_domain::ActorRef::from_actor(actor));
                     n
                 });
                 let mut events = vec![
@@ -951,14 +951,14 @@ impl CommandHandler {
                     let outgoing = relations.list_blocks_targets(id).await?;
                     for rel in outgoing {
                         relations
-                            .update_kind(rel.id, taskagent_domain::RelationKind::WasBlocking)
+                            .update_kind(rel.id, daruma_domain::RelationKind::WasBlocking)
                             .await?;
                         events.push(Event::TaskRelationKindChanged {
                             relation_id: rel.id,
                             from: rel.from,
                             to: rel.to,
-                            from_kind: taskagent_domain::RelationKind::Blocks,
-                            to_kind: taskagent_domain::RelationKind::WasBlocking,
+                            from_kind: daruma_domain::RelationKind::Blocks,
+                            to_kind: daruma_domain::RelationKind::WasBlocking,
                             occurred_at: now,
                         });
                     }
@@ -1192,7 +1192,7 @@ impl CommandHandler {
                 if trimmed.is_empty() {
                     return Err(CoreError::validation("project title must not be empty"));
                 }
-                let base_slug = taskagent_domain::slugify_title(&trimmed);
+                let base_slug = daruma_domain::slugify_title(&trimmed);
                 let existing = self.projects.list_all().await?;
                 let mut slug = base_slug.clone();
                 let mut suffix = 0u32;
@@ -1209,7 +1209,7 @@ impl CommandHandler {
                 // the project's `created_at` so the log starts in a known
                 // state. Projector applies INSERT OR REPLACE, so replaying
                 // these events is idempotent.
-                let interview = taskagent_domain::NewDocument {
+                let interview = daruma_domain::NewDocument {
                     id: None,
                     project_id,
                     kind: DocumentKind::Interview,
@@ -1220,7 +1220,7 @@ impl CommandHandler {
 
                 let human_log_body =
                     format!("# Human Log\n\n_Created {}_\n", created_at.to_rfc3339());
-                let human_log = taskagent_domain::NewDocument {
+                let human_log = daruma_domain::NewDocument {
                     id: None,
                     project_id,
                     kind: DocumentKind::HumanLog,
@@ -1274,7 +1274,7 @@ impl CommandHandler {
                 Ok(vec![Event::ProjectSettingsChanged {
                     project_id,
                     auto_append: current.apply(auto_append),
-                    at: taskagent_shared::time::now(),
+                    at: daruma_shared::time::now(),
                 }])
             }
 
@@ -1284,8 +1284,8 @@ impl CommandHandler {
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("task {}", work_unit.task_id)))?;
                 let mut wu = work_unit.into_work_unit(time::now());
-                if wu.id == taskagent_shared::WorkUnitId::default() {
-                    wu.id = taskagent_shared::WorkUnitId::new();
+                if wu.id == daruma_shared::WorkUnitId::default() {
+                    wu.id = daruma_shared::WorkUnitId::new();
                 }
                 if wu.title.trim().is_empty() {
                     return Err(CoreError::validation("work unit title must not be empty"));
@@ -1321,7 +1321,7 @@ impl CommandHandler {
             }
 
             Command::SetWorkUnitStatus { id, status, reason } => {
-                use taskagent_domain::WorkUnitStatus as WUS;
+                use daruma_domain::WorkUnitStatus as WUS;
                 let unit = self.work_unit(id).await?;
                 if unit.status.is_terminal() {
                     return Err(CoreError::conflict(format!(
@@ -1394,7 +1394,7 @@ impl CommandHandler {
                 let now = time::now();
                 let preview: String = body.chars().take(80).collect();
                 let comment = Comment::from_new(
-                    taskagent_domain::NewComment {
+                    daruma_domain::NewComment {
                         body,
                         ..new_comment
                     },
@@ -2140,7 +2140,7 @@ impl CommandHandler {
                 }
                 let id = new_doc.id.unwrap_or_else(DocumentId::new);
                 let now = time::now();
-                let document = taskagent_domain::NewDocument {
+                let document = daruma_domain::NewDocument {
                     id: Some(id),
                     project_id: new_doc.project_id,
                     kind: new_doc.kind,
@@ -2224,8 +2224,8 @@ impl CommandHandler {
                     )));
                 }
                 let mut rule = rule.into_rule(time::now());
-                if rule.id == taskagent_shared::RuleId::default() {
-                    rule.id = taskagent_shared::RuleId::new();
+                if rule.id == daruma_shared::RuleId::default() {
+                    rule.id = daruma_shared::RuleId::new();
                 }
                 Ok(vec![Event::RuleCreated { rule }])
             }
@@ -2263,8 +2263,8 @@ impl CommandHandler {
                 let _repo = require_evidence(&self.evidence)?;
                 let supersedes = evidence.supersedes;
                 let mut record = evidence.into_evidence(ActorRef::from_actor(actor), time::now());
-                if record.id == taskagent_shared::EvidenceId::default() {
-                    record.id = taskagent_shared::EvidenceId::new();
+                if record.id == daruma_shared::EvidenceId::default() {
+                    record.id = daruma_shared::EvidenceId::new();
                 }
                 let new_id = record.id;
                 let mut events = vec![Event::EvidenceRecorded { evidence: record }];
@@ -2306,7 +2306,7 @@ fn rule_fired_events<'a>(
     let trigger = check.trigger.as_str().to_string();
     outcomes
         .filter_map(|(details, message)| {
-            let rule_id: taskagent_shared::RuleId = details
+            let rule_id: daruma_shared::RuleId = details
                 .get("rule_id")
                 .and_then(|v| v.as_str())?
                 .parse()
@@ -2376,7 +2376,7 @@ fn require_evidence(
 async fn require_document(
     documents: &Option<Arc<dyn DocumentRepository>>,
     id: DocumentId,
-) -> Result<taskagent_domain::Document> {
+) -> Result<daruma_domain::Document> {
     let repo = documents
         .as_ref()
         .ok_or_else(|| CoreError::storage("document repository not configured"))?;
@@ -2427,12 +2427,12 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use std::{collections::HashMap, sync::Mutex};
-    use taskagent_domain::{
+    use daruma_domain::{
         Actor, AgentSession, NewTask, Plan, PlanStatus as PS, PlanTask, Run, SessionArtifactKind,
     };
-    use taskagent_events::{Event, EventStore};
-    use taskagent_shared::{ProjectId, RunId, TaskId};
-    use taskagent_storage::{
+    use daruma_events::{Event, EventStore};
+    use daruma_shared::{ProjectId, RunId, TaskId};
+    use daruma_storage::{
         ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo,
     };
 
@@ -2474,14 +2474,14 @@ mod tests {
 
     #[async_trait]
     impl PlanRepository for MemPlanRepo {
-        async fn get(&self, id: PlanId) -> taskagent_shared::Result<Option<Plan>> {
+        async fn get(&self, id: PlanId) -> daruma_shared::Result<Option<Plan>> {
             Ok(self.plans.lock().unwrap().get(&id).cloned())
         }
 
         async fn list_plan_tasks_ordered(
             &self,
             plan_id: PlanId,
-        ) -> taskagent_shared::Result<Vec<PlanTask>> {
+        ) -> daruma_shared::Result<Vec<PlanTask>> {
             let mut v = self
                 .plan_tasks
                 .lock()
@@ -2496,7 +2496,7 @@ mod tests {
         async fn list_plans_for_task(
             &self,
             task_id: TaskId,
-        ) -> taskagent_shared::Result<Vec<PlanId>> {
+        ) -> daruma_shared::Result<Vec<PlanId>> {
             let guard = self.plan_tasks.lock().unwrap();
             let plan_ids = guard
                 .iter()
@@ -2511,7 +2511,7 @@ mod tests {
             Ok(plan_ids)
         }
 
-        async fn apply_event(&self, env: &EventEnvelope) -> taskagent_shared::Result<()> {
+        async fn apply_event(&self, env: &EventEnvelope) -> daruma_shared::Result<()> {
             match &env.payload {
                 Event::PlanCreated { plan } => {
                     self.plans.lock().unwrap().insert(plan.id, plan.clone());
@@ -2564,14 +2564,14 @@ mod tests {
 
     #[async_trait]
     impl RunRepository for MemRunRepo {
-        async fn get(&self, id: RunId) -> taskagent_shared::Result<Option<Run>> {
+        async fn get(&self, id: RunId) -> daruma_shared::Result<Option<Run>> {
             Ok(self.runs.lock().unwrap().get(&id).cloned())
         }
 
         async fn list_active_for_plan(
             &self,
             plan_id: PlanId,
-        ) -> taskagent_shared::Result<Vec<Run>> {
+        ) -> daruma_shared::Result<Vec<Run>> {
             Ok(self
                 .runs
                 .lock()
@@ -2585,27 +2585,27 @@ mod tests {
         async fn current_step_task(
             &self,
             run_id: RunId,
-        ) -> taskagent_shared::Result<Option<TaskId>> {
+        ) -> daruma_shared::Result<Option<TaskId>> {
             Ok(self.current_steps.lock().unwrap().get(&run_id).copied())
         }
 
         async fn list_unresponsive_candidates(
             &self,
             _threshold: std::time::Duration,
-            _now: taskagent_shared::Timestamp,
-        ) -> taskagent_shared::Result<Vec<RunId>> {
+            _now: daruma_shared::Timestamp,
+        ) -> daruma_shared::Result<Vec<RunId>> {
             Ok(vec![])
         }
 
         async fn list_stale_candidates(
             &self,
             _threshold: std::time::Duration,
-            _now: taskagent_shared::Timestamp,
-        ) -> taskagent_shared::Result<Vec<RunId>> {
+            _now: daruma_shared::Timestamp,
+        ) -> daruma_shared::Result<Vec<RunId>> {
             Ok(vec![])
         }
 
-        async fn apply_event(&self, env: &EventEnvelope) -> taskagent_shared::Result<()> {
+        async fn apply_event(&self, env: &EventEnvelope) -> daruma_shared::Result<()> {
             match &env.payload {
                 Event::RunStarted { run } => {
                     self.runs.lock().unwrap().insert(run.id, run.clone());
@@ -2651,11 +2651,11 @@ mod tests {
 
     #[async_trait]
     impl SessionRepository for MemSessionRepo {
-        async fn get(&self, id: AgentSessionId) -> taskagent_shared::Result<Option<AgentSession>> {
+        async fn get(&self, id: AgentSessionId) -> daruma_shared::Result<Option<AgentSession>> {
             Ok(self.sessions.lock().unwrap().get(&id).cloned())
         }
 
-        async fn apply_event(&self, env: &EventEnvelope) -> taskagent_shared::Result<()> {
+        async fn apply_event(&self, env: &EventEnvelope) -> daruma_shared::Result<()> {
             match &env.payload {
                 Event::AgentSessionStarted { session } => {
                     self.sessions
@@ -2695,7 +2695,7 @@ mod tests {
             tenant: &str,
             kind: &str,
             external_id: &str,
-        ) -> taskagent_shared::Result<Option<String>> {
+        ) -> daruma_shared::Result<Option<String>> {
             Ok(self
                 .refs
                 .lock()
@@ -2704,7 +2704,7 @@ mod tests {
                 .cloned())
         }
 
-        async fn apply_event(&self, _env: &EventEnvelope) -> taskagent_shared::Result<()> {
+        async fn apply_event(&self, _env: &EventEnvelope) -> daruma_shared::Result<()> {
             Ok(())
         }
     }
@@ -2715,11 +2715,11 @@ mod tests {
 
     #[async_trait]
     impl SearchProvider for RecordingSearchProvider {
-        async fn search(&self, _query: SearchQuery) -> taskagent_shared::Result<Vec<SearchHit>> {
+        async fn search(&self, _query: SearchQuery) -> daruma_shared::Result<Vec<SearchHit>> {
             Ok(Vec::new())
         }
 
-        async fn index(&self, item: SearchIndexItem) -> taskagent_shared::Result<()> {
+        async fn index(&self, item: SearchIndexItem) -> daruma_shared::Result<()> {
             if let SearchIndexItem::Task(task) = item {
                 let _ = self.tx.send(format!("task:{}", task.title));
             }
@@ -2845,7 +2845,7 @@ mod tests {
         assert_eq!(store.load_since(0, 100).await.unwrap().len(), 4);
 
         let task = tasks.get(task_id).await.unwrap().unwrap();
-        assert_eq!(task.status, taskagent_domain::Status::Done);
+        assert_eq!(task.status, daruma_domain::Status::Done);
         assert!(task.completed_at.is_some());
 
         let err = handler
@@ -2858,7 +2858,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, taskagent_shared::CoreError::Conflict(_)));
+        assert!(matches!(err, daruma_shared::CoreError::Conflict(_)));
     }
 
     #[tokio::test]
@@ -2899,7 +2899,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_comment_emits_comment_added() {
-        use taskagent_domain::NewComment;
+        use daruma_domain::NewComment;
 
         let (handler, _store, _tasks) = build_stack().await;
 
@@ -2931,7 +2931,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_comment_rejects_empty_body() {
-        use taskagent_domain::NewComment;
+        use daruma_domain::NewComment;
 
         let (handler, _store, _tasks) = build_stack().await;
 
@@ -2956,7 +2956,7 @@ mod tests {
 
     #[tokio::test]
     async fn edit_deleted_comment_returns_not_found() {
-        use taskagent_domain::{CommentPatch, NewComment};
+        use daruma_domain::{CommentPatch, NewComment};
 
         let (handler, _store, _tasks) = build_stack().await;
 
@@ -3007,7 +3007,7 @@ mod tests {
 
     /// Helper: create a plan and return its id.
     async fn create_active_plan(handler: &CommandHandler, project_id: ProjectId) -> PlanId {
-        use taskagent_domain::NewPlan;
+        use daruma_domain::NewPlan;
 
         let envs = handler
             .handle(
@@ -3040,7 +3040,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_plan_happy_path_emits_plan_created() {
-        use taskagent_domain::NewPlan;
+        use daruma_domain::NewPlan;
 
         let (handler, plans, ..) = build_plan_stack().await;
         let project_id = ProjectId::new();
@@ -3074,7 +3074,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_plan_rejects_empty_title() {
-        use taskagent_domain::NewPlan;
+        use daruma_domain::NewPlan;
 
         let (handler, ..) = build_plan_stack().await;
         let err = handler
@@ -3092,7 +3092,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_plan_with_existing_external_ref_is_idempotent() {
-        use taskagent_domain::NewPlan;
+        use daruma_domain::NewPlan;
 
         let (handler, _, _, _, ext_refs, _) = build_plan_stack().await;
         ext_refs.seed(
@@ -3254,8 +3254,8 @@ mod tests {
 
     #[tokio::test]
     async fn update_agent_session_plan_rejects_over_100_steps() {
-        use taskagent_domain::AgentSessionPlanStep;
-        use taskagent_domain::SessionStepStatus;
+        use daruma_domain::AgentSessionPlanStep;
+        use daruma_domain::SessionStepStatus;
 
         let (handler, _, _, _sessions, ..) = build_plan_stack().await;
 
@@ -3464,7 +3464,7 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(err, taskagent_shared::CoreError::Validation(_)),
+            matches!(err, daruma_shared::CoreError::Validation(_)),
             "expected Validation error, got: {err:?}"
         );
     }
@@ -3508,7 +3508,7 @@ mod tests {
             .handle(
                 Command::SetStatus {
                     id: task_ids[1],
-                    status: taskagent_domain::Status::Cancelled,
+                    status: daruma_domain::Status::Cancelled,
                     force: false,
                 },
                 Actor::user(),

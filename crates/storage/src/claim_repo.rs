@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_shared::{AgentId, CoreError, Result, TaskId, Timestamp};
+use daruma_shared::{AgentId, CoreError, Result, TaskId, Timestamp};
 
 /// Outcome of an atomic [`AgentClaimRepo::try_acquire`] attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,7 +319,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_shared::{AgentId, TaskId};
+    use daruma_shared::{AgentId, TaskId};
 
     async fn make_repo() -> (Db, AgentClaimRepo) {
         let db = Db::memory().await.unwrap();

@@ -1,14 +1,14 @@
 ---
 name: auto-record
-description: Automatically capture a durable lesson from the current session at stop time. Triggered by the Stop hook when TASKAGENT_ACTIVE_TASK is set.
+description: Automatically capture a durable lesson from the current session at stop time. Triggered by the Stop hook when DARUMA_ACTIVE_TASK is set.
 ---
 
-# taskagent-claude: auto-record
+# daruma-claude: auto-record
 
 The Stop hook fires this skill at the end of every session that had an
-active taskagent task (`TASKAGENT_ACTIVE_TASK` is set). It decides whether
+active daruma task (`DARUMA_ACTIVE_TASK` is set). It decides whether
 a lesson worth keeping was produced and, if so, records it via
-`taskagent_comment`.
+`daruma_comment`.
 
 ## Decision gate
 
@@ -27,8 +27,8 @@ Skip silently when:
 
 ## Step 1 — Identify the target task
 
-Use `TASKAGENT_ACTIVE_TASK` as the task id. If the variable is absent,
-fall back to `taskagent_list status=["in_progress"] limit=1` to find the
+Use `DARUMA_ACTIVE_TASK` as the task id. If the variable is absent,
+fall back to `daruma_list status=["in_progress"] limit=1` to find the
 most-recently updated in-progress task.
 
 ## Step 2 — Draft the lesson
@@ -38,7 +38,7 @@ One paragraph maximum. Include:
 - Why it matters (what failure or confusion it prevents).
 - Optionally: how to apply it.
 
-Prefix the body with `lesson:` so `taskagent_lesson_recall` can surface it.
+Prefix the body with `lesson:` so `daruma_lesson_recall` can surface it.
 
 ## Step 3 — Post the comment
 
@@ -49,7 +49,7 @@ Prefix the body with `lesson:` so `taskagent_lesson_recall` can surface it.
 }
 ```
 
-Call `taskagent_comment` with the above payload.
+Call `daruma_comment` with the above payload.
 
 ## Step 4 — Confirm
 

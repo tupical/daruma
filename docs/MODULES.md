@@ -1,6 +1,6 @@
 # Module Registry
 
-This document is the **canonical registry** of every TaskAgent module —
+This document is the **canonical registry** of every Daruma module —
 each app and crate, classified by *kind* (`core`, `transport`, `client`,
 `embed`, `integration`), with a per-module manifest describing the
 contract it relies on. Adding a new module = adding a row here and a
@@ -18,29 +18,29 @@ The runtime split is formalised in
 | `core`        | Domain, command/event runtime, storage, auth. Stable contract; minor versions backwards-compat. |
 | `transport`   | Speaks HTTP / WS / MCP / webhook to clients; owned by core (lives in `crates/` or `apps/`). |
 | `client`      | Consumer of `/v1/*`; ships its own UI/CLI binary. May be replaced freely.                     |
-| `embed`       | Runs `taskagent-core` in-process (no network). Desktop today; mobile later if size allows.    |
+| `embed`       | Runs `daruma-core` in-process (no network). Desktop today; mobile later if size allows.    |
 | `integration` | Speaks to a third-party system (GitHub, Slack, …). Planned, no shipped impls yet.             |
 
 ## Registry
 
 | Module                 | Path                       | Kind          | Lang  | Status     | Owner          | Contract dep |
 |------------------------|----------------------------|---------------|-------|------------|----------------|--------------|
-| `taskagent-shared`     | `crates/shared/`           | `core`        | Rust  | shipped    | core           | —            |
-| `taskagent-domain`     | `crates/domain/`           | `core`        | Rust  | shipped    | core           | shared       |
-| `taskagent-events`     | `crates/events/`           | `core`        | Rust  | shipped    | core           | shared+domain |
-| `taskagent-core`       | `crates/core/`             | `core`        | Rust  | shipped    | core           | events+storage |
-| `taskagent-storage`    | `crates/storage/`          | `core`        | Rust  | shipped    | core           | events        |
-| `taskagent-auth`       | `crates/auth/`             | `core`        | Rust  | shipped    | core           | shared        |
-| `taskagent-api-dto`    | `crates/api-dto/`          | `core`        | Rust  | shipped    | core           | domain+events |
-| `taskagent-server`     | `apps/server/`             | `transport`   | Rust  | shipped    | core           | core+auth     |
-| `taskagent-sync`       | `crates/sync/`             | `transport`   | Rust  | shipped    | core           | events        |
-| `taskagent-webhooks`   | `crates/webhooks/`         | `transport`   | Rust  | shipped    | core           | events        |
-| `taskagent-mcp`        | `crates/mcp/`              | `transport`   | Rust  | shipped    | core           | server (HTTP) |
-| `taskagent-ai`         | `crates/ai/`               | `transport`   | Rust  | shipped    | core           | domain+events |
-| `taskagent-web`        | `../taskagent-web/` (repo) | `client`      | Rust/WASM | shipped | clients        | `/v1/*` + WS  |
-| `taskagent-cli`        | `apps/cli/`                | `client`      | Rust  | shipped    | clients        | `/v1/*`       |
-| `taskagent-desktop`    | `apps/desktop/`            | `embed`       | Rust (GPUI) | wip    | clients        | `taskagent-core` in-process |
-| `taskagent-mobile`     | `apps/mobile/`             | `client`      | Rust+Tauri 2 | wip     | clients     | `/v1/*` (HTTP) |
+| `daruma-shared`     | `crates/shared/`           | `core`        | Rust  | shipped    | core           | —            |
+| `daruma-domain`     | `crates/domain/`           | `core`        | Rust  | shipped    | core           | shared       |
+| `daruma-events`     | `crates/events/`           | `core`        | Rust  | shipped    | core           | shared+domain |
+| `daruma-core`       | `crates/core/`             | `core`        | Rust  | shipped    | core           | events+storage |
+| `daruma-storage`    | `crates/storage/`          | `core`        | Rust  | shipped    | core           | events        |
+| `daruma-auth`       | `crates/auth/`             | `core`        | Rust  | shipped    | core           | shared        |
+| `daruma-api-dto`    | `crates/api-dto/`          | `core`        | Rust  | shipped    | core           | domain+events |
+| `daruma-server`     | `apps/server/`             | `transport`   | Rust  | shipped    | core           | core+auth     |
+| `daruma-sync`       | `crates/sync/`             | `transport`   | Rust  | shipped    | core           | events        |
+| `daruma-webhooks`   | `crates/webhooks/`         | `transport`   | Rust  | shipped    | core           | events        |
+| `daruma-mcp`        | `crates/mcp/`              | `transport`   | Rust  | shipped    | core           | server (HTTP) |
+| `daruma-ai`         | `crates/ai/`               | `transport`   | Rust  | shipped    | core           | domain+events |
+| `daruma-web`        | `../daruma-web/` (repo) | `client`      | Rust/WASM | shipped | clients        | `/v1/*` + WS  |
+| `daruma-cli`        | `apps/cli/`                | `client`      | Rust  | shipped    | clients        | `/v1/*`       |
+| `daruma-desktop`    | `apps/desktop/`            | `embed`       | Rust (GPUI) | wip    | clients        | `daruma-core` in-process |
+| `daruma-mobile`     | `apps/mobile/`             | `client`      | Rust+Tauri 2 | wip     | clients     | `/v1/*` (HTTP) |
 | GitHub integration     | `integrations/github/`     | `integration` | — | planned    | integrations   | webhooks + `/v1/*` |
 | Slack integration      | `integrations/slack/`      | `integration` | — | planned    | integrations   | webhooks + `/v1/*` |
 
@@ -55,7 +55,7 @@ for non-Rust modules) at its source root with the following shape:
 
 ```toml
 [module]
-name           = "taskagent-web"
+name           = "daruma-web"
 kind           = "client"                    # core | transport | client | embed | integration
 status         = "shipped"                   # planned | wip | shipped | retired
 owner          = "clients"
@@ -70,8 +70,8 @@ optional = ["AdminTokens"]
 source       = "git"
 repo         = "https://github.com/tupical/daruma"
 version      = "0.1.0"
-tag          = "taskagent-v0.1.0"
-dev_override = "vendor/oss -> ../taskagent"
+tag          = "daruma-v0.1.0"
+dev_override = "vendor/oss -> ../daruma"
 ```
 
 The manifest is the source of truth for:

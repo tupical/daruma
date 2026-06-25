@@ -3,7 +3,7 @@
 --
 -- NULL = legacy/unclassified comment; backwards-compatible by design.
 -- Validation of the enum string happens in the application layer
--- (taskagent_domain::CommentKind::FromStr), not via a CHECK constraint —
+-- (daruma_domain::CommentKind::FromStr), not via a CHECK constraint —
 -- this keeps the migration cheap and lets us evolve the variant set
 -- without ALTERs.
 

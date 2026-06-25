@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use serde_json::json;
-use taskagent_core::embed::EventEnvelope;
-use taskagent_shared::{CoreError, Result};
+use daruma_core::embed::EventEnvelope;
+use daruma_shared::{CoreError, Result};
 
 use crate::flush::RemoteEventSink;
 
@@ -24,9 +24,9 @@ impl HttpReplicaSink {
 
     pub fn from_env() -> Result<Self> {
         let base_url =
-            std::env::var("TASKAGENT_API_URL").unwrap_or_else(|_| "http://localhost:8080".into());
-        let token = std::env::var("TASKAGENT_TOKEN")
-            .map_err(|_| CoreError::validation("TASKAGENT_TOKEN is required for sync"))?;
+            std::env::var("DARUMA_API_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+        let token = std::env::var("DARUMA_TOKEN")
+            .map_err(|_| CoreError::validation("DARUMA_TOKEN is required for sync"))?;
         Ok(Self::new(base_url, token))
     }
 

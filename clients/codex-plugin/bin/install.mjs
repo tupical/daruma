@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// `npx taskagent-codex-install` — thin delegate to `taskagent install`.
+// `npx daruma-codex-install` — thin delegate to `daruma install`.
 //
-// All install logic lives in the unified `taskagent` binary (apps/cli).
+// All install logic lives in the unified `daruma` binary (apps/cli).
 // This wrapper detects the running IDE from env vars and maps the legacy
 // --ide flag to the binary's per-target flags, then execs the binary.
 //
 // Usage (same surface as before):
-//   npx taskagent-codex install [--ide auto|codex|cursor|windsurf|claude|all]
+//   npx daruma-codex install [--ide auto|codex|cursor|windsurf|claude|all]
 //                               [--project DIR] [--base-url URL]
 //                               [--token TOKEN] [--force] [--help]
 
@@ -18,25 +18,25 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
 
-const HELP = `taskagent-codex v${pkg.version} — Multi-IDE MCP installer for TaskAgent
-(thin delegate — requires the \`taskagent\` binary on PATH)
+const HELP = `daruma-codex v${pkg.version} — Multi-IDE MCP installer for Daruma
+(thin delegate — requires the \`daruma\` binary on PATH)
 
 Usage:
-  npx taskagent-codex install [options]
+  npx daruma-codex install [options]
 
 Options:
   --ide <target>     IDE to configure: auto (default), codex, cursor, windsurf,
                      claude, all. "auto" detects from environment variables.
   --project DIR      Write project-scoped config instead of global.
-  --base-url URL     TaskAgent server origin (default: http://localhost:8080).
-  --token TOKEN      Bearer token. Resolved from TASKAGENT_TOKEN env or
+  --base-url URL     Daruma server origin (default: http://localhost:8080).
+  --token TOKEN      Bearer token. Resolved from DARUMA_TOKEN env or
                      credentials file if omitted.
   --force            Overwrite existing MCP config entries.
   --help | -h        This message.
 
-Install the \`taskagent\` binary first:
+Install the \`daruma\` binary first:
   curl -fsSL https://raw.githubusercontent.com/tupical/daruma/main/install.sh | sh
-  # or: cargo install taskagent-cli
+  # or: cargo install daruma-cli
   # or: download from https://github.com/tupical/daruma/releases
 `;
 
@@ -89,7 +89,7 @@ function main(argv) {
         return;
       default:
         if (!a.startsWith("-")) break; // positional — ignore
-        process.stderr.write(`taskagent-codex install: unknown flag: ${a}\n`);
+        process.stderr.write(`daruma-codex install: unknown flag: ${a}\n`);
         process.exit(1);
     }
   }
@@ -107,7 +107,7 @@ function main(argv) {
   const ideFlags = ideToFlag[ide];
   if (!ideFlags) {
     process.stderr.write(
-      `taskagent-codex install: unknown IDE target: ${ide}. ` +
+      `daruma-codex install: unknown IDE target: ${ide}. ` +
       `Use: auto, codex, cursor, windsurf, claude, all\n`
     );
     process.exit(1);
@@ -124,21 +124,21 @@ function main(argv) {
 
   const finalArgs = [...globalArgs, ...binaryArgs];
 
-  console.log(`taskagent-codex install — IDE: ${ide}`);
+  console.log(`daruma-codex install — IDE: ${ide}`);
 
-  const result = spawnSync("taskagent", finalArgs, { stdio: "inherit", shell: false });
+  const result = spawnSync("daruma", finalArgs, { stdio: "inherit", shell: false });
 
   if (result.error) {
     if (result.error.code === "ENOENT") {
       process.stderr.write(
-        `\ntaskagent-codex install: 'taskagent' binary not found on PATH.\n` +
+        `\ndaruma-codex install: 'daruma' binary not found on PATH.\n` +
         `Install it first:\n` +
         `  curl -fsSL https://raw.githubusercontent.com/tupical/daruma/main/install.sh | sh\n` +
-        `  # or: cargo install taskagent-cli\n` +
+        `  # or: cargo install daruma-cli\n` +
         `  # or: https://github.com/tupical/daruma/releases\n`
       );
     } else {
-      process.stderr.write(`taskagent-codex install: ${result.error.message}\n`);
+      process.stderr.write(`daruma-codex install: ${result.error.message}\n`);
     }
     process.exit(1);
   }

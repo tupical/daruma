@@ -1,4 +1,4 @@
-//! Minimal MCP server for TaskAgent.
+//! Minimal MCP server for Daruma.
 //!
 //! Implements just enough of the Model Context Protocol (JSON-RPC 2.0 over
 //! stdio) for tool-call interop with Claude Desktop and the MCP Inspector:

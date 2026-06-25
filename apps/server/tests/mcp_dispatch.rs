@@ -1,6 +1,6 @@
 //! AC-7 — MCP server protocol + tool dispatch.
 //!
-//! Spins up `taskagent-server` inline, points an `ApiClient` at it, and
+//! Spins up `daruma-server` inline, points an `ApiClient` at it, and
 //! drives the MCP JSON-RPC dispatcher directly (the stdio binary is
 //! identical glue around the same `dispatch_request` function — we test
 //! the protocol layer rather than the OS pipe plumbing).
@@ -12,7 +12,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::json;
-use taskagent_mcp::{
+use daruma_mcp::{
     dispatch_request_with_profile, tool_definitions, ApiClient, JsonRpcRequest, ToolProfile,
 };
 use tower::ServiceExt;
@@ -20,7 +20,7 @@ use tower::ServiceExt;
 mod common;
 use common::{spawn_server, test_app};
 
-async fn spawn_taskagent_inline() -> (SocketAddr, String) {
+async fn spawn_daruma_inline() -> (SocketAddr, String) {
     let app = test_app().await;
     let addr = spawn_server(&app).await;
     (addr, app.admin_token)
@@ -53,20 +53,20 @@ async fn get_json(app: axum::Router, token: &str, uri: &str) -> (StatusCode, ser
 
 #[tokio::test]
 async fn ac7_initialize_returns_server_info() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let resp = dispatch_request(&client, req("initialize", json!({})))
         .await
         .unwrap();
     let result = resp.result.expect("initialize must return a result");
-    assert_eq!(result["serverInfo"]["name"], "taskagent-mcp");
+    assert_eq!(result["serverInfo"]["name"], "daruma-mcp");
     assert!(result["protocolVersion"].is_string());
 }
 
 #[tokio::test]
 async fn ac7_tools_list_advertises_at_least_ten_required_tools() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let resp = dispatch_request(&client, req("tools/list", json!({})))
@@ -77,11 +77,11 @@ async fn ac7_tools_list_advertises_at_least_ten_required_tools() {
 
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for required in [
-        "taskagent_subscribe_project",
-        "taskagent_inbox_pull",
-        "taskagent_comment",
-        "taskagent_reopen",
-        "taskagent_update",
+        "daruma_subscribe_project",
+        "daruma_inbox_pull",
+        "daruma_comment",
+        "daruma_reopen",
+        "daruma_update",
     ] {
         assert!(
             names.contains(&required),
@@ -92,7 +92,7 @@ async fn ac7_tools_list_advertises_at_least_ten_required_tools() {
 
 #[tokio::test]
 async fn ac7_tools_call_create_task_dispatches_through_to_server() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let resp = dispatch_request(
@@ -100,7 +100,7 @@ async fn ac7_tools_call_create_task_dispatches_through_to_server() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_create",
+                "name": "daruma_create",
                 "arguments": { "task": { "title": "AC-7 mcp" } }
             }),
         ),
@@ -121,13 +121,13 @@ async fn ac7_tools_call_create_task_dispatches_through_to_server() {
     assert_eq!(arr[0]["payload"]["type"], "task_created");
     assert!(
         envelopes["task_id"].is_string(),
-        "taskagent_create must surface task_id for agents: {envelopes}"
+        "daruma_create must surface task_id for agents: {envelopes}"
     );
 
     // Follow up with healthz — verifies a non-auth path also works.
     let healthz = dispatch_request(
         &client,
-        req("tools/call", json!({"name": "taskagent_healthz"})),
+        req("tools/call", json!({"name": "daruma_healthz"})),
     )
     .await
     .unwrap();
@@ -145,7 +145,7 @@ async fn tools_call_update_task_dispatches_and_records_activity() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_create",
+                "name": "daruma_create",
                 "arguments": { "task": { "title": "MCP update seed" } }
             }),
         ),
@@ -179,7 +179,7 @@ async fn tools_call_update_task_dispatches_and_records_activity() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_update",
+                "name": "daruma_update",
                 "arguments": {
                     "id": task_id,
                     "title": "MCP update changed",
@@ -226,7 +226,7 @@ async fn tools_call_update_task_dispatches_and_records_activity() {
 
 #[tokio::test]
 async fn ac7_unknown_method_returns_jsonrpc_error() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let resp = dispatch_request(&client, req("frobnicate", json!({})))
@@ -240,7 +240,7 @@ async fn ac7_unknown_method_returns_jsonrpc_error() {
 async fn ac7_catalogue_is_consistent_with_direct_helper() {
     // Same list whether you call the helper or the JSON-RPC method.
     let direct: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
     let via_jsonrpc = dispatch_request(&client, req("tools/list", json!({})))
         .await
@@ -260,7 +260,7 @@ async fn ac7_catalogue_is_consistent_with_direct_helper() {
 async fn dispatch_request(
     client: &ApiClient,
     req: JsonRpcRequest,
-) -> Option<taskagent_mcp::JsonRpcResponse> {
+) -> Option<daruma_mcp::JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }
 
@@ -280,7 +280,7 @@ async fn tools_list_names(client: &ApiClient, profile: ToolProfile) -> Vec<Strin
 
 #[tokio::test]
 async fn profiles_tools_list_reflects_selected_surface() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let full = tools_list_names(&client, ToolProfile::Full).await;
@@ -300,16 +300,16 @@ async fn profiles_tools_list_reflects_selected_surface() {
     for name in &compact {
         assert!(full.contains(name), "default tool {name} missing from full");
     }
-    assert!(compact.iter().any(|n| n == "taskagent_list"));
+    assert!(compact.iter().any(|n| n == "daruma_list"));
     assert!(
-        !compact.iter().any(|n| n == "taskagent_history_rollback"),
+        !compact.iter().any(|n| n == "daruma_history_rollback"),
         "advanced tools must be hidden in the default profile"
     );
 }
 
 #[tokio::test]
 async fn profiles_tools_list_carries_titles_and_annotations() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let resp =
@@ -338,7 +338,7 @@ async fn profiles_tools_list_carries_titles_and_annotations() {
 
 #[tokio::test]
 async fn profiles_hidden_tool_is_not_callable_in_default() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let resp = dispatch_request_with_profile(
@@ -346,7 +346,7 @@ async fn profiles_hidden_tool_is_not_callable_in_default() {
         ToolProfile::Default,
         req(
             "tools/call",
-            json!({ "name": "taskagent_history_latest", "arguments": {} }),
+            json!({ "name": "daruma_history_latest", "arguments": {} }),
         ),
     )
     .await
@@ -366,7 +366,7 @@ async fn profiles_hidden_tool_is_not_callable_in_default() {
         ToolProfile::Full,
         req(
             "tools/call",
-            json!({ "name": "taskagent_history_latest", "arguments": { "limit": 1 } }),
+            json!({ "name": "daruma_history_latest", "arguments": { "limit": 1 } }),
         ),
     )
     .await

@@ -3,8 +3,8 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::ExternalRef;
-use taskagent_shared::{CoreError, Result};
+use daruma_domain::ExternalRef;
+use daruma_shared::{CoreError, Result};
 
 /// Read/write access to the `external_refs` table.
 pub struct ExternalRefRepo {
@@ -85,7 +85,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_shared::{time, PlanId};
+    use daruma_shared::{time, PlanId};
 
     async fn make_repo() -> (Db, ExternalRefRepo) {
         let db = Db::memory().await.unwrap();

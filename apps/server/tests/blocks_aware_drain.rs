@@ -8,7 +8,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::Value;
-use taskagent_auth::{Capabilities, Capability, ProjectFilter};
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
 use tower::ServiceExt;
 
 mod common;

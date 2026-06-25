@@ -8,9 +8,9 @@ use std::collections::{HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Document, Plan, Project, RelationKind};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, Result};
+use daruma_domain::{Document, Plan, Project, RelationKind};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GraphNode {
@@ -1478,12 +1478,12 @@ fn storage_err<E: std::fmt::Display>(err: E) -> CoreError {
 mod tests {
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
-    use taskagent_domain::{
+    use daruma_domain::{
         Actor, Comment, Document, DocumentKind, NewTask, Plan, PlanStatus, Priority, Project,
         RelationKind, Status,
     };
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{CommentId, DocumentId, PlanId, ProjectId, RelationId, TaskId};
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{CommentId, DocumentId, PlanId, ProjectId, RelationId, TaskId};
 
     use super::*;
 

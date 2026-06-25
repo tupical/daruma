@@ -1,9 +1,9 @@
 // Detection helpers for tupical/daruma and oh-my-claudecode.
-// Used by both the `taskagent-claude` CLI and the /taskagent-claude:doctor skill.
+// Used by both the `daruma-claude` CLI and the /daruma-claude:doctor skill.
 //
-// readiness gate = omc CLI present + taskagent MCP server registered in Claude
-// + taskagent HTTP server healthy. The MCP probe parses `claude mcp list`
-// output; the HTTP probe hits TASKAGENT_BASE_URL/v1/healthz (default
+// readiness gate = omc CLI present + daruma MCP server registered in Claude
+// + daruma HTTP server healthy. The MCP probe parses `claude mcp list`
+// output; the HTTP probe hits DARUMA_BASE_URL/v1/healthz (default
 // http://localhost:8080).
 
 import { execFile } from "node:child_process";
@@ -102,22 +102,22 @@ export async function detectOMC() {
   };
 }
 
-// Parses `claude mcp list` looking for a `taskagent:` line and its status.
+// Parses `claude mcp list` looking for a `daruma:` line and its status.
 // Output format (claude 2.1.x):
 //   Checking MCP server health…
 //
-//   taskagent: /path/to/taskagent-mcp - ✓ Connected
+//   daruma: /path/to/daruma-mcp - ✓ Connected
 //   other-server: ... - ✗ Failed to connect
 //
 // Returns { present, connected, command }.
-export function parseClaudeMcpList(text, serverName = "taskagent") {
+export function parseClaudeMcpList(text, serverName = "daruma") {
   const empty = { present: false, connected: false, command: null };
   if (!text) return empty;
   const lines = text.split(/\r?\n/);
   // Server lines look like:
   //   <name>: <command…> - <status-marker> <status-text>
   // where the status-marker is one of ✓ / ✗ / ! (from `claude mcp list`).
-  // The command itself can contain dashes (e.g. `taskagent-mcp`), so we
+  // The command itself can contain dashes (e.g. `daruma-mcp`), so we
   // anchor the separator on the trailing status marker rather than the
   // first ` - ` we encounter.
   const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -140,7 +140,7 @@ export function parseClaudeMcpList(text, serverName = "taskagent") {
   return empty;
 }
 
-async function probeTaskagentHttp(baseUrl) {
+async function probeDarumaHttp(baseUrl) {
   try {
     const res = await fetch(`${baseUrl}/v1/healthz`, {
       signal: timeoutSignal(HTTP_TIMEOUT_MS),
@@ -155,7 +155,7 @@ async function probeTaskagentHttp(baseUrl) {
   }
 }
 
-export async function detectTaskagent() {
+export async function detectDaruma() {
   const probeUrl = await resolveHttpProbeUrl();
   const creds = await loadCredentials();
   const profile = creds ? resolveActiveProfile(creds) : null;
@@ -165,13 +165,13 @@ export async function detectTaskagent() {
   // standard PROBE_TIMEOUT_MS would clip it. Give it a wider budget.
   const CLAUDE_MCP_LIST_TIMEOUT_MS = 20_000;
   const [mcpCliVersion, mcpList, httpProbe] = await Promise.all([
-    tryExecAny(["taskagent-mcp", "taskagent"], ["--version"]),
+    tryExecAny(["daruma-mcp", "daruma"], ["--version"]),
     tryExec("claude", ["mcp", "list"], { timeout: CLAUDE_MCP_LIST_TIMEOUT_MS }),
-    probeTaskagentHttp(probeUrl),
+    probeDarumaHttp(probeUrl),
   ]);
 
   const mcpEntry = mcpList.ok
-    ? parseClaudeMcpList(mcpList.output, "taskagent")
+    ? parseClaudeMcpList(mcpList.output, "daruma")
     : { present: false, connected: false, command: null };
 
   // mcpReady = MCP server registered AND HTTP backend healthy. The MCP shim
@@ -181,7 +181,7 @@ export async function detectTaskagent() {
   const installed = mcpCliVersion.ok || mcpEntry.present || httpProbe.ok;
 
   return {
-    name: "taskagent",
+    name: "daruma",
     installed,
     mcpReady,
     cli: mcpCliVersion.ok ? `${mcpCliVersion.cmd}: ${mcpCliVersion.output}` : null,
@@ -198,36 +198,36 @@ export async function detectTaskagent() {
     installHint: [
       "Self-host (build from source — server + MCP shim):",
       "  git clone https://github.com/tupical/daruma && cd daruma",
-      "  cargo build --release -p taskagent-server -p taskagent-cli",
-      "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
+      "  cargo build --release -p daruma-server -p daruma-cli",
+      "  ./target/release/daruma-server  # data: ~/.agents/daruma/data",
       "Register the MCP shim with Claude Code:",
-      "  claude mcp add taskagent -- taskagent-mcp",
-      "Set TASKAGENT_API_URL and TASKAGENT_TOKEN if you do not use credentials.json.",
-      "Override agent dir: TASKAGENT_AGENT_DIR (default ~/.agents/taskagent/).",
+      "  claude mcp add daruma -- daruma-mcp",
+      "Set DARUMA_API_URL and DARUMA_TOKEN if you do not use credentials.json.",
+      "Override agent dir: DARUMA_AGENT_DIR (default ~/.agents/daruma/).",
     ].join("\n"),
     mcpHint: [
-      "taskagent server or MCP shim is not ready.",
+      "daruma server or MCP shim is not ready.",
       `Server probe: GET ${probeUrl}/v1/healthz`,
       profile?.token
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
-        : `credentials: none at ${credentialsLocationHint()} — set TASKAGENT_API_URL + TASKAGENT_TOKEN or save a local profile`,
+        : `credentials: none at ${credentialsLocationHint()} — set DARUMA_API_URL + DARUMA_TOKEN or save a local profile`,
       mcpEntry.present
         ? `MCP shim registered (${mcpEntry.command}) but status: ${mcpEntry.connected ? "connected" : "disconnected"}`
-        : "MCP shim not registered. Add it:  claude mcp add taskagent -- taskagent-mcp",
+        : "MCP shim not registered. Add it:  claude mcp add daruma -- daruma-mcp",
       httpProbe.ok
         ? `HTTP server: ${httpProbe.status}${httpProbe.version ? ` (v${httpProbe.version})` : ""}`
         : `HTTP server unreachable: ${httpProbe.error}`,
     ].join("\n"),
-    updateHint: "cd <taskagent repo> && git pull && cargo build --release -p taskagent-server -p taskagent-cli",
+    updateHint: "cd <daruma repo> && git pull && cargo build --release -p daruma-server -p daruma-cli",
   };
 }
 
 export async function detectAll() {
-  const [omc, taskagent] = await Promise.all([detectOMC(), detectTaskagent()]);
+  const [omc, daruma] = await Promise.all([detectOMC(), detectDaruma()]);
   return {
     omc,
-    taskagent,
-    ready: omc.installed && taskagent.mcpReady,
+    daruma,
+    ready: omc.installed && daruma.mcpReady,
   };
 }
 
@@ -238,7 +238,7 @@ export function parseSemver(text) {
 }
 
 export function cliReadinessSummary(report) {
-  const t = report.taskagent;
+  const t = report.daruma;
   const mcp = t.claudeMcp ?? {};
   return {
     ready: report.ready,
@@ -247,7 +247,7 @@ export function cliReadinessSummary(report) {
       cli: report.omc.cli,
       npm: report.omc.npmVersion,
     },
-    taskagent: {
+    daruma: {
       installed: t.installed,
       mcpReady: t.mcpReady,
       cli: t.cli,
@@ -260,8 +260,8 @@ export function cliReadinessSummary(report) {
     },
     hints: {
       omcInstall: report.omc.installed ? null : firstLine(report.omc.installHint),
-      taskagentInstall: t.installed ? null : firstLine(t.installHint),
-      taskagentMcp: t.mcpReady ? null : firstLine(t.mcpHint),
+      darumaInstall: t.installed ? null : firstLine(t.installHint),
+      darumaMcp: t.mcpReady ? null : firstLine(t.mcpHint),
     },
   };
 }
@@ -274,7 +274,7 @@ function firstLine(text) {
 
 export function formatReport(report) {
   const lines = [];
-  for (const tool of [report.omc, report.taskagent]) {
+  for (const tool of [report.omc, report.daruma]) {
     const status = tool.installed ? "OK" : "MISSING";
     lines.push(`[${status}] ${tool.name}`);
     if (tool.cli) lines.push(`       cli: ${tool.cli}`);
@@ -310,8 +310,8 @@ export function formatReport(report) {
   lines.push("");
   if (report.ready) {
     lines.push("READY");
-  } else if (report.omc.installed && report.taskagent.installed && !report.taskagent.mcpReady) {
-    lines.push("NOT READY — taskagent MCP/server not ready (see mcp hint above)");
+  } else if (report.omc.installed && report.daruma.installed && !report.daruma.mcpReady) {
+    lines.push("NOT READY — daruma MCP/server not ready (see mcp hint above)");
   } else {
     lines.push("NOT READY — install missing dependencies above");
   }
@@ -325,7 +325,7 @@ const CACHE_TTL_MS = 30_000;
 function cachePath() {
   const xdg = process.env.XDG_CACHE_HOME;
   const base = xdg && xdg.length > 0 ? xdg : join(homedir(), ".cache");
-  return join(base, "taskagent-claude", "doctor.json");
+  return join(base, "daruma-claude", "doctor.json");
 }
 
 export async function loadCachedDoctor({ cliVersion } = {}) {
@@ -357,7 +357,7 @@ export async function saveCachedDoctor(report, { cliVersion } = {}) {
   try {
     const path = cachePath();
     await fs.mkdir(join(path, ".."), { recursive: true });
-    const tmp = join(tmpdir(), `taskagent-claude-doctor.${process.pid}.${Date.now()}.json`);
+    const tmp = join(tmpdir(), `daruma-claude-doctor.${process.pid}.${Date.now()}.json`);
     await fs.writeFile(tmp, JSON.stringify(payload));
     await fs.rename(tmp, path);
   } catch {
@@ -365,8 +365,8 @@ export async function saveCachedDoctor(report, { cliVersion } = {}) {
   }
 }
 
-/** Env vars for spawning taskagent-mcp (credentials + process env). */
-export async function taskagentMcpChildEnv(extra = {}) {
+/** Env vars for spawning daruma-mcp (credentials + process env). */
+export async function darumaMcpChildEnv(extra = {}) {
   const fromCreds = await resolveMcpEnvFromCredentials();
   return { ...process.env, ...fromCreds, ...extra };
 }

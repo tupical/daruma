@@ -8,15 +8,15 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use taskagent_api_dto::MutationWarning;
-use taskagent_core::lifecycle_gate::{
+use daruma_api_dto::MutationWarning;
+use daruma_core::lifecycle_gate::{
     derive_gate_checks, GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
 };
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{Actor, NewTask, PlanStatus, Status};
-use taskagent_events::{Event, EventBus, EventStore};
-use taskagent_shared::{CoreError, PlanId, RunId, TaskId};
-use taskagent_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{Actor, NewTask, PlanStatus, Status};
+use daruma_events::{Event, EventBus, EventStore};
+use daruma_shared::{CoreError, PlanId, RunId, TaskId};
+use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
 
 /// Recording stub: allows everything unless `block_trigger` matches; can
 /// emit a fixed warning on every check. When `identified` is set, decisions
@@ -39,7 +39,7 @@ impl LifecycleGate for TestGate {
         _actor: &Actor,
         check: &GateCheck,
         gate_override: &GateOverride,
-    ) -> taskagent_shared::Result<GateDecision> {
+    ) -> daruma_shared::Result<GateDecision> {
         self.seen
             .lock()
             .unwrap()
@@ -270,7 +270,7 @@ fn derive_checks_maps_transitions_and_skips_non_lifecycle_events() {
     let plan_id = PlanId::new();
     let run_id = RunId::new();
     let task_id = TaskId::new();
-    let now = taskagent_shared::time::now();
+    let now = daruma_shared::time::now();
 
     let events = vec![
         Event::PlanStatusChanged {
@@ -363,7 +363,7 @@ async fn complete_task_without_note_is_backward_compatible() {
 
 #[tokio::test]
 async fn complete_task_with_note_carries_note_and_actor_kind() {
-    use taskagent_domain::CompletionNote;
+    use daruma_domain::CompletionNote;
 
     let (handler, _store, _tasks) = stack_with_gate(None).await;
     let task_id = create_task(&handler, "With note").await;
@@ -416,7 +416,7 @@ async fn complete_task_with_note_carries_note_and_actor_kind() {
 
 #[tokio::test]
 async fn rule_fired_audit_persists_on_blocked_and_is_visible_in_event_log() {
-    use taskagent_events::event::RuleDecision;
+    use daruma_events::event::RuleDecision;
 
     let gate = Arc::new(TestGate {
         block_trigger: Some(TriggerEvent::TaskBeforeComplete),
@@ -483,7 +483,7 @@ async fn rule_fired_audit_persists_on_blocked_and_is_visible_in_event_log() {
 
 #[tokio::test]
 async fn rule_fired_audit_rides_ahead_of_the_warned_mutation() {
-    use taskagent_events::event::RuleDecision;
+    use daruma_events::event::RuleDecision;
 
     let gate = Arc::new(TestGate {
         warn: true,

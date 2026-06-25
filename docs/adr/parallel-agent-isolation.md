@@ -10,7 +10,7 @@ Multiple agents are given one command — "close the tasks for this project" —
 must run in parallel without (a) taking the same task or (b) editing the same
 files. Two layers solve this:
 
-1. **Atomic task claiming** — `taskagent_plan_drain_next` resolves the next
+1. **Atomic task claiming** — `daruma_plan_drain_next` resolves the next
    ready task and acquires an exclusive claim via a single-statement
    compare-and-set (`agent_claims`), with a claim-aware resolver + retry so
    concurrent callers each get a distinct task. (Implemented.)
@@ -27,20 +27,20 @@ For layer 2 the field splits into two patterns:
   git, but lighter" — directory/file granularity, no diff, auto-released on task
   close or TTL.
 
-This ADR records which model TaskAgent adopts and why.
+This ADR records which model Daruma adopts and why.
 
 ## Decision
 
-**TaskAgent owns the file-lease model (B) and treats worktree isolation (A) as a
+**Daruma owns the file-lease model (B) and treats worktree isolation (A) as a
 client-side deployment choice it records but does not manage.**
 
 Concretely:
 
-- `work_leases` (migration `0031`) + `taskagent_reserve_files` /
-  `taskagent_release_files` / `taskagent_active_work` are the canonical
+- `work_leases` (migration `0031`) + `daruma_reserve_files` /
+  `daruma_release_files` / `daruma_active_work` are the canonical
   coordination surface. Reservation is atomic (`BEGIN IMMEDIATE` + glob-overlap
   check); leases auto-release on `TaskClosed` and via the TTL sweeper.
-- TaskAgent does **not** create, switch, or merge git worktrees. It is a tracker
+- Daruma does **not** create, switch, or merge git worktrees. It is a tracker
   and coordination server, not a VCS driver. Orchestrators (OMC, Conductor-style
   runners) remain free to put each agent in its own worktree; when they do, the
   file leases simply become advisory within that agent's private tree and stay
@@ -48,7 +48,7 @@ Concretely:
 
 ### Rationale
 
-- **TaskAgent is provider/VCS-agnostic.** Owning worktree lifecycles would couple
+- **Daruma is provider/VCS-agnostic.** Owning worktree lifecycles would couple
   the server to git layout, branch policy, and merge tooling — exactly the
   coupling the event-sourced core avoids elsewhere (cf. WorkspaceGraph sidecar).
 - **Leases work in both worlds.** Shared-tree agents need them; separate-worktree
@@ -64,8 +64,8 @@ Concretely:
 
 To support worktree-based orchestrators without owning the lifecycle, a future
 increment may add optional `worktree_path` / `branch` metadata on the claim or
-agent session and surface it in `taskagent_active_work`. This is descriptive
-("agent X is in branch Y") — TaskAgent still never runs git itself.
+agent session and surface it in `daruma_active_work`. This is descriptive
+("agent X is in branch Y") — Daruma still never runs git itself.
 
 ## Consequences
 
@@ -82,7 +82,7 @@ agent session and surface it in `taskagent_active_work`. This is descriptive
   duplicates what orchestrators already do, and fails shared-tree deployments.
 - **Advisory-only registry.** Rejected for the default: the user requires hard
   conflict avoidance, so overlap blocks by default. (A read-only view of leases
-  is still exposed via `taskagent_active_work`.)
+  is still exposed via `daruma_active_work`.)
 
 
 ## Addendum (P2): Blocks-aware drain + deadlock-safe bulk acquire

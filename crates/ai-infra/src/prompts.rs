@@ -5,14 +5,14 @@
 //! `{ var }` substitution against a serde-able params struct.
 //!
 //! The *catalogue* of operation prompts (parse, decompose, scope, …) lives
-//! with the operations in `taskagent-ai`; those prompts are operational, not
+//! with the operations in `daruma-ai`; those prompts are operational, not
 //! infrastructure. A crate owning a set of prompts embeds its `*.toml` via
 //! `include_str!`, parses each with [`PromptFile::parse`], and renders a
 //! chosen variant with [`render_variant`].
 //!
 //! ```ignore
 //! use serde::Serialize;
-//! use taskagent_ai_infra::prompts::{PromptFile, render_variant};
+//! use daruma_ai_infra::prompts::{PromptFile, render_variant};
 //!
 //! #[derive(Serialize)]
 //! struct ParseCtx<'a> { input: &'a str }
@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::CoreError;
+use daruma_shared::CoreError;
 use tinytemplate::{format_unescaped, TinyTemplate};
 
 /// Parsed TOML shape of a single `prompts/<name>.toml` file.
@@ -112,7 +112,7 @@ pub fn render_variant<P: Serialize>(
 ///
 /// ```ignore
 /// use once_cell::sync::Lazy;
-/// use taskagent_ai_infra::prompts::PromptRegistry;
+/// use daruma_ai_infra::prompts::PromptRegistry;
 ///
 /// static PROMPTS: Lazy<PromptRegistry> = Lazy::new(|| {
 ///     PromptRegistry::new(&[("parse", include_str!("../prompts/parse.toml"))])

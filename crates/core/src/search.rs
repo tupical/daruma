@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Serialize;
-use taskagent_domain::{Comment, Plan, Task};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, PlanId, ProjectId, Result, TaskId};
-use taskagent_storage::{CommentRepo, PlanRepo, TaskRepo};
+use daruma_domain::{Comment, Plan, Task};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, PlanId, ProjectId, Result, TaskId};
+use daruma_storage::{CommentRepo, PlanRepo, TaskRepo};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchScope {
@@ -281,10 +281,10 @@ fn parse_lesson_search(query: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_domain::{Actor, Comment, NewTask, Plan};
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{time, CommentId, PlanId, ProjectId, TaskId};
-    use taskagent_storage::Db;
+    use daruma_domain::{Actor, Comment, NewTask, Plan};
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{time, CommentId, PlanId, ProjectId, TaskId};
+    use daruma_storage::Db;
 
     async fn provider() -> (
         FtsSearchProvider,

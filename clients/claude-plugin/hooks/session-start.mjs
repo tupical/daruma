@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// SessionStart hook: query taskagent MCP server and print a compact summary
+// SessionStart hook: query daruma MCP server and print a compact summary
 // of open tasks so Claude sees them at the top of every fresh session.
 //
 // Output goes to stdout — Claude Code injects it as a <system-reminder>.
-// Exit 0 always so a taskagent outage never blocks the session from opening.
+// Exit 0 always so a daruma outage never blocks the session from opening.
 //
 // Environment variables used:
-//   TASKAGENT_MCP_CMD   — command to start the MCP server (default: "taskagent")
-//   TASKAGENT_MCP_ARGS  — space-separated extra args (default: "mcp serve")
-//   TASKAGENT_SCOPE     — optional project_scope path filter
+//   DARUMA_MCP_CMD   — command to start the MCP server (default: "daruma")
+//   DARUMA_MCP_ARGS  — space-separated extra args (default: "mcp serve")
+//   DARUMA_SCOPE     — optional project_scope path filter
 
 import { MCPClient } from "../lib/mcp-client.mjs";
 
@@ -43,10 +43,10 @@ function formatTask(t) {
 }
 
 async function fetchSummary() {
-  const cmd = process.env.TASKAGENT_MCP_CMD ?? "taskagent";
-  const extraArgs = process.env.TASKAGENT_MCP_ARGS ?? "mcp serve";
+  const cmd = process.env.DARUMA_MCP_CMD ?? "daruma";
+  const extraArgs = process.env.DARUMA_MCP_ARGS ?? "mcp serve";
   const args = extraArgs.trim() ? extraArgs.trim().split(/\s+/) : ["mcp", "serve"];
-  const scope = process.env.TASKAGENT_SCOPE;
+  const scope = process.env.DARUMA_SCOPE;
 
   const client = new MCPClient();
 
@@ -63,7 +63,7 @@ async function fetchSummary() {
     let projectId = null;
     let projectTitle = null;
     try {
-      const wsResult = await client.callTool("taskagent_workspace_info", {});
+      const wsResult = await client.callTool("daruma_workspace_info", {});
       const ws = wsResult.parsed ?? {};
       projectId = ws.default_project ?? ws.defaultProject ?? null;
       projectTitle = ws.project_title ?? ws.title ?? null;
@@ -77,7 +77,7 @@ async function fetchSummary() {
     if (projectId) listArgs.project_id = projectId;
     if (!projectId && scope) listArgs.project_scope = scope;
 
-    const listResult = await client.callTool("taskagent_list", listArgs);
+    const listResult = await client.callTool("daruma_list", listArgs);
     const raw = listResult.parsed ?? listResult.text;
     const tasks = Array.isArray(raw)
       ? raw
@@ -103,10 +103,10 @@ async function main() {
   try {
     data = await fetchSummary();
   } catch (err) {
-    // Soft failure: taskagent unavailable — don't block session.
+    // Soft failure: daruma unavailable — don't block session.
     const msg = err?.message ?? String(err);
-    if (process.env.TASKAGENT_DEBUG) {
-      process.stderr.write(`[taskagent-claude/session-start] error: ${msg}\n`);
+    if (process.env.DARUMA_DEBUG) {
+      process.stderr.write(`[daruma-claude/session-start] error: ${msg}\n`);
     }
     // Print nothing and exit cleanly so the session opens normally.
     process.exit(0);
@@ -116,7 +116,7 @@ async function main() {
 
   if (!tasks || tasks.length === 0) {
     process.stdout.write(
-      "[taskagent] No open tasks — run /taskagent-claude:tasks to verify or /taskagent-claude:start \"<goal>\" to create one.\n"
+      "[daruma] No open tasks — run /daruma-claude:tasks to verify or /daruma-claude:start \"<goal>\" to create one.\n"
     );
     process.exit(0);
   }
@@ -125,14 +125,14 @@ async function main() {
   const extra = tasks.length > MAX_TASKS ? tasks.length - MAX_TASKS : 0;
 
   const header = projectTitle
-    ? `[taskagent] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""} in "${projectTitle}":`
-    : `[taskagent] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""}:`;
+    ? `[daruma] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""} in "${projectTitle}":`
+    : `[daruma] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""}:`;
 
   const lines = [header, ...shown.map(formatTask)];
   if (extra > 0) {
-    lines.push(`  …and ${extra} more — /taskagent-claude:tasks for full list`);
+    lines.push(`  …and ${extra} more — /daruma-claude:tasks for full list`);
   }
-  lines.push("→ /taskagent-claude:next to claim the next task  |  /taskagent-claude:status for details");
+  lines.push("→ /daruma-claude:next to claim the next task  |  /daruma-claude:status for details");
 
   process.stdout.write(lines.join("\n") + "\n");
   process.exit(0);

@@ -1,23 +1,23 @@
 ---
-description: Claim the next ready task from the active taskagent plan and show its briefing.
+description: Claim the next ready task from the active daruma plan and show its briefing.
 ---
 
-The user invoked `/taskagent-claude:next`. This claims a task —
+The user invoked `/daruma-claude:next`. This claims a task —
 afterward, control returns to the user/agent to actually execute it.
 
 ## Steps
 
-1. Resolve project (`taskagent_workspace_info` → `default_project`).
-2. Active plan: `taskagent_plan_list` filtered to
+1. Resolve project (`daruma_workspace_info` → `default_project`).
+2. Active plan: `daruma_plan_list` filtered to
    `status = ["active", "in_progress"]`, most recent.
-   If none, stop with "no active plan — `taskagent_plan_create` first".
-3. `taskagent_plan_next_task` with the plan id. Server atomically picks
+   If none, stop with "no active plan — `daruma_plan_create` first".
+3. `daruma_plan_next_task` with the plan id. Server atomically picks
    the next ready (unblocked) task and transitions `todo → in_progress`.
 4. If "no ready task":
 
    ```
    No ready task. <reason from server, e.g. "3 tasks blocked by X">
-   → run /taskagent-claude:plan to inspect dependencies.
+   → run /daruma-claude:plan to inspect dependencies.
    ```
 
    Stop.
@@ -47,9 +47,9 @@ afterward, control returns to the user/agent to actually execute it.
 6. End with:
 
    ```
-   → When done: taskagent_complete task_id=<task_id> [comment="<summary>"]
-   → On failure: taskagent_comment task_id=<task_id> body=<reason>
-     followed by taskagent_set_status task_id=<task_id> status=todo
+   → When done: daruma_complete task_id=<task_id> [comment="<summary>"]
+   → On failure: daruma_comment task_id=<task_id> body=<reason>
+     followed by daruma_set_status task_id=<task_id> status=todo
    ```
 
 7. Do not start executing the task itself in this command — it's a

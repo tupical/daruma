@@ -1,17 +1,17 @@
 //! MCP tool integration tests for plan tools.
 //!
-//! Regression cover for the `taskagent_plan_create`/`taskagent_plan_update`
+//! Regression cover for the `daruma_plan_create`/`daruma_plan_update`
 //! body-wrapping bug (server expects `{plan: NewPlan, external_ref?}` and
 //! `{patch: PlanPatch}` respectively; the shim previously sent flat bodies
 //! and got HTTP 422 "missing field `plan`/`patch`").
 
 use serde_json::json;
-use taskagent_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
+use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 
 mod common;
 use common::{spawn_server, test_app};
 
-async fn spawn_taskagent_inline() -> (std::net::SocketAddr, String) {
+async fn spawn_daruma_inline() -> (std::net::SocketAddr, String) {
     let app = test_app().await;
     let addr = spawn_server(&app).await;
     (addr, app.admin_token)
@@ -51,7 +51,7 @@ async fn call_tool(
 async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
     let resp = call_tool(
         client,
-        "taskagent_project_create",
+        "daruma_project_create",
         json!({ "title": title }),
     )
     .await;
@@ -68,7 +68,7 @@ async fn create_plan_via_mcp(
 ) -> serde_json::Value {
     call_tool(
         client,
-        "taskagent_plan_create",
+        "daruma_plan_create",
         json!({ "title": title, "project_id": project_id }),
     )
     .await
@@ -77,7 +77,7 @@ async fn create_plan_via_mcp(
 async fn first_plan_id(client: &ApiClient, project_id: &str) -> String {
     let list = call_tool(
         client,
-        "taskagent_plan_list",
+        "daruma_plan_list",
         json!({ "project_id": project_id, "status": "all" }),
     )
     .await;
@@ -97,7 +97,7 @@ async fn first_plan_id(client: &ApiClient, project_id: &str) -> String {
 /// a default `owner: {kind: "user"}` so creation succeeds.
 #[tokio::test]
 async fn plan_create_via_mcp_returns_success() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo Project").await;
@@ -105,7 +105,7 @@ async fn plan_create_via_mcp_returns_success() {
 
     assert_eq!(
         resp["success"], true,
-        "taskagent_plan_create must succeed: {resp}"
+        "daruma_plan_create must succeed: {resp}"
     );
     assert!(
         resp["event_id"].is_string(),
@@ -129,13 +129,13 @@ async fn plan_create_via_mcp_returns_success() {
 /// `parent_plan_id`) must flow into the wrapped `plan` object.
 #[tokio::test]
 async fn plan_create_via_mcp_accepts_optional_fields() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo Project").await;
     let resp = call_tool(
         &client,
-        "taskagent_plan_create",
+        "daruma_plan_create",
         json!({
             "title": "Q1 Plan",
             "project_id": pid,
@@ -148,7 +148,7 @@ async fn plan_create_via_mcp_accepts_optional_fields() {
     assert_eq!(resp["success"], true, "plan_create must succeed: {resp}");
 
     let plan_id = first_plan_id(&client, &pid).await;
-    let plan = call_tool(&client, "taskagent_plan_get", json!({ "id": plan_id })).await;
+    let plan = call_tool(&client, "daruma_plan_get", json!({ "id": plan_id })).await;
     assert_eq!(
         plan["plan"]["title"], "Q1 Plan",
         "title round-trips: {plan}"
@@ -175,7 +175,7 @@ async fn plan_create_via_mcp_accepts_optional_fields() {
 /// "patch"`. Now the shim wraps it.
 #[tokio::test]
 async fn plan_update_via_mcp_patches_fields() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo Project").await;
@@ -184,7 +184,7 @@ async fn plan_update_via_mcp_patches_fields() {
 
     let resp = call_tool(
         &client,
-        "taskagent_plan_update",
+        "daruma_plan_update",
         json!({
             "id": plan_id,
             "patch": { "title": "Plan A (renamed)", "goal": "new goal" },
@@ -193,7 +193,7 @@ async fn plan_update_via_mcp_patches_fields() {
     .await;
     assert_eq!(resp["success"], true, "plan_update must succeed: {resp}");
 
-    let plan = call_tool(&client, "taskagent_plan_get", json!({ "id": plan_id })).await;
+    let plan = call_tool(&client, "daruma_plan_get", json!({ "id": plan_id })).await;
     assert_eq!(
         plan["plan"]["title"], "Plan A (renamed)",
         "title must be patched: {plan}"
@@ -212,7 +212,7 @@ async fn plan_update_via_mcp_patches_fields() {
 /// today; this test guards against future regressions.
 #[tokio::test]
 async fn plan_tool_surface_smoke() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo Project").await;
@@ -222,7 +222,7 @@ async fn plan_tool_surface_smoke() {
     // Create two tasks and attach them to the plan.
     let t1 = call_tool(
         &client,
-        "taskagent_create",
+        "daruma_create",
         json!({ "task": { "title": "Task 1", "project_id": pid } }),
     )
     .await;
@@ -242,7 +242,7 @@ async fn plan_tool_surface_smoke() {
 
     let t2 = call_tool(
         &client,
-        "taskagent_create",
+        "daruma_create",
         json!({ "task": { "title": "Task 2", "project_id": pid } }),
     )
     .await;
@@ -262,13 +262,13 @@ async fn plan_tool_surface_smoke() {
 
     call_tool(
         &client,
-        "taskagent_plan_add_task",
+        "daruma_plan_add_task",
         json!({ "plan_id": plan_id, "task_id": t1_id }),
     )
     .await;
     call_tool(
         &client,
-        "taskagent_plan_add_task",
+        "daruma_plan_add_task",
         json!({ "plan_id": plan_id, "task_id": t2_id }),
     )
     .await;
@@ -276,7 +276,7 @@ async fn plan_tool_surface_smoke() {
     // Reorder: put t2 before t1.
     let reorder = call_tool(
         &client,
-        "taskagent_plan_reorder",
+        "daruma_plan_reorder",
         json!({ "plan_id": plan_id, "order": [t2_id.clone(), t1_id.clone()] }),
     )
     .await;
@@ -285,14 +285,14 @@ async fn plan_tool_surface_smoke() {
     // Remove t1.
     let remove = call_tool(
         &client,
-        "taskagent_plan_remove_task",
+        "daruma_plan_remove_task",
         json!({ "plan_id": plan_id, "task_id": t1_id }),
     )
     .await;
     assert_eq!(remove["success"], true, "remove must succeed: {remove}");
 
     // Archive.
-    let archive = call_tool(&client, "taskagent_plan_archive", json!({ "id": plan_id })).await;
+    let archive = call_tool(&client, "daruma_plan_archive", json!({ "id": plan_id })).await;
     assert_eq!(archive["success"], true, "archive must succeed: {archive}");
 }
 
@@ -312,7 +312,7 @@ async fn plan_tool_surface_smoke() {
 // position alone cannot explain the trace, dep filtering must be exercised.
 #[tokio::test]
 async fn plan_next_task_orders_by_position_and_skips_blocked() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo Project").await;
@@ -323,7 +323,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     async fn make_task(client: &ApiClient, pid: &str, title: &str) -> String {
         let resp = call_tool(
             client,
-            "taskagent_create",
+            "daruma_create",
             json!({ "task": { "title": title, "project_id": pid } }),
         )
         .await;
@@ -358,7 +358,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
         if !deps.is_empty() {
             args["depends_on"] = json!(deps);
         }
-        let resp = call_tool(&client, "taskagent_plan_add_task", args).await;
+        let resp = call_tool(&client, "daruma_plan_add_task", args).await;
         assert_eq!(resp["success"], true, "plan_add_task must succeed: {resp}");
     }
 
@@ -366,7 +366,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     let run_id = uuid::Uuid::now_v7().to_string();
     let draft_resp = call_tool(
         &client,
-        "taskagent_plan_next_task",
+        "daruma_plan_next_task",
         json!({ "id": plan_id, "run_id": run_id }),
     )
     .await;
@@ -378,7 +378,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     // Activate the plan.
     let activate = call_tool(
         &client,
-        "taskagent_plan_set_status",
+        "daruma_plan_set_status",
         json!({ "plan_id": plan_id, "status": "active" }),
     )
     .await;
@@ -391,7 +391,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     async fn next_task(client: &ApiClient, plan_id: &str) -> Option<String> {
         let resp = call_tool(
             client,
-            "taskagent_plan_next_task",
+            "daruma_plan_next_task",
             json!({ "id": plan_id, "run_id": uuid::Uuid::now_v7().to_string() }),
         )
         .await;
@@ -412,7 +412,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     // Complete t1. Now eligible-set = {t3, t4} (t2 is blocked by t3).
     // Position-asc → t3 (pos 2) before t4 (pos 3). Critically, t2 (pos 1) is
     // SKIPPED despite having a lower position than t3.
-    let c1 = call_tool(&client, "taskagent_complete", json!({ "id": t1 })).await;
+    let c1 = call_tool(&client, "daruma_complete", json!({ "id": t1 })).await;
     assert_eq!(c1["success"], true, "complete t1 must succeed: {c1}");
     assert_eq!(
         next_task(&client, &plan_id).await.as_deref(),
@@ -421,7 +421,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     );
 
     // Complete t3 → t2 unblocks. Eligible-set = {t2, t4}; t2 (pos 1) wins.
-    let c3 = call_tool(&client, "taskagent_complete", json!({ "id": t3 })).await;
+    let c3 = call_tool(&client, "daruma_complete", json!({ "id": t3 })).await;
     assert_eq!(c3["success"], true, "complete t3 must succeed: {c3}");
     assert_eq!(
         next_task(&client, &plan_id).await.as_deref(),
@@ -430,7 +430,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     );
 
     // Complete t2 → only t4 left.
-    let c2 = call_tool(&client, "taskagent_complete", json!({ "id": t2 })).await;
+    let c2 = call_tool(&client, "daruma_complete", json!({ "id": t2 })).await;
     assert_eq!(c2["success"], true, "complete t2 must succeed: {c2}");
     assert_eq!(
         next_task(&client, &plan_id).await.as_deref(),
@@ -439,7 +439,7 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     );
 
     // Complete t4 → resolver returns null.
-    let c4 = call_tool(&client, "taskagent_complete", json!({ "id": t4 })).await;
+    let c4 = call_tool(&client, "daruma_complete", json!({ "id": t4 })).await;
     assert_eq!(c4["success"], true, "complete t4 must succeed: {c4}");
     assert!(
         next_task(&client, &plan_id).await.is_none(),
@@ -453,6 +453,6 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
 async fn dispatch_request(
     client: &ApiClient,
     req: JsonRpcRequest,
-) -> Option<taskagent_mcp::JsonRpcResponse> {
+) -> Option<daruma_mcp::JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }

@@ -1,20 +1,20 @@
 ---
-name: taskagent-next
-description: Claim the next ready task from the active taskagent plan and show its briefing.
+name: daruma-next
+description: Claim the next ready task from the active daruma plan and show its briefing.
 ---
 
-# /taskagent-next
+# /daruma-next
 
 Claim the next ready task from the active plan, set it to `in_progress`,
 and render a compact briefing for the user.
 
 ## Steps
 
-1. Resolve project (`taskagent_workspace_info` → `default_project`).
-2. Find the active plan: `taskagent_plan_list` filtered to
+1. Resolve project (`daruma_workspace_info` → `default_project`).
+2. Find the active plan: `daruma_plan_list` filtered to
    `status = ["active", "in_progress"]`, pick most recent.
-   If none, stop with "no active plan — `taskagent_plan_create` first".
-3. Claim next: `taskagent_plan_next_task` with the plan id. The server
+   If none, stop with "no active plan — `daruma_plan_create` first".
+3. Claim next: `daruma_plan_next_task` with the plan id. The server
    returns the next ready (unblocked) task and atomically transitions it
    to `in_progress` if it was `todo`.
 4. If the server returns "no ready task" (plan empty or all blocked),
@@ -22,7 +22,7 @@ and render a compact briefing for the user.
 
    ```
    No ready task. <reason from server, e.g. "3 tasks blocked by X">
-   → run /taskagent-plan to inspect dependencies.
+   → run /daruma-plan to inspect dependencies.
    ```
 
    Stop.
@@ -54,9 +54,9 @@ and render a compact briefing for the user.
 6. Finish with a short call-to-action:
 
    ```
-   → When done: taskagent_complete task_id=<task_id> [comment="<summary>"]
-   → On failure: taskagent_comment task_id=<task_id> body=<reason>
-     followed by taskagent_set_status task_id=<task_id> status=todo
+   → When done: daruma_complete task_id=<task_id> [comment="<summary>"]
+   → On failure: daruma_comment task_id=<task_id> body=<reason>
+     followed by daruma_set_status task_id=<task_id> status=todo
    ```
 
 7. Do not start executing the task yourself in this command — this is a

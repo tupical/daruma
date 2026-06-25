@@ -5,9 +5,9 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Actor, Comment, CommentKind, CommentPatch};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CommentId, CoreError, ProjectId, Result, TaskId};
+use daruma_domain::{Actor, Comment, CommentKind, CommentPatch};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CommentId, CoreError, ProjectId, Result, TaskId};
 
 /// Read/write access to the `comments` projection table.
 pub struct CommentRepo {
@@ -255,9 +255,9 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, Comment, CommentKind, CommentPatch, NewComment};
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{CommentId, TaskId};
+    use daruma_domain::{Actor, Comment, CommentKind, CommentPatch, NewComment};
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{CommentId, TaskId};
 
     async fn make_repo() -> CommentRepo {
         let db = Db::memory().await.unwrap();
@@ -266,7 +266,7 @@ mod tests {
     }
 
     fn make_comment(task_id: TaskId) -> Comment {
-        use taskagent_shared::time;
+        use daruma_shared::time;
         let nc = NewComment {
             id: Some(CommentId::new()),
             task_id,
@@ -278,7 +278,7 @@ mod tests {
     }
 
     fn make_comment_with_kind(task_id: TaskId, kind: CommentKind) -> Comment {
-        use taskagent_shared::time;
+        use daruma_shared::time;
         let nc = NewComment {
             id: Some(CommentId::new()),
             task_id,
@@ -324,7 +324,7 @@ mod tests {
         .await
         .unwrap();
 
-        let edited_at = taskagent_shared::time::now();
+        let edited_at = daruma_shared::time::now();
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
             Event::CommentEdited {
@@ -359,7 +359,7 @@ mod tests {
         .await
         .unwrap();
 
-        let deleted_at = taskagent_shared::time::now();
+        let deleted_at = daruma_shared::time::now();
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
             Event::CommentDeleted {
@@ -471,7 +471,7 @@ mod tests {
         .await
         .unwrap();
 
-        let edited_at = taskagent_shared::time::now();
+        let edited_at = daruma_shared::time::now();
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
             Event::CommentEdited {

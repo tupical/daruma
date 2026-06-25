@@ -5,9 +5,9 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::{json, Value};
-use taskagent_domain::{Actor, NewTask};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::DeviceId;
+use daruma_domain::{Actor, NewTask};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::DeviceId;
 use tower::ServiceExt;
 
 mod common;

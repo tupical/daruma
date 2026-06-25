@@ -18,22 +18,22 @@ const PATTERNS = [
     // Explicit capture / record lesson
     // ASCII keywords use \b; Cyrillic uses (?<![а-яёА-ЯЁ]) prefix guard.
     re: /\b(capture|record|lesson)\b|(?<![а-яёА-ЯЁ])(сохрани|запомни|урок)(?![а-яёА-ЯЁ])/,
-    hint: "[taskagent-claude] Detected lesson-capture intent → /taskagent-claude:capture",
+    hint: "[daruma-claude] Detected lesson-capture intent → /daruma-claude:capture",
   },
   {
     // Sync / refresh tasks from server
     re: /\b(sync|refresh\s+tasks)\b|(?<![а-яёА-ЯЁ])(синх|обнови\s+задачи)(?![а-яёА-ЯЁ])/,
-    hint: "[taskagent-claude] Detected sync intent → /taskagent-claude:sync",
+    hint: "[daruma-claude] Detected sync intent → /daruma-claude:sync",
   },
   {
     // Status / progress check
     re: /\b(status|progress|what.?s\s+(open|next|left))\b|(?<![а-яёА-ЯЁ])(статус|прогресс|что\s+(открыто|осталось|дальше))(?![а-яёА-ЯЁ])/,
-    hint: "[taskagent-claude] Detected status query → /taskagent-claude:status",
+    hint: "[daruma-claude] Detected status query → /daruma-claude:status",
   },
   {
     // Close / complete / done
     re: /\b(close|complete|mark\s+.*done)\b|(?<![а-яёА-ЯЁ])(закрой|закрыть|завершить|пометь\s+.*выполненной)(?![а-яёА-ЯЁ])/,
-    hint: "[taskagent-claude] Detected close intent → /taskagent-claude:close",
+    hint: "[daruma-claude] Detected close intent → /daruma-claude:close",
   },
 ];
 

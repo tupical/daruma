@@ -1,15 +1,15 @@
-// Copies the bundled taskagent Cursor Rules (.mdc) into a project's
+// Copies the bundled daruma Cursor Rules (.mdc) into a project's
 // `.cursor/rules/` directory. Mirrors what a Cursor marketplace plugin would
 // drop alongside the MCP registration.
 //
 // We ship three rules:
-//   - taskagent-policy.mdc — alwaysApply: true; workspace policy that makes
-//     taskagent the default tracker, forbids `.omc/plans/` shadow plans, and
+//   - daruma-policy.mdc — alwaysApply: true; workspace policy that makes
+//     daruma the default tracker, forbids `.omc/plans/` shadow plans, and
 //     keeps the agent on the token-lean `list active` path.
-//   - taskagent.mdc        — alwaysApply: false; the full tool contract plus
+//   - daruma.mdc        — alwaysApply: false; the full tool contract plus
 //     the audit/close workflow, loaded on demand via its description.
 //   - workspacegraph.mdc   — alwaysApply: false; guardrails for the
-//     `taskagent_workspacegraph_*` tools so graph search is never used to
+//     `daruma_workspacegraph_*` tools so graph search is never used to
 //     list open tasks. Without it the graph MCP tools have no guidance and
 //     the agent burns tokens on multi-KB graph dumps (see tokensaveaudit.md).
 
@@ -22,8 +22,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOURCE_DIR = join(__dirname, "..", "cursor", "rules");
 
 export const RULE_FILES = [
-  "taskagent-policy.mdc",
-  "taskagent.mdc",
+  "daruma-policy.mdc",
+  "daruma.mdc",
   "workspacegraph.mdc",
 ];
 

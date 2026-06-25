@@ -1,11 +1,11 @@
-//! `taskagent-mobile` — mobile client scaffold (§3.4 W3.1).
+//! `daruma-mobile` — mobile client scaffold (§3.4 W3.1).
 //!
 //! Phase 1 is a minimal HTTP probe: `GET /v1/tasks` and print JSON to
 //! stdout. A Tauri 2 shell will wrap this client once the mobile UI lands.
 //!
 //! Environment:
-//!   * `TASKAGENT_API_URL` — server base (default `http://localhost:8080`)
-//!   * `TASKAGENT_TOKEN`   — bearer token (required when auth is enabled)
+//!   * `DARUMA_API_URL` — server base (default `http://localhost:8080`)
+//!   * `DARUMA_TOKEN`   — bearer token (required when auth is enabled)
 
 use anyhow::Context;
 use tracing_subscriber::EnvFilter;
@@ -19,12 +19,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let base =
-        std::env::var("TASKAGENT_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let token = std::env::var("TASKAGENT_TOKEN").unwrap_or_default();
+        std::env::var("DARUMA_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let token = std::env::var("DARUMA_TOKEN").unwrap_or_default();
     let url = format!("{}/v1/tasks?status=active", base.trim_end_matches('/'));
 
     let http = reqwest::Client::builder()
-        .user_agent(format!("taskagent-mobile/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("daruma-mobile/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let mut req = http.get(&url);

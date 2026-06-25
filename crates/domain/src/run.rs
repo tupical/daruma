@@ -1,7 +1,7 @@
 //! Run entity — a single agent execution pass through a Plan.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{AgentId, PlanId, RunId, RunNoteId, Timestamp};
+use daruma_shared::{AgentId, PlanId, RunId, RunNoteId, Timestamp};
 
 use crate::agent::Actor;
 
@@ -79,7 +79,7 @@ pub struct RunNote {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::{time, AgentId, PlanId, RunId};
+    use daruma_shared::{time, AgentId, PlanId, RunId};
 
     fn make_run() -> Run {
         Run {

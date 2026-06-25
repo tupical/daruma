@@ -1,11 +1,11 @@
 //! Per-workspace defaults persisted to [`crate::paths::workspaces_file`]
-//! (default `~/.agents/taskagent/workspaces.json`).
+//! (default `~/.agents/daruma/workspaces.json`).
 //!
 //! Lets the MCP client say "for this workspace, my default project is X"
-//! once, so subsequent `taskagent_list`/`taskagent_create` calls don't
+//! once, so subsequent `daruma_list`/`daruma_create` calls don't
 //! need to repeat the `project_id`. The map is keyed by an opaque
 //! workspace identifier — by default the CWD at MCP startup, but the
-//! caller may override via `TASKAGENT_WORKSPACE`.
+//! caller may override via `DARUMA_WORKSPACE`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,10 +30,10 @@ struct Inner {
 
 impl Workspace {
     /// Initialize the global workspace state. Reads the workspace key from
-    /// `TASKAGENT_WORKSPACE` env, falling back to the current working
+    /// `DARUMA_WORKSPACE` env, falling back to the current working
     /// directory. Loads any existing state from disk.
     pub fn init() -> Self {
-        let key = std::env::var("TASKAGENT_WORKSPACE")
+        let key = std::env::var("DARUMA_WORKSPACE")
             .ok()
             .or_else(|| {
                 std::env::current_dir()
@@ -57,9 +57,9 @@ impl Workspace {
         &self.key
     }
 
-    /// Session-wide override from `TASKAGENT_PROJECT_ID`.
+    /// Session-wide override from `DARUMA_PROJECT_ID`.
     pub fn env_project(&self) -> Option<String> {
-        if let Ok(p) = std::env::var("TASKAGENT_PROJECT_ID") {
+        if let Ok(p) = std::env::var("DARUMA_PROJECT_ID") {
             if !p.is_empty() {
                 return Some(p);
             }
@@ -82,7 +82,7 @@ impl Workspace {
     }
 
     /// Resolve a named scope. Names may be the exact configured key or its
-    /// final path component (e.g. `taskagent-secondary`).
+    /// final path component (e.g. `daruma-secondary`).
     pub fn project_for_scope(&self, scope: &str) -> anyhow::Result<Option<String>> {
         let scope = scope.trim();
         if scope.is_empty() {
@@ -100,7 +100,7 @@ impl Workspace {
             [] => Ok(None),
             [(_, project_id)] => Ok(Some((*project_id).clone())),
             _ => anyhow::bail!(
-                "ambiguous taskagent scope `{scope}`; use `scope_path` or `project_id`"
+                "ambiguous daruma scope `{scope}`; use `scope_path` or `project_id`"
             ),
         }
     }
@@ -186,7 +186,7 @@ impl Workspace {
             .collect::<Vec<_>>();
         if child_scopes.len() > 1 {
             anyhow::bail!(
-                "current workspace `{}` contains multiple taskagent scopes; pass `scope_path`",
+                "current workspace `{}` contains multiple daruma scopes; pass `scope_path`",
                 self.key
             );
         }
@@ -222,7 +222,7 @@ fn path_is_inside(path: &str, root: &str) -> bool {
 
 fn ambiguous_scope_message(workspace: &str, scopes: &[(String, String)]) -> String {
     let mut lines = vec![format!(
-        "ambiguous taskagent scope for `{workspace}`; pass `project_id`, `scope`, or `scope_path`"
+        "ambiguous daruma scope for `{workspace}`; pass `project_id`, `scope`, or `scope_path`"
     )];
     lines.push("known scopes:".to_string());
     for (scope, project_id) in scopes {
@@ -269,7 +269,7 @@ mod tests {
         Workspace {
             key: key.to_string(),
             path: std::env::temp_dir().join(format!(
-                "taskagent-workspaces-test-{}.json",
+                "daruma-workspaces-test-{}.json",
                 uuid::Uuid::new_v4()
             )),
             inner: Mutex::new(Inner { workspaces }),
@@ -279,13 +279,13 @@ mod tests {
     #[test]
     fn project_for_path_uses_longest_matching_scope() {
         let _guard = env_lock();
-        std::env::remove_var("TASKAGENT_PROJECT_ID");
+        std::env::remove_var("DARUMA_PROJECT_ID");
         let ws = workspace(
-            "/tmp/taskagent-public-test/projects",
+            "/tmp/daruma-public-test/projects",
             &[
-                ("/tmp/taskagent-public-test/projects", "root"),
+                ("/tmp/daruma-public-test/projects", "root"),
                 (
-                    "/tmp/taskagent-public-test/projects/taskagent-secondary",
+                    "/tmp/daruma-public-test/projects/daruma-secondary",
                     "secondary",
                 ),
             ],
@@ -293,7 +293,7 @@ mod tests {
 
         assert_eq!(
             ws.project_for_path(
-                "/tmp/taskagent-public-test/projects/taskagent-secondary/crates/api"
+                "/tmp/daruma-public-test/projects/daruma-secondary/crates/api"
             ),
             Some("secondary".to_string())
         );
@@ -302,10 +302,10 @@ mod tests {
     #[test]
     fn inferred_project_selects_single_repo_scope() {
         let _guard = env_lock();
-        std::env::remove_var("TASKAGENT_PROJECT_ID");
+        std::env::remove_var("DARUMA_PROJECT_ID");
         let ws = workspace(
-            "/tmp/taskagent-public-test/projects/taskagent/crates/mcp",
-            &[("/tmp/taskagent-public-test/projects/taskagent", "oss")],
+            "/tmp/daruma-public-test/projects/daruma/crates/mcp",
+            &[("/tmp/daruma-public-test/projects/daruma", "oss")],
         );
 
         assert_eq!(ws.inferred_project().unwrap(), Some("oss".to_string()));
@@ -314,38 +314,38 @@ mod tests {
     #[test]
     fn inferred_project_errors_for_ambiguous_parent_scope_even_with_parent_mapping() {
         let _guard = env_lock();
-        std::env::remove_var("TASKAGENT_PROJECT_ID");
+        std::env::remove_var("DARUMA_PROJECT_ID");
         let ws = workspace(
-            "/tmp/taskagent-public-test/projects",
+            "/tmp/daruma-public-test/projects",
             &[
-                ("/tmp/taskagent-public-test/projects", "legacy-parent"),
-                ("/tmp/taskagent-public-test/projects/taskagent", "oss"),
+                ("/tmp/daruma-public-test/projects", "legacy-parent"),
+                ("/tmp/daruma-public-test/projects/daruma", "oss"),
                 (
-                    "/tmp/taskagent-public-test/projects/taskagent-secondary",
+                    "/tmp/daruma-public-test/projects/daruma-secondary",
                     "secondary",
                 ),
             ],
         );
 
         let err = ws.inferred_project().unwrap_err().to_string();
-        assert!(err.contains("ambiguous taskagent scope"));
-        assert!(err.contains("taskagent-secondary"));
+        assert!(err.contains("ambiguous daruma scope"));
+        assert!(err.contains("daruma-secondary"));
     }
 
     #[test]
     fn project_for_path_resolves_relative_path_from_workspace_key() {
         let _guard = env_lock();
-        std::env::remove_var("TASKAGENT_PROJECT_ID");
+        std::env::remove_var("DARUMA_PROJECT_ID");
         let ws = workspace(
-            "/tmp/taskagent-public-test/projects",
+            "/tmp/daruma-public-test/projects",
             &[(
-                "/tmp/taskagent-public-test/projects/taskagent-secondary",
+                "/tmp/daruma-public-test/projects/daruma-secondary",
                 "secondary",
             )],
         );
 
         assert_eq!(
-            ws.project_for_path("taskagent-secondary/crates/api"),
+            ws.project_for_path("daruma-secondary/crates/api"),
             Some("secondary".to_string())
         );
     }
@@ -353,30 +353,30 @@ mod tests {
     #[test]
     fn set_default_project_requires_scope_path_for_multi_repo_parent() {
         let _guard = env_lock();
-        std::env::remove_var("TASKAGENT_PROJECT_ID");
+        std::env::remove_var("DARUMA_PROJECT_ID");
         let ws = workspace(
-            "/tmp/taskagent-public-test/projects",
+            "/tmp/daruma-public-test/projects",
             &[
-                ("/tmp/taskagent-public-test/projects/taskagent", "oss"),
+                ("/tmp/daruma-public-test/projects/daruma", "oss"),
                 (
-                    "/tmp/taskagent-public-test/projects/taskagent-secondary",
+                    "/tmp/daruma-public-test/projects/daruma-secondary",
                     "secondary",
                 ),
             ],
         );
 
         let err = ws.set_default_project("new", None).unwrap_err().to_string();
-        assert!(err.contains("contains multiple taskagent scopes"));
+        assert!(err.contains("contains multiple daruma scopes"));
 
         let scope = ws
-            .set_default_project("secondary-new", Some("taskagent-secondary"))
+            .set_default_project("secondary-new", Some("daruma-secondary"))
             .unwrap();
         assert_eq!(
             scope,
-            "/tmp/taskagent-public-test/projects/taskagent-secondary"
+            "/tmp/daruma-public-test/projects/daruma-secondary"
         );
         assert_eq!(
-            ws.project_for_scope("taskagent-secondary").unwrap(),
+            ws.project_for_scope("daruma-secondary").unwrap(),
             Some("secondary-new".to_string())
         );
     }
@@ -384,16 +384,16 @@ mod tests {
     #[test]
     fn set_default_project_updates_existing_scope_from_subdir() {
         let _guard = env_lock();
-        std::env::remove_var("TASKAGENT_PROJECT_ID");
+        std::env::remove_var("DARUMA_PROJECT_ID");
         let ws = workspace(
-            "/tmp/taskagent-public-test/projects/taskagent/crates/mcp",
-            &[("/tmp/taskagent-public-test/projects/taskagent", "old")],
+            "/tmp/daruma-public-test/projects/daruma/crates/mcp",
+            &[("/tmp/daruma-public-test/projects/daruma", "old")],
         );
 
         let scope = ws.set_default_project("new", None).unwrap();
-        assert_eq!(scope, "/tmp/taskagent-public-test/projects/taskagent");
+        assert_eq!(scope, "/tmp/daruma-public-test/projects/daruma");
         assert_eq!(
-            ws.project_for_scope("taskagent").unwrap(),
+            ws.project_for_scope("daruma").unwrap(),
             Some("new".to_string())
         );
         assert_eq!(ws.project_for_scope("mcp").unwrap(), None);

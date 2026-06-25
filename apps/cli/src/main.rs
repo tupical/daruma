@@ -1,28 +1,28 @@
-//! `taskagent` — terse CLI for humans-and-agents-via-shell over the
-//! `taskagent-server` HTTP surface (§3.8.11, CTM B.5).
+//! `daruma` — terse CLI for humans-and-agents-via-shell over the
+//! `daruma-server` HTTP surface (§3.8.11, CTM B.5).
 //!
-//! Thin wrapper around `taskagent_mcp::ApiClient`. Output is either a
+//! Thin wrapper around `daruma_mcp::ApiClient`. Output is either a
 //! `comfy-table` for humans or raw JSON for scripts via `--json`.
 //!
 //! Verbs (terse on purpose):
-//!   * `taskagent next`            — pick the next claim-ready task
-//!   * `taskagent show <id>`       — task + comments
-//!   * `taskagent done <id>`       — mark a task done
-//!   * `taskagent list --status <filter>` — list with required status filter
-//!   * `taskagent history task <id>` — version timeline
+//!   * `daruma next`            — pick the next claim-ready task
+//!   * `daruma show <id>`       — task + comments
+//!   * `daruma done <id>`       — mark a task done
+//!   * `daruma list --status <filter>` — list with required status filter
+//!   * `daruma history task <id>` — version timeline
 //!
 //! Environment:
-//!   * `TASKAGENT_API_URL`     — server base (default `http://localhost:8080`)
-//!   * `TASKAGENT_TOKEN`       — bearer token
-//!   * `TASKAGENT_PROJECT_ID`  — scope for `next` / `list` when no `--project-id`
-//!   * `TASKAGENT_WORKSPACE`   — optional workspace key override
+//!   * `DARUMA_API_URL`     — server base (default `http://localhost:8080`)
+//!   * `DARUMA_TOKEN`       — bearer token
+//!   * `DARUMA_PROJECT_ID`  — scope for `next` / `list` when no `--project-id`
+//!   * `DARUMA_WORKSPACE`   — optional workspace key override
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use taskagent_mcp::{run_stdio_with_profile, workspace::Workspace, ApiClient, ToolProfile};
+use daruma_mcp::{run_stdio_with_profile, workspace::Workspace, ApiClient, ToolProfile};
 use tracing_subscriber::EnvFilter;
 
 mod format;
@@ -30,9 +30,9 @@ mod format;
 /// Top-level CLI entry-point.
 #[derive(Debug, Parser)]
 #[command(
-    name = "taskagent",
+    name = "daruma",
     version,
-    about = "Terse CLI for taskagent — next / show / done / list",
+    about = "Terse CLI for daruma — next / show / done / list",
     long_about = None
 )]
 struct Cli {
@@ -41,11 +41,11 @@ struct Cli {
     json: bool,
 
     /// Server base URL (default `http://localhost:8080`).
-    #[arg(long, global = true, env = "TASKAGENT_API_URL")]
+    #[arg(long, global = true, env = "DARUMA_API_URL")]
     api_url: Option<String>,
 
     /// Bearer token. May be empty for `/healthz`.
-    #[arg(long, global = true, env = "TASKAGENT_TOKEN")]
+    #[arg(long, global = true, env = "DARUMA_TOKEN")]
     token: Option<String>,
 
     #[command(subcommand)]
@@ -54,7 +54,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Configure taskagent integrations.
+    /// Configure daruma integrations.
     Install {
         /// Print an MCP config snippet instead of writing files.
         #[arg(long = "print-config", value_name = "TARGET")]
@@ -65,13 +65,13 @@ enum Cmd {
         /// Do not prompt. Required when writing credentials.
         #[arg(short = 'y', long)]
         yes: bool,
-        /// Write the TaskAgent CLAUDE.md policy block (+ .omc OMC guard).
+        /// Write the Daruma CLAUDE.md policy block (+ .omc OMC guard).
         #[arg(long)]
         claude: bool,
-        /// Upsert taskagent MCP entry into Cursor mcp.json.
+        /// Upsert daruma MCP entry into Cursor mcp.json.
         #[arg(long)]
         cursor: bool,
-        /// Upsert taskagent MCP entry into Windsurf mcp_config.json.
+        /// Upsert daruma MCP entry into Windsurf mcp_config.json.
         #[arg(long)]
         windsurf: bool,
         /// Write the codex AGENTS.md managed policy block.
@@ -80,7 +80,7 @@ enum Cmd {
         /// Install all targets: cursor + windsurf + codex + claude.
         #[arg(long)]
         all: bool,
-        /// Overwrite an existing taskagent entry instead of skipping.
+        /// Overwrite an existing daruma entry instead of skipping.
         #[arg(long)]
         force: bool,
         /// Project directory for --claude / --codex / --cursor / --windsurf
@@ -91,18 +91,18 @@ enum Cmd {
     /// Run the stdio MCP server (JSON-RPC over stdin/stdout).
     ///
     /// This is the merged entry-point for what used to be the separate
-    /// `taskagent-mcp` binary — one artifact configures and serves everything.
-    /// Register with: `claude mcp add taskagent -- taskagent mcp`.
+    /// `daruma-mcp` binary — one artifact configures and serves everything.
+    /// Register with: `claude mcp add daruma -- daruma mcp`.
     Mcp {
         /// Tool surface profile: `default` (compact workflow set) or `full`
-        /// (complete catalogue). Overrides TASKAGENT_MCP_PROFILE.
+        /// (complete catalogue). Overrides DARUMA_MCP_PROFILE.
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
     },
     /// Show the next claim-ready task in the current project.
     Next {
         /// Project id (defaults to env / workspace).
-        #[arg(long, env = "TASKAGENT_PROJECT_ID")]
+        #[arg(long, env = "DARUMA_PROJECT_ID")]
         project_id: Option<String>,
     },
     /// Show a task and its comments.
@@ -118,7 +118,7 @@ enum Cmd {
     /// List tasks (requires an explicit status filter).
     List {
         /// Project id (defaults to env / workspace). Pass `all` to ignore the default.
-        #[arg(long, env = "TASKAGENT_PROJECT_ID")]
+        #[arg(long, env = "DARUMA_PROJECT_ID")]
         project_id: Option<String>,
         /// Required status filter (`active`, `all`, `todo`, `in_progress`, `done`, …).
         #[arg(long)]
@@ -159,17 +159,17 @@ async fn main() -> anyhow::Result<()> {
     let base = cli
         .api_url
         .clone()
-        .or_else(|| taskagent_mcp::credentials::resolve_from_agent_dir().map(|c| c.api_url))
+        .or_else(|| daruma_mcp::credentials::resolve_from_agent_dir().map(|c| c.api_url))
         .unwrap_or_else(|| "http://localhost:8080".to_string());
     let token = cli
         .token
         .clone()
         .filter(|t| !t.trim().is_empty())
-        .or_else(|| taskagent_mcp::credentials::resolve_from_agent_dir().map(|c| c.token))
+        .or_else(|| daruma_mcp::credentials::resolve_from_agent_dir().map(|c| c.token))
         .unwrap_or_default();
 
     match &cli.cmd {
-        // Bare `taskagent` (no subcommand) → cloud-agnostic HTTP-MCP connect
+        // Bare `daruma` (no subcommand) → cloud-agnostic HTTP-MCP connect
         // guide. The launcher never reaches out anywhere; it only reflects
         // local credentials or prints the self-host quick start.
         None => return cmd_connect_guide(),
@@ -206,14 +206,14 @@ async fn main() -> anyhow::Result<()> {
         _ => {}
     }
 
-    // Install workspace state so the `taskagent-mcp` workspace helpers
+    // Install workspace state so the `daruma-mcp` workspace helpers
     // (used here for `default_project`) work the same way they do in the
     // MCP binary — single source of truth for "current project".
     let ws = Workspace::init();
-    taskagent_mcp::workspace::install(ws);
+    daruma_mcp::workspace::install(ws);
 
     let http = reqwest::Client::builder()
-        .user_agent(format!("taskagent-cli/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("daruma-cli/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
     let client = ApiClient::with_http(base.clone(), token.clone(), http);
 
@@ -232,12 +232,12 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-// ── stdio MCP server (merged `taskagent mcp`) ────────────────────────────────
+// ── stdio MCP server (merged `daruma mcp`) ────────────────────────────────
 
 /// Run the stdio MCP server: read JSON-RPC frames on stdin, forward each tool
-/// call to a `taskagent-server` over HTTP, write responses to stdout. This is
-/// the merged `taskagent mcp` entry-point (formerly the standalone
-/// `taskagent-mcp` binary). Config is via env / credentials.json, exactly like
+/// call to a `daruma-server` over HTTP, write responses to stdout. This is
+/// the merged `daruma mcp` entry-point (formerly the standalone
+/// `daruma-mcp` binary). Config is via env / credentials.json, exactly like
 /// the rest of the CLI — fully generic over the server it points at.
 async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
     let profile = match profile_flag {
@@ -247,17 +247,17 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
         None => ToolProfile::from_env(),
     };
     let mut base =
-        std::env::var("TASKAGENT_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let mut token = std::env::var("TASKAGENT_TOKEN").unwrap_or_default();
+        std::env::var("DARUMA_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let mut token = std::env::var("DARUMA_TOKEN").unwrap_or_default();
     let mut workspace_id_from_creds: Option<String> = None;
 
     if token.trim().is_empty() {
-        if let Some(auth) = taskagent_mcp::credentials::resolve_from_agent_dir() {
+        if let Some(auth) = daruma_mcp::credentials::resolve_from_agent_dir() {
             base = auth.api_url;
             token = auth.token;
             workspace_id_from_creds = auth.workspace_id;
             tracing::info!(
-                path = %taskagent_mcp::credentials::credentials_path().display(),
+                path = %daruma_mcp::credentials::credentials_path().display(),
                 "loaded API credentials from agent dir"
             );
         }
@@ -265,8 +265,8 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
 
     if token.is_empty() {
         tracing::warn!(
-            "TASKAGENT_TOKEN is empty — only /healthz will work; \
-             set TASKAGENT_API_URL + TASKAGENT_TOKEN or save credentials.json"
+            "DARUMA_TOKEN is empty — only /healthz will work; \
+             set DARUMA_API_URL + DARUMA_TOKEN or save credentials.json"
         );
     }
 
@@ -276,10 +276,10 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
         default_project = ?ws.default_project(),
         "workspace state loaded"
     );
-    taskagent_mcp::workspace::install(ws);
+    daruma_mcp::workspace::install(ws);
 
     let http = reqwest::Client::builder()
-        .user_agent(format!("taskagent-mcp/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("daruma-mcp/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let mut client = ApiClient::with_http(base, token, http);
@@ -289,19 +289,19 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
         client = client.with_workspace_id(workspace_id);
     }
 
-    tracing::info!(profile = profile.as_str(), "taskagent mcp ready on stdio");
+    tracing::info!(profile = profile.as_str(), "daruma mcp ready on stdio");
     run_stdio_with_profile(client, profile).await
 }
 
-/// Optional workspace scope sent as `X-TaskAgent-Workspace-Id`.
+/// Optional workspace scope sent as `X-Daruma-Workspace-Id`.
 fn workspace_id_from_env() -> Option<String> {
-    if let Ok(id) = std::env::var("TASKAGENT_WORKSPACE_ID") {
+    if let Ok(id) = std::env::var("DARUMA_WORKSPACE_ID") {
         let id = id.trim();
         if !id.is_empty() {
             return Some(id.to_string());
         }
     }
-    if let Ok(key) = std::env::var("TASKAGENT_WORKSPACE") {
+    if let Ok(key) = std::env::var("DARUMA_WORKSPACE") {
         let key = key.trim();
         if uuid::Uuid::parse_str(key).is_ok() {
             return Some(key.to_string());
@@ -391,7 +391,7 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Upsert `mcpServers.taskagent` into a JSON config file (Cursor / Windsurf).
+/// Upsert `mcpServers.daruma` into a JSON config file (Cursor / Windsurf).
 /// Preserves all other entries. Writes atomically (tmp + rename).
 /// Returns an error-like message (not Err) if already present and !force — the
 /// caller prints it directly so the overall install continues.
@@ -409,7 +409,7 @@ fn install_mcp_json(path: &Path, base: &str, token: &str, force: bool) -> anyhow
         doc["mcpServers"] = serde_json::json!({});
     }
 
-    if doc["mcpServers"].get("taskagent").is_some() && !force {
+    if doc["mcpServers"].get("daruma").is_some() && !force {
         println!(
             "  already present: {} (use --force to overwrite)",
             path.display()
@@ -430,7 +430,7 @@ fn install_mcp_json(path: &Path, base: &str, token: &str, force: bool) -> anyhow
         }
         e
     };
-    doc["mcpServers"]["taskagent"] = entry;
+    doc["mcpServers"]["daruma"] = entry;
 
     // Atomic write: tmp file in same directory, then rename.
     if let Some(parent) = path.parent() {
@@ -450,8 +450,8 @@ fn install_mcp_json(path: &Path, base: &str, token: &str, force: bool) -> anyhow
 /// Markers for the codex AGENTS.md managed block. Kept byte-for-byte
 /// compatible with clients/codex-plugin/lib/policy.mjs so re-runs from
 /// either tool update the same block.
-const CODEX_POLICY_BEGIN: &str = "<!-- taskagent-codex:policy:begin -->";
-const CODEX_POLICY_END: &str = "<!-- taskagent-codex:policy:end -->";
+const CODEX_POLICY_BEGIN: &str = "<!-- daruma-codex:policy:begin -->";
+const CODEX_POLICY_END: &str = "<!-- daruma-codex:policy:end -->";
 
 /// Body of the codex policy block. The include_str! may carry a trailing
 /// newline; we strip it so write_managed_block produces the same byte sequence
@@ -475,24 +475,24 @@ fn install_codex_policy(project_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Begin/end markers for the TaskAgent-managed CLAUDE.md policy block. Kept
+/// Begin/end markers for the Daruma-managed CLAUDE.md policy block. Kept
 /// byte-for-byte compatible with the installer wrappers so a later
 /// re-run (binary or curl) updates the same block instead of appending.
-const CLAUDE_POLICY_BEGIN: &str = "<!-- taskagent-claude:policy:begin -->";
-const CLAUDE_POLICY_END: &str = "<!-- taskagent-claude:policy:end -->";
-const OMC_GUARD_BEGIN: &str = "<!-- taskagent-claude:begin -->";
-const OMC_GUARD_END: &str = "<!-- taskagent-claude:end -->";
+const CLAUDE_POLICY_BEGIN: &str = "<!-- daruma-claude:policy:begin -->";
+const CLAUDE_POLICY_END: &str = "<!-- daruma-claude:policy:end -->";
+const OMC_GUARD_BEGIN: &str = "<!-- daruma-claude:begin -->";
+const OMC_GUARD_END: &str = "<!-- daruma-claude:end -->";
 
-/// The single source of truth for the TaskAgent project policy / OMC-guard
-/// text. Wrappers (install.sh, the `taskagent-claude` npm plugin) and the
-/// connect page call `taskagent install --claude` rather than carrying their
+/// The single source of truth for the Daruma project policy / OMC-guard
+/// text. Wrappers (install.sh, the `daruma-claude` npm plugin) and the
+/// connect page call `daruma install --claude` rather than carrying their
 /// own copies. The bodies live in sibling `.md` files (canonical text + markers
 /// match the npm plugin byte-for-byte so blocks stay idempotent across tools).
 const CLAUDE_POLICY_BODY: &str = include_str!("policy_claude.md");
 
 const OMC_GUARD_BODY: &str = include_str!("policy_omc_guard.md");
 
-/// Write the TaskAgent policy block into `<project>/CLAUDE.md` and, when an
+/// Write the Daruma policy block into `<project>/CLAUDE.md` and, when an
 /// `.omc` directory is present, the OMC guard into `<project>/.omc/AGENTS.md`.
 fn install_claude_policy(project_dir: &Path) -> anyhow::Result<()> {
     let claude_md = project_dir.join("CLAUDE.md");
@@ -546,36 +546,36 @@ fn write_managed_block(path: &Path, begin: &str, end: &str, body: &str) -> anyho
     Ok(())
 }
 
-/// Default action for bare `taskagent`: print cloud-agnostic HTTP-MCP connect
+/// Default action for bare `daruma`: print cloud-agnostic HTTP-MCP connect
 /// instructions. With credentials present we echo a ready-to-paste snippet for
 /// whatever server they point at (self-host or any other — the launcher does
 /// not distinguish); without them we show the self-host quick start. No remote
 /// account or service is referenced.
 fn cmd_connect_guide() -> anyhow::Result<()> {
-    match taskagent_mcp::credentials::resolve_from_agent_dir() {
+    match daruma_mcp::credentials::resolve_from_agent_dir() {
         Some(auth) => {
             let server = auth.api_url.trim_end_matches('/');
-            println!("TaskAgent configured → {server}");
+            println!("Daruma configured → {server}");
             println!();
             println!("Connect Claude Code (HTTP MCP):");
             println!(
-                "  claude mcp add --transport http taskagent {server}/v1/mcp \\\n    --header \"Authorization: Bearer {}\"",
+                "  claude mcp add --transport http daruma {server}/v1/mcp \\\n    --header \"Authorization: Bearer {}\"",
                 auth.token.trim()
             );
             println!();
             println!("Cursor (~/.cursor/mcp.json):");
             print_json(&cursor_mcp_config(server, &auth.token));
             println!();
-            println!("Verify:  taskagent next");
+            println!("Verify:  daruma next");
         }
         None => {
-            println!("No TaskAgent credentials found.");
+            println!("No Daruma credentials found.");
             println!();
             println!("Self-host quick start (HTTP MCP — no account needed):");
-            println!("  1) Start a local server:    taskagent-server");
-            println!("  2) Save local credentials:  taskagent install --mode local -y");
-            println!("  3) Connect Claude Code:     claude mcp add --transport http taskagent http://localhost:8080/v1/mcp");
-            println!("  4) Verify:                  taskagent next");
+            println!("  1) Start a local server:    daruma-server");
+            println!("  2) Save local credentials:  daruma install --mode local -y");
+            println!("  3) Connect Claude Code:     claude mcp add --transport http daruma http://localhost:8080/v1/mcp");
+            println!("  4) Verify:                  daruma next");
         }
     }
     Ok(())
@@ -592,7 +592,7 @@ fn cursor_mcp_config(base: &str, token: &str) -> Value {
     }
     json!({
         "mcpServers": {
-            "taskagent": entry,
+            "daruma": entry,
         }
     })
 }
@@ -610,10 +610,10 @@ fn save_credentials(mode: &str, base: &str, token: &str, yes: bool) -> anyhow::R
         token.trim().to_string()
     };
     if token.is_empty() {
-        anyhow::bail!("TASKAGENT_TOKEN or --token is required");
+        anyhow::bail!("DARUMA_TOKEN or --token is required");
     }
 
-    let path = taskagent_mcp::credentials::credentials_path();
+    let path = daruma_mcp::credentials::credentials_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -635,7 +635,7 @@ fn save_credentials(mode: &str, base: &str, token: &str, yes: bool) -> anyhow::R
 }
 
 fn read_local_bootstrap_token() -> anyhow::Result<String> {
-    let data_dir = taskagent_mcp::paths::data_dir();
+    let data_dir = daruma_mcp::paths::data_dir();
     let path = data_dir.join("bootstrap.token");
     let token = std::fs::read_to_string(&path)
         .with_context(|| format!("read local bootstrap token at {}", path.display()))?;
@@ -671,7 +671,7 @@ fn resolve_project(cli_arg: Option<String>) -> Option<String> {
     if let Some(p) = cli_arg.filter(|p| !p.is_empty()) {
         return Some(p);
     }
-    taskagent_mcp::workspace::global().and_then(|w| w.default_project())
+    daruma_mcp::workspace::global().and_then(|w| w.default_project())
 }
 
 async fn cmd_next(
@@ -822,7 +822,7 @@ fn print_json(v: &Value) {
     }
 }
 
-/// Same percent-encoder as `taskagent-mcp::tools::urlencode` — kept private
+/// Same percent-encoder as `daruma-mcp::tools::urlencode` — kept private
 /// to avoid widening that crate's public API for one helper.
 fn urlencode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -852,7 +852,7 @@ mod tests {
     #[test]
     fn install_mcp_json_writes_entry_into_empty_file() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-mcp-test-empty-{}", std::process::id()));
+            .join(format!("daruma-mcp-test-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join(".cursor").join("mcp.json");
 
@@ -861,11 +861,11 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(
-            doc["mcpServers"]["taskagent"]["url"],
+            doc["mcpServers"]["daruma"]["url"],
             "http://localhost:8080/v1/mcp"
         );
         assert_eq!(
-            doc["mcpServers"]["taskagent"]["headers"]["Authorization"],
+            doc["mcpServers"]["daruma"]["headers"]["Authorization"],
             "Bearer mytoken"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn install_mcp_json_preserves_foreign_entries() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-mcp-test-foreign-{}", std::process::id()));
+            .join(format!("daruma-mcp-test-foreign-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
@@ -894,7 +894,7 @@ mod tests {
         assert_eq!(doc["mcpServers"]["other"]["url"], "http://other");
         // New entry written.
         assert_eq!(
-            doc["mcpServers"]["taskagent"]["url"],
+            doc["mcpServers"]["daruma"]["url"],
             "http://localhost:8080/v1/mcp"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -903,14 +903,14 @@ mod tests {
     #[test]
     fn install_mcp_json_skips_without_force_when_entry_exists() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-mcp-test-skip-{}", std::process::id()));
+            .join(format!("daruma-mcp-test-skip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
 
         std::fs::write(
             &path,
-            r#"{"mcpServers":{"taskagent":{"type":"http","url":"http://old/v1/mcp"}}}"#,
+            r#"{"mcpServers":{"daruma":{"type":"http","url":"http://old/v1/mcp"}}}"#,
         )
         .unwrap();
 
@@ -919,21 +919,21 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
         // Still the old URL — was skipped.
-        assert_eq!(doc["mcpServers"]["taskagent"]["url"], "http://old/v1/mcp");
+        assert_eq!(doc["mcpServers"]["daruma"]["url"], "http://old/v1/mcp");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn install_mcp_json_force_overwrites_existing_entry() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-mcp-test-force-{}", std::process::id()));
+            .join(format!("daruma-mcp-test-force-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
 
         std::fs::write(
             &path,
-            r#"{"mcpServers":{"taskagent":{"type":"http","url":"http://old/v1/mcp"}}}"#,
+            r#"{"mcpServers":{"daruma":{"type":"http","url":"http://old/v1/mcp"}}}"#,
         )
         .unwrap();
 
@@ -941,9 +941,9 @@ mod tests {
 
         let raw = std::fs::read_to_string(&path).unwrap();
         let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(doc["mcpServers"]["taskagent"]["url"], "http://new/v1/mcp");
+        assert_eq!(doc["mcpServers"]["daruma"]["url"], "http://new/v1/mcp");
         assert_eq!(
-            doc["mcpServers"]["taskagent"]["headers"]["Authorization"],
+            doc["mcpServers"]["daruma"]["headers"]["Authorization"],
             "Bearer newtoken"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn install_codex_policy_creates_agents_md() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-codex-test-create-{}", std::process::id()));
+            .join(format!("daruma-codex-test-create-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -963,14 +963,14 @@ mod tests {
         let body = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
         assert!(body.contains(CODEX_POLICY_BEGIN));
         assert!(body.contains(CODEX_POLICY_END));
-        assert!(body.contains("taskagent_plan_create"));
+        assert!(body.contains("daruma_plan_create"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn install_codex_policy_idempotent_rerun() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-codex-test-idem-{}", std::process::id()));
+            .join(format!("daruma-codex-test-idem-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -987,7 +987,7 @@ mod tests {
     #[test]
     fn install_codex_policy_preserves_surrounding_content() {
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-codex-test-preserve-{}", std::process::id()));
+            .join(format!("daruma-codex-test-preserve-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("AGENTS.md");
@@ -1007,7 +1007,7 @@ mod tests {
         // The block produced by write_managed_block must start/end with the
         // same markers the JS buildBlock() uses so cross-tool idempotency holds.
         let dir = std::env::temp_dir()
-            .join(format!("taskagent-codex-test-markers-{}", std::process::id()));
+            .join(format!("daruma-codex-test-markers-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1035,11 +1035,11 @@ mod tests {
     fn cursor_config_uses_remote_mcp_url_and_bearer_header() {
         let config = cursor_mcp_config("http://localhost:8080/", "ta_svc_test");
         assert_eq!(
-            config["mcpServers"]["taskagent"]["url"],
+            config["mcpServers"]["daruma"]["url"],
             "http://localhost:8080/v1/mcp"
         );
         assert_eq!(
-            config["mcpServers"]["taskagent"]["headers"]["Authorization"],
+            config["mcpServers"]["daruma"]["headers"]["Authorization"],
             "Bearer ta_svc_test"
         );
     }
@@ -1047,20 +1047,20 @@ mod tests {
     #[test]
     fn cursor_config_omits_empty_token_header() {
         let config = cursor_mcp_config("http://localhost:8080", "");
-        assert!(config["mcpServers"]["taskagent"].get("headers").is_none());
+        assert!(config["mcpServers"]["daruma"].get("headers").is_none());
     }
 
     #[test]
     fn save_self_host_credentials_writes_active_profile() {
         let _guard = env_lock().lock().unwrap();
         let dir =
-            std::env::temp_dir().join(format!("taskagent-cli-cred-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("daruma-cli-cred-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::env::set_var(taskagent_mcp::paths::ENV_AGENT_DIR, &dir);
+        std::env::set_var(daruma_mcp::paths::ENV_AGENT_DIR, &dir);
 
         save_credentials("self-host", "http://localhost:8080/", "ta_svc_test", true).unwrap();
 
-        let path = taskagent_mcp::credentials::credentials_path();
+        let path = daruma_mcp::credentials::credentials_path();
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(doc["active_profile"], "self-host-default");
         assert_eq!(
@@ -1069,7 +1069,7 @@ mod tests {
         );
         assert_eq!(doc["profiles"]["self-host-default"]["token"], "ta_svc_test");
 
-        std::env::remove_var(taskagent_mcp::paths::ENV_AGENT_DIR);
+        std::env::remove_var(daruma_mcp::paths::ENV_AGENT_DIR);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1077,7 +1077,7 @@ mod tests {
     fn save_local_credentials_reads_bootstrap_token() {
         let _guard = env_lock().lock().unwrap();
         let root = std::env::temp_dir().join(format!(
-            "taskagent-cli-local-cred-test-{}",
+            "daruma-cli-local-cred-test-{}",
             std::process::id()
         ));
         let agent_dir = root.join("agent");
@@ -1085,12 +1085,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::write(data_dir.join("bootstrap.token"), "ta_svc_bootstrap\n").unwrap();
-        std::env::set_var(taskagent_mcp::paths::ENV_AGENT_DIR, &agent_dir);
-        std::env::set_var("TASKAGENT_DATA_DIR", &data_dir);
+        std::env::set_var(daruma_mcp::paths::ENV_AGENT_DIR, &agent_dir);
+        std::env::set_var("DARUMA_DATA_DIR", &data_dir);
 
         save_credentials("local", "http://localhost:8080", "", true).unwrap();
 
-        let path = taskagent_mcp::credentials::credentials_path();
+        let path = daruma_mcp::credentials::credentials_path();
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(doc["active_profile"], "local-default");
         assert_eq!(
@@ -1098,8 +1098,8 @@ mod tests {
             "ta_svc_bootstrap"
         );
 
-        std::env::remove_var(taskagent_mcp::paths::ENV_AGENT_DIR);
-        std::env::remove_var("TASKAGENT_DATA_DIR");
+        std::env::remove_var(daruma_mcp::paths::ENV_AGENT_DIR);
+        std::env::remove_var("DARUMA_DATA_DIR");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

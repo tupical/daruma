@@ -1,6 +1,6 @@
 <!--
 module:
-  name:     taskagent-mobile
+  name:     daruma-mobile
   kind:     client
   status:   wip
   contract: /v1/*
@@ -8,39 +8,39 @@ module:
 See module.toml for the machine-readable manifest.
 -->
 
-# taskagent-mobile
+# daruma-mobile
 
-Mobile client module for TaskAgent (§3.4 W3.1). The long-term target is a
+Mobile client module for Daruma (§3.4 W3.1). The long-term target is a
 **Tauri 2** shell on iOS/Android; this scaffold ships a minimal Rust binary
 that proves the `/v1/*` HTTP contract from a separate workspace member.
 
 Today the binary only performs `GET /v1/tasks` and prints JSON to stdout.
 No UI, no in-process embed — same transport boundary as
-[`apps/cli/`](../cli/) and the standalone `taskagent-web` repo.
+[`apps/cli/`](../cli/) and the standalone `daruma-web` repo.
 
 ## Build
 
 ```bash
-cargo build -p taskagent-mobile
-# binary at target/debug/taskagent-mobile (or target/release/…)
+cargo build -p daruma-mobile
+# binary at target/debug/daruma-mobile (or target/release/…)
 ```
 
 ## Configure
 
 ```bash
-export TASKAGENT_API_URL=http://localhost:8080
-export TASKAGENT_TOKEN=ag_dev_xxxxxxxx
+export DARUMA_API_URL=http://localhost:8080
+export DARUMA_TOKEN=ag_dev_xxxxxxxx
 ```
 
-When `TASKAGENT_TOKEN` is unset, the request is sent without a bearer
+When `DARUMA_TOKEN` is unset, the request is sent without a bearer
 header (works only when the server allows unauthenticated reads).
 
 ## Run
 
-With `taskagent-server` listening on `:8080`:
+With `daruma-server` listening on `:8080`:
 
 ```bash
-cargo run -p taskagent-mobile
+cargo run -p daruma-mobile
 ```
 
 Example output: pretty-printed JSON array of tasks from `/v1/tasks`.
@@ -49,7 +49,7 @@ Example output: pretty-printed JSON array of tasks from `/v1/tasks`.
 
 ```
 apps/mobile/
-├── Cargo.toml      # workspace member; `taskagent-mobile` binary
+├── Cargo.toml      # workspace member; `daruma-mobile` binary
 ├── module.toml     # capabilities + contract manifest
 ├── README.md
 └── src/

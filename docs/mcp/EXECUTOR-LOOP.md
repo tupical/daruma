@@ -4,9 +4,9 @@ Canonical agent loop for draining a plan without a human in the loop. Stateless 
 
 ## Prerequisites
 
-- Plan status **`active`** (use `taskagent_plan_set_status` if still `draft`).
-- A **`run_id`** from `taskagent_run_start` (or a fresh UUID per drain pass — see `plan_next_task` docs).
-- Workspace default project set (`taskagent_project_use`) when tasks are project-scoped.
+- Plan status **`active`** (use `daruma_plan_set_status` if still `draft`).
+- A **`run_id`** from `daruma_run_start` (or a fresh UUID per drain pass — see `plan_next_task` docs).
+- Workspace default project set (`daruma_project_use`) when tasks are project-scoped.
 
 ## Loop
 
@@ -40,28 +40,28 @@ repeat from plan_progress
 
 | Step | Tool | Notes |
 |------|------|-------|
-| 1 | `taskagent_run_start` | `{ plan_id, agent_id }` |
-| 2 | `taskagent_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
-| 3 | `taskagent_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` |
-| 4 | `taskagent_set_status` | `{ id, status: "in_progress" }` |
+| 1 | `daruma_run_start` | `{ plan_id, agent_id }` |
+| 2 | `daruma_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
+| 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` |
+| 4 | `daruma_set_status` | `{ id, status: "in_progress" }` |
 | 5 | *(work)* | Agent edits codebase; no direct DB writes |
-| 6 | `taskagent_comment` | `{ task_id, body, kind: "outcome" }` |
-| 7 | `taskagent_complete` | `{ id: task_id }` |
-| 8 | `taskagent_run_finish_step` | `{ run_id, task_id, outcome: { kind: "success" } }` |
+| 6 | `daruma_comment` | `{ task_id, body, kind: "outcome" }` |
+| 7 | `daruma_complete` | `{ id: task_id }` |
+| 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "success" } }` |
 | 9 | goto 2 | |
-| ∞ | `taskagent_run_complete` | When plan drained |
+| ∞ | `daruma_run_complete` | When plan drained |
 
 ## Prompt template (drop into agent system context)
 
 ```markdown
 You are executing plan {{plan_id}} for project {{project_title}}.
 
-Loop until `taskagent_plan_progress` returns no `next_ready` and all tasks are done:
+Loop until `daruma_plan_progress` returns no `next_ready` and all tasks are done:
 
-1. Call `taskagent_plan_progress` — if `next_ready` is absent and counts show completion, call `taskagent_run_complete` and stop.
-2. Call `taskagent_plan_next_task` with `claim_ttl_secs=300`.
+1. Call `daruma_plan_progress` — if `next_ready` is absent and counts show completion, call `daruma_run_complete` and stop.
+2. Call `daruma_plan_next_task` with `claim_ttl_secs=300`.
 3. Set the task `in_progress`, do the work, leave an `outcome` comment summarizing changes.
-4. Call `taskagent_complete` and `taskagent_run_finish_step` with `{ "kind": "success" }`.
+4. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "success" }`.
 5. On blocker: comment with `kind=blocker`, do not complete; move to the next ready task or stop and report.
 
 Rules:
@@ -74,15 +74,15 @@ Rules:
 
 | Situation | Action |
 |-----------|--------|
-| `plan_next_task` returns null but tasks remain | Check plan status; verify blockers via `taskagent_relations` (`blocks` edges). |
-| Claim expired | Re-call `plan_next_task` with fresh TTL or `taskagent_claim`. |
-| Step failed | `run_finish_step` with `{ "kind": "failure", "reason": "…" }`; optionally `taskagent_reopen` after fix. |
-| Human interrupt | `taskagent_run_abort` + release claims. |
+| `plan_next_task` returns null but tasks remain | Check plan status; verify blockers via `daruma_relations` (`blocks` edges). |
+| Claim expired | Re-call `plan_next_task` with fresh TTL or `daruma_claim`. |
+| Step failed | `run_finish_step` with `{ "kind": "failure", "reason": "…" }`; optionally `daruma_reopen` after fix. |
+| Human interrupt | `daruma_run_abort` + release claims. |
 
 ## Related tools (roadmap)
 
-- **`taskagent_plan_drain_next`** (M5.2) — atomic `plan_next_task` + `claim` in one call.
-- **`taskagent_can_start`** (M2.1) — preflight blockers before `set_status(in_progress)`.
+- **`daruma_plan_drain_next`** (M5.2) — atomic `plan_next_task` + `claim` in one call.
+- **`daruma_can_start`** (M2.1) — preflight blockers before `set_status(in_progress)`.
 
 ## See also
 

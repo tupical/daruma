@@ -1,6 +1,6 @@
-# TaskAgent Cursor/VSCode Extension
+# Daruma Cursor/VSCode Extension
 
-Native sidebar extension for TaskAgent. This package is separate from
+Native sidebar extension for Daruma. This package is separate from
 `clients/cursor-plugin`, which remains the lightweight MCP/rules glue.
 
 ## Development
@@ -10,8 +10,8 @@ npm install
 npm test
 ```
 
-The extension reads `taskagent.apiUrl` / `taskagent.token` settings, falling
-back to `TASKAGENT_API_URL` / `TASKAGENT_TOKEN`.
+The extension reads `daruma.apiUrl` / `daruma.token` settings, falling
+back to `DARUMA_API_URL` / `DARUMA_TOKEN`.
 
 On WSL with Windows `npm`, run compile directly if `npm test` falls back to
 `C:\Windows` because of UNC paths:

@@ -1,21 +1,21 @@
 #!/usr/bin/env node
-// `taskagent-claude` — single-shell entry point for the
+// `daruma-claude` — single-shell entry point for the
 // tupical/daruma × oh-my-claudecode workflow.
 //
 // Subcommands:
-//   taskagent-claude doctor                      Check whether taskagent + omc are ready.
-//   taskagent-claude setup                       Print install instructions for missing deps.
-//   taskagent-claude start "<task description>"  Drive taskagent via MCP and run each
+//   daruma-claude doctor                      Check whether daruma + omc are ready.
+//   daruma-claude setup                       Print install instructions for missing deps.
+//   daruma-claude start "<task description>"  Drive daruma via MCP and run each
 //                                                eligible task as `omc team`.
-//   taskagent-claude update                      Check + update taskagent-claude / omc;
-//                                                print manual hint for taskagent.
-//   taskagent-claude platform                    Print execution mode (omc-team | task-fallback)
-//   taskagent-claude --version                   Print version.
+//   daruma-claude update                      Check + update daruma-claude / omc;
+//                                                print manual hint for daruma.
+//   daruma-claude platform                    Print execution mode (omc-team | task-fallback)
+//   daruma-claude --version                   Print version.
 //
-// `start` opens its own JSON-RPC connection to `taskagent-mcp`, creates/picks a
+// `start` opens its own JSON-RPC connection to `daruma-mcp`, creates/picks a
 // project, creates a root task (optionally decomposing into a plan), then uses
 // `omc team` as the executor for each eligible task. No nested Claude Code
-// session is opened at the taskagent-claude level — `omc team` workers are the
+// session is opened at the daruma-claude level — `omc team` workers are the
 // only Claude Code panes.
 
 import {
@@ -23,11 +23,11 @@ import {
   detectAll,
   detectAllCached,
   detectOMC,
-  detectTaskagent,
+  detectDaruma,
   formatReport,
   parseSemver,
 } from "../lib/detect.mjs";
-import { runTaskagentStart } from "../lib/orchestrator.mjs";
+import { runDarumaStart } from "../lib/orchestrator.mjs";
 import { installPolicy, removePolicy } from "../lib/policy.mjs";
 import { installOmcGuard, removeOmcGuard } from "../lib/omc-guard.mjs";
 import {
@@ -41,11 +41,11 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 // Single source of truth for the policy + OMC-guard text is the unified
-// `taskagent` binary (`taskagent install --claude`). When it is on PATH we
+// `daruma` binary (`daruma install --claude`). When it is on PATH we
 // delegate to it; otherwise we fall back to the byte-identical bundled Node
 // writers below (so `init` still works before the binary is installed).
 function delegatePolicyToBinary(dir) {
-  const r = spawnSync("taskagent", ["install", "--claude", "--project", dir], {
+  const r = spawnSync("daruma", ["install", "--claude", "--project", dir], {
     encoding: "utf8",
   });
   if (r.error) return null; // ENOENT — binary not on PATH
@@ -56,55 +56,55 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
 
-const HELP = `taskagent-claude v${pkg.version} — tupical/daruma × oh-my-claudecode glue
+const HELP = `daruma-claude v${pkg.version} — tupical/daruma × oh-my-claudecode glue
 
 Usage:
-  taskagent-claude start "<task description>" [--workers N] [--max-retries M]
+  daruma-claude start "<task description>" [--workers N] [--max-retries M]
                                               [--agent T] [--plan] [--project ID] [--yes]
-                                    Drive taskagent (project → task [→ plan])
+                                    Drive daruma (project → task [→ plan])
                                     via MCP and run each eligible task as
                                     \`omc team\`. No nested Claude Code session.
-  taskagent-claude init [--dir DIR] [--no-policy] [--no-omc-guard]
+  daruma-claude init [--dir DIR] [--no-policy] [--no-omc-guard]
                                     Drop project-scoped artifacts: a managed
                                     policy block in <DIR>/CLAUDE.md so this
-                                    project defaults to taskagent for tasks
+                                    project defaults to daruma for tasks
                                     and plans, plus the OMC guard in
                                     <DIR>/.omc/AGENTS.md when oh-my-claudecode
                                     is present. Idempotent.
-  taskagent-claude uninit [--dir DIR]
+  daruma-claude uninit [--dir DIR]
                                     Remove the managed policy block and OMC
                                     guard. Surrounding content is preserved.
-  taskagent-claude doctor [--json|--quiet] [--no-cache]
+  daruma-claude doctor [--json|--quiet] [--no-cache]
                                     Check dependency status (exit 0 = READY)
-  taskagent-claude setup            Print install instructions for missing deps
-  taskagent-claude update           Check + update taskagent-claude and omc to latest;
-                                    print manual upgrade hint for taskagent.
-  taskagent-claude platform         Print execution mode (omc-team | task-fallback)
-  taskagent-claude --version | -v   Print version
-  taskagent-claude --help    | -h   This message
+  daruma-claude setup            Print install instructions for missing deps
+  daruma-claude update           Check + update daruma-claude and omc to latest;
+                                    print manual upgrade hint for daruma.
+  daruma-claude platform         Print execution mode (omc-team | task-fallback)
+  daruma-claude --version | -v   Print version
+  daruma-claude --help    | -h   This message
 
-taskagent-claude start flags:
+daruma-claude start flags:
   --workers N         Number of parallel agents in each \`omc team\` invocation.
                       Integer 1-20. Default 3.
   --max-retries M     Retries after the first attempt for each task (so total
                       attempts = M + 1). Non-negative integer. Default 2.
   --agent T           Agent type for \`omc team\` workers (claude | codex | gemini).
                       Default claude.
-  --plan              Ask taskagent to AI-decompose the root task into a plan
+  --plan              Ask daruma to AI-decompose the root task into a plan
                       of subtasks, then execute each subtask via \`omc team\`.
-  --project ID        Use this taskagent project id instead of auto-resolving
+  --project ID        Use this daruma project id instead of auto-resolving
                       from workspace info / cwd basename.
   --yes               Skip y/n confirmation prompts (implied when stdin is
                       not a TTY).
 
-taskagent-claude doctor flags:
+daruma-claude doctor flags:
   --json      Emit machine-readable readiness summary on stdout. Mutually
               exclusive with --quiet. Exits 0/1 the same way as plain doctor.
   --quiet     Print nothing on stdout; only the exit code carries info.
               Useful as a cheap preflight gate from shell scripts.
   --no-cache  Force live detection. Default behaviour caches a successful
-              READY result for 30s in ~/.cache/taskagent-claude/doctor.json so
-              that a subsequent \`taskagent-claude start\` preflight returns
+              READY result for 30s in ~/.cache/daruma-claude/doctor.json so
+              that a subsequent \`daruma-claude start\` preflight returns
               near-instantly.
 `;
 
@@ -114,7 +114,7 @@ function parseDoctorFlags(rest) {
     if (arg === "--json") flags.json = true;
     else if (arg === "--quiet") flags.quiet = true;
     else if (arg === "--no-cache") flags.noCache = true;
-    else throw new Error(`Unknown taskagent-claude doctor flag: ${arg}`);
+    else throw new Error(`Unknown daruma-claude doctor flag: ${arg}`);
   }
   if (flags.json && flags.quiet) {
     throw new Error("--json and --quiet are mutually exclusive");
@@ -127,7 +127,7 @@ async function cmdDoctor(rest = []) {
   try {
     flags = parseDoctorFlags(rest);
   } catch (err) {
-    process.stderr.write(`taskagent-claude doctor: ${err.message}\n`);
+    process.stderr.write(`daruma-claude doctor: ${err.message}\n`);
     process.exit(2);
   }
   const result = await detectAllCached({
@@ -152,7 +152,7 @@ async function cmdDoctor(rest = []) {
 }
 
 async function cmdSetup() {
-  const ui = createCliUi({ title: "TaskAgent Claude Setup" });
+  const ui = createCliUi({ title: "Daruma Claude Setup" });
   ui.header();
   const report = await detectAll();
   if (report.ready) {
@@ -160,8 +160,8 @@ async function cmdSetup() {
     process.stdout.write(formatReport(report) + "\n");
     return;
   }
-  ui.warn("Install the missing dependencies below, then re-run `taskagent-claude doctor`.");
-  for (const tool of [report.omc, report.taskagent]) {
+  ui.warn("Install the missing dependencies below, then re-run `daruma-claude doctor`.");
+  for (const tool of [report.omc, report.daruma]) {
     if (tool.installed) continue;
     ui.section(tool.name);
     process.stdout.write(`${tool.installHint}\n`);
@@ -210,11 +210,11 @@ function parseInitFlags(rest) {
         if (!v || v.startsWith("--")) throw new Error(`${a} requires a directory`);
         if (a === "--project") {
           // `--project` here is the target DIRECTORY, which clashes with
-          // `start --project ID` (a taskagent project id). Keep it as a
+          // `start --project ID` (a daruma project id). Keep it as a
           // back-compat alias for `--dir` but steer callers away.
           process.stderr.write(
-            "taskagent-claude init: --project is deprecated and means the target DIRECTORY, " +
-              "not a taskagent project. Use --dir <directory> (default: current directory).\n",
+            "daruma-claude init: --project is deprecated and means the target DIRECTORY, " +
+              "not a daruma project. Use --dir <directory> (default: current directory).\n",
           );
         }
         opts.projectDir = v;
@@ -225,34 +225,34 @@ function parseInitFlags(rest) {
       case "--no-omc-guard":
         opts.noOmcGuard = true; break;
       default:
-        throw new Error(`Unknown taskagent-claude init flag: ${a}`);
+        throw new Error(`Unknown daruma-claude init flag: ${a}`);
     }
   }
   return opts;
 }
 
 async function cmdInit(rest = []) {
-  const ui = createCliUi({ title: "TaskAgent Claude Initializer" });
+  const ui = createCliUi({ title: "Daruma Claude Initializer" });
   let opts;
   try {
     opts = parseInitFlags(rest);
   } catch (err) {
-    process.stderr.write(`taskagent-claude init: ${err.message}\n`);
+    process.stderr.write(`daruma-claude init: ${err.message}\n`);
     process.exit(2);
   }
   const dir = opts.projectDir ?? process.cwd();
   ui.header();
 
-  // Prefer the unified `taskagent` binary as the single source of policy text.
+  // Prefer the unified `daruma` binary as the single source of policy text.
   // It writes both the CLAUDE.md policy and the .omc guard in one call; only
   // delegate when neither block is opted out so per-block flags keep working.
   if (!opts.noPolicy && !opts.noOmcGuard) {
     const delegated = delegatePolicyToBinary(dir);
     if (delegated && delegated.ok) {
-      ui.item("policy + OMC guard written by taskagent (single source)", {
+      ui.item("policy + OMC guard written by daruma (single source)", {
         kind: "ok",
       });
-      ui.success("Project is now defaulted to taskagent.");
+      ui.success("Project is now defaulted to daruma.");
       ui.detail("  Open Claude Code in this directory to pick it up.");
       return;
     }
@@ -282,17 +282,17 @@ async function cmdInit(rest = []) {
     }
   }
 
-  ui.success("Project is now defaulted to taskagent.");
+  ui.success("Project is now defaulted to daruma.");
   ui.detail("  Open Claude Code in this directory to pick it up.");
 }
 
 async function cmdUninit(rest = []) {
-  const ui = createCliUi({ title: "TaskAgent Claude Uninitializer" });
+  const ui = createCliUi({ title: "Daruma Claude Uninitializer" });
   let opts;
   try {
     opts = parseInitFlags(rest);
   } catch (err) {
-    process.stderr.write(`taskagent-claude uninit: ${err.message}\n`);
+    process.stderr.write(`daruma-claude uninit: ${err.message}\n`);
     process.exit(2);
   }
   const dir = opts.projectDir ?? process.cwd();
@@ -369,20 +369,20 @@ async function tryFetchNpm(pkgName) {
 }
 
 async function cmdUpdate() {
-  const ui = createCliUi({ title: "TaskAgent Claude Updater" });
+  const ui = createCliUi({ title: "Daruma Claude Updater" });
   ui.header();
-  // 1. taskagent-claude (self) — npm.
+  // 1. daruma-claude (self) — npm.
   const selfLatest = await ui.task(
-    "Checking taskagent-claude...",
-    () => tryFetchNpm("taskagent-claude"),
-    "Checked taskagent-claude",
+    "Checking daruma-claude...",
+    () => tryFetchNpm("daruma-claude"),
+    "Checked daruma-claude",
   );
   await processComponent({
-    label: "taskagent-claude",
+    label: "daruma-claude",
     current: pkg.version,
     latest: selfLatest,
-    upgradeFn: () => installLatest("taskagent-claude"),
-    manualHint: "npm i -g taskagent-claude@latest",
+    upgradeFn: () => installLatest("daruma-claude"),
+    manualHint: "npm i -g daruma-claude@latest",
   });
 
   // 2. omc (oh-my-claude-sisyphus) — npm.
@@ -409,20 +409,20 @@ async function cmdUpdate() {
     });
   }
 
-  // 3. taskagent — built from source, no registry to query. Just print the
+  // 3. daruma — built from source, no registry to query. Just print the
   // canonical manual upgrade hint pulled from detect.mjs.
-  const taskagent = await ui.task(
-    "Checking taskagent...",
-    () => detectTaskagent(),
-    "Checked taskagent",
+  const daruma = await ui.task(
+    "Checking daruma...",
+    () => detectDaruma(),
+    "Checked daruma",
   );
-  if (!taskagent.installed) {
-    ui.warn("taskagent not installed");
-    ui.detail(`  install: ${taskagent.installHint.split("\n")[0]}`);
+  if (!daruma.installed) {
+    ui.warn("daruma not installed");
+    ui.detail(`  install: ${daruma.installHint.split("\n")[0]}`);
   } else {
-    const current = parseSemver(taskagent.cli) ?? parseSemver(taskagent.http?.version);
-    ui.warn(`taskagent${current ? `: ${current}` : ""} — built from source`);
-    ui.detail(`  run: ${taskagent.updateHint}`);
+    const current = parseSemver(daruma.cli) ?? parseSemver(daruma.http?.version);
+    ui.warn(`daruma${current ? `: ${current}` : ""} — built from source`);
+    ui.detail(`  run: ${daruma.updateHint}`);
   }
 }
 
@@ -465,7 +465,7 @@ function parseStartArgs(argv) {
       taskParts.push(...argv.slice(i + 1));
       break;
     } else if (a.startsWith("--")) {
-      throw new Error(`Unknown taskagent-claude start flag: ${a}`);
+      throw new Error(`Unknown daruma-claude start flag: ${a}`);
     } else {
       taskParts.push(a);
     }
@@ -479,22 +479,22 @@ async function cmdStart(rest) {
   try {
     opts = parseStartArgs(rest);
   } catch (err) {
-    process.stderr.write(`taskagent-claude start: ${err.message}\n`);
+    process.stderr.write(`daruma-claude start: ${err.message}\n`);
     process.exit(2);
   }
   if (!opts.task) {
-    process.stderr.write("taskagent-claude start requires a task description.\nExample: taskagent-claude start \"refactor auth module to use OAuth2\"\n");
+    process.stderr.write("daruma-claude start requires a task description.\nExample: daruma-claude start \"refactor auth module to use OAuth2\"\n");
     process.exit(2);
   }
   const report = await detectAll();
   if (!report.ready) {
     process.stderr.write("Cannot start — missing dependencies:\n\n");
     process.stderr.write(formatReport(report) + "\n\n");
-    process.stderr.write("Run `taskagent-claude setup` for install instructions.\n");
+    process.stderr.write("Run `daruma-claude setup` for install instructions.\n");
     process.exit(1);
   }
   try {
-    const result = await runTaskagentStart({
+    const result = await runDarumaStart({
       task: opts.task,
       cwd: process.cwd(),
       workers: opts.workers,
@@ -509,8 +509,8 @@ async function cmdStart(rest) {
     if (result?.cancelled) process.exit(130);
     if (result?.ok === false) process.exit(1);
   } catch (err) {
-    process.stderr.write(`taskagent-claude start failed: ${err.message}\n`);
-    if (process.env.TASKAGENT_DEBUG || process.env.OMO_DEBUG) {
+    process.stderr.write(`daruma-claude start failed: ${err.message}\n`);
+    if (process.env.DARUMA_DEBUG || process.env.OMO_DEBUG) {
       process.stderr.write(`${err.stack}\n`);
     }
     process.exit(1);
@@ -551,6 +551,6 @@ async function main(argv) {
 }
 
 main(process.argv).catch((err) => {
-  process.stderr.write(`taskagent-claude: ${err.stack ?? err.message ?? err}\n`);
+  process.stderr.write(`daruma-claude: ${err.stack ?? err.message ?? err}\n`);
   process.exit(1);
 });

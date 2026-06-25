@@ -3,8 +3,8 @@
 #![allow(dead_code)] // Transport hook is wired in the next Phase 2 block.
 
 use async_trait::async_trait;
-use taskagent_core::embed::EventEnvelope;
-use taskagent_shared::Result;
+use daruma_core::embed::EventEnvelope;
+use daruma_shared::Result;
 
 use crate::outbox::Outbox;
 
@@ -42,9 +42,9 @@ pub async fn flush_pending(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use taskagent_core::embed::{Db, Event, EventEnvelope};
-    use taskagent_domain::{Actor, NewTask};
-    use taskagent_shared::{CoreError, DeviceId};
+    use daruma_core::embed::{Db, Event, EventEnvelope};
+    use daruma_domain::{Actor, NewTask};
+    use daruma_shared::{CoreError, DeviceId};
 
     struct RecordingSink {
         seen: Arc<Mutex<Vec<u64>>>,

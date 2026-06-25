@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use taskagent_domain::Actor;
-use taskagent_shared::{time, DeviceId, EventId, Timestamp};
+use daruma_domain::Actor;
+use daruma_shared::{time, DeviceId, EventId, Timestamp};
 
 use crate::event::Event;
 
@@ -44,7 +44,7 @@ impl EventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_domain::NewTask;
+    use daruma_domain::NewTask;
 
     #[test]
     fn legacy_json_without_origin_fields_deserialises() {

@@ -1,11 +1,11 @@
 {
-  "name": "taskagent-claude",
-  "description": "Glue plugin: drives tupical/daruma (parse / decompose / plan / execute) and uses oh-my-claudecode /team as the executor. Ships /taskagent-claude:{tasks,plan,next,mine,branch-tasks,start,doctor,setup,sync,capture,status,close} and a project-init that makes taskagent the default tracker (overrides .omc/plans/). SessionStart hook proactively prints open tasks; Stop hook triggers auto-record.",
+  "name": "daruma-claude",
+  "description": "Glue plugin: drives tupical/daruma (parse / decompose / plan / execute) and uses oh-my-claudecode /team as the executor. Ships /daruma-claude:{tasks,plan,next,mine,branch-tasks,start,doctor,setup,sync,capture,status,close} and a project-init that makes daruma the default tracker (overrides .omc/plans/). SessionStart hook proactively prints open tasks; Stop hook triggers auto-record.",
   "version": "0.3.0",
-  "author": { "name": "taskagent-claude contributors" },
+  "author": { "name": "daruma-claude contributors" },
   "license": "MIT",
   "homepage": "https://github.com/tupical/daruma/tree/main/clients/claude-plugin",
-  "keywords": ["taskagent", "taskagent", "oh-my-claudecode", "orchestration", "multi-agent", "claude-code-plugin"],
+  "keywords": ["daruma", "daruma", "oh-my-claudecode", "orchestration", "multi-agent", "claude-code-plugin"],
   "commands": "./commands/",
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json"

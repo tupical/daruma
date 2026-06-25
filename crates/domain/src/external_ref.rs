@@ -2,7 +2,7 @@
 //! Enables idempotent creation via `(tenant, kind, external_id)` uniqueness.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::Timestamp;
+use daruma_shared::Timestamp;
 
 /// A cross-system identity mapping.
 ///
@@ -25,7 +25,7 @@ pub struct ExternalRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::{time, PlanId};
+    use daruma_shared::{time, PlanId};
 
     #[test]
     fn external_ref_roundtrip_serde() {
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn external_ref_session_kind_roundtrip_serde() {
-        use taskagent_shared::AgentSessionId;
+        use daruma_shared::AgentSessionId;
         let session_id = AgentSessionId::new();
         let ext = ExternalRef {
             tenant: "omc".to_string(),

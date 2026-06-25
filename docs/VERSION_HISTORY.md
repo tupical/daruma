@@ -19,8 +19,8 @@ Version history covers mutable user-facing entities:
 
 | Entity type | Entity id source | Snapshot payload |
 |---|---|---|
-| `task` | `TaskId` (`tsk_*`) | serialized `taskagent_domain::Task` |
-| `document` | `DocumentId` (`doc_*`) | serialized `taskagent_domain::Document` |
+| `task` | `TaskId` (`tsk_*`) | serialized `daruma_domain::Task` |
+| `document` | `DocumentId` (`doc_*`) | serialized `daruma_domain::Document` |
 
 Other projections such as activity rows, comments, plans, runs, and relations
 remain event-log/audit-log backed unless a later task adds them explicitly.
@@ -55,7 +55,7 @@ same UUIDv7 newtype conventions as `TaskId`, `DocumentId`, and `EventId`.
 ## Storage Mapping
 
 SQLite uses a shared `entity_versions` table (`0020_entity_versions.sql`).
-JSON fields are stored as `TEXT`, matching the rest of `taskagent-storage`.
+JSON fields are stored as `TEXT`, matching the rest of `daruma-storage`.
 
 Required columns map one-to-one to the public record:
 
@@ -183,12 +183,12 @@ HTTP routes are authenticated under `/v1` and legacy root aliases:
 
 MCP tools mirror the HTTP routes:
 
-- `taskagent_history_list`
-- `taskagent_history_get`
-- `taskagent_history_compare`
-- `taskagent_history_latest`
-- `taskagent_history_summary`
-- `taskagent_history_rollback`
+- `daruma_history_list`
+- `daruma_history_get`
+- `daruma_history_compare`
+- `daruma_history_latest`
+- `daruma_history_summary`
+- `daruma_history_rollback`
 
 ## Rollback
 

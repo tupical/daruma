@@ -2,7 +2,7 @@
 
 > Дополнение к полному контракту в [ARCHITECTURE.md](ARCHITECTURE.md).
 > Здесь — зафиксированные policy-решения (backfill, cascade, sequence_id).
-> Бэклог — TaskAgent tracker ([README.md](README.md)).
+> Бэклог — Daruma tracker ([README.md](README.md)).
 
 ---
 

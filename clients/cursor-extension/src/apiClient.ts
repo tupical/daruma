@@ -40,20 +40,20 @@ export interface PlanGraph {
   nodes: PlanGraphNode[];
 }
 
-export interface TaskAgentEvent {
+export interface DarumaEvent {
   id: string;
   type: string;
   payload?: unknown;
 }
 
 export interface EventsResponse {
-  events: TaskAgentEvent[];
+  events: DarumaEvent[];
   cursor?: string;
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-export class TaskagentApiClient {
+export class DarumaApiClient {
   private readonly apiUrl: string;
   private readonly token: string;
   private readonly fetchFn: FetchLike;
@@ -163,7 +163,7 @@ export class TaskagentApiClient {
 async function decodeJson<T>(response: Response): Promise<T> {
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`TaskAgent HTTP ${response.status}: ${text}`);
+    throw new Error(`Daruma HTTP ${response.status}: ${text}`);
   }
   return text ? (JSON.parse(text) as T) : (null as T);
 }

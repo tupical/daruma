@@ -2,7 +2,7 @@
 
 ## Our pledge
 
-We — maintainers and contributors of TaskAgent — pledge to make
+We — maintainers and contributors of Daruma — pledge to make
 participation in this project a harassment-free experience for
 everyone, regardless of age, body size, visible or invisible disability,
 ethnicity, sex characteristics, gender identity and expression, level

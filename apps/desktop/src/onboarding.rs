@@ -2,15 +2,15 @@
 //!
 //! ## Subcommands
 //!
-//! ### `taskagent discover`
+//! ### `daruma discover`
 //!
-//! Listens for `_taskagent._tcp.local.` mDNS announcements for up to 5 seconds
+//! Listens for `_daruma._tcp.local.` mDNS announcements for up to 5 seconds
 //! (or `--timeout <secs>`) and prints a table of discovered hosts with their
 //! TLS fingerprints.  The list can be used to choose a host for `pair`.
 //!
-//! ### `taskagent pair <url>`
+//! ### `daruma pair <url>`
 //!
-//! Accepts a `taskagent://pair?host=…&token=…&fpr=sha256:…` URL (paste from
+//! Accepts a `daruma://pair?host=…&token=…&fpr=sha256:…` URL (paste from
 //! QR code or copy from the server's `/v1/devices/pair/ticket` output), sends
 //! `POST /v1/devices/pair` to the server over TLS, and persists the returned
 //! bearer token + server URL to the local config.
@@ -40,19 +40,19 @@ use serde::Deserialize;
 
 // ── discover ──────────────────────────────────────────────────────────────────
 
-/// `taskagent discover [--timeout <secs>]`
+/// `daruma discover [--timeout <secs>]`
 ///
-/// Scans the LAN for `_taskagent._tcp.local.` services and prints a summary
+/// Scans the LAN for `_daruma._tcp.local.` services and prints a summary
 /// table.
 pub async fn cmd_discover(args: &[String]) -> Result<()> {
     let timeout_secs: u64 = parse_timeout(args).unwrap_or(5);
 
-    println!("Scanning for taskagent servers on the LAN ({timeout_secs}s)…");
+    println!("Scanning for daruma servers on the LAN ({timeout_secs}s)…");
 
     let discovered = scan_mdns(timeout_secs).await;
 
     if discovered.is_empty() {
-        println!("No taskagent servers found.");
+        println!("No daruma servers found.");
         println!("Hint: ensure the server is running and mDNS is not blocked by your firewall.");
         return Ok(());
     }
@@ -67,7 +67,7 @@ pub async fn cmd_discover(args: &[String]) -> Result<()> {
             truncate(&h.fingerprint, 20),
         );
     }
-    println!("\nUse `taskagent pair <url>` to pair with a discovered server.");
+    println!("\nUse `daruma pair <url>` to pair with a discovered server.");
     Ok(())
 }
 
@@ -86,7 +86,7 @@ struct DiscoveredHost {
     fingerprint: String,
 }
 
-/// Browse `_taskagent._tcp.local.` for `timeout_secs` and collect results.
+/// Browse `_daruma._tcp.local.` for `timeout_secs` and collect results.
 async fn scan_mdns(timeout_secs: u64) -> Vec<DiscoveredHost> {
     use mdns_sd::{ServiceDaemon, ServiceEvent};
 
@@ -98,7 +98,7 @@ async fn scan_mdns(timeout_secs: u64) -> Vec<DiscoveredHost> {
         }
     };
 
-    let receiver = match daemon.browse(taskagent_discovery::mdns::SERVICE_TYPE) {
+    let receiver = match daemon.browse(daruma_discovery::mdns::SERVICE_TYPE) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("mDNS browse failed: {e}");
@@ -153,7 +153,7 @@ fn parse_timeout(args: &[String]) -> Option<u64> {
 
 // ── pair ──────────────────────────────────────────────────────────────────────
 
-/// `taskagent pair <taskagent://pair?…>`
+/// `daruma pair <daruma://pair?…>`
 ///
 /// Parse the pairing URL, call `POST /v1/devices/pair` over a TLS connection
 /// whose leaf-certificate fingerprint is pinned to the value in the URL, and
@@ -161,7 +161,7 @@ fn parse_timeout(args: &[String]) -> Option<u64> {
 pub async fn cmd_pair(args: &[String]) -> Result<()> {
     let url_str = args
         .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: taskagent pair <taskagent://pair?host=…&token=…&fpr=sha256:…>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: daruma pair <daruma://pair?host=…&token=…&fpr=sha256:…>"))?;
 
     // Camera pairing stub — off by default; can be unlocked with feature flag.
     #[cfg(feature = "camera-pairing")]
@@ -197,7 +197,7 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
     println!("  Token prefix: {}", pair_resp.token_prefix);
     println!();
     println!("Credentials written to the local config.");
-    println!("Run `taskagent sync` to pull tasks from the server.");
+    println!("Run `daruma sync` to pull tasks from the server.");
 
     Ok(())
 }
@@ -404,11 +404,11 @@ struct PairingUrlParams {
 }
 
 fn parse_pairing_url(url: &str) -> Result<PairingUrlParams> {
-    // Strip the scheme — accept both taskagent:// and https://
+    // Strip the scheme — accept both daruma:// and https://
     let rest = url
-        .strip_prefix("taskagent://pair?")
-        .or_else(|| url.strip_prefix("taskagent://pair/?"))
-        .ok_or_else(|| anyhow::anyhow!("URL must start with taskagent://pair?"))?;
+        .strip_prefix("daruma://pair?")
+        .or_else(|| url.strip_prefix("daruma://pair/?"))
+        .ok_or_else(|| anyhow::anyhow!("URL must start with daruma://pair?"))?;
 
     let mut host = None;
     let mut token = None;
@@ -477,7 +477,7 @@ fn hostname_label() -> String {
 /// Persist `server_url` + `token` to the local config file used by `sync`.
 ///
 /// This writes (or overwrites) `<data_dir>/paired.json` — the `sync` command
-/// checks this file for credentials when `TASKAGENT_API_URL` / `TASKAGENT_TOKEN`
+/// checks this file for credentials when `DARUMA_API_URL` / `DARUMA_TOKEN`
 /// are not set.
 async fn persist_credentials(host: &str, token: &str) -> Result<()> {
     let data_dir = crate::context::data_path();
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn parse_pairing_url_roundtrip() {
-        let url = "taskagent://pair?host=192.168.1.5%3A8443&token=abc123&fpr=sha256%3Adeadbeef";
+        let url = "daruma://pair?host=192.168.1.5%3A8443&token=abc123&fpr=sha256%3Adeadbeef";
         let p = parse_pairing_url(url).unwrap();
         assert_eq!(p.host, "192.168.1.5:8443");
         assert_eq!(p.token, "abc123");
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn parse_pairing_url_missing_token() {
-        let url = "taskagent://pair?host=x%3A8443&fpr=sha256%3Aabc";
+        let url = "daruma://pair?host=x%3A8443&fpr=sha256%3Aabc";
         assert!(parse_pairing_url(url).is_err());
     }
 

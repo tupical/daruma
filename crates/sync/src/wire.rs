@@ -3,21 +3,21 @@
 //! Types are now defined in `crates/api-dto` (wasm-compatible) and
 //! re-exported here for backward compatibility.
 
-pub use taskagent_api_dto::ws::{WsClientMessage, WsServerMessage};
+pub use daruma_api_dto::ws::{WsClientMessage, WsServerMessage};
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_api_dto::command::Command;
-    use taskagent_domain::{Actor, NewTask};
-    use taskagent_events::{Channel, Event, EventEnvelope};
-    use taskagent_shared::ProjectId;
+    use daruma_api_dto::command::Command;
+    use daruma_domain::{Actor, NewTask};
+    use daruma_events::{Channel, Event, EventEnvelope};
+    use daruma_shared::ProjectId;
 
     #[test]
     fn dispatch_roundtrip() {
-        let client_event_id = taskagent_shared::EventId::new();
+        let client_event_id = daruma_shared::EventId::new();
         let msg = WsClientMessage::Dispatch {
             command: Command::CreateTask {
                 task: NewTask::new("wire test"),

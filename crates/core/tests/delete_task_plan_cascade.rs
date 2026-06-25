@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{Actor, NewPlan, NewTask, RelationKind};
-use taskagent_events::{Event, EventBus, EventStore};
-use taskagent_shared::{PlanId, ProjectId, TaskId};
-use taskagent_storage::{
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{Actor, NewPlan, NewTask, RelationKind};
+use daruma_events::{Event, EventBus, EventStore};
+use daruma_shared::{PlanId, ProjectId, TaskId};
+use daruma_storage::{
     ActivityRepo, CommentRepo, Db, PlanRepo, ProjectRepo, RelationRepo, SqliteEventStore, TaskRepo,
 };
 
-use taskagent_core::repos::PlanRepository;
+use daruma_core::repos::PlanRepository;
 
 // ── Test stack ────────────────────────────────────────────────────────────────
 

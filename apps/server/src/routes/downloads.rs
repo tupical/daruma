@@ -1,5 +1,5 @@
-//! Authenticated download of the unified `taskagent` binary (serves the CLI,
-//! launcher, and `taskagent mcp` stdio server in one artifact).
+//! Authenticated download of the unified `daruma` binary (serves the CLI,
+//! launcher, and `daruma mcp` stdio server in one artifact).
 
 use std::path::Path;
 
@@ -10,13 +10,13 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use taskagent_auth::{AuthContext, Capability};
-use taskagent_shared::CoreError;
+use daruma_auth::{AuthContext, Capability};
+use daruma_shared::CoreError;
 
 use crate::{error::ApiError, state::AppState};
 
-/// `GET /v1/downloads/taskagent/{platform}` — `linux` or `windows`.
-pub async fn download_taskagent_mcp(
+/// `GET /v1/downloads/daruma/{platform}` — `linux` or `windows`.
+pub async fn download_daruma_mcp(
     auth: Extension<AuthContext>,
     State(state): State<AppState>,
     AxumPath(platform): AxumPath<String>,
@@ -29,7 +29,7 @@ pub async fn download_taskagent_mcp(
         .path_for(platform.as_str())
         .ok_or_else(|| {
             ApiError(CoreError::not_found(
-                "taskagent binary is not available for this platform",
+                "daruma binary is not available for this platform",
             ))
         })?;
 
@@ -58,12 +58,12 @@ async fn serve_binary(path: &Path, filename: &str) -> Result<impl IntoResponse, 
 
 fn filename_for(platform: &str) -> &'static str {
     match platform {
-        "windows" => "taskagent.exe",
-        _ => "taskagent",
+        "windows" => "daruma.exe",
+        _ => "daruma",
     }
 }
 
-/// `GET /v1/downloads/taskagent` — which platforms are bundled.
+/// `GET /v1/downloads/daruma` — which platforms are bundled.
 pub async fn mcp_download_info(
     auth: Extension<AuthContext>,
     State(state): State<AppState>,

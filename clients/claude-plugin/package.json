@@ -1,12 +1,12 @@
 {
-  "name": "taskagent-claude",
+  "name": "daruma-claude",
   "version": "0.3.0",
-  "description": "Glue between tupical/daruma and oh-my-claudecode. Drives the taskagent pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
+  "description": "Glue between tupical/daruma and oh-my-claudecode. Drives the daruma pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
   "keywords": [
     "claude-code",
     "claude-code-plugin",
-    "taskagent",
-    "taskagent",
+    "daruma",
+    "daruma",
     "oh-my-claudecode",
     "orchestration",
     "multi-agent",
@@ -26,7 +26,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "taskagent-claude": "bin/taskagent-claude.mjs"
+    "daruma-claude": "bin/daruma-claude.mjs"
   },
   "files": [
     "bin/",

@@ -44,7 +44,7 @@ pub fn create_task_tool() -> Value {
     })
 }
 
-/// Tool schema for §3.8.7 `taskagent_ai_scope`. The model returns the
+/// Tool schema for §3.8.7 `daruma_ai_scope`. The model returns the
 /// rewritten task body — the server turns it into `Command::UpdateTask`.
 pub fn rescope_task_tool() -> Value {
     json!({

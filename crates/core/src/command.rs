@@ -5,14 +5,14 @@
 //! Types are now defined in `crates/api-dto` (wasm-compatible) and
 //! re-exported here for backward compatibility.
 
-pub use taskagent_api_dto::command::{Command, CommandEnvelope};
+pub use daruma_api_dto::command::{Command, CommandEnvelope};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use taskagent_domain::NewTask;
-    use taskagent_shared::{AgentId, PlanId, ProjectId, RunId, TaskId};
+    use daruma_domain::NewTask;
+    use daruma_shared::{AgentId, PlanId, ProjectId, RunId, TaskId};
 
     #[test]
     fn serde_roundtrip() {
@@ -46,9 +46,9 @@ mod tests {
 
     #[test]
     fn create_plan_roundtrip() {
-        use taskagent_domain::Actor;
+        use daruma_domain::Actor;
         let cmd = Command::CreatePlan {
-            plan: taskagent_domain::NewPlan::new("My plan", ProjectId::new(), Actor::user()),
+            plan: daruma_domain::NewPlan::new("My plan", ProjectId::new(), Actor::user()),
             external_ref: None,
         };
         let v = serde_json::to_value(&cmd).unwrap();
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn all_kinds_are_snake_case() {
-        use taskagent_domain::Actor;
+        use daruma_domain::Actor;
         let cmds = vec![
             Command::StartRun {
                 plan_id: PlanId::new(),
@@ -103,7 +103,7 @@ mod tests {
                 ttl_secs: 30,
             },
             Command::CreatePlan {
-                plan: taskagent_domain::NewPlan::new("t", ProjectId::new(), Actor::user()),
+                plan: daruma_domain::NewPlan::new("t", ProjectId::new(), Actor::user()),
                 external_ref: None,
             },
         ];

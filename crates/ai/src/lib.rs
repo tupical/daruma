@@ -1,23 +1,23 @@
-//! `taskagent-ai` — NL→Command operations on top of [`taskagent_ai_infra`].
+//! `daruma-ai` — NL→Command operations on top of [`daruma_ai_infra`].
 //!
 //! The provider-neutral infrastructure (Responses API client, config,
 //! [`AiProvider`] abstraction, prompt rendering engine, tool schemas,
-//! prompt-injection hardening) lives in `taskagent-ai-infra`. This crate
+//! prompt-injection hardening) lives in `daruma-ai-infra`. This crate
 //! holds the task operations — currently analyze-complexity — that turn
-//! model output into [`taskagent_core::Command`]s or plain strings, plus
+//! model output into [`daruma_core::Command`]s or plain strings, plus
 //! the operation prompt catalogue ([`prompts`]) those operations render.
 //!
 //! # Contract
 //! - The AI layer **never** writes to storage. Every output is a
-//!   [`taskagent_core::Command`] or a plain `String`.
+//!   [`daruma_core::Command`] or a plain `String`.
 //! - All JSON is built with [`serde_json::json!`]; no string concatenation.
-//! - Errors propagate as [`taskagent_shared::CoreError`].
+//! - Errors propagate as [`daruma_shared::CoreError`].
 //!
 //! # Quick start
 //! ```no_run
-//! use taskagent_ai::{AiConfig, OpenAiClient, analyze_complexity_batch};
+//! use daruma_ai::{AiConfig, OpenAiClient, analyze_complexity_batch};
 //!
-//! # async fn example() -> taskagent_shared::Result<()> {
+//! # async fn example() -> daruma_shared::Result<()> {
 //! let config = AiConfig::from_env()?;
 //! let client = OpenAiClient::new(config);
 //! // let result = analyze_complexity_batch(&client, tasks).await?;
@@ -30,10 +30,10 @@ pub mod prompts;
 
 // ── Re-export the infrastructure layer ─────────────────────────────────────────
 //
-// Preserves `taskagent-ai`'s public surface (`OpenAiClient`, `AiConfig`,
+// Preserves `daruma-ai`'s public surface (`OpenAiClient`, `AiConfig`,
 // `AiProvider`, …) so existing consumers (server, mcp, desktop) keep
-// compiling against `taskagent_ai::*`.
-pub use taskagent_ai_infra::{wrap_untrusted, AiConfig, AiError, AiProvider, OpenAiClient};
+// compiling against `daruma_ai::*`.
+pub use daruma_ai_infra::{wrap_untrusted, AiConfig, AiError, AiProvider, OpenAiClient};
 
 // `PromptRegistry` is the operation prompt catalogue, owned by this crate.
 pub use prompts::PromptRegistry;

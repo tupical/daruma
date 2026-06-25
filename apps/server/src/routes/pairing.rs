@@ -24,8 +24,8 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 #[allow(unused_imports)]
 use chrono;
 use serde::{Deserialize, Serialize};
-use taskagent_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
-use taskagent_shared::AgentId; // for Duration::days in token expiry
+use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
+use daruma_shared::AgentId; // for Duration::days in token expiry
 
 use crate::{error::ApiError, state::AppState};
 
@@ -33,7 +33,7 @@ use crate::{error::ApiError, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct PairRequest {
-    /// The single-use token from the `taskagent://pair?token=…` URL.
+    /// The single-use token from the `daruma://pair?token=…` URL.
     pub token: String,
     /// The TLS fingerprint the client observed while connecting, e.g.
     /// `"sha256:ab12cd…"`.  Must match the server's actual certificate.
@@ -65,13 +65,13 @@ pub async fn pair_device(
     // 1. Reject obviously-bad inputs before touching the store.
     let candidate_token = body.token.trim();
     if candidate_token.is_empty() {
-        return Err(ApiError::from(taskagent_shared::CoreError::validation(
+        return Err(ApiError::from(daruma_shared::CoreError::validation(
             "token must not be empty",
         )));
     }
     let claimed_fpr = body.tls_fingerprint.trim();
     if claimed_fpr.is_empty() {
-        return Err(ApiError::from(taskagent_shared::CoreError::validation(
+        return Err(ApiError::from(daruma_shared::CoreError::validation(
             "tls_fingerprint must not be empty",
         )));
     }
@@ -83,7 +83,7 @@ pub async fn pair_device(
         .consume(candidate_token)
         .await
         .ok_or_else(|| {
-            ApiError::from(taskagent_shared::CoreError::unauthorized(
+            ApiError::from(daruma_shared::CoreError::unauthorized(
                 "invalid, expired, or already-used pairing token",
             ))
         })?;
@@ -116,7 +116,7 @@ pub async fn pair_device(
 
     // Paired-device tokens expire in 90 days — bounded lifetime limits blast
     // radius if a token is ever compromised.
-    let expires = taskagent_shared::time::now() + chrono::Duration::days(90);
+    let expires = daruma_shared::time::now() + chrono::Duration::days(90);
     let secret = generate(NewTokenSpec {
         kind: TokenKind::Pat,
         agent_id: AgentId::new(),
@@ -124,13 +124,13 @@ pub async fn pair_device(
         rate_limit_per_min: 120,
         expired_at: Some(expires),
     })
-    .map_err(|e| ApiError::from(taskagent_shared::CoreError::storage(e.to_string())))?;
+    .map_err(|e| ApiError::from(daruma_shared::CoreError::storage(e.to_string())))?;
 
     state
         .auth_store
         .insert(secret.record.clone())
         .await
-        .map_err(|e| ApiError::from(taskagent_shared::CoreError::storage(e.to_string())))?;
+        .map_err(|e| ApiError::from(daruma_shared::CoreError::storage(e.to_string())))?;
 
     tracing::info!(
         device = label,
@@ -149,10 +149,10 @@ pub async fn pair_device(
 /// QR code PNG.  Requires an authenticated admin token so only the server
 /// operator can initiate pairing.
 pub async fn issue_pairing_ticket(
-    auth: axum::Extension<taskagent_auth::AuthContext>,
+    auth: axum::Extension<daruma_auth::AuthContext>,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    use taskagent_auth::Capability;
+    use daruma_auth::Capability;
     auth.require(Capability::TokenWrite)
         .map_err(ApiError::from_missing_cap)?;
 
@@ -167,7 +167,7 @@ pub async fn issue_pairing_ticket(
     let pairing_url = ticket.pairing_url();
 
     // Generate QR PNG — fall back gracefully if image encoding fails.
-    let qr_png = taskagent_discovery::qr::encode_png(&pairing_url).unwrap_or_default();
+    let qr_png = daruma_discovery::qr::encode_png(&pairing_url).unwrap_or_default();
 
     let response = serde_json::json!({
         "pairing_url": pairing_url,

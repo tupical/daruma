@@ -1,17 +1,17 @@
 ---
-description: Show the active taskagent plan as a checklist with a progress bar.
+description: Show the active daruma plan as a checklist with a progress bar.
 ---
 
-The user invoked `/taskagent-claude:plan`. Read-only — do not modify
+The user invoked `/daruma-claude:plan`. Read-only — do not modify
 tasks or write to `.omc/plans/`.
 
 ## Steps
 
-1. Resolve project (`taskagent_workspace_info` → `default_project`).
-2. `taskagent_plan_list` with `status = ["active", "in_progress"]`.
+1. Resolve project (`daruma_workspace_info` → `default_project`).
+2. `daruma_plan_list` with `status = ["active", "in_progress"]`.
    Pick the most recently updated. If none, say
-   "no active plan — `taskagent_plan_create` first" and stop.
-3. `taskagent_plan_get` with the chosen `plan_id`.
+   "no active plan — `daruma_plan_create` first" and stop.
+3. `daruma_plan_get` with the chosen `plan_id`.
 4. Compute `done_count / total_count`. Build a 20-cell bar:
    `▓▓▓▓▓▓▓▓░░░░░░░░░░░░ 40%`.
 5. Render exactly:
@@ -39,5 +39,5 @@ tasks or write to `.omc/plans/`.
 
 6. Suggest next action:
    - any `in_progress` → `→ continue: <title>`.
-   - else any ready `todo` → `→ next: run /taskagent-claude:next`.
-   - else all done → `→ plan complete — taskagent_plan_set_status status=done`.
+   - else any ready `todo` → `→ next: run /daruma-claude:next`.
+   - else all done → `→ plan complete — daruma_plan_set_status status=done`.

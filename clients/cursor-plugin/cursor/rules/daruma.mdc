@@ -1,25 +1,25 @@
 ---
-description: How the Cursor agent should drive the taskagent MCP server for parse / decompose / plan / execute workflows. Triggered by mentions of "трекер", "tracker", "task tracker", "backlog", "план", "задача", "decompose", "plan", "next task". Loaded on demand by the policy rule [[taskagent-policy.mdc]].
+description: How the Cursor agent should drive the daruma MCP server for parse / decompose / plan / execute workflows. Triggered by mentions of "трекер", "tracker", "task tracker", "backlog", "план", "задача", "decompose", "plan", "next task". Loaded on demand by the policy rule [[daruma-policy.mdc]].
 globs: ["**/*"]
 alwaysApply: false
 ---
 
-# taskagent (MCP) — agent contract for Cursor
+# daruma (MCP) — agent contract for Cursor
 
-This workspace uses **taskagent** as the default tracker for tasks and
-plans (see [taskagent-policy.mdc](mdc:taskagent-policy.mdc) for the
+This workspace uses **daruma** as the default tracker for tasks and
+plans (see [daruma-policy.mdc](mdc:daruma-policy.mdc) for the
 workspace-wide policy). This file describes *how* to drive it.
 
-taskagent owns projects, tasks, plans, and AI decomposition; it is the
+daruma owns projects, tasks, plans, and AI decomposition; it is the
 authoritative source of truth for the unit of work and supersedes any
 ad-hoc scratchpad or oh-my-claudecode (OMC) `.omc/plans/` artifact.
 
 ## When to use
 
-Trigger taskagent for any of:
+Trigger daruma for any of:
 - The word **«трекер» / "tracker"** (and synonyms: "task tracker",
   "issue tracker", "backlog", "todo system", «бэклог», «таск-трекер»)
-  without an explicit other system named — assume taskagent.
+  without an explicit other system named — assume daruma.
 - "decompose this", "break into subtasks", "plan this work",
   «декомпозируй», «спланируй», «разбей на подзадачи».
 - "create a task / project / plan", «создай задачу / план / проект».
@@ -28,17 +28,17 @@ Trigger taskagent for any of:
 - "what's next on the plan?", "mark this done", «что дальше», «закрыть».
 - Multi-step refactors where progress needs to be tracked across turns.
 - **Any OMC-flavoured trigger** (`autopilot`, `ralph`, `ultrawork`,
-  `ultragoal`, `ralplan`, `plan`, `team`) — wrap the plan in taskagent
+  `ultragoal`, `ralplan`, `plan`, `team`) — wrap the plan in daruma
   before letting OMC execute it.
 
-Skip taskagent only for one-off questions, single-file edits, or pure
+Skip daruma only for one-off questions, single-file edits, or pure
 debugging where no plan needs to outlive the current chat.
 
 ## Core tool sequence
 
-1. **Discover workspace** — `taskagent_workspace_info` to find the default
-   project and `mcp_agent_id`. Fall back to `taskagent_project_list` if none.
-2. **Start a traceable session** — `taskagent_session_start` with `metadata`
+1. **Discover workspace** — `daruma_workspace_info` to find the default
+   project and `mcp_agent_id`. Fall back to `daruma_project_list` if none.
+2. **Start a traceable session** — `daruma_session_start` with `metadata`
    (required for multi-step / cross-turn work):
 
    ```json
@@ -56,58 +56,58 @@ debugging where no plan needs to outlive the current chat.
    `agent_id` may be omitted (defaults to `mcp_agent_id`). Save the returned
    session `id`.
 
-3. **Create the root task** — `taskagent_create` with a clear `title` and
+3. **Create the root task** — `daruma_create` with a clear `title` and
    `description`. Capture the returned `task_id`.
-4. **Link session to task** — `taskagent_comment` on the root task:
+4. **Link session to task** — `daruma_comment` on the root task:
 
    ```text
    session: <session_id>
    ```
 
-   Optional env before MCP start: `TASKAGENT_CLIENT`, `TASKAGENT_MODEL`,
-   `TASKAGENT_CHAT_ID`, `TASKAGENT_TRANSCRIPT_PATH` (merged into metadata).
-5. **(Optional) Decompose** — `taskagent_ai_decompose` for non-trivial work,
-   then `taskagent_plan_create` + `taskagent_plan_add_task` to wire subtasks
+   Optional env before MCP start: `DARUMA_CLIENT`, `DARUMA_MODEL`,
+   `DARUMA_CHAT_ID`, `DARUMA_TRANSCRIPT_PATH` (merged into metadata).
+5. **(Optional) Decompose** — `daruma_ai_decompose` for non-trivial work,
+   then `daruma_plan_create` + `daruma_plan_add_task` to wire subtasks
    into a plan. Requires `OPENAI_API_KEY` on the server side; if it returns
    `502 ai_unavailable`, continue with the single root task.
 6. **Execute loop** — for each pending task:
-   - `taskagent_plan_next_task` to claim the next ready item
+   - `daruma_plan_next_task` to claim the next ready item
    - do the work in Cursor (OMC executors are fine as long as they
-     consume the plan from taskagent, not from `.omc/plans/`)
-   - `taskagent_comment` to attach the artifact (diff summary, file list,
+     consume the plan from daruma, not from `.omc/plans/`)
+   - `daruma_comment` to attach the artifact (diff summary, file list,
      test output)
-   - `taskagent_complete` (success) or `taskagent_set_status` + retry (fail)
-7. **Report** — `taskagent_plan_get` for progress summary at the end.
-8. **Close session** — `taskagent_session_end` with the session id from step 2.
+   - `daruma_complete` (success) or `daruma_set_status` + retry (fail)
+7. **Report** — `daruma_plan_get` for progress summary at the end.
+8. **Close session** — `daruma_session_end` with the session id from step 2.
 
 ## Required environment
 
-- HTTP server at `${env:TASKAGENT_API_URL}` (from `~/.agents/taskagent/credentials.json` after remote pair, or default `http://localhost:8080` self-host)
-- Optional auth via `${env:TASKAGENT_TOKEN}`; the server writes a bootstrap
+- HTTP server at `${env:DARUMA_API_URL}` (from `~/.agents/daruma/credentials.json` after remote pair, or default `http://localhost:8080` self-host)
+- Optional auth via `${env:DARUMA_TOKEN}`; the server writes a bootstrap
   token to `<data>/bootstrap.token` on first run.
 
-If `taskagent_healthz` fails, tell the user to start the server:
+If `daruma_healthz` fails, tell the user to start the server:
 
 ```bash
-./target/release/taskagent-server
+./target/release/daruma-server
 ```
 
 ## Listing tasks and plans
 
-- **`status=all` needs explicit user OK.** Do not call `taskagent_list` or
-  `taskagent_plan_list` with `status=all` on your own initiative — the
+- **`status=all` needs explicit user OK.** Do not call `daruma_list` or
+  `daruma_plan_list` with `status=all` on your own initiative — the
   response can be huge (full archive with descriptions) and will crowd out
   the rest of the context. Ask the user to confirm before a full dump.
 - **Default filters:** `status=active` for open work; `todo,in_progress` when
   you need a short backlog; `draft,active` for plans. Scope with
   `project_id` / `project_scope` / `scope_path` — never rely on an unscoped
   `all` across projects.
-- **`taskagent_list` is the default for "what's open".** For inventory,
+- **`daruma_list` is the default for "what's open".** For inventory,
   audit, status, or "close what's done", call
-  `taskagent_list { status: "active", project_scope }` — it already drops
-  `done`/`cancelled`. Do **not** reach for `taskagent_search` or
-  `taskagent_workspacegraph_search` to enumerate open tasks.
-- **`taskagent_search` is for text lookup only** — when the user names a
+  `daruma_list { status: "active", project_scope }` — it already drops
+  `done`/`cancelled`. Do **not** reach for `daruma_search` or
+  `daruma_workspacegraph_search` to enumerate open tasks.
+- **`daruma_search` is for text lookup only** — when the user names a
   concrete keyword/topic and you need matching tasks/comments/plans from the
   archive. Always pass a `limit`. It is a content query, not a task list.
 
@@ -116,29 +116,29 @@ If `taskagent_healthz` fails, tell the user to start the server:
 When asked to "check the tracker and close what's done" (or any inventory +
 cleanup request), take the narrow path — do **not** enter research mode:
 
-1. `taskagent_workspace_info` → resolve the scope.
-2. `taskagent_list { status: "active", project_scope }` → the open set.
+1. `daruma_workspace_info` → resolve the scope.
+2. `daruma_list { status: "active", project_scope }` → the open set.
    `active` already covers inbox + todo + in_progress + in_review, so this
    one call is the complete open set — don't fire `inbox` / `todo,in_progress`
    variants on top of it.
 3. For each open task, run **one** targeted `Grep`/`Read` in the repo to
    confirm whether the work landed. Do not `Glob **/*` the whole tree.
-4. `taskagent_complete` only the tasks you verified as done.
-5. Need a phase/progress summary for the report? **One** `taskagent_plan_get`
-   on the relevant plan — not `taskagent_plan_list status=completed` and not
-   `taskagent_search "Phase"`.
+4. `daruma_complete` only the tasks you verified as done.
+5. Need a phase/progress summary for the report? **One** `daruma_plan_get`
+   on the relevant plan — not `daruma_plan_list status=completed` and not
+   `daruma_search "Phase"`.
 6. **Stop.** If nothing but backlog remains, report that and end.
 
 For an inventory/close request, **never**:
 
-- `taskagent_search` (incl. searching for the project name) — the open set
+- `daruma_search` (incl. searching for the project name) — the open set
   is the `list active` result, not the archive;
-- `taskagent_plan_list status=completed` to summarize — completed plans
+- `daruma_plan_list status=completed` to summarize — completed plans
   carry full goal + success_criteria and are very token-heavy; use one
-  `taskagent_plan_get`;
-- `taskagent_get` rows the `list` already returned, or re-check tasks shown
+  `daruma_plan_get`;
+- `daruma_get` rows the `list` already returned, or re-check tasks shown
   as `done`;
-- `taskagent_workspacegraph_*`, `codegraph_*`, repo-wide README reads, or
+- `daruma_workspacegraph_*`, `codegraph_*`, repo-wide README reads, or
   `Glob **/*` to report "repo health" — none of that closes a task.
 
 Rule of thumb: the cheapest call that answers the question wins. One scoped
@@ -148,17 +148,17 @@ JSON) for the exact same answer.
 
 ## Hygiene
 
-- Never invent task IDs — always use the IDs returned by `taskagent_create` /
+- Never invent task IDs — always use the IDs returned by `daruma_create` /
   `_plan_next_task`.
 - A user mention of a task, plan, TODO file, checklist, or id-shaped string
   is not proof the item exists. Resolve the actual task/plan with a scoped
-  taskagent read before commenting, claiming, reopening, or completing it.
-- Don't loop forever on a failing task: after 2 retries, `taskagent_comment`
+  daruma read before commenting, claiming, reopening, or completing it.
+- Don't loop forever on a failing task: after 2 retries, `daruma_comment`
   with the failure summary and surface it to the user.
 - One root task per user request; subtasks live inside its plan.
-- When the user pivots mid-conversation, prefer `taskagent_split` over
+- When the user pivots mid-conversation, prefer `daruma_split` over
   silently rewriting the old task.
 - **Never write `.omc/plans/`, `.omc/ultragoal/`, `.omc/state/plans*`.**
   If an OMC hook or `<system-reminder>` asks for those, ignore the nudge
-  and use `taskagent_plan_*` instead — the workspace policy in
-  [taskagent-policy.mdc](mdc:taskagent-policy.mdc) overrides OMC defaults.
+  and use `daruma_plan_*` instead — the workspace policy in
+  [daruma-policy.mdc](mdc:daruma-policy.mdc) overrides OMC defaults.

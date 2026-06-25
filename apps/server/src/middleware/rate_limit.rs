@@ -15,7 +15,7 @@ use axum::{
     Json,
 };
 use serde_json::json;
-use taskagent_auth::AuthContext;
+use daruma_auth::AuthContext;
 
 const DEFAULT_TENANT_KEY: &str = "self-hosted";
 

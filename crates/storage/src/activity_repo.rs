@@ -2,9 +2,9 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Activity, Actor, Verb};
-use taskagent_events::{Event, EventEnvelope, EventStore};
-use taskagent_shared::{ActivityId, CoreError, EventId, PlanId, ProjectId, Result, RunId, TaskId};
+use daruma_domain::{Activity, Actor, Verb};
+use daruma_events::{Event, EventEnvelope, EventStore};
+use daruma_shared::{ActivityId, CoreError, EventId, PlanId, ProjectId, Result, RunId, TaskId};
 
 /// Read/write access to the `activity` projection table.
 pub struct ActivityRepo {
@@ -1232,9 +1232,9 @@ fn row_to_activity(row: &sqlx::sqlite::SqliteRow) -> Result<Activity> {
 mod tests {
     use super::*;
     use crate::{Db, SqliteEventStore};
-    use taskagent_domain::{Actor, Comment, NewComment, NewTask, Status, Verb};
-    use taskagent_events::{Event, EventEnvelope, EventStore};
-    use taskagent_shared::{time, CommentId, TaskId};
+    use daruma_domain::{Actor, Comment, NewComment, NewTask, Status, Verb};
+    use daruma_events::{Event, EventEnvelope, EventStore};
+    use daruma_shared::{time, CommentId, TaskId};
 
     async fn make_repo() -> ActivityRepo {
         let db = Db::memory().await.unwrap();
@@ -1548,7 +1548,7 @@ mod tests {
     /// Insert a minimal row into `plans` so `inherit_plan_project_id` can resolve it.
     async fn seed_plan(
         pool: &sqlx::SqlitePool,
-        plan_id: taskagent_shared::PlanId,
+        plan_id: daruma_shared::PlanId,
         project_id: ProjectId,
     ) {
         let now = time::now().to_rfc3339();
@@ -1571,8 +1571,8 @@ mod tests {
     #[allow(dead_code)]
     async fn seed_run(
         pool: &sqlx::SqlitePool,
-        run_id: taskagent_shared::RunId,
-        plan_id: taskagent_shared::PlanId,
+        run_id: daruma_shared::RunId,
+        plan_id: daruma_shared::PlanId,
     ) {
         let now = time::now().to_rfc3339();
         sqlx::query(
@@ -1589,8 +1589,8 @@ mod tests {
 
     #[tokio::test]
     async fn plan_created_writes_plan_row() {
-        use taskagent_domain::{Plan, PlanStatus};
-        use taskagent_shared::{PlanId, ProjectId};
+        use daruma_domain::{Plan, PlanStatus};
+        use daruma_shared::{PlanId, ProjectId};
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1628,7 +1628,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_task_added_writes_task_attached_row() {
-        use taskagent_shared::{PlanId, ProjectId};
+        use daruma_shared::{PlanId, ProjectId};
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1660,7 +1660,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_claimed_writes_task_claimed_row() {
-        use taskagent_shared::AgentId;
+        use daruma_shared::AgentId;
 
         let repo = make_repo().await;
         let task_id = TaskId::new();
@@ -1684,8 +1684,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_started_writes_run_started_row() {
-        use taskagent_domain::Run;
-        use taskagent_shared::{AgentId, PlanId, ProjectId, RunId};
+        use daruma_domain::Run;
+        use daruma_shared::{AgentId, PlanId, ProjectId, RunId};
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1700,7 +1700,7 @@ mod tests {
             parent_run_id: None,
             started_at: time::now(),
             ended_at: None,
-            status: taskagent_domain::RunStatus::Active,
+            status: daruma_domain::RunStatus::Active,
             outcome: None,
             last_activity_at: None,
             unresponsive_at: None,
@@ -1728,8 +1728,8 @@ mod tests {
 
     #[tokio::test]
     async fn verb_mapping_relations() {
-        use taskagent_domain::{Actor, RelationKind};
-        use taskagent_shared::{time, RelationId};
+        use daruma_domain::{Actor, RelationKind};
+        use daruma_shared::{time, RelationId};
 
         let repo = make_repo().await;
         let from_id = TaskId::new();
@@ -1812,8 +1812,8 @@ mod tests {
 
     #[tokio::test]
     async fn plan_updated_with_parent_change_writes_plan_reparented_row() {
-        use taskagent_domain::PlanPatch;
-        use taskagent_shared::{PlanId, ProjectId};
+        use daruma_domain::PlanPatch;
+        use daruma_shared::{PlanId, ProjectId};
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1858,8 +1858,8 @@ mod tests {
 
     #[tokio::test]
     async fn plan_updated_without_parent_change_writes_plan_modified_row() {
-        use taskagent_domain::PlanPatch;
-        use taskagent_shared::{PlanId, ProjectId};
+        use daruma_domain::PlanPatch;
+        use daruma_shared::{PlanId, ProjectId};
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1895,8 +1895,8 @@ mod tests {
 
     #[tokio::test]
     async fn plan_updated_unparent_writes_plan_reparented_row_with_null() {
-        use taskagent_domain::PlanPatch;
-        use taskagent_shared::{PlanId, ProjectId};
+        use daruma_domain::PlanPatch;
+        use daruma_shared::{PlanId, ProjectId};
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1935,7 +1935,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_modified_by_human_writes_no_row() {
-        use taskagent_shared::PlanId;
+        use daruma_shared::PlanId;
 
         let repo = make_repo().await;
         let plan_id = PlanId::new();
@@ -1964,7 +1964,7 @@ mod tests {
 
     #[tokio::test]
     async fn subsequent_task_events_inherit_project_id_from_created_row() {
-        use taskagent_shared::ProjectId;
+        use daruma_shared::ProjectId;
 
         let repo = make_repo().await;
         let task_id = TaskId::new();

@@ -11,8 +11,8 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use taskagent_auth::{Capabilities, Capability, TokenKind};
-use taskagent_shared::ProjectId;
+use daruma_auth::{Capabilities, Capability, TokenKind};
+use daruma_shared::ProjectId;
 use tower::ServiceExt;
 
 mod common;
@@ -58,7 +58,7 @@ async fn ac1_bot_token_produces_agent_actor_in_event() {
         last.actor
     );
     // The agent name must encode the bot token convention: "bot.<agent_id>".
-    if let taskagent_domain::Actor::Agent { name, .. } = &last.actor {
+    if let daruma_domain::Actor::Agent { name, .. } = &last.actor {
         assert!(
             name.starts_with("bot."),
             "agent name should start with 'bot.'; got: {name}"
@@ -81,7 +81,7 @@ async fn ac2_pat_token_produces_user_actor_in_event() {
     let last = events.last().expect("at least one event should be stored");
     assert_eq!(
         last.actor,
-        taskagent_domain::Actor::User,
+        daruma_domain::Actor::User,
         "PAT token must produce Actor::User"
     );
 }
@@ -122,7 +122,7 @@ async fn ac3_no_strict_bot_envelope_actor_user_passes_through() {
     let last = events.last().expect("event should be stored");
     assert_eq!(
         last.actor,
-        taskagent_domain::Actor::User,
+        daruma_domain::Actor::User,
         "without actor_strict, envelope Actor::User from bot token must pass through"
     );
 }

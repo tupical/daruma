@@ -1,5 +1,5 @@
-// Cursor-side detection for taskagent-claude: probes the taskagent HTTP server,
-// the taskagent-mcp binary on PATH, and the presence of Cursor's mcp.json.
+// Cursor-side detection for daruma-claude: probes the daruma HTTP server,
+// the daruma-mcp binary on PATH, and the presence of Cursor's mcp.json.
 //
 // This is intentionally lighter than the claude-plugin detect.mjs — Cursor
 // doesn't expose a "cursor mcp list" CLI, so we infer registration from the
@@ -69,7 +69,7 @@ function timeoutSignal(ms) {
   return ac.signal;
 }
 
-async function probeTaskagentHttp(baseUrl) {
+async function probeDarumaHttp(baseUrl) {
   try {
     const res = await fetch(`${baseUrl}/v1/healthz`, {
       signal: timeoutSignal(HTTP_TIMEOUT_MS),
@@ -115,7 +115,7 @@ export async function detectOmc({ projectDir } = {}) {
     ultragoalDir: ultragoal,
     agentsMd: agents !== null,
     guardInstalled: typeof agents === "string"
-      && agents.includes("<!-- taskagent-claude:begin -->"),
+      && agents.includes("<!-- daruma-claude:begin -->"),
   };
 }
 
@@ -180,25 +180,25 @@ async function detectMcpRegistration({ projectDir } = {}) {
   return {
     global: {
       path: globalPath,
-      present: Boolean(global.mcpServers?.taskagent),
-      entry: global.mcpServers?.taskagent ?? null,
+      present: Boolean(global.mcpServers?.daruma),
+      entry: global.mcpServers?.daruma ?? null,
     },
     project: {
       path: projectPath,
-      present: Boolean(project.mcpServers?.taskagent),
-      entry: project.mcpServers?.taskagent ?? null,
+      present: Boolean(project.mcpServers?.daruma),
+      entry: project.mcpServers?.daruma ?? null,
     },
   };
 }
 
-export async function detectTaskagent({ projectDir, remote } = {}) {
+export async function detectDaruma({ projectDir, remote } = {}) {
   const probeUrl = await resolveHttpProbeUrl({ remote });
   const creds = await loadCredentials();
   const profile = creds ? resolveActiveProfile(creds) : null;
 
   const [mcpCli, http, registration, projectRules, projectCommands] = await Promise.all([
-    tryExecAny(["taskagent-mcp", "taskagent"], ["--version"]),
-    probeTaskagentHttp(probeUrl),
+    tryExecAny(["daruma-mcp", "daruma"], ["--version"]),
+    probeDarumaHttp(probeUrl),
     detectMcpRegistration({ projectDir }),
     detectProjectRules({ projectDir }),
     detectProjectCommands({ projectDir }),
@@ -213,12 +213,12 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
   const configuredCommand = activeEntry?.command ?? null;
   const resolvedCommand = isHttpEntry
     ? { command: null, resolved: true, source: "http" }
-    : await resolveMcpCommand({ command: configuredCommand ?? "taskagent-mcp" });
+    : await resolveMcpCommand({ command: configuredCommand ?? "daruma-mcp" });
   const commandReady = isHttpEntry || resolvedCommand.resolved || mcpCli.ok;
   const mcpReady = registered && http.ok && commandReady;
 
   return {
-    name: "taskagent",
+    name: "daruma",
     installed: mcpCli.ok || registered || http.ok,
     mcpReady,
     cli: mcpCli.ok ? `${mcpCli.cmd}: ${mcpCli.output}` : null,
@@ -235,54 +235,54 @@ export async function detectTaskagent({ projectDir, remote } = {}) {
     projectCommands,
     installHint: [
       "Register HTTP MCP with Cursor (use your own server origin):",
-      "  npx taskagent-cursor install --transport http --global --api-url <your-taskagent-server>",
-      "Or open an Add-to-Cursor link from your TaskAgent Connect page.",
-      "For local self-host, also keep taskagent-server running:",
-      "  ./target/release/taskagent-server  # data: ~/.agents/taskagent/data",
+      "  npx daruma-cursor install --transport http --global --api-url <your-daruma-server>",
+      "Or open an Add-to-Cursor link from your Daruma Connect page.",
+      "For local self-host, also keep daruma-server running:",
+      "  ./target/release/daruma-server  # data: ~/.agents/daruma/data",
     ].join("\n"),
     mcpHint: [
-      "taskagent is not yet wired into Cursor.",
+      "daruma is not yet wired into Cursor.",
       `HTTP probe: GET ${probeUrl}/v1/healthz`,
       profile?.token
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
-        : `credentials: none at ${credentialsLocationHint()} — run your TaskAgent installer to save credentials.json, then re-run install`,
+        : `credentials: none at ${credentialsLocationHint()} — run your Daruma installer to save credentials.json, then re-run install`,
       commandReady
         ? isHttpEntry
           ? `mcp transport: http (${activeEntry.url ?? "url configured"})`
           : `mcp command: ${resolvedCommand.command}${resolvedCommand.source === "discovered" ? " (auto-discovered)" : ""}`
         : [
-            `mcp command missing: ${configuredCommand ?? "taskagent-mcp"} not executable`,
-            "  cargo build --release -p taskagent-cli",
-            "  taskagent-cursor install --transport stdio --global --command \"$PWD/target/release/taskagent-mcp\"",
+            `mcp command missing: ${configuredCommand ?? "daruma-mcp"} not executable`,
+            "  cargo build --release -p daruma-cli",
+            "  daruma-cursor install --transport stdio --global --command \"$PWD/target/release/daruma-mcp\"",
           ].join("\n         "),
       http.ok
         ? `HTTP server: ${http.status}${http.version ? ` (v${http.version})` : ""}`
         : `HTTP server unreachable: ${http.error}`,
       registered
         ? `mcp.json: registered (global=${registration.global.present}, project=${registration.project.present})`
-        : "mcp.json: taskagent entry missing — run `taskagent-cursor install --global`",
+        : "mcp.json: daruma entry missing — run `daruma-cursor install --global`",
     ].join("\n"),
-    updateHint: "cd <taskagent repo> && git pull && cargo build --release -p taskagent-server -p taskagent-cli",
+    updateHint: "cd <daruma repo> && git pull && cargo build --release -p daruma-server -p daruma-cli",
   };
 }
 
 export async function detectAll({ projectDir } = {}) {
-  const [cursor, taskagent, omc] = await Promise.all([
+  const [cursor, daruma, omc] = await Promise.all([
     detectCursor(),
-    detectTaskagent({ projectDir }),
+    detectDaruma({ projectDir }),
     detectOmc({ projectDir }),
   ]);
   return {
     cursor,
-    taskagent,
+    daruma,
     omc,
-    ready: cursor.installed && taskagent.mcpReady,
+    ready: cursor.installed && daruma.mcpReady,
   };
 }
 
 export function formatReport(report) {
   const lines = [];
-  for (const tool of [report.cursor, report.taskagent]) {
+  for (const tool of [report.cursor, report.daruma]) {
     const status = tool.installed ? "OK" : "MISSING";
     lines.push(`[${status}] ${tool.name}`);
     if (tool.cli) lines.push(`       cli: ${tool.cli}`);
@@ -340,7 +340,7 @@ export function formatReport(report) {
       lines.push(`       plans dir:    ${o.plansDir ? "EXISTS (review for stale plans)" : "absent"}`);
       lines.push(`       ultragoal:    ${o.ultragoalDir ? "EXISTS (review for stale plans)" : "absent"}`);
       lines.push(`       AGENTS.md:    ${o.agentsMd ? "exists" : "absent"}`);
-      lines.push(`       taskagent guard: ${o.guardInstalled ? "installed" : "MISSING — run omc-guard"}`);
+      lines.push(`       daruma guard: ${o.guardInstalled ? "installed" : "MISSING — run omc-guard"}`);
     }
   }
   lines.push("");

@@ -9,20 +9,20 @@
 
 use std::sync::Arc;
 
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{
     Actor, Document, DocumentKind, NewDocument, NewPlan, NewTask, PlanStatus, Priority, Status,
 };
-use taskagent_events::{Event, EventBus, EventStore};
-use taskagent_shared::{CoreError, DocumentId, ProjectId};
-use taskagent_storage::{
+use daruma_events::{Event, EventBus, EventStore};
+use daruma_shared::{CoreError, DocumentId, ProjectId};
+use daruma_storage::{
     ActivityRepo, AgentClaimRepo, CommentRepo, Db, DocumentRepo, ExternalRefRepo, PlanRepo,
     ProjectRepo, RelationRepo, RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskRepo,
 };
 
 // Silence unused-import warnings for items only used in some tests.
 #[allow(unused_imports)]
-use taskagent_shared::TaskId;
+use daruma_shared::TaskId;
 
 async fn build_stack() -> (CommandHandler, Arc<DocumentRepo>) {
     let db = Db::memory().await.unwrap();

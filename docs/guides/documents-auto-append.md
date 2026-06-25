@@ -30,8 +30,8 @@ GET   /v1/projects/{id}/settings
 PATCH /v1/projects/{id}/settings   { "auto_append": { "interview": false } }
 ```
 
-MCP (full profile): `taskagent_project_settings_get`,
-`taskagent_project_settings_update { project_id, interview?, human_log? }`.
+MCP (full profile): `daruma_project_settings_get`,
+`daruma_project_settings_update { project_id, interview?, human_log? }`.
 
 The state is event-sourced (`ProjectSettingsChanged`), so other clients
 get the change in realtime over WS, and the `project_settings`

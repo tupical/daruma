@@ -1,13 +1,13 @@
 [package]
-name = "taskagent-events"
+name = "daruma-events"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-taskagent-shared = { workspace = true }
-taskagent-domain = { workspace = true }
+daruma-shared = { workspace = true }
+daruma-domain = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 async-trait = { workspace = true }

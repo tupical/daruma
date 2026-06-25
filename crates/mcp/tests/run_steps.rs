@@ -2,16 +2,16 @@
 //!
 //! Verifies:
 //!   1. Both step tools are present in `tool_definitions()`.
-//!   2. `taskagent_run_start_step` POSTs to `/v1/runs/{id}/step/start`.
-//!   3. `taskagent_run_finish_step` POSTs to `/v1/runs/{id}/step/finish`
+//!   2. `daruma_run_start_step` POSTs to `/v1/runs/{id}/step/start`.
+//!   3. `daruma_run_finish_step` POSTs to `/v1/runs/{id}/step/finish`
 //!      with `{"kind": "done"}` in the outcome object (not `"type"`).
 
 use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::post, Router};
 use serde_json::{json, Value};
-use taskagent_mcp::tools::call_tool;
-use taskagent_mcp::{tool_definitions, ApiClient};
+use daruma_mcp::tools::call_tool;
+use daruma_mcp::{tool_definitions, ApiClient};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,16 +84,16 @@ async fn call_via_mock(tool: &str, args: Value) -> Captured {
 fn catalogue_contains_step_tools() {
     let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
     assert!(
-        names.contains(&"taskagent_run_start_step"),
-        "tool_definitions() is missing taskagent_run_start_step; found: {names:?}"
+        names.contains(&"daruma_run_start_step"),
+        "tool_definitions() is missing daruma_run_start_step; found: {names:?}"
     );
     assert!(
-        names.contains(&"taskagent_run_finish_step"),
-        "tool_definitions() is missing taskagent_run_finish_step; found: {names:?}"
+        names.contains(&"daruma_run_finish_step"),
+        "tool_definitions() is missing daruma_run_finish_step; found: {names:?}"
     );
     assert!(
-        names.contains(&"taskagent_run_log"),
-        "tool_definitions() is missing taskagent_run_log; found: {names:?}"
+        names.contains(&"daruma_run_log"),
+        "tool_definitions() is missing daruma_run_log; found: {names:?}"
     );
 }
 
@@ -107,7 +107,7 @@ async fn start_step_posts_correct_url() {
     let task_id = "task-xyz-456";
 
     let captured = call_via_mock(
-        "taskagent_run_start_step",
+        "daruma_run_start_step",
         json!({ "run_id": run_id, "task_id": task_id }),
     )
     .await;
@@ -135,7 +135,7 @@ async fn finish_step_posts_correct_url_and_kind_field() {
     let task_id = "task-xyz-456";
 
     let captured = call_via_mock(
-        "taskagent_run_finish_step",
+        "daruma_run_finish_step",
         json!({
             "run_id": run_id,
             "task_id": task_id,
@@ -174,7 +174,7 @@ async fn run_log_posts_leveled_body_to_notes_endpoint() {
     let run_id = "run-abc-123";
 
     let captured = call_via_mock(
-        "taskagent_run_log",
+        "daruma_run_log",
         json!({
             "run_id": run_id,
             "level": "warn",

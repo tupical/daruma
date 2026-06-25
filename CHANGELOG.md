@@ -1,6 +1,6 @@
 # Changelog
 
-This file tracks public, user-visible changes for TaskAgent releases.
+This file tracks public, user-visible changes for Daruma releases.
 
 For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
@@ -10,8 +10,8 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 `tools/list` is now profile-gated: the new `default` profile advertises a
 compact, workflow-first surface of 31 tools; `full` keeps the complete
-catalogue (~94 tools) unchanged. Select with `taskagent mcp --profile`,
-`TASKAGENT_MCP_PROFILE`, or `/v1/mcp?profile=`. **Unset now means
+catalogue (~94 tools) unchanged. Select with `daruma mcp --profile`,
+`DARUMA_MCP_PROFILE`, or `/v1/mcp?profile=`. **Unset now means
 `default`** — clients that depend on advanced tools (history, documents,
 sessions, workspacegraph, AI ops, bulk ops) must opt into `full`; hidden
 tools return an actionable error instead of dispatching. See
@@ -27,7 +27,7 @@ tools return an actionable error instead of dispatching. See
 
 ### task.due webhooks
 
-A due-date watchdog tick (`TASKAGENT_DUE_TICK_SECS`, default 60 s, `0`
+A due-date watchdog tick (`DARUMA_DUE_TICK_SECS`, default 60 s, `0`
 disables) now emits a `task.due` event when an active task's `due_at`
 passes — once per (task, deadline) value, deduped across restarts via the
 `task_due_notifications` projection (migration 0032). Webhook
@@ -46,7 +46,7 @@ transaction as the grant — stale holders cannot pass
 `check_fencing_token` after a re-grant. `reserve_files` (HTTP `/v1/leases`
 and the MCP tool) accepts optional `targets` + `mode` and returns leases
 carrying tokens; the legacy `paths`-only call is unchanged. The MCP
-`taskagent_healthz` tool moved into the `default` profile.
+`daruma_healthz` tool moved into the `default` profile.
 
 ### WorkUnit layer (multi-agent coordination, P3)
 
@@ -70,7 +70,7 @@ agent activity (agent task ops, runs, run notes) appends to
 project renames) append to **Human Log**. Per-project toggles — ON by
 default, also for pre-existing projects — live at
 `GET/PATCH /v1/projects/{id}/settings` and the MCP tools
-`taskagent_project_settings_get` / `_update`; changes are event-sourced
+`daruma_project_settings_get` / `_update`; changes are event-sourced
 (`ProjectSettingsChanged`, migration 0034) so other clients update in
 realtime. See docs/guides/documents-auto-append.md.
 
@@ -89,9 +89,9 @@ HTTP responses are unchanged.
 logical workspace + default project, creating and binding both on first
 contact (longest project-root prefix wins; `create:false` probes only;
 `workspace_id` targets an existing workspace). New MCP tools (full
-profile): `taskagent_workspace_resolve` (persists the resolved project
-as the scope default), `taskagent_workspace_list`, and
-`taskagent_project_move_workspace`.
+profile): `daruma_workspace_resolve` (persists the resolved project
+as the scope default), `daruma_workspace_list`, and
+`daruma_project_move_workspace`.
 
 ### Scheduler correctness (multi-agent coordination, P2)
 
@@ -111,25 +111,25 @@ fence-escape neutralization. See docs/guides/ai-agent.md.
 
 ## 0.2.0
 
-### One unified `taskagent` binary
+### One unified `daruma` binary
 
-The stdio MCP server is now a subcommand of the CLI: a single `taskagent`
+The stdio MCP server is now a subcommand of the CLI: a single `daruma`
 binary is the CLI, the launcher, and the MCP server — one artifact configures
 and serves everything.
 
-- `taskagent mcp` serves the stdio MCP server, superseding the standalone
-  `taskagent-mcp` binary. Register it with
-  `claude mcp add taskagent -- taskagent mcp`.
-- Bare `taskagent` (no subcommand) prints HTTP-MCP connect instructions. With
+- `daruma mcp` serves the stdio MCP server, superseding the standalone
+  `daruma-mcp` binary. Register it with
+  `claude mcp add daruma -- daruma mcp`.
+- Bare `daruma` (no subcommand) prints HTTP-MCP connect instructions. With
   credentials it emits a ready-to-paste snippet for whatever server
-  `~/.agents/taskagent/credentials.json` points at.
-- `taskagent install --claude` writes the project policy (`CLAUDE.md`) and the
+  `~/.agents/daruma/credentials.json` points at.
+- `daruma install --claude` writes the project policy (`CLAUDE.md`) and the
   `.omc` guard, now the single source of truth for that text (shared
-  byte-for-byte with the `taskagent-claude` plugin).
+  byte-for-byte with the `daruma-claude` plugin).
 
 ### Cloud-agnostic core
 
-- The `taskagent` binary references no hosted service: it reads a generic
+- The `daruma` binary references no hosted service: it reads a generic
   `server_url` + `token` from credentials and works against any server,
   self-hosted or otherwise.
 - Removed the cloud-flavored `install.sh` and its GitHub Pages workflow from
@@ -138,14 +138,14 @@ and serves everything.
 ### Server
 
 - The binary download endpoint moved from
-  `/v1/downloads/taskagent-mcp/{platform}` to
-  `/v1/downloads/taskagent/{platform}` and serves the unified binary.
+  `/v1/downloads/daruma-mcp/{platform}` to
+  `/v1/downloads/daruma/{platform}` and serves the unified binary.
 
 ### Client plugins
 
-- `taskagent-claude` delegates policy writing to the `taskagent` binary when it
+- `daruma-claude` delegates policy writing to the `daruma` binary when it
   is on `PATH`, falling back to its bundled Node writer otherwise.
-- `taskagent-cursor` no longer hardcodes a hosted URL in its install hints.
+- `daruma-cursor` no longer hardcodes a hosted URL in its install hints.
 
 ### Docs
 

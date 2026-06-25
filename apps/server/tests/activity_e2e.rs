@@ -13,7 +13,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::{json, Value};
-use taskagent_shared::TaskId;
+use daruma_shared::TaskId;
 use tower::ServiceExt;
 
 mod common;

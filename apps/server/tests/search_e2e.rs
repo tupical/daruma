@@ -1,9 +1,9 @@
 use axum::http::StatusCode;
 use serde_json::json;
-use taskagent_core::Command;
-use taskagent_domain::{Actor, NewComment, NewPlan, NewTask};
-use taskagent_events::Event;
-use taskagent_shared::TaskId;
+use daruma_core::Command;
+use daruma_domain::{Actor, NewComment, NewPlan, NewTask};
+use daruma_events::Event;
+use daruma_shared::TaskId;
 
 mod common;
 use common::{json_get, test_app};

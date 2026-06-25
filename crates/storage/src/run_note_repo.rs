@@ -3,9 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Actor, RunNote};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, Result, RunId, RunNoteId};
+use daruma_domain::{Actor, RunNote};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, Result, RunId, RunNoteId};
 
 /// Read/write access to the `run_notes` projection table.
 pub struct RunNoteRepo {
@@ -195,9 +195,9 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_events::EventEnvelope;
-    use taskagent_shared::{time, RunId, RunNoteId};
+    use daruma_domain::Actor;
+    use daruma_events::EventEnvelope;
+    use daruma_shared::{time, RunId, RunNoteId};
 
     async fn make_repo() -> (Db, RunNoteRepo) {
         let db = Db::memory().await.unwrap();

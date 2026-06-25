@@ -1,5 +1,5 @@
 {
-  "description": "taskagent-claude hooks: proactive session summary, capture hints, and auto-record",
+  "description": "daruma-claude hooks: proactive session summary, capture hints, and auto-record",
   "hooks": {
     "SessionStart": [
       {
@@ -29,8 +29,8 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs\"",
             "asyncRewake": true,
-            "rewakeMessage": "taskagent-claude auto-record: a reusable lesson was captured from this session. Acknowledge or skip.",
-            "rewakeSummary": "taskagent-claude captured a session lesson"
+            "rewakeMessage": "daruma-claude auto-record: a reusable lesson was captured from this session. Acknowledge or skip.",
+            "rewakeSummary": "daruma-claude captured a session lesson"
           }
         ]
       }

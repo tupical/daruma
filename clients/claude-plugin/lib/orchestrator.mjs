@@ -1,20 +1,20 @@
-// Outer orchestrator for `taskagent-claude start`. Pipeline:
-//   1. spawn `taskagent-mcp` (stdio JSON-RPC), connect MCP client.
+// Outer orchestrator for `daruma-claude start`. Pipeline:
+//   1. spawn `daruma-mcp` (stdio JSON-RPC), connect MCP client.
 //   2. parse phase: derive {title, description} from input; show + confirm y/n.
 //   3. resolve project_id (workspace default or basename(cwd)).
 //   4. seed phase:
-//        - taskagent_create({task: {title, description, project_id}}) → root_task_id
-//        - if plan-mode: try taskagent_ai_decompose(root_task_id) → subtasks
+//        - daruma_create({task: {title, description, project_id}}) → root_task_id
+//        - if plan-mode: try daruma_ai_decompose(root_task_id) → subtasks
 //                        create plan, attach subtasks, confirm
 //   5. execute loop:
 //        - single-task: omc team N:agent "<prompt>" → comment + complete
-//        - plan-mode:   loop taskagent_plan_next_task → omc team → comment + complete
+//        - plan-mode:   loop daruma_plan_next_task → omc team → comment + complete
 //   6. report progress + final summary.
 //
 // Why MCP over direct HTTP: token discovery, env propagation, and command-shape
-// invariants are already encapsulated by `taskagent-mcp`. The shim is just a
+// invariants are already encapsulated by `daruma-mcp`. The shim is just a
 // JSON-RPC ↔ /v1/commands translator with bearer auth pulled from env. Reusing
-// it keeps taskagent-claude code small and isolated from API churn.
+// it keeps daruma-claude code small and isolated from API churn.
 
 import readline from "node:readline";
 import { promises as fs } from "node:fs";
@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_WORKERS = 3;
 const DEFAULT_AGENT_TYPE = "claude";
-const TASKAGENT_MCP_BIN = process.env.TASKAGENT_MCP_BIN ?? "taskagent-mcp";
+const DARUMA_MCP_BIN = process.env.DARUMA_MCP_BIN ?? "daruma-mcp";
 
 function makePrompt(input, output) {
   const rl = readline.createInterface({ input, output });
@@ -86,7 +86,7 @@ async function currentGitBranch(cwd) {
   }
 }
 
-// Pulls a structured payload out of an MCP tool response. taskagent emits JSON
+// Pulls a structured payload out of an MCP tool response. daruma emits JSON
 // in TextContent.text; we parse best-effort and fall back to the raw text.
 function payload(resp) {
   if (resp.parsed != null) return resp.parsed;
@@ -125,8 +125,8 @@ async function confirm({ ask, write, message, autoYes = false }) {
 
 // Resolve which project_id to use for new tasks/plans. Priority:
 //   1. explicit --project flag (passed in as opts.projectId)
-//   2. taskagent_workspace_info scope matching cwd
-//   3. taskagent_workspace_info default_project (if its workspace matches cwd)
+//   2. daruma_workspace_info scope matching cwd
+//   3. daruma_workspace_info default_project (if its workspace matches cwd)
 //   4. existing project whose title equals basename(cwd)
 //   5. create a new project named basename(cwd)
 async function resolveProject({ mcp, cwd, explicitProjectId, write }) {
@@ -134,7 +134,7 @@ async function resolveProject({ mcp, cwd, explicitProjectId, write }) {
     write(`[project] using explicit --project ${explicitProjectId}`);
     return explicitProjectId;
   }
-  const wsResp = await callOrThrow(mcp, "taskagent_workspace_info", {});
+  const wsResp = await callOrThrow(mcp, "daruma_workspace_info", {});
   const ws = payload(wsResp) ?? {};
   const scoped = projectFromWorkspaceScopes(ws, cwd);
   if (scoped) {
@@ -154,9 +154,9 @@ async function resolveProject({ mcp, cwd, explicitProjectId, write }) {
     }
   }
 
-  const listResp = await callOrThrow(mcp, "taskagent_project_list", {});
+  const listResp = await callOrThrow(mcp, "daruma_project_list", {});
   const projects = payload(listResp) ?? [];
-  const desired = basename(cwd) || "taskagent-claude";
+  const desired = basename(cwd) || "daruma-claude";
   const match = Array.isArray(projects)
     ? projects.find((p) => (p.title ?? "").trim().toLowerCase() === desired.toLowerCase())
     : null;
@@ -165,13 +165,13 @@ async function resolveProject({ mcp, cwd, explicitProjectId, write }) {
     return match.id;
   }
 
-  const createResp = await callOrThrow(mcp, "taskagent_project_create", {
+  const createResp = await callOrThrow(mcp, "daruma_project_create", {
     title: desired,
-    description: `Auto-created by taskagent-claude for ${cwd}`,
+    description: `Auto-created by daruma-claude for ${cwd}`,
   });
   const created = payload(createResp) ?? {};
   if (!created.id) {
-    throw new Error(`taskagent_project_create returned no id; raw: ${createResp.text}`);
+    throw new Error(`daruma_project_create returned no id; raw: ${createResp.text}`);
   }
   write(`[project] created new project "${desired}" (${created.id})`);
   return created.id;
@@ -199,7 +199,7 @@ function projectFromWorkspaceScopes(ws, cwd) {
 }
 
 async function createRootTask({ mcp, title, description, projectId, write }) {
-  const resp = await callOrThrow(mcp, "taskagent_create", {
+  const resp = await callOrThrow(mcp, "daruma_create", {
     task: {
       title,
       description,
@@ -209,7 +209,7 @@ async function createRootTask({ mcp, title, description, projectId, write }) {
   });
   const task = payload(resp) ?? {};
   if (!task.id) {
-    throw new Error(`taskagent_create returned no id; raw: ${resp.text}`);
+    throw new Error(`daruma_create returned no id; raw: ${resp.text}`);
   }
   write(`[task] created root task ${task.id}: ${title}`);
   return task;
@@ -219,7 +219,7 @@ async function commentBranch({ mcp, taskId, branch, write }) {
   if (!branch) return;
   const resp = await callOrThrow(
     mcp,
-    "taskagent_comment",
+    "daruma_comment",
     { task_id: taskId, body: `branch: ${branch}` },
     { allowError: true },
   );
@@ -231,7 +231,7 @@ async function commentBranch({ mcp, taskId, branch, write }) {
 async function tryDecompose({ mcp, taskId, write }) {
   // ai_decompose returns 502 ai_unavailable when OPENAI_API_KEY isn't set on
   // the server. Treat that case as "no AI, single-task mode" without aborting.
-  const resp = await mcp.callTool("taskagent_ai_decompose", { task_id: taskId });
+  const resp = await mcp.callTool("daruma_ai_decompose", { task_id: taskId });
   if (resp.isError) {
     write(`[decompose] AI decomposition unavailable: ${resp.text.slice(0, 200)}`);
     return null;
@@ -249,13 +249,13 @@ async function tryDecompose({ mcp, taskId, write }) {
 }
 
 async function buildPlan({ mcp, projectId, title, subtasks, write }) {
-  const planResp = await callOrThrow(mcp, "taskagent_plan_create", {
+  const planResp = await callOrThrow(mcp, "daruma_plan_create", {
     title,
     project_id: projectId,
     description: `Plan for: ${title}`,
   });
   const plan = payload(planResp) ?? {};
-  if (!plan.id) throw new Error(`taskagent_plan_create returned no id; raw: ${planResp.text}`);
+  if (!plan.id) throw new Error(`daruma_plan_create returned no id; raw: ${planResp.text}`);
   write(`[plan] created ${plan.id}: ${title}`);
 
   for (let i = 0; i < subtasks.length; i++) {
@@ -264,7 +264,7 @@ async function buildPlan({ mcp, projectId, title, subtasks, write }) {
     // proposals (with title/description). Handle both.
     let subTaskId = sub.id ?? sub.task_id ?? null;
     if (!subTaskId) {
-      const createResp = await callOrThrow(mcp, "taskagent_create", {
+      const createResp = await callOrThrow(mcp, "daruma_create", {
         task: {
           title: sub.title ?? `Subtask ${i + 1}`,
           description: sub.description ?? "",
@@ -275,7 +275,7 @@ async function buildPlan({ mcp, projectId, title, subtasks, write }) {
       subTaskId = payload(createResp)?.id;
       if (!subTaskId) throw new Error(`subtask create returned no id; raw: ${createResp.text}`);
     }
-    await callOrThrow(mcp, "taskagent_plan_add_task", {
+    await callOrThrow(mcp, "daruma_plan_add_task", {
       plan_id: plan.id,
       task_id: subTaskId,
       position: i,
@@ -343,7 +343,7 @@ async function executeTaskWithRetries({
   let lastResult = null;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     write(`\n=== task ${task.id}: attempt ${attempt}/${maxRetries + 1} — ${task.title} ===`);
-    await callOrThrow(mcp, "taskagent_set_status", { id: task.id, status: "in_progress" });
+    await callOrThrow(mcp, "daruma_set_status", { id: task.id, status: "in_progress" });
     if (attempt === 1) {
       await commentBranch({ mcp, taskId: task.id, branch, write });
     }
@@ -354,24 +354,24 @@ async function executeTaskWithRetries({
     write(`[task ${task.id}] omc team result: ok=${result.ok} completed=${result.counts.completed} failed=${result.counts.failed}`);
 
     // Comment the artifact onto the task regardless of verdict, so the trail
-    // survives even when execution fails. taskagent_comment doesn't accept
+    // survives even when execution fails. daruma_comment doesn't accept
     // very large bodies; truncate to a safe upper bound.
     const body = result.artifact.length > 16_000
       ? result.artifact.slice(0, 16_000) + `\n\n…(truncated ${result.artifact.length - 16_000} chars)`
       : result.artifact;
-    await callOrThrow(mcp, "taskagent_comment", {
+    await callOrThrow(mcp, "daruma_comment", {
       task_id: task.id,
       body: `### Attempt ${attempt} — omc team ${result.teamName}\n\n${body}`,
     }, { allowError: true });
 
     if (result.ok) {
-      await callOrThrow(mcp, "taskagent_complete", { id: task.id });
+      await callOrThrow(mcp, "daruma_complete", { id: task.id });
       return { ok: true, attempts: attempt, result };
     }
 
     if (attempt > maxRetries) break;
     write(`[task ${task.id}] failed; retrying (${attempt}/${maxRetries})`);
-    await callOrThrow(mcp, "taskagent_set_status", { id: task.id, status: "todo" });
+    await callOrThrow(mcp, "daruma_set_status", { id: task.id, status: "todo" });
   }
   return { ok: false, attempts: maxRetries + 1, result: lastResult };
 }
@@ -379,14 +379,14 @@ async function executeTaskWithRetries({
 async function runPlanLoop({
   mcp, plan, projectId, maxRetries, workers, agentType, cwd, stderrLog, stdout, write, branch = null,
 }) {
-  // run_id semantics in taskagent: a "claim ticket" used by plan_next_task
+  // run_id semantics in daruma: a "claim ticket" used by plan_next_task
   // to track which agent is pulling work. We don't need real run lifecycle
   // tracking for v1 — just a stable id for the duration of this invocation.
-  const runId = `taskagent-claude-${Date.now()}`;
+  const runId = `daruma-claude-${Date.now()}`;
   const summaries = [];
   let safetyLimit = 100; // hard cap to prevent runaway loops
   while (safetyLimit-- > 0) {
-    const nextResp = await mcp.callTool("taskagent_plan_next_task", {
+    const nextResp = await mcp.callTool("daruma_plan_next_task", {
       id: plan.id,
       run_id: runId,
     });
@@ -408,12 +408,12 @@ async function runPlanLoop({
       break;
     }
   }
-  const planResp = await mcp.callTool("taskagent_plan_get", { id: plan.id });
+  const planResp = await mcp.callTool("daruma_plan_get", { id: plan.id });
   const planState = payload(planResp);
   return { runId, summaries, planState };
 }
 
-export async function runTaskagentStart({
+export async function runDarumaStart({
   task,
   cwd = process.cwd(),
   maxRetries = DEFAULT_MAX_RETRIES,
@@ -425,11 +425,11 @@ export async function runTaskagentStart({
   stdin = process.stdin,
   stdout = process.stdout,
 } = {}) {
-  if (!task || !task.trim()) throw new Error("runTaskagentStart: task is required");
+  if (!task || !task.trim()) throw new Error("runDarumaStart: task is required");
   if (!autoYes && !stdin.isTTY) autoYes = true;
 
   const logDir = await ensureLogDir(cwd);
-  const mcpStderrLog = join(logDir, "taskagent-mcp.stderr.log");
+  const mcpStderrLog = join(logDir, "daruma-mcp.stderr.log");
   const teamStderrLog = join(logDir, "omc-team.stderr.log");
 
   const write = (s) => { stdout.write(`${s}\n`); };
@@ -439,21 +439,21 @@ export async function runTaskagentStart({
   let sigintHandler = null;
 
   try {
-    write(`[taskagent-claude] starting taskagent-mcp (logs: ${mcpStderrLog})`);
-    const { taskagentMcpChildEnv } = await import("./detect.mjs");
-    const childEnv = await taskagentMcpChildEnv();
-    await mcp.start(TASKAGENT_MCP_BIN, [], {
+    write(`[daruma-claude] starting daruma-mcp (logs: ${mcpStderrLog})`);
+    const { darumaMcpChildEnv } = await import("./detect.mjs");
+    const childEnv = await darumaMcpChildEnv();
+    await mcp.start(DARUMA_MCP_BIN, [], {
       cwd,
       stderrLog: mcpStderrLog,
       env: childEnv,
     });
     await mcp.initialize();
-    write(`[taskagent-claude] mcp server ready: ${mcp._serverInfo?.name}@${mcp._serverInfo?.version}`);
+    write(`[daruma-claude] mcp server ready: ${mcp._serverInfo?.name}@${mcp._serverInfo?.version}`);
     const branch = await currentGitBranch(cwd);
     if (branch) write(`[branch] ${branch}`);
 
     sigintHandler = async () => {
-      write("\n[taskagent-claude] SIGINT — shutting down");
+      write("\n[daruma-claude] SIGINT — shutting down");
       try { await mcp.stop(); } catch { /* best-effort */ }
       process.exit(130);
     };
@@ -537,9 +537,9 @@ export async function runTaskagentStart({
   }
 }
 
-// Backwards-compat re-export. bin/omo.mjs used `runTaskagentStartLegacy`; new bin will use
-// runTaskagentStart but we keep both names live during the transition.
-export const runTaskagentStartLegacy = runTaskagentStart;
+// Backwards-compat re-export. bin/omo.mjs used `runDarumaStartLegacy`; new bin will use
+// runDarumaStart but we keep both names live during the transition.
+export const runDarumaStartLegacy = runDarumaStart;
 
 // Test-only exports.
 export const _internal = {

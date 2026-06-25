@@ -1,7 +1,7 @@
 //! Plan entity — a goal with an ordered list of tasks an agent works through.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{time, PlanId, ProjectId, TaskId, Timestamp};
+use daruma_shared::{time, PlanId, ProjectId, TaskId, Timestamp};
 
 use crate::task::Status;
 
@@ -78,7 +78,7 @@ pub struct PlanProgress {
 /// Executor-oriented progress snapshot for a single plan's task list.
 ///
 /// Counts only direct `plan_tasks` members (not nested sub-plans). Used by
-/// `GET /v1/plans/{id}/progress` and `taskagent_plan_progress`.
+/// `GET /v1/plans/{id}/progress` and `daruma_plan_progress`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanProgressSummary {
     pub total: u32,
@@ -88,7 +88,7 @@ pub struct PlanProgressSummary {
     pub todo: u32,
     /// First eligible task per [`NextTaskResolver`] when the plan is `Active`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_ready: Option<taskagent_shared::TaskId>,
+    pub next_ready: Option<daruma_shared::TaskId>,
 }
 
 /// Node in a plan execution graph.
@@ -124,7 +124,7 @@ pub struct PlanFanoutWave {
     pub tasks: Vec<TaskId>,
 }
 
-/// Blocker details returned by `taskagent_can_start`.
+/// Blocker details returned by `daruma_can_start`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CanStartBlocker {
     pub task_id: TaskId,
@@ -198,7 +198,7 @@ impl PlanPatch {
 
 /// Input for creating a new Plan.
 ///
-/// Analogous to [`taskagent_domain::NewTask`].  Optional fields default to
+/// Analogous to [`daruma_domain::NewTask`].  Optional fields default to
 /// empty / absent when not supplied.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NewPlan {
@@ -254,7 +254,7 @@ impl NewPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::{PlanId, ProjectId, TaskId};
+    use daruma_shared::{PlanId, ProjectId, TaskId};
 
     fn make_plan() -> Plan {
         let now = time::now();

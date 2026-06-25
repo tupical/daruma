@@ -17,7 +17,7 @@ async fn http_mcp_dispatches_tool_calls() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "taskagent_healthz",
+                "name": "daruma_healthz",
                 "arguments": {}
             }
         }))
@@ -46,7 +46,7 @@ async fn http_mcp_profile_query_param_selects_surface() {
         .bearer_auth(&app.admin_token)
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "taskagent_history_latest", "arguments": {} }
+            "params": { "name": "daruma_history_latest", "arguments": {} }
         }))
         .send()
         .await
@@ -63,7 +63,7 @@ async fn http_mcp_profile_query_param_selects_surface() {
         .bearer_auth(&app.admin_token)
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "taskagent_history_latest", "arguments": { "limit": 1 } }
+            "params": { "name": "daruma_history_latest", "arguments": { "limit": 1 } }
         }))
         .send()
         .await

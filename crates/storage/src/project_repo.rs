@@ -3,9 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{slugify_title, Project, DEFAULT_TENANT_ID};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, ProjectId, Result};
+use daruma_domain::{slugify_title, Project, DEFAULT_TENANT_ID};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, ProjectId, Result};
 
 /// Read/write access to the `projects` projection table.
 pub struct ProjectRepo {
@@ -264,8 +264,8 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_events::EventEnvelope;
+    use daruma_domain::Actor;
+    use daruma_events::EventEnvelope;
 
     #[tokio::test]
     async fn project_created_and_retrieved() {

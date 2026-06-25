@@ -11,7 +11,7 @@ use crate::protocol::{
 use crate::tools::{call_tool_in_profile, tool_definitions_for, ToolProfile};
 
 /// Dispatch a single JSON-RPC request using the profile resolved from
-/// `TASKAGENT_MCP_PROFILE` (unset → `default`). Returns `Ok(None)` for
+/// `DARUMA_MCP_PROFILE` (unset → `default`). Returns `Ok(None)` for
 /// notifications (no `id` present, no response expected).
 pub async fn dispatch_request(client: &ApiClient, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::from_env(), req).await
@@ -54,7 +54,7 @@ fn handle_initialize() -> Value {
     json!({
         "protocolVersion": "2025-06-18",
         "capabilities": { "tools": { "listChanged": false } },
-        "serverInfo": { "name": "taskagent-mcp", "version": env!("CARGO_PKG_VERSION") }
+        "serverInfo": { "name": "daruma-mcp", "version": env!("CARGO_PKG_VERSION") }
     })
 }
 
@@ -87,7 +87,7 @@ async fn handle_tools_call(
 
 /// Read newline-delimited JSON-RPC frames from stdin, dispatch them, and
 /// write responses to stdout. Blocks until EOF. The tool profile is
-/// resolved from `TASKAGENT_MCP_PROFILE` (unset → `default`).
+/// resolved from `DARUMA_MCP_PROFILE` (unset → `default`).
 pub async fn run_stdio(client: ApiClient) -> anyhow::Result<()> {
     run_stdio_with_profile(client, ToolProfile::from_env()).await
 }

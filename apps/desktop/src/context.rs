@@ -6,12 +6,12 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use taskagent_ai::{AiConfig, OpenAiClient};
+use daruma_ai::{AiConfig, OpenAiClient};
 // §3.4 W2.1: embed-mode reaches for the runtime through `core::embed`
-// only — never via `taskagent_storage::*` or `taskagent_events::*`
+// only — never via `daruma_storage::*` or `daruma_events::*`
 // directly, so the W4.1 audit-grep step can keep enforcing
 // "modules do not depend on core internals".
-use taskagent_core::embed::{
+use daruma_core::embed::{
     ActivityRepo, CommandBus, CommandHandler, CommentRepo, Db, EventBus, EventStore, ProjectRepo,
     SqliteEventStore, TaskRepo,
 };
@@ -109,10 +109,10 @@ impl Context {
 /// Resolve the local DB path.
 ///
 /// Precedence:
-///   1. `TASKAGENT_DATA_DIR` env var → `<dir>/replica.sqlite`
+///   1. `DARUMA_DATA_DIR` env var → `<dir>/replica.sqlite`
 ///   2. current working directory → `./replica.sqlite`
 pub fn data_path() -> PathBuf {
-    let dir = std::env::var("TASKAGENT_DATA_DIR").unwrap_or_else(|_| ".".into());
+    let dir = std::env::var("DARUMA_DATA_DIR").unwrap_or_else(|_| ".".into());
     PathBuf::from(dir).join("replica.sqlite")
 }
 
@@ -129,11 +129,11 @@ mod tests {
     #[test]
     fn data_path_uses_replica_sqlite_name() {
         let _guard = env_lock().lock().unwrap();
-        std::env::set_var("TASKAGENT_DATA_DIR", "/tmp/taskagent-desktop-test");
+        std::env::set_var("DARUMA_DATA_DIR", "/tmp/daruma-desktop-test");
         assert_eq!(
             data_path(),
-            PathBuf::from("/tmp/taskagent-desktop-test/replica.sqlite")
+            PathBuf::from("/tmp/daruma-desktop-test/replica.sqlite")
         );
-        std::env::remove_var("TASKAGENT_DATA_DIR");
+        std::env::remove_var("DARUMA_DATA_DIR");
     }
 }

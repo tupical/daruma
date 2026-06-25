@@ -1,4 +1,4 @@
-//! SQLite-backed implementation of [`taskagent_auth::TokenStore`].
+//! SQLite-backed implementation of [`daruma_auth::TokenStore`].
 //!
 //! Tokens are stored in the `tokens` table (migration `0004_tokens.sql`).
 //! `scope` is encoded as JSON in `scope_json`; `kind` is stored as the
@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_auth::{ApiToken, TokenKind, TokenScope, TokenStore};
-use taskagent_shared::{time, AgentId, CoreError, Result, TokenId};
+use daruma_auth::{ApiToken, TokenKind, TokenScope, TokenStore};
+use daruma_shared::{time, AgentId, CoreError, Result, TokenId};
 
 /// Read/write access to the `tokens` table.
 #[derive(Clone)]
@@ -220,7 +220,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_auth::{generate, NewTokenSpec, TokenScope};
+    use daruma_auth::{generate, NewTokenSpec, TokenScope};
 
     fn admin_spec() -> NewTokenSpec {
         NewTokenSpec {

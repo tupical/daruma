@@ -3,7 +3,7 @@
 //! configured URL with an HMAC-SHA256 signature.
 //!
 //! Storage is plugged in via the [`WebhookStore`] trait; the SQLite-backed
-//! implementation lives in `taskagent-storage::WebhookRepo`.
+//! implementation lives in `daruma-storage::WebhookRepo`.
 
 pub mod dispatcher;
 pub mod enrich;

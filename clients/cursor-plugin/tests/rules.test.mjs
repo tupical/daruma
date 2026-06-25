@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { RULE_FILES, installRules } from "../lib/rules.mjs";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-cursor-rules-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-cursor-rules-test-"));
   try { return await fn(dir); }
   finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -24,13 +24,13 @@ test("installRules drops both bundled rules with alwaysApply policy", async () =
     }
 
     const policy = await fs.readFile(
-      join(dir, ".cursor", "rules", "taskagent-policy.mdc"),
+      join(dir, ".cursor", "rules", "daruma-policy.mdc"),
       "utf8",
     );
     assert.match(policy, /alwaysApply:\s*true/);
     assert.match(policy, /\.omc\/plans\//);
     // Trigger-word guard: must mention both Russian and English forms
-    // so the agent reaches for taskagent on either side.
+    // so the agent reaches for daruma on either side.
     assert.match(policy, /трекер/);
     assert.match(policy, /tracker/);
     // Token-economy guard: the always-applied policy must steer toward
@@ -40,10 +40,10 @@ test("installRules drops both bundled rules with alwaysApply policy", async () =
     assert.doesNotMatch(policy, /for targeted lookups/);
 
     const contract = await fs.readFile(
-      join(dir, ".cursor", "rules", "taskagent.mdc"),
+      join(dir, ".cursor", "rules", "daruma.mdc"),
       "utf8",
     );
-    assert.match(contract, /taskagent-policy\.mdc/);
+    assert.match(contract, /daruma-policy\.mdc/);
     // The on-demand contract must document the lean audit/close workflow
     // and drop the old "Prefer search over bulk list" guidance.
     assert.match(contract, /Audit & close workflow/);
@@ -54,7 +54,7 @@ test("installRules drops both bundled rules with alwaysApply policy", async () =
       "utf8",
     );
     // workspacegraph guardrail: never use graph search to list open tasks.
-    assert.match(graph, /Never use `taskagent_workspacegraph_search` to list open tasks/);
+    assert.match(graph, /Never use `daruma_workspacegraph_search` to list open tasks/);
   });
 });
 
@@ -71,7 +71,7 @@ test("installRules is idempotent without --force", async () => {
 test("installRules overwrites with overwrite: true", async () => {
   await withTempDir(async (dir) => {
     await installRules({ projectDir: dir });
-    const target = join(dir, ".cursor", "rules", "taskagent-policy.mdc");
+    const target = join(dir, ".cursor", "rules", "daruma-policy.mdc");
     await fs.writeFile(target, "stale\n");
 
     const results = await installRules({ projectDir: dir, overwrite: true });
@@ -85,8 +85,8 @@ test("installRules overwrites with overwrite: true", async () => {
 
 test("RULE_FILES lists all managed rule names", () => {
   assert.deepEqual([...RULE_FILES].sort(), [
-    "taskagent-policy.mdc",
-    "taskagent.mdc",
+    "daruma-policy.mdc",
+    "daruma.mdc",
     "workspacegraph.mdc",
   ]);
 });

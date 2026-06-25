@@ -1,12 +1,12 @@
 //! Storage trait for webhook persistence.
 
 use async_trait::async_trait;
-use taskagent_shared::{Result, WebhookId};
+use daruma_shared::{Result, WebhookId};
 
 use crate::model::{Webhook, WebhookPatch};
 
 /// Persistence API for webhook configuration rows. Cheap to clone; SQLite
-/// implementation lives in `taskagent-storage::WebhookRepo`.
+/// implementation lives in `daruma-storage::WebhookRepo`.
 #[async_trait]
 pub trait WebhookStore: Send + Sync + 'static {
     async fn insert(&self, webhook: Webhook) -> Result<()>;
@@ -27,7 +27,7 @@ pub trait WebhookStore: Send + Sync + 'static {
     async fn record_delivery(
         &self,
         webhook_id: WebhookId,
-        event_id: taskagent_shared::EventId,
+        event_id: daruma_shared::EventId,
         event_kind: &str,
         status_code: Option<u16>,
         succeeded: bool,

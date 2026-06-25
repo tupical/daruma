@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{Actor, NewTask, RelationKind};
-use taskagent_events::{Event, EventBus, EventStore};
-use taskagent_shared::{CoreError, RelationId, TaskId};
-use taskagent_storage::{
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{Actor, NewTask, RelationKind};
+use daruma_events::{Event, EventBus, EventStore};
+use daruma_shared::{CoreError, RelationId, TaskId};
+use daruma_storage::{
     ActivityRepo, CommentRepo, Db, ProjectRepo, RelationRepo, SqliteEventStore, TaskRepo,
 };
 

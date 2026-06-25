@@ -1,15 +1,15 @@
 {
-  "name": "taskagent-cursor",
+  "name": "daruma-cursor",
   "version": "0.3.7",
-  "description": "Cursor plugin for tupical/daruma. Registers the taskagent MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI, and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
+  "description": "Cursor plugin for tupical/daruma. Registers the daruma MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI, and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
   "keywords": [
     "cursor",
     "cursor-plugin",
     "cursor-mcp",
     "mcp",
     "mcp-server",
-    "taskagent",
-    "taskagent",
+    "daruma",
+    "daruma",
     "marketplace"
   ],
   "homepage": "https://github.com/tupical/daruma/tree/main/clients/cursor-plugin#readme",
@@ -25,13 +25,13 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "taskagent-cursor": "bin/taskagent-cursor.mjs"
+    "daruma-cursor": "bin/daruma-cursor.mjs"
   },
   "files": [
     "bin/",
     "lib/",
     "cursor/",
-    ".taskagent-plugin/",
+    ".daruma-plugin/",
     "README.md",
     "README.ru.md",
     "LICENSE"

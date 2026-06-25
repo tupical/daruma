@@ -21,11 +21,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, routing::post as axpost, Router as AxRouter};
 use serde_json::{json, Value};
-use taskagent_auth::ProjectFilter;
-use taskagent_domain::Actor;
-use taskagent_events::{Event, EventBus, EventEnvelope};
-use taskagent_shared::{EventId, ProjectId, Result, TaskId, WebhookDeliveryId, WebhookId};
-use taskagent_webhooks::{
+use daruma_auth::ProjectFilter;
+use daruma_domain::Actor;
+use daruma_events::{Event, EventBus, EventEnvelope};
+use daruma_shared::{EventId, ProjectId, Result, TaskId, WebhookDeliveryId, WebhookId};
+use daruma_webhooks::{
     enrich::keys, spawn_dispatcher, EnrichmentSource, NewWebhook, NoopEnrichment, Webhook,
     WebhookStore,
 };
@@ -98,7 +98,7 @@ impl WebhookStore for MemStore {
     async fn patch(
         &self,
         _id: WebhookId,
-        _patch: taskagent_webhooks::WebhookPatch,
+        _patch: daruma_webhooks::WebhookPatch,
     ) -> Result<Option<Webhook>> {
         unreachable!("not exercised by these tests")
     }
@@ -169,7 +169,7 @@ fn sample_envelope() -> EventEnvelope {
     EventEnvelope::new(
         Actor::user(),
         Event::TaskCreated {
-            task: taskagent_domain::NewTask {
+            task: daruma_domain::NewTask {
                 id: Some(TaskId::new()),
                 project_id: Some(ProjectId::new()),
                 title: "hello".into(),

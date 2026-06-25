@@ -1,13 +1,13 @@
 //! WebSocket wire types for `/v1/ws`.
 //!
 //! Previously defined in `crates/sync/src/wire.rs`. Moved here so the WASM
-//! frontend can import them without pulling in `taskagent-sync`'s tokio
+//! frontend can import them without pulling in `daruma-sync`'s tokio
 //! runtime dependency.
 
 use serde::{Deserialize, Serialize};
-use taskagent_domain::Actor;
-use taskagent_events::{Channel, EventEnvelope};
-use taskagent_shared::{EventId, ProjectId};
+use daruma_domain::Actor;
+use daruma_events::{Channel, EventEnvelope};
+use daruma_shared::{EventId, ProjectId};
 
 use crate::command::Command;
 

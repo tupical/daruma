@@ -4,7 +4,7 @@
 //! plain `task claim` path untouched.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{time, AgentId, PlanId, TaskId, Timestamp, WorkUnitId};
+use daruma_shared::{time, AgentId, PlanId, TaskId, Timestamp, WorkUnitId};
 
 use crate::task::Priority;
 

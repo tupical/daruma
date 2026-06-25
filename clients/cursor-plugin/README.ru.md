@@ -5,7 +5,7 @@
   <br/>
   ◯ ─────────── ◯
   <br/><br/>
-  <strong>taskagent-cursor</strong>
+  <strong>daruma-cursor</strong>
   <br/>
   <sub>tupical/daruma × Cursor</sub>
   <br/><br/>
@@ -14,9 +14,9 @@
 </p>
 
 <p align="center">
-  <strong>Один клик подключает taskagent MCP к Cursor.</strong>
+  <strong>Один клик подключает daruma MCP к Cursor.</strong>
   <br/>
-  <sub>Готовая Cursor-обвязка для hosted taskagent MCP-сервера.</sub>
+  <sub>Готовая Cursor-обвязка для hosted daruma MCP-сервера.</sub>
 </p>
 
 ---
@@ -27,7 +27,7 @@
 покажет диалог подтверждения и сам пропишет сервер в `~/.cursor/mcp.json`.
 
 <p align="center">
-  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D">
+  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D">
     <img src="https://img.shields.io/badge/Add%20to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
   </a>
 </p>
@@ -35,39 +35,39 @@
 Или скопируй официальный Cursor deeplink:
 
 ```
-cursor://anysphere.cursor-deeplink/mcp/install?name=taskagent&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D
+cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D
 ```
 
-Default-путь Cursor использует HTTP MCP endpoint TaskAgent. Для локальной
+Default-путь Cursor использует HTTP MCP endpoint Daruma. Для локальной
 разработки сначала запусти сервер:
 
 ```bash
-./target/release/taskagent-server   # данные: ~/.agents/taskagent/data
+./target/release/daruma-server   # данные: ~/.agents/daruma/data
 ```
 
 ---
 
 ## Что делает
 
-`taskagent-cursor` — тонкий компаньон Cursor для
+`daruma-cursor` — тонкий компаньон Cursor для
 [`tupical/daruma`](https://github.com/tupical/daruma). Делает три вещи:
 
 1. **Регистрирует MCP-сервер** в `mcp.json` Cursor — глобально
    (`~/.cursor/mcp.json`) или для проекта (`./.cursor/mcp.json`).
 2. **Генерирует ссылку «Add to Cursor»** для установки HTTP MCP в один клик.
 3. **Кладёт три правила** в `.cursor/rules/`, которые учат агента Cursor
-   работать с `taskagent_*`-инструментами (parse → decompose → plan →
+   работать с `daruma_*`-инструментами (parse → decompose → plan →
    execute) вместо самодельных тудушек и держат его на экономном пути
    `list active`:
-   - `taskagent-policy.mdc` (`alwaysApply`) — taskagent как трекер по
+   - `daruma-policy.mdc` (`alwaysApply`) — daruma как трекер по
      умолчанию + правила экономии токенов (list-first, без graph-поиска для
      инвентаря).
-   - `taskagent.mdc` — полный контракт инструментов + audit/close workflow.
-   - `workspacegraph.mdc` — guardrails: `taskagent_workspacegraph_*` для
+   - `daruma.mdc` — полный контракт инструментов + audit/close workflow.
+   - `workspacegraph.mdc` — guardrails: `daruma_workspacegraph_*` для
      связей/impact, а не для списка открытых задач.
 
 Сам по себе плагин **не содержит логики исполнения**. Cursor-агент общается с
-сервером taskagent напрямую через MCP — здесь только обвязка.
+сервером daruma напрямую через MCP — здесь только обвязка.
 
 ---
 
@@ -76,15 +76,15 @@ Default-путь Cursor использует HTTP MCP endpoint TaskAgent. Для
 ### Через npm
 
 ```bash
-npm i -g taskagent-cursor
-taskagent-cursor install --global   # пишет ~/.cursor/mcp.json
-taskagent-cursor doctor             # проверка
+npm i -g daruma-cursor
+daruma-cursor install --global   # пишет ~/.cursor/mcp.json
+daruma-cursor doctor             # проверка
 ```
 
 ### Вручную
 
 Скопируй [`cursor/mcp.example.json`](./cursor/mcp.example.json) в
-`~/.cursor/mcp.json` (или влей запись `taskagent` в существующий файл).
+`~/.cursor/mcp.json` (или влей запись `daruma` в существующий файл).
 
 ---
 
@@ -92,14 +92,14 @@ taskagent-cursor doctor             # проверка
 
 | Команда                                                          | Эффект                                                                  |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `taskagent-cursor install [--global\|--project DIR]`      | Прописать taskagent MCP в выбранный `mcp.json`.                         |
-| `taskagent-cursor uninstall [--global\|--project DIR]`    | Удалить запись.                                                         |
-| `taskagent-cursor deeplink [--print-scheme]`              | Напечатать официальный Cursor Add-to-Cursor deeplink.                   |
-| `taskagent-cursor rules [--project DIR] [--force]`        | Положить три `.cursor/rules/*.mdc` (policy + контракт + workspacegraph) в проект. |
-| `taskagent-cursor doctor [--json\|--quiet]`               | Проверить Cursor MCP config + HTTP-сервер. Exit 0 ⇒ READY.              |
-| `taskagent-cursor setup`                                  | Подсказки по установке отсутствующего.                                  |
-| `taskagent-cursor marketplace`                            | Напечатать plugin-манифест taskagent (со встроенным актуальным deeplink).  |
-| `taskagent-cursor --version` / `--help`                   |                                                                         |
+| `daruma-cursor install [--global\|--project DIR]`      | Прописать daruma MCP в выбранный `mcp.json`.                         |
+| `daruma-cursor uninstall [--global\|--project DIR]`    | Удалить запись.                                                         |
+| `daruma-cursor deeplink [--print-scheme]`              | Напечатать официальный Cursor Add-to-Cursor deeplink.                   |
+| `daruma-cursor rules [--project DIR] [--force]`        | Положить три `.cursor/rules/*.mdc` (policy + контракт + workspacegraph) в проект. |
+| `daruma-cursor doctor [--json\|--quiet]`               | Проверить Cursor MCP config + HTTP-сервер. Exit 0 ⇒ READY.              |
+| `daruma-cursor setup`                                  | Подсказки по установке отсутствующего.                                  |
+| `daruma-cursor marketplace`                            | Напечатать plugin-манифест daruma (со встроенным актуальным deeplink).  |
+| `daruma-cursor --version` / `--help`                   |                                                                         |
 
 ### Флаги install
 
@@ -110,7 +110,7 @@ taskagent-cursor doctor             # проверка
 | `--command CMD`              | (нет)                      | Включает stdio fallback и задаёт путь к бинарю.             |
 | `--base-url URL`             | `http://localhost:8080`    | Origin HTTP MCP сервера.                                    |
 | `--token T`                  | (нет)                      | Добавляет Authorization header для self-host config.        |
-| `--name NAME`                | `taskagent`                | Переименовать запись (если запускаешь несколько инстансов). |
+| `--name NAME`                | `daruma`                | Переименовать запись (если запускаешь несколько инстансов). |
 
 ---
 
@@ -119,11 +119,11 @@ taskagent-cursor doctor             # проверка
 ```
 deeplink                                                Cursor
 ┌─────────────────────────┐    cursor://...  ┌─────────────────────┐
-│ taskagent               │ ───────────────▶ │ «Установить MCP?»   │
+│ daruma               │ ───────────────▶ │ «Установить MCP?»   │
 │ [ Add to Cursor ]       │   deeplink       │ пишет mcp.json      │
 └─────────────────────────┘                  └─────────────────────┘
         │
-        │ использует /clients/cursor-plugin/.taskagent-plugin/plugin.json
+        │ использует /clients/cursor-plugin/.daruma-plugin/plugin.json
         │ из этого репо (или npm-тарбола)
         ▼
 ┌─────────────────────────┐
@@ -144,7 +144,7 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=<NAME>&config=<BASE64_JSON>
 свой:
 
 ```bash
-taskagent-cursor deeplink
+daruma-cursor deeplink
 ```
 
 ---
@@ -154,19 +154,19 @@ taskagent-cursor deeplink
 ```text
 clients/cursor-plugin/
 ├── package.json                          # npm-пакет + CLI bin
-├── bin/taskagent-cursor.mjs       # точка входа CLI
+├── bin/daruma-cursor.mjs       # точка входа CLI
 ├── lib/
 │   ├── deeplink.mjs                      # генератор cursor:// install link
-│   ├── detect.mjs                        # readiness-проба Cursor + taskagent
+│   ├── detect.mjs                        # readiness-проба Cursor + daruma
 │   ├── mcp-config.mjs                    # чтение/запись ~/.cursor/mcp.json
 │   └── rules.mjs                         # установка .cursor/rules/*.mdc
 ├── cursor/
 │   ├── mcp.example.json                  # эталон для ручной установки
 │   └── rules/                            # policy + контракт + workspacegraph guardrails
-│       ├── taskagent-policy.mdc          # alwaysApply policy (list-first / экономия токенов)
-│       ├── taskagent.mdc                 # контракт + audit/close workflow
+│       ├── daruma-policy.mdc          # alwaysApply policy (list-first / экономия токенов)
+│       ├── daruma.mdc                 # контракт + audit/close workflow
 │       └── workspacegraph.mdc            # граф-инструменты: связи/impact, не инвентарь
-├── .taskagent/plugin.json                   # манифест маркетплейса taskagent
+├── .daruma/plugin.json                   # манифест маркетплейса daruma
 └── tests/                                # node --test
 ```
 
@@ -176,10 +176,10 @@ clients/cursor-plugin/
 
 - Cursor (любой свежий, с поддержкой MCP)
 - Node.js ≥ 20 (только для CLI; в рантайме не нужен)
-- Запущенный taskagent HTTP server. Для локальной разработки собери его из
+- Запущенный daruma HTTP server. Для локальной разработки собери его из
   [tupical/daruma](https://github.com/tupical/daruma):
-  `cargo build --release -p taskagent-server`.
-- `taskagent-mcp` нужен только для явного fallback `--transport stdio`.
+  `cargo build --release -p daruma-server`.
+- `daruma-mcp` нужен только для явного fallback `--transport stdio`.
 
 ---
 

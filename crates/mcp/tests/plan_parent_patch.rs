@@ -1,4 +1,4 @@
-//! Integration tests for taskagent_plan_update — parent_plan_id support (W3).
+//! Integration tests for daruma_plan_update — parent_plan_id support (W3).
 //!
 //! Verifies:
 //!   1. `plan_update_reparent_via_mcp`  — PATCH body carries the new parent_plan_id string.
@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
 use serde_json::{json, Value};
-use taskagent_mcp::tools::call_tool;
-use taskagent_mcp::ApiClient;
+use daruma_mcp::tools::call_tool;
+use daruma_mcp::ApiClient;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,7 +114,7 @@ async fn plan_update_reparent_via_mcp() {
     let parent_id = "plan-bbb-222";
 
     let (result, captured) = call_via_recording(
-        "taskagent_plan_update",
+        "daruma_plan_update",
         json!({
             "id": plan_id,
             "patch": { "parent_plan_id": parent_id }
@@ -149,7 +149,7 @@ async fn plan_update_unparent_via_mcp() {
     let plan_id = "plan-aaa-111";
 
     let (result, captured) = call_via_recording(
-        "taskagent_plan_update",
+        "daruma_plan_update",
         json!({
             "id": plan_id,
             "patch": { "parent_plan_id": null }
@@ -193,7 +193,7 @@ async fn plan_update_cycle_via_mcp_returns_error() {
     let plan_id = "plan-aaa-111";
     // Attempt to make a plan its own parent — the server detects a cycle and returns 422.
     let result = call_via_error_server(
-        "taskagent_plan_update",
+        "daruma_plan_update",
         json!({
             "id": plan_id,
             "patch": { "parent_plan_id": plan_id }

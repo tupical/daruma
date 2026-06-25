@@ -2,10 +2,10 @@
 //! `TaskDueElapsed` per (task, due_at) value for overdue active tasks.
 
 use chrono::{Duration, Utc};
-use taskagent_core::Command;
-use taskagent_domain::{Actor, NewTask};
-use taskagent_events::Event;
-use taskagent_shared::TaskId;
+use daruma_core::Command;
+use daruma_domain::{Actor, NewTask};
+use daruma_events::Event;
+use daruma_shared::TaskId;
 
 mod common;
 use common::test_app;

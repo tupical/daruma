@@ -4,7 +4,7 @@
 //! middleware applied and drives it with `tower::ServiceExt::oneshot`.
 
 use axum::{body::Body, http::Request, http::StatusCode, routing::get, Router};
-use taskagent_server::middleware::request_id::request_id_middleware;
+use daruma_server::middleware::request_id::request_id_middleware;
 use tower::ServiceExt; // oneshot
 
 fn test_router() -> Router {

@@ -1,39 +1,39 @@
 ---
 name: setup
-description: Print install instructions for any missing taskagent-claude dependencies. Triggered by /taskagent-claude:setup or taskagent-claude setup from the shell.
+description: Print install instructions for any missing daruma-claude dependencies. Triggered by /daruma-claude:setup or daruma-claude setup from the shell.
 ---
 
-# taskagent-claude: setup
+# daruma-claude: setup
 
 This skill **does not run installers**. It detects what's missing and prints the official install commands so the user decides.
 
 ## Step 1 — Detect
 
 ```
-if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then node "$CLAUDE_PLUGIN_ROOT/bin/taskagent-claude.mjs" setup; else taskagent-claude setup; fi
+if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then node "$CLAUDE_PLUGIN_ROOT/bin/daruma-claude.mjs" setup; else daruma-claude setup; fi
 ```
 
 The detector prints install hints for each missing dependency. Show the output verbatim.
 
-## Step 2 — Self-host TaskAgent
+## Step 2 — Self-host Daruma
 
-Credentials may live at **`~/.agents/taskagent/credentials.json`** (Windows: `%USERPROFILE%\.agents\taskagent\credentials.json`). Override the directory with `TASKAGENT_AGENT_DIR`.
+Credentials may live at **`~/.agents/daruma/credentials.json`** (Windows: `%USERPROFILE%\.agents\daruma\credentials.json`). Override the directory with `DARUMA_AGENT_DIR`.
 
 ```bash
 git clone https://github.com/tupical/daruma
 cd daruma
-cargo build --release -p taskagent-server -p taskagent-cli
-./target/release/taskagent-server
-claude mcp add taskagent -- ./target/release/taskagent-mcp
+cargo build --release -p daruma-server -p daruma-cli
+./target/release/daruma-server
+claude mcp add daruma -- ./target/release/daruma-mcp
 ```
 
-Relevant env vars for `taskagent-mcp`:
+Relevant env vars for `daruma-mcp`:
 
-- `TASKAGENT_API_URL` — server base (default `http://localhost:8080` when no credentials).
-- `TASKAGENT_TOKEN` — bearer token.
-- `TASKAGENT_WORKSPACE_ID` — optional workspace UUID for scoped deployments.
+- `DARUMA_API_URL` — server base (default `http://localhost:8080` when no credentials).
+- `DARUMA_TOKEN` — bearer token.
+- `DARUMA_WORKSPACE_ID` — optional workspace UUID for scoped deployments.
 
-## Step 3 — oh-my-claudecode (needed for `taskagent-claude start`)
+## Step 3 — oh-my-claudecode (needed for `daruma-claude start`)
 
 ```
 npm i -g oh-my-claude-sisyphus@latest
@@ -50,12 +50,12 @@ Requires Node.js ≥ 20.
 
 ## Step 4 — Updates
 
-`taskagent-claude update` checks `taskagent-claude` (npm) and `omc`. taskagent itself has to be pulled and rebuilt manually:
+`daruma-claude update` checks `daruma-claude` (npm) and `omc`. daruma itself has to be pulled and rebuilt manually:
 
 ```
-cd <taskagent-repo> && git pull && cargo build --release -p taskagent-server -p taskagent-cli
+cd <daruma-repo> && git pull && cargo build --release -p daruma-server -p daruma-cli
 ```
 
 ## Step 5 — Re-verify
 
-After install, run `taskagent-claude doctor`. Do not assume install succeeded based on a CLI exit code.
+After install, run `daruma-claude doctor`. Do not assume install succeeded based on a CLI exit code.

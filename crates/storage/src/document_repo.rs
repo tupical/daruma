@@ -4,9 +4,9 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
-use taskagent_domain::{Document, DocumentKind};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, DocumentId, ProjectId, Result};
+use daruma_domain::{Document, DocumentKind};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, DocumentId, ProjectId, Result};
 
 use crate::entity_version::{insert_entity_version, update_summary};
 
@@ -460,9 +460,9 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, NewDocument};
-    use taskagent_events::EventEnvelope;
-    use taskagent_shared::{time, DocumentId, ProjectId};
+    use daruma_domain::{Actor, NewDocument};
+    use daruma_events::EventEnvelope;
+    use daruma_shared::{time, DocumentId, ProjectId};
 
     async fn make_repo() -> (Db, DocumentRepo) {
         let db = Db::memory().await.unwrap();
@@ -776,7 +776,7 @@ mod tests {
         let env = EventEnvelope::new(
             Actor::user(),
             Event::PlanArchived {
-                plan_id: taskagent_shared::PlanId::new(),
+                plan_id: daruma_shared::PlanId::new(),
                 at: time::now(),
             },
         );

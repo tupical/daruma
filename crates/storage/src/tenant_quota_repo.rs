@@ -1,8 +1,8 @@
 //! Tenant quota checks for logical workspace resource limits.
 
 use sqlx::SqlitePool;
-use taskagent_domain::DEFAULT_TENANT_ID;
-use taskagent_shared::{CoreError, ProjectId, Result};
+use daruma_domain::DEFAULT_TENANT_ID;
+use daruma_shared::{CoreError, ProjectId, Result};
 
 #[derive(Clone)]
 pub struct TenantQuotaRepo {

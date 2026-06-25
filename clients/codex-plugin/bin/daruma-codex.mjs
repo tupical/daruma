@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// `taskagent-codex` — project init for the Codex taskagent plugin.
+// `daruma-codex` — project init for the Codex daruma plugin.
 //
 // Subcommands:
-//   taskagent-codex init [--project DIR]     Drop managed policy in AGENTS.md
-//   taskagent-codex uninit [--project DIR] Remove managed policy block
-//   taskagent-codex --version | -v
-//   taskagent-codex --help    | -h
+//   daruma-codex init [--project DIR]     Drop managed policy in AGENTS.md
+//   daruma-codex uninit [--project DIR] Remove managed policy block
+//   daruma-codex --version | -v
+//   daruma-codex --help    | -h
 
 import { installPolicy, removePolicy } from "../lib/policy.mjs";
 import { readFileSync } from "node:fs";
@@ -15,16 +15,16 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
 
-const HELP = `taskagent-codex v${pkg.version} — Codex project init for TaskAgent
+const HELP = `daruma-codex v${pkg.version} — Codex project init for Daruma
 
 Usage:
-  taskagent-codex init [--project DIR]
+  daruma-codex init [--project DIR]
         Drop a managed policy block in <DIR>/AGENTS.md so this project
-        defaults to taskagent for tasks and plans. Idempotent.
-  taskagent-codex uninit [--project DIR]
+        defaults to daruma for tasks and plans. Idempotent.
+  daruma-codex uninit [--project DIR]
         Remove the managed policy block. Surrounding content is preserved.
-  taskagent-codex --version | -v   Print version
-  taskagent-codex --help    | -h   This message
+  daruma-codex --version | -v   Print version
+  daruma-codex --help    | -h   This message
 `;
 
 const POLICY_VERB = {
@@ -57,7 +57,7 @@ async function cmdInit(rest = []) {
   try {
     projectDir = parseProjectFlag(rest);
   } catch (err) {
-    process.stderr.write(`taskagent-codex init: ${err.message}\n`);
+    process.stderr.write(`daruma-codex init: ${err.message}\n`);
     process.exit(2);
   }
   const result = await installPolicy({ projectDir });
@@ -70,7 +70,7 @@ async function cmdUninit(rest = []) {
   try {
     projectDir = parseProjectFlag(rest);
   } catch (err) {
-    process.stderr.write(`taskagent-codex uninit: ${err.message}\n`);
+    process.stderr.write(`daruma-codex uninit: ${err.message}\n`);
     process.exit(2);
   }
   const result = await removePolicy({ projectDir });
@@ -101,6 +101,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(`taskagent-codex: ${err.message}\n`);
+  process.stderr.write(`daruma-codex: ${err.message}\n`);
   process.exit(1);
 });

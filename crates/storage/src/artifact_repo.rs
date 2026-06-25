@@ -5,9 +5,9 @@
 //! cannot commit writes after losing its lease.
 
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{ArtifactId, CoreError, ProjectId, Result, TaskId};
+use daruma_domain::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{ArtifactId, CoreError, ProjectId, Result, TaskId};
 
 pub struct ArtifactRepo {
     pool: SqlitePool,
@@ -390,11 +390,11 @@ fn row_to_relation(r: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRelation> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{
+    use daruma_domain::{
         Actor, Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus,
     };
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{AgentId, ArtifactId, ArtifactRelationId};
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{AgentId, ArtifactId, ArtifactRelationId};
 
     async fn repo() -> (Db, ArtifactRepo) {
         let db = Db::memory().await.unwrap();

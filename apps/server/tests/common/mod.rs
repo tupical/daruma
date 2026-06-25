@@ -20,21 +20,21 @@ use axum::{
     Router,
 };
 use serde_json::Value;
-use taskagent_auth::{
+use daruma_auth::{
     generate, Capabilities, NewTokenSpec, ProjectFilter, TokenKind, TokenScope, TokenStore,
 };
-use taskagent_core::{CommandBus, CommandHandler, LifecycleGate};
-use taskagent_events::{EventBus, EventStore};
-use taskagent_server::{routes::router, state::AppState, workspace_graph};
-use taskagent_shared::AgentId;
-use taskagent_storage::{
+use daruma_core::{CommandBus, CommandHandler, LifecycleGate};
+use daruma_events::{EventBus, EventStore};
+use daruma_server::{routes::router, state::AppState, workspace_graph};
+use daruma_shared::AgentId;
+use daruma_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, Db, DocumentRepo, EntityVersionRepo,
     ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
     SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
     WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
-use taskagent_sync::Hub;
-use taskagent_webhooks::WebhookStore;
+use daruma_sync::Hub;
+use daruma_webhooks::WebhookStore;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 
@@ -120,11 +120,11 @@ impl TestAppBuilder {
         let work_leases = Arc::new(WorkLeaseRepo::new(pool.clone()));
         let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
         let documents = Arc::new(DocumentRepo::new(pool.clone()));
-        let project_settings = Arc::new(taskagent_storage::ProjectSettingsRepo::new(pool.clone()));
-        let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
-        let rules = Arc::new(taskagent_storage::RuleRepo::new(pool.clone()));
-        let evidence = Arc::new(taskagent_storage::EvidenceRepo::new(pool.clone()));
-        let audit_findings = Arc::new(taskagent_storage::AuditFindingRepo::new(pool.clone()));
+        let project_settings = Arc::new(daruma_storage::ProjectSettingsRepo::new(pool.clone()));
+        let work_units = Arc::new(daruma_storage::WorkUnitRepo::new(pool.clone()));
+        let rules = Arc::new(daruma_storage::RuleRepo::new(pool.clone()));
+        let evidence = Arc::new(daruma_storage::EvidenceRepo::new(pool.clone()));
+        let audit_findings = Arc::new(daruma_storage::AuditFindingRepo::new(pool.clone()));
         let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
         let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
         let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
@@ -224,9 +224,9 @@ impl TestAppBuilder {
             entity_versions,
             complexity_hints,
             workspace_graph,
-            mcp_downloads: taskagent_server::mcp_downloads::McpDownloads::default(),
-            rate_limiter: taskagent_server::middleware::rate_limit::RateLimiter::default(),
-            pairing: taskagent_discovery::PairingStore::new(),
+            mcp_downloads: daruma_server::mcp_downloads::McpDownloads::default(),
+            rate_limiter: daruma_server::middleware::rate_limit::RateLimiter::default(),
+            pairing: daruma_discovery::PairingStore::new(),
             tls_host: "localhost:8443".to_string(),
             tls_fingerprint: "0000000000000000000000000000000000000000000000000000000000000000"
                 .to_string(),

@@ -3,10 +3,10 @@
 // Cursor `/` slash-menu as user-invocable commands.
 //
 // We ship four:
-//   - taskagent-tasks.md  — read-only task list
-//   - taskagent-plan.md   — active plan checklist + progress bar
-//   - taskagent-next.md   — claim next ready task with briefing
-//   - taskagent-mine.md   — tasks currently claimed by this session
+//   - daruma-tasks.md  — read-only task list
+//   - daruma-plan.md   — active plan checklist + progress bar
+//   - daruma-next.md   — claim next ready task with briefing
+//   - daruma-mine.md   — tasks currently claimed by this session
 
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
@@ -17,10 +17,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOURCE_DIR = join(__dirname, "..", "cursor", "commands");
 
 export const COMMAND_FILES = [
-  "taskagent-tasks.md",
-  "taskagent-plan.md",
-  "taskagent-next.md",
-  "taskagent-mine.md",
+  "daruma-tasks.md",
+  "daruma-plan.md",
+  "daruma-next.md",
+  "daruma-mine.md",
 ];
 
 export async function installCommands({ projectDir, overwrite = false } = {}) {

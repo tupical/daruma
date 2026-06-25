@@ -1,6 +1,6 @@
 //! QR code generation for pairing URLs.
 //!
-//! Encodes a `taskagent://pair?…` URL into a PNG image returned as raw bytes,
+//! Encodes a `daruma://pair?…` URL into a PNG image returned as raw bytes,
 //! and optionally renders an ASCII-art representation for terminal display.
 
 use anyhow::{Context, Result};
@@ -45,14 +45,14 @@ mod tests {
 
     #[test]
     fn png_starts_with_png_magic() {
-        let url = "taskagent://pair?host=localhost%3A8443&token=abc&fpr=sha256%3Adef";
+        let url = "daruma://pair?host=localhost%3A8443&token=abc&fpr=sha256%3Adef";
         let png = encode_png(url).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
     #[test]
     fn ascii_is_non_empty() {
-        let url = "taskagent://pair?host=localhost%3A8443&token=abc&fpr=sha256%3Adef";
+        let url = "daruma://pair?host=localhost%3A8443&token=abc&fpr=sha256%3Adef";
         let art = encode_ascii(url).unwrap();
         assert!(!art.is_empty());
     }

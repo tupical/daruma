@@ -1,20 +1,20 @@
 //! MCP tool integration tests for document tools (PR1 §9).
 //!
 //! Covers the spec scenarios end-to-end through the MCP dispatcher:
-//!   1. `taskagent_project_create` auto-seeds two documents (Interview + HumanLog).
-//!   2. `taskagent_doc_append` → `taskagent_doc_get` reflects the appended chunk.
-//!   3. `taskagent_doc_create(kind=Interview)` allows duplicate kinds.
-//!   4. `taskagent_doc_list(project_id, kind=HumanLog)` returns exactly one.
-//!   5. `taskagent_doc_archive` hides the doc from `taskagent_doc_list`
+//!   1. `daruma_project_create` auto-seeds two documents (Interview + HumanLog).
+//!   2. `daruma_doc_append` → `daruma_doc_get` reflects the appended chunk.
+//!   3. `daruma_doc_create(kind=Interview)` allows duplicate kinds.
+//!   4. `daruma_doc_list(project_id, kind=HumanLog)` returns exactly one.
+//!   5. `daruma_doc_archive` hides the doc from `daruma_doc_list`
 //!      until `include_archived=true`.
 
 use serde_json::{json, Value};
-use taskagent_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
+use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 
 mod common;
 use common::{spawn_server, test_app};
 
-async fn spawn_taskagent_inline() -> (std::net::SocketAddr, String) {
+async fn spawn_daruma_inline() -> (std::net::SocketAddr, String) {
     let app = test_app().await;
     let addr = spawn_server(&app).await;
     (addr, app.admin_token)
@@ -50,7 +50,7 @@ async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> Value {
 async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
     let resp = call_tool(
         client,
-        "taskagent_project_create",
+        "daruma_project_create",
         json!({ "title": title }),
     )
     .await;
@@ -61,17 +61,17 @@ async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
 }
 
 /// Project creation auto-seeds two documents: one `interview` and one
-/// `human_log`. Both must be visible via `taskagent_doc_list`, share the
+/// `human_log`. Both must be visible via `daruma_doc_list`, share the
 /// project_id, and the HumanLog body must include the rendered "_Created"
 /// stamp added by the handler.
 #[tokio::test]
 async fn project_create_seeds_interview_and_human_log() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
 
-    let docs = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
     let arr = docs.as_array().expect("doc list must be array");
     assert_eq!(arr.len(), 2, "two default docs: {arr:?}");
 
@@ -105,15 +105,15 @@ async fn project_create_seeds_interview_and_human_log() {
     );
 }
 
-/// Appending a chunk via `taskagent_doc_append` must show up in
-/// `taskagent_doc_get` immediately.
+/// Appending a chunk via `daruma_doc_append` must show up in
+/// `daruma_doc_get` immediately.
 #[tokio::test]
 async fn doc_append_reflected_in_doc_get() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
-    let docs = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
     let interview_id = docs
         .as_array()
         .unwrap()
@@ -126,7 +126,7 @@ async fn doc_append_reflected_in_doc_get() {
     let appended_snippet = "appended-chunk-marker";
     let append_resp = call_tool(
         &client,
-        "taskagent_doc_append",
+        "daruma_doc_append",
         json!({ "document_id": interview_id, "content": appended_snippet }),
     )
     .await;
@@ -137,7 +137,7 @@ async fn doc_append_reflected_in_doc_get() {
 
     let got = call_tool(
         &client,
-        "taskagent_doc_get",
+        "daruma_doc_get",
         json!({ "document_id": interview_id }),
     )
     .await;
@@ -148,18 +148,18 @@ async fn doc_append_reflected_in_doc_get() {
     );
 }
 
-/// `taskagent_doc_create(kind=interview)` must succeed even when an Interview
+/// `daruma_doc_create(kind=interview)` must succeed even when an Interview
 /// document already exists — kind is not unique per project.
 #[tokio::test]
 async fn doc_create_allows_duplicate_kind() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
 
     let resp = call_tool(
         &client,
-        "taskagent_doc_create",
+        "daruma_doc_create",
         json!({
             "project_id": pid,
             "kind": "interview",
@@ -178,7 +178,7 @@ async fn doc_create_allows_duplicate_kind() {
 
     let docs = call_tool(
         &client,
-        "taskagent_doc_list",
+        "daruma_doc_list",
         json!({ "project_id": pid, "kind": "interview" }),
     )
     .await;
@@ -186,17 +186,17 @@ async fn doc_create_allows_duplicate_kind() {
     assert_eq!(arr.len(), 2, "two Interview docs now exist: {arr:?}");
 }
 
-/// `taskagent_doc_list` with `kind` filter must return only docs of that kind.
+/// `daruma_doc_list` with `kind` filter must return only docs of that kind.
 #[tokio::test]
 async fn doc_list_filters_by_kind() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
 
     let only_log = call_tool(
         &client,
-        "taskagent_doc_list",
+        "daruma_doc_list",
         json!({ "project_id": pid, "kind": "human_log" }),
     )
     .await;
@@ -205,15 +205,15 @@ async fn doc_list_filters_by_kind() {
     assert_eq!(arr[0]["kind"], "human_log");
 }
 
-/// `taskagent_doc_archive` must remove the doc from the default `doc_list`
+/// `daruma_doc_archive` must remove the doc from the default `doc_list`
 /// view, but the doc must reappear when `include_archived=true`.
 #[tokio::test]
 async fn doc_archive_hides_from_default_list() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
-    let docs = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
     let interview_id = docs
         .as_array()
         .unwrap()
@@ -225,7 +225,7 @@ async fn doc_archive_hides_from_default_list() {
 
     let archive_resp = call_tool(
         &client,
-        "taskagent_doc_archive",
+        "daruma_doc_archive",
         json!({ "document_id": interview_id }),
     )
     .await;
@@ -235,7 +235,7 @@ async fn doc_archive_hides_from_default_list() {
     );
 
     // Default list (include_archived=false) hides the doc.
-    let default_list = call_tool(&client, "taskagent_doc_list", json!({ "project_id": pid })).await;
+    let default_list = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
     let default_arr = default_list.as_array().expect("default list array");
     assert!(
         default_arr.iter().all(|d| d["id"] != interview_id),
@@ -250,7 +250,7 @@ async fn doc_archive_hides_from_default_list() {
     // include_archived=true brings it back.
     let with_archived = call_tool(
         &client,
-        "taskagent_doc_list",
+        "daruma_doc_list",
         json!({ "project_id": pid, "include_archived": true }),
     )
     .await;
@@ -271,6 +271,6 @@ async fn doc_archive_hides_from_default_list() {
 async fn dispatch_request(
     client: &ApiClient,
     req: JsonRpcRequest,
-) -> Option<taskagent_mcp::JsonRpcResponse> {
+) -> Option<daruma_mcp::JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }

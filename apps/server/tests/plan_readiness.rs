@@ -2,10 +2,10 @@
 
 use axum::http::StatusCode;
 use serde_json::json;
-use taskagent_core::{Command, CommandBus};
-use taskagent_domain::{Actor, NewPlan, NewTask, RelationKind, Status};
-use taskagent_events::Event;
-use taskagent_shared::{PlanId, ProjectId, TaskId};
+use daruma_core::{Command, CommandBus};
+use daruma_domain::{Actor, NewPlan, NewTask, RelationKind, Status};
+use daruma_events::Event;
+use daruma_shared::{PlanId, ProjectId, TaskId};
 
 mod common;
 use common::{json_get, json_post, test_app};
@@ -199,7 +199,7 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
         .dispatch(
             Command::SetPlanStatus {
                 plan_id,
-                status: taskagent_domain::PlanStatus::Active,
+                status: daruma_domain::PlanStatus::Active,
             },
             Actor::user(),
         )

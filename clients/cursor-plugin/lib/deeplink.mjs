@@ -64,7 +64,7 @@ export function mcpResourceUrl(serverUrl) {
   return `${base}${MCP_RESOURCE_PATH}`;
 }
 
-export function defaultTaskagentHttpConfig({ apiUrl, remote, token = null, workspaceId = null } = {}) {
+export function defaultDarumaHttpConfig({ apiUrl, remote, token = null, workspaceId = null } = {}) {
   const serverUrl = apiUrl ?? urlForApiPreset(remote) ?? DEFAULT_API_URL;
   const entry = {
     type: "http",
@@ -72,18 +72,18 @@ export function defaultTaskagentHttpConfig({ apiUrl, remote, token = null, works
   };
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (workspaceId) headers["X-TaskAgent-Workspace-Id"] = workspaceId;
+  if (workspaceId) headers["X-Daruma-Workspace-Id"] = workspaceId;
   if (Object.keys(headers).length > 0) entry.headers = headers;
   return entry;
 }
 
 /**
- * Canonical mcpServers entry for the taskagent stdio shim.
- * Env uses `TASKAGENT_API_URL` (read by taskagent-mcp). After remote pair,
+ * Canonical mcpServers entry for the daruma stdio shim.
+ * Env uses `DARUMA_API_URL` (read by daruma-mcp). After remote pair,
  * `resolveMcpEnvFromCredentials` fills URL, token, and workspace id.
  */
-export async function defaultTaskagentStdioConfig({
-  command = "taskagent-mcp",
+export async function defaultDarumaStdioConfig({
+  command = "daruma-mcp",
   args = [],
   apiUrl,
   token = null,
@@ -98,8 +98,8 @@ export async function defaultTaskagentStdioConfig({
     remote,
   });
   const env = { ...credEnv, ...extraEnv };
-  if (!env.TASKAGENT_API_URL) {
-    env.TASKAGENT_API_URL =
+  if (!env.DARUMA_API_URL) {
+    env.DARUMA_API_URL =
       urlForApiPreset(remote) ?? SELFHOST_URL_DEFAULT;
   }
   const resolved = await resolveMcpCommand({ command });
@@ -109,19 +109,19 @@ export async function defaultTaskagentStdioConfig({
   return entry;
 }
 
-export async function defaultTaskagentConfig(opts = {}) {
+export async function defaultDarumaConfig(opts = {}) {
   const transport = opts.transport ?? (opts.command ? "stdio" : "http");
   if (transport === "http" || transport === "remote" || transport === "remote-oauth") {
-    return defaultTaskagentHttpConfig(opts);
+    return defaultDarumaHttpConfig(opts);
   }
   if (transport !== "stdio") {
     throw new RangeError(`unknown Cursor MCP transport: ${transport}`);
   }
-  return defaultTaskagentStdioConfig(opts);
+  return defaultDarumaStdioConfig(opts);
 }
 
 /** Sync variant when credentials are not needed (tests / explicit env only). */
-export function defaultTaskagentConfigSync({
+export function defaultDarumaConfigSync({
   command,
   args = [],
   apiUrl = SELFHOST_URL_DEFAULT,
@@ -131,12 +131,12 @@ export function defaultTaskagentConfigSync({
 } = {}) {
   const resolvedTransport = transport ?? (command ? "stdio" : "http");
   if (resolvedTransport === "http" || resolvedTransport === "remote" || resolvedTransport === "remote-oauth") {
-    return defaultTaskagentHttpConfig({ apiUrl, token, workspaceId });
+    return defaultDarumaHttpConfig({ apiUrl, token, workspaceId });
   }
-  const resolvedCommand = command ?? "taskagent-mcp";
-  const env = { TASKAGENT_API_URL: apiUrl };
-  if (token) env.TASKAGENT_TOKEN = token;
-  if (workspaceId) env.TASKAGENT_WORKSPACE_ID = workspaceId;
+  const resolvedCommand = command ?? "daruma-mcp";
+  const env = { DARUMA_API_URL: apiUrl };
+  if (token) env.DARUMA_TOKEN = token;
+  if (workspaceId) env.DARUMA_WORKSPACE_ID = workspaceId;
   const entry = { type: "stdio", command: resolvedCommand };
   if (args.length > 0) entry.args = args;
   entry.env = env;
@@ -145,9 +145,9 @@ export function defaultTaskagentConfigSync({
 
 // Convenience: returns both URLs + the underlying entry, ready to print or
 // embed in a marketplace manifest.
-export async function buildTaskagentInstallLinks(opts = {}) {
-  const name = opts.name ?? "taskagent";
-  const config = await defaultTaskagentConfig(opts);
+export async function buildDarumaInstallLinks(opts = {}) {
+  const name = opts.name ?? "daruma";
+  const config = await defaultDarumaConfig(opts);
   return {
     name,
     config,

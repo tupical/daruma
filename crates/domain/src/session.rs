@@ -2,7 +2,7 @@
 //! including its current plan steps.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{AgentId, AgentSessionId, SessionArtifactId, Timestamp};
+use daruma_shared::{AgentId, AgentSessionId, SessionArtifactId, Timestamp};
 
 /// Status of a single plan step within an agent session.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -60,7 +60,7 @@ pub struct SessionArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::{time, AgentId, AgentSessionId};
+    use daruma_shared::{time, AgentId, AgentSessionId};
 
     fn make_session() -> AgentSession {
         AgentSession {

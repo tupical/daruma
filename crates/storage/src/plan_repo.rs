@@ -3,9 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, PlanId, ProjectId, Result, TaskId, Timestamp};
+use daruma_domain::{Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, PlanId, ProjectId, Result, TaskId, Timestamp};
 
 /// Read/write access to the `plans` and `plan_tasks` projection tables.
 pub struct PlanRepo {
@@ -157,7 +157,7 @@ impl PlanRepo {
     pub async fn update_status(&self, plan_id: PlanId, status: PlanStatus) -> Result<()> {
         sqlx::query("UPDATE plans SET status = ?, updated_at = ? WHERE id = ?")
             .bind(plan_status_str(status))
-            .bind(taskagent_shared::time::now().to_rfc3339())
+            .bind(daruma_shared::time::now().to_rfc3339())
             .bind(plan_id.to_string())
             .execute(&self.pool)
             .await
@@ -579,9 +579,9 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{time, PlanId, ProjectId, TaskId};
+    use daruma_domain::Actor;
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{time, PlanId, ProjectId, TaskId};
 
     async fn make_repo() -> (Db, PlanRepo) {
         let db = Db::memory().await.unwrap();

@@ -7,7 +7,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Compute the lowercase hex HMAC-SHA256 of `body` keyed by `secret`.
 ///
-/// This is the value placed in the `X-Taskagent-Signature` header. The
+/// This is the value placed in the `X-Daruma-Signature` header. The
 /// receiver re-runs the same hash over the raw request body and compares
 /// in constant time.
 pub fn sign_body_hex(secret: &str, body: &[u8]) -> String {

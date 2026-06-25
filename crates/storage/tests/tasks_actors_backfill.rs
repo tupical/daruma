@@ -11,10 +11,10 @@
 
 use std::sync::Arc;
 
-use taskagent_domain::{Actor, NewTask};
-use taskagent_events::{Event, EventEnvelope, EventStore};
-use taskagent_shared::{AgentId, TaskId};
-use taskagent_storage::{Db, SqliteEventStore, TaskRepo};
+use daruma_domain::{Actor, NewTask};
+use daruma_events::{Event, EventEnvelope, EventStore};
+use daruma_shared::{AgentId, TaskId};
+use daruma_storage::{Db, SqliteEventStore, TaskRepo};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ async fn apply(store: &Arc<dyn EventStore>, tasks: &Arc<TaskRepo>, envelopes: Ve
 /// Insert a task row directly into SQLite without actor columns.
 /// This simulates a row that existed before `0010_tasks_actors.sql` was applied.
 async fn insert_legacy_row(pool: &sqlx::SqlitePool, task_id: TaskId) {
-    let now = taskagent_shared::time::now().to_rfc3339();
+    let now = daruma_shared::time::now().to_rfc3339();
     sqlx::query(
         "INSERT INTO tasks \
          (id, title, status, priority, description, created_at, updated_at) \
@@ -143,7 +143,7 @@ async fn completing_task_populates_completed_by() {
     .await;
 
     // Complete the task with a different actor.
-    let now = taskagent_shared::time::now();
+    let now = daruma_shared::time::now();
     apply(
         &store,
         &tasks,

@@ -6,7 +6,7 @@ use sqlx::{
     SqlitePool,
 };
 use std::str::FromStr;
-use taskagent_shared::{CoreError, Result};
+use daruma_shared::{CoreError, Result};
 
 // ── Performance notes ─────────────────────────────────────────────────────────
 //

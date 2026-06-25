@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use taskagent_core::{detect_parent_cycle, MAX_PARENT_DEPTH};
-use taskagent_domain::{Plan, PlanStatus, PlanTask};
-use taskagent_events::EventEnvelope;
-use taskagent_shared::{time, CoreError, PlanId, ProjectId, Result, TaskId};
+use daruma_core::{detect_parent_cycle, MAX_PARENT_DEPTH};
+use daruma_domain::{Plan, PlanStatus, PlanTask};
+use daruma_events::EventEnvelope;
+use daruma_shared::{time, CoreError, PlanId, ProjectId, Result, TaskId};
 
 // ── In-memory stub ────────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ impl MemPlanRepo {
 }
 
 #[async_trait]
-impl taskagent_core::repos::PlanRepository for MemPlanRepo {
+impl daruma_core::repos::PlanRepository for MemPlanRepo {
     async fn get(&self, id: PlanId) -> Result<Option<Plan>> {
         Ok(self.plans.lock().unwrap().get(&id).cloned())
     }
@@ -54,7 +54,7 @@ fn plan(id: PlanId, parent: Option<PlanId>) -> Plan {
         goal: String::new(),
         success_criteria: vec![],
         status: PlanStatus::Active,
-        owner: taskagent_domain::Actor::user(),
+        owner: daruma_domain::Actor::user(),
         created_at: now,
         updated_at: now,
         archived_at: None,

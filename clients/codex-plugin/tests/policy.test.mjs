@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { installPolicy, removePolicy } from "../lib/policy.mjs";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-codex-policy-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-codex-policy-test-"));
   try {
     return await fn(dir);
   } finally {
@@ -16,8 +16,8 @@ async function withTempDir(fn) {
   }
 }
 
-const BEGIN = "<!-- taskagent-codex:policy:begin -->";
-const END = "<!-- taskagent-codex:policy:end -->";
+const BEGIN = "<!-- daruma-codex:policy:begin -->";
+const END = "<!-- daruma-codex:policy:end -->";
 
 test("installPolicy creates AGENTS.md with policy block when missing", async () => {
   await withTempDir(async (dir) => {
@@ -26,14 +26,14 @@ test("installPolicy creates AGENTS.md with policy block when missing", async () 
     const body = await fs.readFile(join(dir, "AGENTS.md"), "utf8");
     assert.ok(body.includes(BEGIN));
     assert.ok(body.includes(END));
-    assert.match(body, /taskagent_plan_create/);
+    assert.match(body, /daruma_plan_create/);
     assert.match(body, /status=all/);
     assert.match(body, /трекер/);
-    assert.match(body, /Verify real taskagent state/);
+    assert.match(body, /Verify real daruma state/);
     assert.match(body, /checklist/);
     // Token-economy guard: list-first, no "Prefer search" default.
     assert.match(body, /Go straight to the goal/);
-    assert.doesNotMatch(body, /Prefer `taskagent_search`/);
+    assert.doesNotMatch(body, /Prefer `daruma_search`/);
   });
 });
 

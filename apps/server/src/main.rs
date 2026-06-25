@@ -1,25 +1,25 @@
-//! `taskagent-server` entry-point — wires storage, core, sync, AI and Axum.
+//! `daruma-server` entry-point — wires storage, core, sync, AI and Axum.
 
 use std::sync::Arc;
 
-use taskagent_ai::{AiConfig, OpenAiClient};
-use taskagent_auth::{generate, NewTokenSpec, TokenKind, TokenScope, TokenStore};
-use taskagent_core::{search::FtsSearchProvider, CommandBus, CommandHandler};
-use taskagent_events::{EventBus, EventStore};
-use taskagent_shared::AgentId;
-use taskagent_storage::{
+use daruma_ai::{AiConfig, OpenAiClient};
+use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope, TokenStore};
+use daruma_core::{search::FtsSearchProvider, CommandBus, CommandHandler};
+use daruma_events::{EventBus, EventStore};
+use daruma_shared::AgentId;
+use daruma_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, Db, DocumentRepo,
     EntityVersionRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo,
     RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo,
     TenantQuotaRepo, TokenRepo, WebhookEnrichment, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
-use taskagent_sync::Hub;
-use taskagent_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};
+use daruma_sync::Hub;
+use daruma_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};
 use tracing_subscriber::EnvFilter;
 
-use taskagent_discovery::{CertBundle, MdnsAdvertiser, PairingStore};
+use daruma_discovery::{CertBundle, MdnsAdvertiser, PairingStore};
 
-use taskagent_server::{
+use daruma_server::{
     cors, mcp_downloads::McpDownloads, middleware::rate_limit::RateLimiter, routes,
     state::AppState, workspace_graph,
 };
@@ -37,10 +37,10 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     // ── Data directory ────────────────────────────────────────────────────────
-    let data_path = taskagent_mcp::paths::data_dir();
+    let data_path = daruma_mcp::paths::data_dir();
     tokio::fs::create_dir_all(&data_path).await?;
 
-    let db_path = data_path.join("taskagent.sqlite");
+    let db_path = data_path.join("daruma.sqlite");
     let db_str = db_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("DB path contains non-UTF-8 characters"))?;
@@ -87,10 +87,10 @@ async fn main() -> anyhow::Result<()> {
     let work_leases = Arc::new(WorkLeaseRepo::new(pool.clone()));
     let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
     let documents = Arc::new(DocumentRepo::new(pool.clone()));
-    let project_settings = Arc::new(taskagent_storage::ProjectSettingsRepo::new(pool.clone()));
-    let work_units = Arc::new(taskagent_storage::WorkUnitRepo::new(pool.clone()));
-    let rules = Arc::new(taskagent_storage::RuleRepo::new(pool.clone()));
-    let evidence = Arc::new(taskagent_storage::EvidenceRepo::new(pool.clone()));
+    let project_settings = Arc::new(daruma_storage::ProjectSettingsRepo::new(pool.clone()));
+    let work_units = Arc::new(daruma_storage::WorkUnitRepo::new(pool.clone()));
+    let rules = Arc::new(daruma_storage::RuleRepo::new(pool.clone()));
+    let evidence = Arc::new(daruma_storage::EvidenceRepo::new(pool.clone()));
     let audit_findings = Arc::new(AuditFindingRepo::new(pool.clone()));
     let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
     let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
         .with_evidence(evidence.clone())
         // Rule engine reads through the same projections (zero-cost when empty).
         // Evidence satisfies `required` requirements (spec §1.3).
-        .with_lifecycle_gate(Arc::new(taskagent_core::RuleEngineGate::with_evidence(
+        .with_lifecycle_gate(Arc::new(daruma_core::RuleEngineGate::with_evidence(
             rules.clone(),
             evidence.clone(),
         )))
@@ -169,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Webhook dispatcher ────────────────────────────────────────────────────
     let http = reqwest::Client::builder()
-        .user_agent(format!("taskagent/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("daruma/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| anyhow::anyhow!("reqwest client: {e}"))?;
     let enrichment: Arc<dyn EnrichmentSource> =
@@ -194,13 +194,13 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── TLS certificate (self-signed, persisted) ──────────────────────────────
-    let hostname = std::env::var("TASKAGENT_HOSTNAME").unwrap_or_else(|_| hostname_or_localhost());
+    let hostname = std::env::var("DARUMA_HOSTNAME").unwrap_or_else(|_| hostname_or_localhost());
     let tls_bundle = CertBundle::load_or_generate(&data_path, &hostname)
         .await
         .map_err(|e| anyhow::anyhow!("TLS init failed: {e}"))?;
     let tls_fingerprint = tls_bundle.fingerprint.clone();
 
-    let tls_port: u16 = std::env::var("TASKAGENT_TLS_PORT")
+    let tls_port: u16 = std::env::var("DARUMA_TLS_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8443);
@@ -210,8 +210,8 @@ async fn main() -> anyhow::Result<()> {
     let pairing = PairingStore::new();
 
     // ── mDNS advertisement ────────────────────────────────────────────────────
-    let _mdns = if std::env::var("TASKAGENT_MDNS_DISABLE").is_ok() {
-        tracing::info!("mDNS advertisement disabled via TASKAGENT_MDNS_DISABLE");
+    let _mdns = if std::env::var("DARUMA_MDNS_DISABLE").is_ok() {
+        tracing::info!("mDNS advertisement disabled via DARUMA_MDNS_DISABLE");
         None
     } else {
         match MdnsAdvertiser::start(
@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
         ) {
             Ok(advertiser) => {
                 tracing::info!(
-                    service = "_taskagent._tcp.local.",
+                    service = "_daruma._tcp.local.",
                     port = tls_port,
                     fingerprint = %tls_fingerprint,
                     "mDNS advertisement started"
@@ -252,10 +252,10 @@ async fn main() -> anyhow::Result<()> {
     // ── App state ─────────────────────────────────────────────────────────────
     let mcp_downloads = McpDownloads::discover();
     if mcp_downloads.linux.is_some() {
-        tracing::info!("taskagent-mcp linux download available");
+        tracing::info!("daruma-mcp linux download available");
     }
     if mcp_downloads.windows.is_some() {
-        tracing::info!("taskagent-mcp windows download available");
+        tracing::info!("daruma-mcp windows download available");
     }
 
     let state = AppState {
@@ -311,8 +311,8 @@ async fn main() -> anyhow::Result<()> {
                         for (agent_id, task_id) in released {
                             let _ = bus_bg
                                 .dispatch(
-                                    taskagent_core::Command::ReleaseClaim { agent_id, task_id },
-                                    taskagent_domain::Actor::user(),
+                                    daruma_core::Command::ReleaseClaim { agent_id, task_id },
+                                    daruma_domain::Actor::user(),
                                 )
                                 .await;
                         }
@@ -324,8 +324,8 @@ async fn main() -> anyhow::Result<()> {
                         for (agent_id, task_id) in released {
                             let _ = bus_bg
                                 .dispatch(
-                                    taskagent_core::Command::ReleaseFiles { agent_id, task_id },
-                                    taskagent_domain::Actor::user(),
+                                    daruma_core::Command::ReleaseFiles { agent_id, task_id },
+                                    daruma_domain::Actor::user(),
                                 )
                                 .await;
                         }
@@ -355,11 +355,11 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Background: §3.7.4 liveness watchdog (every 10 s) ─────────────────────
     {
-        let liveness_ack: u64 = std::env::var("TASKAGENT_LIVENESS_ACK_SECS")
+        let liveness_ack: u64 = std::env::var("DARUMA_LIVENESS_ACK_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(30);
-        let liveness_idle: u64 = std::env::var("TASKAGENT_LIVENESS_IDLE_SECS")
+        let liveness_idle: u64 = std::env::var("DARUMA_LIVENESS_IDLE_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1800);
@@ -380,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Due-date watchdog (task.due webhooks) ────────────────────────────────
     {
-        let due_tick_secs: u64 = std::env::var("TASKAGENT_DUE_TICK_SECS")
+        let due_tick_secs: u64 = std::env::var("DARUMA_DUE_TICK_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
@@ -453,7 +453,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Plain HTTP listener on :8080 (existing API clients, not for pairing) ─
-    let port: u16 = std::env::var("TASKAGENT_PORT")
+    let port: u16 = std::env::var("DARUMA_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
@@ -533,7 +533,7 @@ async fn bootstrap_admin_token(
     }
 
     eprintln!("┌────────────────────────────────────────────────────────────────────┐");
-    eprintln!("│ TASKAGENT BOOTSTRAP ADMIN TOKEN                                    │");
+    eprintln!("│ DARUMA BOOTSTRAP ADMIN TOKEN                                    │");
     eprintln!("│ ------------------------------------------------------------------ │");
     eprintln!("│ This token is shown only once. Save it now.                        │");
     eprintln!("│ Also written to: {}", bootstrap_path.display());

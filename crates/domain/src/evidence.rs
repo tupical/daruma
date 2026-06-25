@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::RuleScope;
-use taskagent_shared::{
+use daruma_shared::{
     AgentId, ArtifactId, EvidenceId, PlanId, ProjectId, RuleId, RunId, TaskId, Timestamp,
 };
 
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn new_evidence_materialises_with_actor_and_time() {
-        let now = taskagent_shared::time::now();
+        let now = daruma_shared::time::now();
         let ev = NewEvidence {
             id: None,
             kind: EvidenceKind::CompletionNote,

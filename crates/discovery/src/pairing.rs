@@ -39,10 +39,10 @@ pub struct PairingTicket {
 }
 
 impl PairingTicket {
-    /// The `taskagent://pair?…` deep-link URL suitable for a QR code.
+    /// The `daruma://pair?…` deep-link URL suitable for a QR code.
     pub fn pairing_url(&self) -> String {
         format!(
-            "taskagent://pair?host={}&token={}&fpr={}",
+            "daruma://pair?host={}&token={}&fpr={}",
             urlencoding_encode(&self.host),
             urlencoding_encode(&self.token),
             urlencoding_encode(&self.tls_fingerprint),
@@ -258,7 +258,7 @@ mod tests {
             .issue("192.168.1.5:8443".into(), "sha256:deadbeef".into())
             .await;
         let url = ticket.pairing_url();
-        assert!(url.starts_with("taskagent://pair?"));
+        assert!(url.starts_with("daruma://pair?"));
         assert!(url.contains("host="));
         assert!(url.contains("token="));
         assert!(url.contains("fpr="));

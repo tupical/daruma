@@ -14,10 +14,10 @@ use std::time::Duration;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use taskagent_domain::{Actor, NewTask, Plan, PlanStatus, Status};
-use taskagent_events::{Event, EventBus, EventEnvelope};
-use taskagent_shared::{AgentId, PlanId, ProjectId, TaskId};
-use taskagent_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
+use daruma_domain::{Actor, NewTask, Plan, PlanStatus, Status};
+use daruma_events::{Event, EventBus, EventEnvelope};
+use daruma_shared::{AgentId, PlanId, ProjectId, TaskId};
+use daruma_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, Message},
@@ -65,14 +65,14 @@ async fn connect_ws(addr: SocketAddr, token: &str) -> (WsSink, WsStream) {
     let mut req = url.into_client_request().expect("WS request");
     req.headers_mut().insert(
         "Sec-WebSocket-Protocol",
-        format!("taskagent.v1, bearer.{token}").parse().unwrap(),
+        format!("daruma.v1, bearer.{token}").parse().unwrap(),
     );
     let (stream, resp) = connect_async(req).await.expect("WS connect");
     assert_eq!(
         resp.headers()
             .get("sec-websocket-protocol")
             .and_then(|v| v.to_str().ok()),
-        Some("taskagent.v1")
+        Some("daruma.v1")
     );
     stream.split()
 }
@@ -151,7 +151,7 @@ fn task_status_changed_env(task_id: TaskId, seq: u64, from: Status, to: Status) 
 }
 
 fn task_completed_env(task_id: TaskId, seq: u64) -> EventEnvelope {
-    use taskagent_shared::time;
+    use daruma_shared::time;
     EventEnvelope {
         seq,
         ..EventEnvelope::new(
@@ -183,7 +183,7 @@ async fn seed_plan_with_task(
     project_id: ProjectId,
     task_id: TaskId,
 ) -> PlanId {
-    use taskagent_shared::time;
+    use daruma_shared::time;
     let now = time::now();
     let plan = Plan {
         id: PlanId::new(),

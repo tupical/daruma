@@ -4,7 +4,7 @@
 //! docs/adr/work-units-and-artifacts.md, P1).
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{normalize_lease_path, AgentId, ProjectId, TaskId, Timestamp, WorkLeaseId};
+use daruma_shared::{normalize_lease_path, AgentId, ProjectId, TaskId, Timestamp, WorkLeaseId};
 
 /// How a lease holder intends to use the resource. Only `Exclusive`
 /// conflicts: it blocks (and is blocked by) every non-`Intent` lease.
@@ -80,7 +80,7 @@ pub fn canonical_target_uri(raw: &str) -> String {
 /// exact match. Different schemes never overlap.
 pub fn targets_overlap(a: &str, b: &str) -> bool {
     match (a.strip_prefix("file://"), b.strip_prefix("file://")) {
-        (Some(pa), Some(pb)) => taskagent_shared::paths_overlap(pa, pb),
+        (Some(pa), Some(pb)) => daruma_shared::paths_overlap(pa, pb),
         (None, None) => a == b,
         _ => false,
     }

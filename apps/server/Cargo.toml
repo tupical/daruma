@@ -1,34 +1,34 @@
 [package]
-name = "taskagent-server"
+name = "daruma-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [lib]
-name = "taskagent_server"
+name = "daruma_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "taskagent-server"
+name = "daruma-server"
 path = "src/main.rs"
 
 [dependencies]
-taskagent-shared     = { workspace = true }
-taskagent-domain     = { workspace = true }
-taskagent-discovery  = { workspace = true }
-taskagent-events     = { workspace = true, features = ["runtime"] }
+daruma-shared     = { workspace = true }
+daruma-domain     = { workspace = true }
+daruma-discovery  = { workspace = true }
+daruma-events     = { workspace = true, features = ["runtime"] }
 tokio-rustls         = { workspace = true }
 hyper                = { workspace = true }
 hyper-util           = { workspace = true }
-taskagent-storage = { workspace = true }
-taskagent-core    = { workspace = true }
-taskagent-sync    = { workspace = true }
-taskagent-ai      = { workspace = true }
-taskagent-auth    = { workspace = true }
-taskagent-webhooks = { workspace = true }
-taskagent-api-dto = { workspace = true }
-taskagent-mcp     = { workspace = true }
+daruma-storage = { workspace = true }
+daruma-core    = { workspace = true }
+daruma-sync    = { workspace = true }
+daruma-ai      = { workspace = true }
+daruma-auth    = { workspace = true }
+daruma-webhooks = { workspace = true }
+daruma-api-dto = { workspace = true }
+daruma-mcp     = { workspace = true }
 reqwest      = { workspace = true }
 tokio       = { workspace = true }
 axum        = { workspace = true }

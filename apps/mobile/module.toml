@@ -1,5 +1,5 @@
 [module]
-name         = "taskagent-mobile"
+name         = "daruma-mobile"
 kind         = "client"
 status       = "wip"
 owner        = "clients"

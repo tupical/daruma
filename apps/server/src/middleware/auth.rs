@@ -1,7 +1,7 @@
 //! Bearer-token authentication middleware.
 //!
 //! Parses `Authorization: Bearer <token>`, looks the token up via
-//! [`taskagent_auth::TokenStore`], inserts an [`AuthContext`] into the
+//! [`daruma_auth::TokenStore`], inserts an [`AuthContext`] into the
 //! request extensions on success, returns a structured 401 on failure.
 //!
 //! The middleware is **not** applied to `/v1/healthz` or `/v1/ws`
@@ -32,7 +32,7 @@ use axum::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use taskagent_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
+use daruma_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
 
 /// How long a successfully verified bearer stays in the in-memory cache.
 const CACHE_TTL: Duration = Duration::from_secs(30);

@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{QueryBuilder, Row, SqlitePool};
-use taskagent_domain::Actor;
-use taskagent_events::{Event, EventEnvelope, EventStore};
-use taskagent_shared::{CoreError, DeviceId, EventId, Result};
+use daruma_domain::Actor;
+use daruma_events::{Event, EventEnvelope, EventStore};
+use daruma_shared::{CoreError, DeviceId, EventId, Result};
 
 /// SQLite-backed event log.
 ///
@@ -260,9 +260,9 @@ fn parse_row(row: &sqlx::sqlite::SqliteRow) -> Result<EventEnvelope> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, NewTask};
-    use taskagent_events::Event;
-    use taskagent_shared::DeviceId;
+    use daruma_domain::{Actor, NewTask};
+    use daruma_events::Event;
+    use daruma_shared::DeviceId;
 
     #[tokio::test]
     async fn round_trip_append_load_since() {

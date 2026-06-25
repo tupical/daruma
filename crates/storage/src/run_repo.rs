@@ -3,9 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Run, RunStatus};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{AgentId, CoreError, PlanId, Result, RunId, Timestamp};
+use daruma_domain::{Run, RunStatus};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{AgentId, CoreError, PlanId, Result, RunId, Timestamp};
 
 /// Read/write access to the `runs` projection table.
 pub struct RunRepo {
@@ -171,7 +171,7 @@ impl RunRepo {
     pub async fn current_step_task(
         &self,
         _run_id: RunId,
-    ) -> Result<Option<taskagent_shared::TaskId>> {
+    ) -> Result<Option<daruma_shared::TaskId>> {
         Ok(None)
     }
 
@@ -186,7 +186,7 @@ impl RunRepo {
     pub async fn start_step(
         &self,
         _run_id: RunId,
-        _task_id: taskagent_shared::TaskId,
+        _task_id: daruma_shared::TaskId,
         _at: Timestamp,
     ) -> Result<()> {
         Ok(())
@@ -196,8 +196,8 @@ impl RunRepo {
     pub async fn finish_step(
         &self,
         _run_id: RunId,
-        _task_id: taskagent_shared::TaskId,
-        _outcome: taskagent_domain::RunOutcome,
+        _task_id: daruma_shared::TaskId,
+        _outcome: daruma_domain::RunOutcome,
         _at: Timestamp,
     ) -> Result<()> {
         Ok(())
@@ -420,9 +420,9 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{time, AgentId, PlanId, RunId};
+    use daruma_domain::Actor;
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{time, AgentId, PlanId, RunId};
 
     async fn make_repo() -> (Db, RunRepo) {
         let db = Db::memory().await.unwrap();

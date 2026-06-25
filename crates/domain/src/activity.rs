@@ -1,7 +1,7 @@
 //! Activity projection entity — denormalised user-facing history of a task.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{ActivityId, EventId, ProjectId, TaskId, Timestamp};
+use daruma_shared::{ActivityId, EventId, ProjectId, TaskId, Timestamp};
 
 use crate::agent::Actor;
 
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn activity_roundtrip_serde() {
-        use taskagent_shared::time;
+        use daruma_shared::time;
 
         let activity = Activity {
             id: ActivityId::new(),

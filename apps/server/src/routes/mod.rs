@@ -6,7 +6,7 @@
 //! |----------|------------------------------------------------------------------|---------------|
 //! | (root)   | `/healthz`                                                       | none          |
 //! | `/v1`    | `/healthz`, `/ws`                                                | none / subproto |
-//! | `/v1`    | `/tokens`, `/downloads/taskagent/{platform}`, `/ai/analyze-complexity`, …   | bearer        |
+//! | `/v1`    | `/tokens`, `/downloads/daruma/{platform}`, `/ai/analyze-complexity`, …   | bearer        |
 //! | (legacy) | same paths without `/v1` prefix                                  | bearer        |
 //! |          | (also carry `Deprecation: true` + `Sunset` headers)              |               |
 //!
@@ -32,34 +32,34 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
-use taskagent_auth::{
+use daruma_auth::{
     generate, AuthContext, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind,
     TokenScope, TokenStore,
 };
-use taskagent_core::{
+use daruma_core::{
     plan_concurrency::NextTaskResolver,
     plan_readiness,
     repos::{AgentClaimRepository, ExternalRefRepository, PlanRepository},
     search::{FtsSearchProvider, SearchProvider, SearchQuery as CoreSearchQuery, SearchScope},
     Command, CommandEnvelope,
 };
-use taskagent_domain::{
+use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, CommentKind, CommentPatch, Document, DocumentKind,
     NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind,
     SignalKind, Status, Task, TaskPatch, TriageState, Verb,
 };
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_mcp::{
+use daruma_events::{Event, EventEnvelope};
+use daruma_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
-use taskagent_shared::{
+use daruma_shared::{
     AgentId, AgentSessionId, CommentId, CoreError, DocumentId, EvidenceId, PlanId, ProjectId,
     RuleId, RunId, TaskId, TokenId, WebhookId,
 };
-use taskagent_storage::{ClaimOutcome, ReserveOutcome};
-use taskagent_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
+use daruma_storage::{ClaimOutcome, ReserveOutcome};
+use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
 
-use taskagent_api_dto::{MutationResponse, MutationWarning};
+use daruma_api_dto::{MutationResponse, MutationWarning};
 
 use crate::{
     error::ApiError,
@@ -164,13 +164,13 @@ pub fn router(state: AppState) -> Router {
         .merge(authed_routes(state.clone(), auth_layer))
         .layer(deprecation_layer);
 
-    // The browser UI was extracted to the standalone `taskagent-web` repo
+    // The browser UI was extracted to the standalone `daruma-web` repo
     // (Leptos CSR → WASM). This server is a bare API + MCP backend and no
     // longer bundles/serves static web assets — deploy the UI separately and
     // point it at `/v1/*` + `/v1/ws`.
     let shell = Router::new()
         .route(
-            "/.well-known/taskagent-shell.json",
+            "/.well-known/daruma-shell.json",
             get(shell::host_shell_config),
         )
         .route("/workspaces", get(shell::workspace_switcher))
@@ -289,10 +289,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         // Pairing: issue a QR ticket (requires TokenWrite capability).
         .route("/devices/pair/ticket", get(pairing::issue_pairing_ticket))
         .route(
-            "/downloads/taskagent/{platform}",
-            get(downloads::download_taskagent_mcp),
+            "/downloads/daruma/{platform}",
+            get(downloads::download_daruma_mcp),
         )
-        .route("/downloads/taskagent", get(downloads::mcp_download_info))
+        .route("/downloads/daruma", get(downloads::mcp_download_info))
         .route("/agents/{agent_id}/inbox", get(agent_inbox))
         .route("/agents/{agent_id}/inbox/ack", post(agent_inbox_ack))
         .route("/webhooks", post(create_webhook).get(list_webhooks))
@@ -398,7 +398,7 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-        "core_version": taskagent_core::VERSION,
+        "core_version": daruma_core::VERSION,
         "api_version": API_VERSION,
     }))
 }
@@ -536,8 +536,8 @@ fn parse_search_project(raw: Option<&str>) -> Result<Option<ProjectId>, ApiError
 /// The shortcut `active` expands to all non-terminal statuses.
 fn parse_status_filter(
     raw: Option<&str>,
-) -> Result<Option<Vec<taskagent_domain::Status>>, ApiError> {
-    use taskagent_domain::Status;
+) -> Result<Option<Vec<daruma_domain::Status>>, ApiError> {
+    use daruma_domain::Status;
     let Some(raw) = raw else {
         return Err(ApiError::from(CoreError::validation(
             "status is required (e.g. status=active, status=todo,in_progress, or status=all)",
@@ -995,7 +995,7 @@ async fn create_logical_workspace(
         .as_deref()
         .map(validate_workspace_id)
         .transpose()?
-        .unwrap_or_else(|| taskagent_domain::slugify_title(&name));
+        .unwrap_or_else(|| daruma_domain::slugify_title(&name));
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut tx = state
@@ -1089,7 +1089,7 @@ async fn move_project_to_workspace(
 
 #[derive(Deserialize)]
 struct CreateWorkUnitBody {
-    work_unit: taskagent_domain::NewWorkUnit,
+    work_unit: daruma_domain::NewWorkUnit,
 }
 
 /// `POST /v1/work-units` — create a work unit under a task (lazy
@@ -1113,7 +1113,7 @@ async fn create_work_unit(
         .await
         .map_err(ApiError::from)?;
     let unit = envs.iter().find_map(|e| match &e.payload {
-        taskagent_events::Event::WorkUnitCreated { work_unit } => Some(work_unit.clone()),
+        daruma_events::Event::WorkUnitCreated { work_unit } => Some(work_unit.clone()),
         _ => None,
     });
     let last = envs.last();
@@ -1200,7 +1200,7 @@ async fn work_unit_drain_next(
                 unit.task_id,
                 project_id,
                 unit.artifact_refs.clone(),
-                taskagent_domain::LeaseMode::Exclusive,
+                daruma_domain::LeaseMode::Exclusive,
                 ttl,
             )
             .await
@@ -1237,7 +1237,7 @@ async fn work_unit_drain_next(
     let _ = handler
         .emit_system_event_as(
             actor_from(&auth, None),
-            taskagent_events::Event::WorkUnitClaimed {
+            daruma_events::Event::WorkUnitClaimed {
                 work_unit_id: unit.id,
                 agent_id,
                 expires_at: chrono::Utc::now() + ttl,
@@ -1319,8 +1319,8 @@ async fn release_work_unit(
     }))
 }
 
-fn parse_work_unit_id(id_str: &str) -> Result<taskagent_shared::WorkUnitId, ApiError> {
-    id_str.parse::<taskagent_shared::WorkUnitId>().map_err(|_| {
+fn parse_work_unit_id(id_str: &str) -> Result<daruma_shared::WorkUnitId, ApiError> {
+    id_str.parse::<daruma_shared::WorkUnitId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid work unit id: {id_str}"
         )))
@@ -1458,7 +1458,7 @@ async fn resolve_workspace_context(
                 .and_then(|n| n.to_str())
                 .unwrap_or("workspace")
                 .to_string();
-            let id = taskagent_domain::slugify_title(&name);
+            let id = daruma_domain::slugify_title(&name);
             let id = validate_workspace_id(&id)?;
             let now = chrono::Utc::now().to_rfc3339();
             sqlx::query(
@@ -1520,7 +1520,7 @@ async fn resolve_workspace_context(
     let project_id = envs
         .iter()
         .find_map(|e| match &e.payload {
-            taskagent_events::Event::ProjectCreated { project } => Some(project.id),
+            daruma_events::Event::ProjectCreated { project } => Some(project.id),
             _ => None,
         })
         .ok_or_else(|| ApiError::from(CoreError::storage("project_created event missing")))?;
@@ -1577,7 +1577,7 @@ async fn get_project_settings(
 #[derive(Deserialize)]
 struct ProjectSettingsPatchBody {
     #[serde(default)]
-    auto_append: taskagent_domain::AutoAppendPatch,
+    auto_append: daruma_domain::AutoAppendPatch,
 }
 
 /// `PATCH /v1/projects/{id}/settings` — partial update of the auto-append
@@ -1642,8 +1642,8 @@ struct RuleScopeQuery {
 }
 
 impl RuleScopeQuery {
-    fn into_scope(self) -> Result<taskagent_domain::RuleScope, ApiError> {
-        use taskagent_domain::RuleScope;
+    fn into_scope(self) -> Result<daruma_domain::RuleScope, ApiError> {
+        use daruma_domain::RuleScope;
         if let Some(t) = self.task_id {
             Ok(RuleScope::Task {
                 id: t
@@ -1704,7 +1704,7 @@ async fn get_rule(
 
 #[derive(Deserialize)]
 struct CreateRuleBody {
-    rule: taskagent_domain::NewRule,
+    rule: daruma_domain::NewRule,
 }
 
 /// `POST /v1/rules` — create a rule (event-sourced via the command bus).
@@ -1741,7 +1741,7 @@ async fn create_rule(
 #[derive(Deserialize)]
 struct PatchRuleBody {
     #[serde(default, flatten)]
-    patch: taskagent_domain::RulePatch,
+    patch: daruma_domain::RulePatch,
 }
 
 /// `PATCH /v1/rules/{id}` — partial update.
@@ -1869,7 +1869,7 @@ async fn get_evidence(
 
 #[derive(Deserialize)]
 struct RecordEvidenceBody {
-    evidence: taskagent_domain::NewEvidence,
+    evidence: daruma_domain::NewEvidence,
 }
 
 /// `POST /v1/evidence` — record evidence (event-sourced via the command bus).
@@ -1908,14 +1908,14 @@ async fn record_evidence(
 // ── Audit primitives ────────────────────────────────────────────────────────
 
 /// Parse a `FindingSeverity` from a query/body string, or a 400.
-fn parse_severity(s: &str) -> Result<taskagent_domain::FindingSeverity, ApiError> {
-    taskagent_domain::FindingSeverity::parse_str(s)
+fn parse_severity(s: &str) -> Result<daruma_domain::FindingSeverity, ApiError> {
+    daruma_domain::FindingSeverity::parse_str(s)
         .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid severity: {s}"))))
 }
 
 /// Parse a `FindingStatus` from a query/body string, or a 400.
-fn parse_finding_status(s: &str) -> Result<taskagent_domain::FindingStatus, ApiError> {
-    taskagent_domain::FindingStatus::parse_str(s)
+fn parse_finding_status(s: &str) -> Result<daruma_domain::FindingStatus, ApiError> {
+    daruma_domain::FindingStatus::parse_str(s)
         .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid status: {s}"))))
 }
 
@@ -1940,7 +1940,7 @@ async fn list_audit_findings(
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_project_id(&q.project_id)?;
-    let filter = taskagent_storage::FindingFilter {
+    let filter = daruma_storage::FindingFilter {
         severity: q.severity.as_deref().map(parse_severity).transpose()?,
         category: q.category,
         status: q.status.as_deref().map(parse_finding_status).transpose()?,
@@ -1962,7 +1962,7 @@ async fn get_audit_finding(
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
     let id = id_str
-        .parse::<taskagent_shared::AuditFindingId>()
+        .parse::<daruma_shared::AuditFindingId>()
         .map_err(|_| {
             ApiError::from(CoreError::validation(format!(
                 "invalid finding id: {id_str}"
@@ -2034,13 +2034,13 @@ async fn record_audit_finding(
         .map_err(ApiError::from_missing_cap)?;
     let f = body.finding;
     let source = match f.source.as_deref() {
-        Some(s) => taskagent_domain::FindingSource::parse_str(s)
+        Some(s) => daruma_domain::FindingSource::parse_str(s)
             .ok_or_else(|| ApiError::from(CoreError::validation(format!("invalid source: {s}"))))?,
-        None => taskagent_domain::FindingSource::Script,
+        None => daruma_domain::FindingSource::Script,
     };
-    let new = taskagent_domain::NewFinding {
+    let new = daruma_domain::NewFinding {
         project_id: parse_project_id(&f.project_id)?,
-        entity: taskagent_domain::FindingEntity {
+        entity: daruma_domain::FindingEntity {
             plan_id: parse_opt_id(&f.plan_id, "plan id")?,
             task_id: parse_opt_id(&f.task_id, "task id")?,
             document_id: parse_opt_id(&f.document_id, "document id")?,
@@ -2079,17 +2079,17 @@ async fn set_audit_finding_status(
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
     let id = id_str
-        .parse::<taskagent_shared::AuditFindingId>()
+        .parse::<daruma_shared::AuditFindingId>()
         .map_err(|_| {
             ApiError::from(CoreError::validation(format!(
                 "invalid finding id: {id_str}"
             )))
         })?;
     let status = parse_finding_status(&body.status)?;
-    let actor = taskagent_domain::ActorRef::from_actor(&actor_from(&auth, None));
+    let actor = daruma_domain::ActorRef::from_actor(&actor_from(&auth, None));
     let updated = state
         .audit_findings
-        .set_status(id, status, &actor, taskagent_shared::time::now())
+        .set_status(id, status, &actor, daruma_shared::time::now())
         .await
         .map_err(ApiError::from)?;
     if !updated {
@@ -2124,12 +2124,12 @@ async fn resolve_missing_findings(
         .seen
         .iter()
         .map(|s| {
-            s.parse::<taskagent_shared::AuditFindingId>().map_err(|_| {
+            s.parse::<daruma_shared::AuditFindingId>().map_err(|_| {
                 ApiError::from(CoreError::validation(format!("invalid finding id: {s}")))
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let actor = taskagent_domain::ActorRef::from_actor(&actor_from(&auth, None));
+    let actor = daruma_domain::ActorRef::from_actor(&actor_from(&auth, None));
     let resolved = state
         .audit_findings
         .resolve_missing(
@@ -2137,7 +2137,7 @@ async fn resolve_missing_findings(
             &body.check_key,
             &seen,
             &actor,
-            taskagent_shared::time::now(),
+            daruma_shared::time::now(),
         )
         .await
         .map_err(ApiError::from)?;
@@ -2171,7 +2171,7 @@ async fn audit_stuck_tasks(
         None => Status::InProgress,
     };
     let hours = q.threshold_hours.unwrap_or(72).max(0);
-    let cutoff = taskagent_shared::time::now() - chrono::Duration::hours(hours);
+    let cutoff = daruma_shared::time::now() - chrono::Duration::hours(hours);
     let stuck = state
         .tasks
         .list_stuck_in_status(Some(project_id), status, cutoff)
@@ -2243,7 +2243,7 @@ async fn audit_unread_documents(
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_project_id(&q.project_id)?;
     let days = q.days.unwrap_or(30).max(0);
-    let cutoff = taskagent_shared::time::now() - chrono::Duration::days(days);
+    let cutoff = daruma_shared::time::now() - chrono::Duration::days(days);
     let docs = state
         .documents
         .list_unread_since(project_id, cutoff)
@@ -2351,7 +2351,7 @@ async fn patch_project_triage(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<taskagent_shared::ProjectId>().map_err(|_| {
+    let id = id_str.parse::<daruma_shared::ProjectId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid project id: {id_str}"
         )))
@@ -2372,7 +2372,7 @@ async fn list_project_triage(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<taskagent_shared::ProjectId>().map_err(|_| {
+    let id = id_str.parse::<daruma_shared::ProjectId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid project id: {id_str}"
         )))
@@ -2432,7 +2432,7 @@ async fn delete_project(
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
 
-    let id = id_str.parse::<taskagent_shared::ProjectId>().map_err(|_| {
+    let id = id_str.parse::<daruma_shared::ProjectId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid project id: {id_str}"
         )))
@@ -2473,7 +2473,7 @@ async fn delete_project(
     let envs = state
         .commands
         .dispatch(
-            taskagent_api_dto::Command::DeleteProject { id },
+            daruma_api_dto::Command::DeleteProject { id },
             actor_from(&auth, None),
         )
         .await
@@ -2562,7 +2562,7 @@ async fn dispatch_command(
 #[derive(serde::Deserialize, Default)]
 struct McpHttpQuery {
     /// Tool surface profile override: `default` or `full`.
-    /// Falls back to TASKAGENT_MCP_PROFILE, then `default`.
+    /// Falls back to DARUMA_MCP_PROFILE, then `default`.
     profile: Option<String>,
 }
 
@@ -2572,23 +2572,23 @@ async fn mcp_http(
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let profile = match query.profile.as_deref() {
-        Some(raw) => taskagent_mcp::ToolProfile::parse(raw).ok_or_else(|| {
+        Some(raw) => daruma_mcp::ToolProfile::parse(raw).ok_or_else(|| {
             ApiError::from(CoreError::validation(format!(
                 "unknown MCP profile `{raw}` — expected `default` or `full`"
             )))
         })?,
-        None => taskagent_mcp::ToolProfile::from_env(),
+        None => daruma_mcp::ToolProfile::from_env(),
     };
     let token = bearer_token(&headers)?;
     let http = reqwest::Client::builder()
         .user_agent(format!(
-            "taskagent-server-mcp/{}",
+            "daruma-server-mcp/{}",
             env!("CARGO_PKG_VERSION")
         ))
         .build()
         .map_err(|e| ApiError::from(CoreError::validation(e.to_string())))?;
     let mut client = ApiClient::with_http(mcp_base_url(&headers)?, token, http);
-    if let Some(workspace_id) = header_string(&headers, "x-taskagent-workspace-id") {
+    if let Some(workspace_id) = header_string(&headers, "x-daruma-workspace-id") {
         client = client.with_workspace_id(workspace_id);
     }
 
@@ -2637,7 +2637,7 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
 
 async fn load_cached_event_data(
     state: &AppState,
-    event_id: taskagent_shared::EventId,
+    event_id: daruma_shared::EventId,
     event_seq: u64,
 ) -> Result<Option<serde_json::Value>, ApiError> {
     let events = state
@@ -2824,10 +2824,10 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
 /// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.
 ///
 /// Loads the plan's task list, builds a `TaskBrief` per task, hands them to
-/// `taskagent_ai::analyze_complexity_batch` as **one** LLM call, and upserts
+/// `daruma_ai::analyze_complexity_batch` as **one** LLM call, and upserts
 /// the resulting hints into the `task_complexity_hints` projection. The
 /// response surfaces `batch_id` + the freshly written hints so callers (e.g.
-/// the §3.8.4 hint-aware `taskagent_ai_decompose`) can chain immediately.
+/// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
 /// Optional body for `POST /v1/ai/analyze-complexity/{plan_id}`.
 ///
 /// Pre-§3.8.13 callers send no body (or `{}`); the new
@@ -2874,7 +2874,7 @@ async fn ai_analyze_complexity(
         .await
         .map_err(ApiError::from)?;
 
-    let mut briefs: Vec<taskagent_domain::TaskBrief> = Vec::with_capacity(plan_tasks.len());
+    let mut briefs: Vec<daruma_domain::TaskBrief> = Vec::with_capacity(plan_tasks.len());
     for pt in &plan_tasks {
         let Some(task) = state.tasks.get(pt.task_id).await.map_err(ApiError::from)? else {
             // Plan references a task that no longer exists — skip rather
@@ -2882,7 +2882,7 @@ async fn ai_analyze_complexity(
             // omit it, callers see the gap.
             continue;
         };
-        briefs.push(taskagent_domain::TaskBrief {
+        briefs.push(daruma_domain::TaskBrief {
             task_id: task.id,
             title: task.title,
             description: task.description,
@@ -2899,9 +2899,9 @@ async fn ai_analyze_complexity(
 
     // §3.8.12: push-based progress on Channel::AiOps. Best-effort.
     let handler = state.commands.handler();
-    let op_id = taskagent_shared::AiOpId::new();
+    let op_id = daruma_shared::AiOpId::new();
     let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationStarted {
+        .emit_system_event(daruma_events::Event::AiOperationStarted {
             op_id,
             kind: "analyze_complexity".into(),
             target_id: plan_id.to_string(),
@@ -2909,14 +2909,14 @@ async fn ai_analyze_complexity(
         })
         .await;
     let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+        .emit_system_event(daruma_events::Event::AiOperationPhaseChanged {
             op_id,
             phase: "llm_call".into(),
             detail: Some(format!("{} task(s)", briefs.len())),
             at: chrono::Utc::now(),
         })
         .await;
-    let result = taskagent_ai::analyze_complexity_batch(client, briefs).await;
+    let result = daruma_ai::analyze_complexity_batch(client, briefs).await;
     let outcome = match &result {
         Ok(_) => "ok".to_string(),
         Err(e) => format!("error: {e}"),
@@ -2925,7 +2925,7 @@ async fn ai_analyze_complexity(
         Ok(h) => h,
         Err(e) => {
             let _ = handler
-                .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+                .emit_system_event(daruma_events::Event::AiOperationCompleted {
                     op_id,
                     outcome,
                     at: chrono::Utc::now(),
@@ -2936,7 +2936,7 @@ async fn ai_analyze_complexity(
     };
 
     let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationPhaseChanged {
+        .emit_system_event(daruma_events::Event::AiOperationPhaseChanged {
             op_id,
             phase: "apply".into(),
             detail: None,
@@ -2949,7 +2949,7 @@ async fn ai_analyze_complexity(
         .await
         .map_err(ApiError::from)?;
     let _ = handler
-        .emit_system_event(taskagent_events::Event::AiOperationCompleted {
+        .emit_system_event(daruma_events::Event::AiOperationCompleted {
             op_id,
             outcome,
             at: chrono::Utc::now(),
@@ -3220,7 +3220,7 @@ fn default_rate_limit() -> u32 {
 struct CreatedTokenResponse {
     /// Plaintext token — returned **only** on creation, never again.
     secret: String,
-    token: taskagent_auth::ApiToken,
+    token: daruma_auth::ApiToken,
 }
 
 async fn create_token(
@@ -3233,7 +3233,7 @@ async fn create_token(
 
     let expired_at = body
         .expires_in_days
-        .map(|days| taskagent_shared::time::now() + chrono::Duration::days(days));
+        .map(|days| daruma_shared::time::now() + chrono::Duration::days(days));
 
     let spec = NewTokenSpec {
         kind: body.kind,
@@ -4258,13 +4258,13 @@ async fn drain_one_plan(
             .await
             .map_err(ApiError::from)?
         {
-            if task.status != taskagent_domain::Status::InProgress && !task.status.is_terminal() {
+            if task.status != daruma_domain::Status::InProgress && !task.status.is_terminal() {
                 let status_result = state
                     .commands
                     .dispatch(
                         Command::SetStatus {
                             id: next.task_id,
-                            status: taskagent_domain::Status::InProgress,
+                            status: daruma_domain::Status::InProgress,
                             force: true,
                         },
                         actor_from(auth, None),
@@ -4439,7 +4439,7 @@ async fn project_doctor(
 
     let in_progress = state
         .tasks
-        .list_by_project_filtered(Some(project_id), &[taskagent_domain::Status::InProgress])
+        .list_by_project_filtered(Some(project_id), &[daruma_domain::Status::InProgress])
         .await
         .map_err(ApiError::from)?;
 
@@ -4793,7 +4793,7 @@ async fn append_run_note(
                 at,
             } = e.payload
             {
-                Some(taskagent_domain::RunNote {
+                Some(daruma_domain::RunNote {
                     id: note_id,
                     run_id,
                     body,
@@ -4833,7 +4833,7 @@ async fn list_run_notes(
         .after
         .as_deref()
         .map(|s| {
-            s.parse::<taskagent_shared::RunNoteId>().map_err(|_| {
+            s.parse::<daruma_shared::RunNoteId>().map_err(|_| {
                 ApiError::from(CoreError::validation(format!("invalid after cursor: {s}")))
             })
         })
@@ -5284,8 +5284,8 @@ async fn reserve_files(
         )));
     }
     let mode = match body.mode.as_deref() {
-        None => taskagent_domain::LeaseMode::Exclusive,
-        Some(raw) => taskagent_domain::LeaseMode::parse(raw).ok_or_else(|| {
+        None => daruma_domain::LeaseMode::Exclusive,
+        Some(raw) => daruma_domain::LeaseMode::parse(raw).ok_or_else(|| {
             ApiError::from(CoreError::validation(format!(
                 "unknown lease mode `{raw}` — expected exclusive|shared_read|review|intent"
             )))
@@ -5320,7 +5320,7 @@ async fn reserve_files(
                 "conflict_path": path,
                 "holder": holder,
                 "holder_task": holder_task,
-                "reason": "path overlaps a lease held by another agent; negotiate via taskagent_signal_send or take a different task",
+                "reason": "path overlaps a lease held by another agent; negotiate via daruma_signal_send or take a different task",
             }),
             warnings: vec![],
             client_command_id: None,
@@ -5495,7 +5495,7 @@ async fn get_document(
     let reader = read_actor_label(&actor_from(&auth, None));
     if let Err(e) = state
         .documents
-        .mark_read(id, &reader, taskagent_shared::time::now(), READ_THROTTLE)
+        .mark_read(id, &reader, daruma_shared::time::now(), READ_THROTTLE)
         .await
     {
         tracing::warn!(error = %e, document_id = %id, "doc read-tracking update failed");
@@ -5512,7 +5512,7 @@ const READ_THROTTLE: std::time::Duration = std::time::Duration::from_secs(3600);
 /// present, else the actor kind (`user` / `agent`). Mirrors the `ActorRef`
 /// triple the rest of the system stores.
 fn read_actor_label(actor: &Actor) -> String {
-    let aref = taskagent_domain::ActorRef::from_actor(actor);
+    let aref = daruma_domain::ActorRef::from_actor(actor);
     aref.name.unwrap_or(aref.kind)
 }
 
@@ -5547,7 +5547,7 @@ async fn patch_document(
         )));
     }
 
-    let mut last_env: Option<taskagent_events::EventEnvelope> = None;
+    let mut last_env: Option<daruma_events::EventEnvelope> = None;
 
     if let Some(title) = body.title {
         let envs = state

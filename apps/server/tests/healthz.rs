@@ -2,7 +2,7 @@
 //!
 //! §3.4 W2.2 — payload exposes `{status, version, core_version, api_version}`
 //! so deploys/probes can detect drift between the running binary and
-//! `taskagent-core`, and pick the right REST contract.
+//! `daruma-core`, and pick the right REST contract.
 
 use axum::{
     body::{to_bytes, Body},
@@ -46,7 +46,7 @@ async fn root_healthz_returns_full_metadata() {
     let core_version = body["core_version"]
         .as_str()
         .expect("core_version should be a string");
-    assert_eq!(core_version, taskagent_core::VERSION);
+    assert_eq!(core_version, daruma_core::VERSION);
 }
 
 #[tokio::test]

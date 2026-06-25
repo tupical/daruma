@@ -14,11 +14,11 @@
 //!   run (auto-resolve). The caller passes the ids it upserted.
 
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{
+use daruma_domain::{
     ActorRef, AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus,
     NewFinding,
 };
-use taskagent_shared::{time, AuditFindingId, CoreError, Result, Timestamp};
+use daruma_shared::{time, AuditFindingId, CoreError, Result, Timestamp};
 
 /// Filters for [`AuditFindingRepo::list`]. All `None` = every finding in the
 /// project; combine to narrow.
@@ -129,7 +129,7 @@ impl AuditFindingRepo {
     /// finding of the key resolves (the check found nothing this run).
     pub async fn resolve_missing(
         &self,
-        project_id: taskagent_shared::ProjectId,
+        project_id: daruma_shared::ProjectId,
         check_key: &str,
         seen: &[AuditFindingId],
         resolved_by: &ActorRef,
@@ -214,7 +214,7 @@ impl AuditFindingRepo {
     /// guards so SQLite gets one stable prepared statement.
     pub async fn list(
         &self,
-        project_id: taskagent_shared::ProjectId,
+        project_id: daruma_shared::ProjectId,
         filter: &FindingFilter,
     ) -> Result<Vec<AuditFinding>> {
         let rows = sqlx::query(&select_sql(
@@ -326,8 +326,8 @@ fn parse_ts(s: &str) -> Result<Timestamp> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_shared::{ProjectId, TaskId};
+    use daruma_domain::Actor;
+    use daruma_shared::{ProjectId, TaskId};
 
     async fn repo() -> AuditFindingRepo {
         let db = Db::memory().await.unwrap();

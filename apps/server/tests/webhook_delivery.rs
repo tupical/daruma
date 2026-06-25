@@ -1,13 +1,13 @@
 //! AC-9 — webhook delivery + HMAC signature.
 //!
-//! Spawns two axum servers: the real `taskagent-server` and an in-test
+//! Spawns two axum servers: the real `daruma-server` and an in-test
 //! "mock receiver" that records every POST it gets. Creates a webhook
 //! pointing at the receiver, drives a `CreateTask`, then asserts:
 //!   * the receiver got exactly one POST within ~1 s of the event;
-//!   * `X-Taskagent-Event` matches the event kind;
-//!   * `X-Taskagent-Signature` is `hex(hmac_sha256(secret, body))`;
-//!   * `X-Taskagent-Delivery` is present;
-//!   * `User-Agent` starts with `taskagent/`.
+//!   * `X-Daruma-Event` matches the event kind;
+//!   * `X-Daruma-Signature` is `hex(hmac_sha256(secret, body))`;
+//!   * `X-Daruma-Delivery` is present;
+//!   * `User-Agent` starts with `daruma/`.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -15,10 +15,10 @@ use std::time::Duration;
 
 use axum::{extract::State, http::HeaderMap, routing::post, Router as AxumRouter};
 use serde_json::json;
-use taskagent_domain::{Actor, PlanPatch};
-use taskagent_events::{Event, EventBus, EventEnvelope};
-use taskagent_shared::PlanId;
-use taskagent_webhooks::{sign_body_hex, spawn_dispatcher, NoopEnrichment};
+use daruma_domain::{Actor, PlanPatch};
+use daruma_events::{Event, EventBus, EventEnvelope};
+use daruma_shared::PlanId;
+use daruma_webhooks::{sign_body_hex, spawn_dispatcher, NoopEnrichment};
 use tokio::net::TcpListener;
 
 mod common;
@@ -61,7 +61,7 @@ async fn spawn_mock_receiver() -> (SocketAddr, MockState) {
     (addr, state)
 }
 
-// ── taskagent-server harness ─────────────────────────────────────────────────
+// ── daruma-server harness ─────────────────────────────────────────────────
 
 struct ServerHandle {
     addr: SocketAddr,
@@ -71,10 +71,10 @@ struct ServerHandle {
     /// relevant to the assertion being made).
     bus: EventBus,
     // Keep the dispatcher alive for the duration of the test.
-    _dispatcher: taskagent_webhooks::DispatcherHandle,
+    _dispatcher: daruma_webhooks::DispatcherHandle,
 }
 
-async fn spawn_taskagent() -> ServerHandle {
+async fn spawn_daruma() -> ServerHandle {
     let app = common::test_app().await;
 
     // Spawn the dispatcher — this is what the test is actually exercising.
@@ -122,7 +122,7 @@ async fn http_post_json(
 async fn ac9_webhook_delivered_with_valid_hmac() {
     // 1. Spawn the mock receiver and the real server (with dispatcher).
     let (mock_addr, mock_state) = spawn_mock_receiver().await;
-    let server = spawn_taskagent().await;
+    let server = spawn_daruma().await;
     let client = reqwest::Client::new();
 
     let server_url = format!("http://{}", server.addr);
@@ -174,16 +174,16 @@ async fn ac9_webhook_delivered_with_valid_hmac() {
     // 5a. Standard headers.
     let event_header = hit
         .headers
-        .get("x-taskagent-event")
-        .expect("X-Taskagent-Event present")
+        .get("x-daruma-event")
+        .expect("X-Daruma-Event present")
         .to_str()
         .unwrap();
     assert_eq!(event_header, "task_created");
 
     let delivery_header = hit
         .headers
-        .get("x-taskagent-delivery")
-        .expect("X-Taskagent-Delivery present")
+        .get("x-daruma-delivery")
+        .expect("X-Daruma-Delivery present")
         .to_str()
         .unwrap();
     assert!(!delivery_header.is_empty());
@@ -194,13 +194,13 @@ async fn ac9_webhook_delivered_with_valid_hmac() {
         .expect("User-Agent present")
         .to_str()
         .unwrap();
-    assert!(user_agent.starts_with("taskagent/"));
+    assert!(user_agent.starts_with("daruma/"));
 
     // 5b. HMAC signature must match `hex(hmac_sha256(secret, body))`.
     let signature_header = hit
         .headers
-        .get("x-taskagent-signature")
-        .expect("X-Taskagent-Signature present")
+        .get("x-daruma-signature")
+        .expect("X-Daruma-Signature present")
         .to_str()
         .unwrap();
     let expected = sign_body_hex(secret, &hit.body);
@@ -219,7 +219,7 @@ async fn ac9_webhook_delivered_with_valid_hmac() {
 #[tokio::test]
 async fn plan_updated_webhook_includes_parent_plan_id() {
     let (mock_addr, mock_state) = spawn_mock_receiver().await;
-    let server = spawn_taskagent().await;
+    let server = spawn_daruma().await;
     let client = reqwest::Client::new();
 
     let server_url = format!("http://{}", server.addr);
@@ -281,8 +281,8 @@ async fn plan_updated_webhook_includes_parent_plan_id() {
     // Event header must identify the kind.
     let event_header = hit
         .headers
-        .get("x-taskagent-event")
-        .expect("X-Taskagent-Event present")
+        .get("x-daruma-event")
+        .expect("X-Daruma-Event present")
         .to_str()
         .unwrap();
     assert_eq!(event_header, "plan_updated");
@@ -290,8 +290,8 @@ async fn plan_updated_webhook_includes_parent_plan_id() {
     // HMAC must verify.
     let sig = hit
         .headers
-        .get("x-taskagent-signature")
-        .expect("X-Taskagent-Signature present")
+        .get("x-daruma-signature")
+        .expect("X-Daruma-Signature present")
         .to_str()
         .unwrap();
     assert_eq!(sig, sign_body_hex(secret, &hit.body), "HMAC must match");

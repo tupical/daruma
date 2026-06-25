@@ -4,7 +4,7 @@
 //! per-request [`AuthContext`] extension, and a low-level token verifier
 //! that the HTTP and WS layers wire into their own middleware.
 //!
-//! Token storage lives in `taskagent-storage::TokenRepo` (the trait
+//! Token storage lives in `daruma-storage::TokenRepo` (the trait
 //! [`TokenStore`] keeps this crate decoupled from the SQLite layer so the
 //! verifier can be reused in process-internal contexts and tests).
 

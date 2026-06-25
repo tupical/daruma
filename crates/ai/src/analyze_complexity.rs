@@ -7,11 +7,11 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use taskagent_domain::{ComplexityHint, TaskBrief};
-use taskagent_shared::{time, CoreError, TaskId};
+use daruma_domain::{ComplexityHint, TaskBrief};
+use daruma_shared::{time, CoreError, TaskId};
 
-use taskagent_ai_infra::client::{OpenAiClient, ResponseOutput, ResponseRequest};
-use taskagent_ai_infra::untrusted::wrap_untrusted;
+use daruma_ai_infra::client::{OpenAiClient, ResponseOutput, ResponseRequest};
+use daruma_ai_infra::untrusted::wrap_untrusted;
 
 use crate::prompts::PromptRegistry;
 

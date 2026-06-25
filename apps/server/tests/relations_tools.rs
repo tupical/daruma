@@ -2,18 +2,18 @@
 //!
 //! Tests:
 //!   catalogue_includes_relation_tools — AC-9: all 3 relation tool names present
-//!   link_unlink_roundtrip             — taskagent_link → relation_id; taskagent_unlink → ok
-//!   relations_read_returns_five_groups — taskagent_relations returns 5-group projection
+//!   link_unlink_roundtrip             — daruma_link → relation_id; daruma_unlink → ok
+//!   relations_read_returns_five_groups — daruma_relations returns 5-group projection
 
 use serde_json::json;
-use taskagent_mcp::{
+use daruma_mcp::{
     dispatch_request_with_profile, tool_definitions, ApiClient, JsonRpcRequest, ToolProfile,
 };
 
 mod common;
 use common::{spawn_server, test_app};
 
-async fn spawn_taskagent_inline() -> (std::net::SocketAddr, String) {
+async fn spawn_daruma_inline() -> (std::net::SocketAddr, String) {
     let app = test_app().await;
     let addr = spawn_server(&app).await;
     (addr, app.admin_token)
@@ -35,7 +35,7 @@ async fn create_task_via_mcp(client: &ApiClient, title: &str) -> String {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_create",
+                "name": "daruma_create",
                 "arguments": { "task": { "title": title } }
             }),
         ),
@@ -65,12 +65,12 @@ async fn create_task_via_mcp(client: &ApiClient, title: &str) -> String {
 
 // ── AC-9: catalogue includes all 3 relation tool names ───────────────────────
 
-/// AC-9: tool_definitions() must include taskagent_link, taskagent_unlink,
-/// taskagent_relations.
+/// AC-9: tool_definitions() must include daruma_link, daruma_unlink,
+/// daruma_relations.
 #[tokio::test]
 async fn catalogue_includes_relation_tools() {
     let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
-    for required in ["taskagent_link", "taskagent_unlink", "taskagent_relations"] {
+    for required in ["daruma_link", "daruma_unlink", "daruma_relations"] {
         assert!(
             names.contains(&required),
             "AC-9: missing relation tool: {required}"
@@ -85,11 +85,11 @@ async fn catalogue_includes_relation_tools() {
 
 // ── link / unlink roundtrip ───────────────────────────────────────────────────
 
-/// taskagent_link creates a relation and returns a relation_id;
-/// taskagent_unlink deletes it and returns success.
+/// daruma_link creates a relation and returns a relation_id;
+/// daruma_unlink deletes it and returns success.
 #[tokio::test]
 async fn link_unlink_roundtrip() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let from = create_task_via_mcp(&client, "Blocker").await;
@@ -101,7 +101,7 @@ async fn link_unlink_roundtrip() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_link",
+                "name": "daruma_link",
                 "arguments": { "from": from, "to": to, "kind": "blocks" }
             }),
         ),
@@ -110,7 +110,7 @@ async fn link_unlink_roundtrip() {
     .unwrap();
     assert!(
         link_resp.error.is_none(),
-        "taskagent_link failed: {:?}",
+        "daruma_link failed: {:?}",
         link_resp.error
     );
     let link_text = link_resp.result.unwrap()["content"][0]["text"]
@@ -131,7 +131,7 @@ async fn link_unlink_roundtrip() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_unlink",
+                "name": "daruma_unlink",
                 "arguments": { "relation_id": relation_id }
             }),
         ),
@@ -140,7 +140,7 @@ async fn link_unlink_roundtrip() {
     .unwrap();
     assert!(
         unlink_resp.error.is_none(),
-        "taskagent_unlink failed: {:?}",
+        "daruma_unlink failed: {:?}",
         unlink_resp.error
     );
     let unlink_text = unlink_resp.result.unwrap()["content"][0]["text"]
@@ -156,11 +156,11 @@ async fn link_unlink_roundtrip() {
 
 // ── relations read returns five groups ────────────────────────────────────────
 
-/// Create relations of all 3 kinds from task A, then taskagent_relations on A.
+/// Create relations of all 3 kinds from task A, then daruma_relations on A.
 /// blocks/relates_to/duplicates must be non-empty; blocked_by/duplicated_by empty.
 #[tokio::test]
 async fn relations_read_returns_five_groups() {
-    let (addr, token) = spawn_taskagent_inline().await;
+    let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let a = create_task_via_mcp(&client, "Task A").await;
@@ -174,7 +174,7 @@ async fn relations_read_returns_five_groups() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_link",
+                "name": "daruma_link",
                 "arguments": { "from": a, "to": b, "kind": "blocks" }
             }),
         ),
@@ -189,7 +189,7 @@ async fn relations_read_returns_five_groups() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_link",
+                "name": "daruma_link",
                 "arguments": { "from": a, "to": c, "kind": "relates_to" }
             }),
         ),
@@ -204,7 +204,7 @@ async fn relations_read_returns_five_groups() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_link",
+                "name": "daruma_link",
                 "arguments": { "from": a, "to": d, "kind": "duplicates" }
             }),
         ),
@@ -219,7 +219,7 @@ async fn relations_read_returns_five_groups() {
         req(
             "tools/call",
             json!({
-                "name": "taskagent_relations",
+                "name": "daruma_relations",
                 "arguments": { "task_id": a }
             }),
         ),
@@ -228,7 +228,7 @@ async fn relations_read_returns_five_groups() {
     .unwrap();
     assert!(
         rel_resp.error.is_none(),
-        "taskagent_relations failed: {:?}",
+        "daruma_relations failed: {:?}",
         rel_resp.error
     );
     let rel_text = rel_resp.result.unwrap()["content"][0]["text"]
@@ -270,6 +270,6 @@ async fn relations_read_returns_five_groups() {
 async fn dispatch_request(
     client: &ApiClient,
     req: JsonRpcRequest,
-) -> Option<taskagent_mcp::JsonRpcResponse> {
+) -> Option<daruma_mcp::JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }

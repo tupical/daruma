@@ -1,4 +1,4 @@
 Checking MCP server health…
 
-taskagent: /home/user/.cargo/bin/taskagent-mcp - ✓ Connected
+daruma: /home/user/.cargo/bin/daruma-mcp - ✓ Connected
 other-server: /usr/local/bin/other-mcp - ✓ Connected

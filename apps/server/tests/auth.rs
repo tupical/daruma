@@ -14,10 +14,10 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::Value;
-use taskagent_auth::{
+use daruma_auth::{
     generate, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope,
 };
-use taskagent_shared::AgentId;
+use daruma_shared::AgentId;
 use tower::ServiceExt;
 
 mod common;

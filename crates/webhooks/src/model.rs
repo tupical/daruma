@@ -1,8 +1,8 @@
 //! Webhook domain types — also the wire format for the admin endpoints.
 
 use serde::{Deserialize, Serialize};
-use taskagent_auth::ProjectFilter;
-use taskagent_shared::{time, Timestamp, WebhookId};
+use daruma_auth::ProjectFilter;
+use daruma_shared::{time, Timestamp, WebhookId};
 
 /// A persisted outbound webhook subscription.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

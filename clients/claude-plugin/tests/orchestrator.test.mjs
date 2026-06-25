@@ -11,7 +11,7 @@ import { _internal } from "../lib/orchestrator.mjs";
 const execFileAsync = promisify(execFile);
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-orchestrator-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-orchestrator-test-"));
   try {
     return await fn(dir);
   } finally {

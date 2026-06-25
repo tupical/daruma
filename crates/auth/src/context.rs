@@ -1,8 +1,8 @@
 //! Per-request authentication context inserted by middleware.
 
 use serde::{Deserialize, Serialize};
-use taskagent_domain::Actor;
-use taskagent_shared::{AgentId, TokenId};
+use daruma_domain::Actor;
+use daruma_shared::{AgentId, TokenId};
 
 use crate::capability::Capability;
 use crate::scope::TokenScope;

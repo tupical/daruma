@@ -3,9 +3,9 @@
 //! per project (ON by default) via /v1/projects/{id}/settings.
 
 use serde_json::json;
-use taskagent_core::Command;
-use taskagent_domain::{Actor, AutoAppendPatch, DocumentKind, NewTask};
-use taskagent_shared::{AgentId, ProjectId};
+use daruma_core::Command;
+use daruma_domain::{Actor, AutoAppendPatch, DocumentKind, NewTask};
+use daruma_shared::{AgentId, ProjectId};
 
 mod common;
 use common::test_app;
@@ -26,7 +26,7 @@ async fn create_project(h: &common::TestApp, title: &str) -> ProjectId {
         .expect("create project");
     envs.iter()
         .find_map(|e| match &e.payload {
-            taskagent_events::Event::ProjectCreated { project } => Some(project.id),
+            daruma_events::Event::ProjectCreated { project } => Some(project.id),
             _ => None,
         })
         .expect("project id")
@@ -194,7 +194,7 @@ async fn status_changes_route_by_actor() {
     let task_id = envs
         .iter()
         .find_map(|e| match &e.payload {
-            taskagent_events::Event::TaskCreated { task } => task.id,
+            daruma_events::Event::TaskCreated { task } => task.id,
             _ => None,
         })
         .unwrap();

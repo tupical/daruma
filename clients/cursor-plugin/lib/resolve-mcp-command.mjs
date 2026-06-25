@@ -1,4 +1,4 @@
-// Locate the taskagent-mcp stdio shim for Cursor's mcp.json `command` field.
+// Locate the daruma-mcp stdio shim for Cursor's mcp.json `command` field.
 //
 // Cursor spawns the command by name — ENOENT if the Rust binary is built but
 // not on PATH. We probe common locations before falling back to the bare name.
@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_COMMAND = "taskagent-mcp";
+const DEFAULT_COMMAND = "daruma-mcp";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function isExecutable(path) {
@@ -31,12 +31,12 @@ function uniquePaths(paths) {
   return out;
 }
 
-function siblingTaskagentReleasePaths(startDir) {
+function siblingDarumaReleasePaths(startDir) {
   const paths = [];
   let dir = resolve(startDir);
   for (let depth = 0; depth < 6; depth += 1) {
     paths.push(join(dir, "target", "release", DEFAULT_COMMAND));
-    paths.push(join(dir, "taskagent", "target", "release", DEFAULT_COMMAND));
+    paths.push(join(dir, "daruma", "target", "release", DEFAULT_COMMAND));
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -53,7 +53,7 @@ export function candidateMcpCommandPaths({
   cwd = process.cwd(),
   env = process.env,
 } = {}) {
-  const fromEnv = env.TASKAGENT_MCP_BIN?.trim();
+  const fromEnv = env.DARUMA_MCP_BIN?.trim();
   const home = homeDir(env);
   const cargoHome = env.CARGO_HOME?.trim() || join(home, ".cargo");
 
@@ -61,8 +61,8 @@ export function candidateMcpCommandPaths({
     fromEnv,
     join(home, ".local", "bin", DEFAULT_COMMAND),
     join(cargoHome, "bin", DEFAULT_COMMAND),
-    ...siblingTaskagentReleasePaths(cwd),
-    ...siblingTaskagentReleasePaths(__dirname),
+    ...siblingDarumaReleasePaths(cwd),
+    ...siblingDarumaReleasePaths(__dirname),
     DEFAULT_COMMAND,
   ]);
 }

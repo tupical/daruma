@@ -1,6 +1,6 @@
 //! Canonical agent-session metadata for IDE/MCP clients.
 //!
-//! Agents should call `taskagent_session_start` with a `metadata` object so
+//! Agents should call `daruma_session_start` with a `metadata` object so
 //! tasks and comments can be traced back to a client chat / transcript.
 
 use serde_json::{json, Map, Value};
@@ -34,27 +34,27 @@ pub fn merge_defaults(mut metadata: Value) -> Value {
 fn default_entries() -> Vec<(String, Value)> {
     let mut out = Vec::new();
 
-    if let Ok(client) = std::env::var("TASKAGENT_CLIENT") {
+    if let Ok(client) = std::env::var("DARUMA_CLIENT") {
         if !client.trim().is_empty() {
             out.push((KEY_CLIENT.into(), json!(client.trim())));
         }
     }
-    if let Ok(model) = std::env::var("TASKAGENT_MODEL") {
+    if let Ok(model) = std::env::var("DARUMA_MODEL") {
         if !model.trim().is_empty() {
             out.push((KEY_MODEL.into(), json!(model.trim())));
         }
     }
-    if let Ok(chat_id) = std::env::var("TASKAGENT_CHAT_ID") {
+    if let Ok(chat_id) = std::env::var("DARUMA_CHAT_ID") {
         if !chat_id.trim().is_empty() {
             out.push((KEY_CHAT_ID.into(), json!(chat_id.trim())));
         }
     }
-    if let Ok(path) = std::env::var("TASKAGENT_TRANSCRIPT_PATH") {
+    if let Ok(path) = std::env::var("DARUMA_TRANSCRIPT_PATH") {
         if !path.trim().is_empty() {
             out.push((KEY_TRANSCRIPT_PATH.into(), json!(path.trim())));
         }
     }
-    if let Ok(ws) = std::env::var("TASKAGENT_WORKSPACE") {
+    if let Ok(ws) = std::env::var("DARUMA_WORKSPACE") {
         if !ws.trim().is_empty() {
             out.push((KEY_WORKSPACE_PATH.into(), json!(ws.trim())));
         }
@@ -64,7 +64,7 @@ fn default_entries() -> Vec<(String, Value)> {
             json!(cwd.to_string_lossy().to_string()),
         ));
     }
-    if let Ok(host) = std::env::var("TASKAGENT_HOST") {
+    if let Ok(host) = std::env::var("DARUMA_HOST") {
         if !host.trim().is_empty() {
             out.push((KEY_HOST.into(), json!(host.trim())));
         }
@@ -81,8 +81,8 @@ mod tests {
     #[test]
     fn merge_defaults_preserves_caller_overrides() {
         let _guard = env_lock();
-        std::env::set_var("TASKAGENT_CLIENT", "cursor");
-        std::env::set_var("TASKAGENT_MODEL", "env-model");
+        std::env::set_var("DARUMA_CLIENT", "cursor");
+        std::env::set_var("DARUMA_MODEL", "env-model");
 
         let merged = merge_defaults(json!({
             "client": "codex",
@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(merged["chat_id"], "chat-1");
         assert!(merged.get(KEY_WORKSPACE_PATH).is_some());
 
-        std::env::remove_var("TASKAGENT_CLIENT");
-        std::env::remove_var("TASKAGENT_MODEL");
+        std::env::remove_var("DARUMA_CLIENT");
+        std::env::remove_var("DARUMA_MODEL");
     }
 }

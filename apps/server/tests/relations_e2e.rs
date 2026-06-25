@@ -15,11 +15,11 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::Value;
-use taskagent_auth::{
+use daruma_auth::{
     generate, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope,
     TokenStore,
 };
-use taskagent_events::EventStore;
+use daruma_events::EventStore;
 use tower::ServiceExt;
 
 mod common;
@@ -48,7 +48,7 @@ async fn build_harness() -> Harness {
 async fn mint_token(store: &Arc<dyn TokenStore>, caps: Capabilities) -> String {
     let secret = generate(NewTokenSpec {
         kind: TokenKind::Pat,
-        agent_id: taskagent_shared::AgentId::new(),
+        agent_id: daruma_shared::AgentId::new(),
         scope: TokenScope {
             projects: ProjectFilter::All,
             capabilities: caps,
@@ -469,8 +469,8 @@ async fn link_returns_403_without_write_cap() {
 
 /// AC-10: When blocker A is set Done and B becomes unblocked, the webhook
 /// dispatcher must POST to the subscriber URL with:
-///   - `X-Taskagent-Event: task.unblocked`
-///   - valid HMAC in `X-Taskagent-Signature`
+///   - `X-Daruma-Event: task.unblocked`
+///   - valid HMAC in `X-Daruma-Signature`
 ///   - payload `{ "payload": { "type": "task_unblocked", ... } }`
 ///
 /// This test spawns a real TCP mock receiver alongside the real server so the
@@ -481,7 +481,7 @@ async fn webhook_emits_task_unblocked() {
         extract::State as AxState, http::HeaderMap, routing::post as axpost, Router as AxRouter,
     };
     use std::sync::Mutex;
-    use taskagent_webhooks::{sign_body_hex, spawn_dispatcher, NoopEnrichment};
+    use daruma_webhooks::{sign_body_hex, spawn_dispatcher, NoopEnrichment};
 
     // ── Mock receiver ────────────────────────────────────────────────────────
     #[derive(Debug, Clone)]
@@ -624,7 +624,7 @@ async fn webhook_emits_task_unblocked() {
             // Find the hit for task.unblocked (webhook may also deliver other events).
             let found = hits.iter().find(|h| {
                 h.headers
-                    .get("x-taskagent-event")
+                    .get("x-daruma-event")
                     .and_then(|v| v.to_str().ok())
                     == Some("task.unblocked")
             });
@@ -641,8 +641,8 @@ async fn webhook_emits_task_unblocked() {
     // Verify HMAC.
     let sig = hit
         .headers
-        .get("x-taskagent-signature")
-        .expect("X-Taskagent-Signature")
+        .get("x-daruma-signature")
+        .expect("X-Daruma-Signature")
         .to_str()
         .unwrap();
     let expected_sig = sign_body_hex(webhook_secret, &hit.body);
@@ -667,8 +667,8 @@ async fn webhook_emits_task_unblocked() {
 
     // Delivery header must be present.
     assert!(
-        hit.headers.contains_key("x-taskagent-delivery"),
-        "X-Taskagent-Delivery must be present"
+        hit.headers.contains_key("x-daruma-delivery"),
+        "X-Daruma-Delivery must be present"
     );
 }
 
@@ -681,7 +681,7 @@ async fn webhook_emits_task_linked() {
         extract::State as AxState, http::HeaderMap, routing::post as axpost, Router as AxRouter,
     };
     use std::sync::Mutex;
-    use taskagent_webhooks::{spawn_dispatcher, NoopEnrichment};
+    use daruma_webhooks::{spawn_dispatcher, NoopEnrichment};
 
     #[derive(Debug, Clone)]
     struct MockHit {
@@ -793,7 +793,7 @@ async fn webhook_emits_task_linked() {
             let hits = mock_state.hits.lock().unwrap();
             let found = hits.iter().find(|h| {
                 h.headers
-                    .get("x-taskagent-event")
+                    .get("x-daruma-event")
                     .and_then(|v| v.to_str().ok())
                     == Some("task.linked")
             });

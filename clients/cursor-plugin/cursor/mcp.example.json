@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "taskagent": {
+    "daruma": {
       "type": "http",
       "url": "http://localhost:8080/v1/mcp"
     }

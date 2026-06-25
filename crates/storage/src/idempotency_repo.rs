@@ -20,7 +20,7 @@ use chrono::{DateTime, Duration, Utc};
 use fastbloom::BloomFilter;
 use sqlx::{Row, SqlitePool};
 use std::sync::RwLock;
-use taskagent_shared::{CoreError, EventId, Result};
+use daruma_shared::{CoreError, EventId, Result};
 use uuid::Uuid;
 
 fn reserved_event_id() -> EventId {
@@ -233,7 +233,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_shared::EventId;
+    use daruma_shared::EventId;
     use uuid::Uuid;
 
     async fn make_repo() -> (Db, IdempotencyRepo) {

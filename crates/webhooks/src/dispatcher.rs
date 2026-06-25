@@ -8,7 +8,7 @@
 //!   3. resolves each subscription's `enrich` keys against the supplied
 //!      [`EnrichmentSource`] (§3.7.5), folding the result into the outbound
 //!      JSON as a top-level `context` field,
-//!   4. POSTs the JSON payload with `X-Taskagent-Signature`.
+//!   4. POSTs the JSON payload with `X-Daruma-Signature`.
 //!
 //! Delivery is single-shot for the MVP — there is no retry loop and no
 //! delivery queue. Failures are logged and recorded in
@@ -23,9 +23,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use taskagent_auth::ProjectFilter;
-use taskagent_events::{EventEnvelope, EventReceiver};
-use taskagent_shared::{ProjectId, WebhookId};
+use daruma_auth::ProjectFilter;
+use daruma_events::{EventEnvelope, EventReceiver};
+use daruma_shared::{ProjectId, WebhookId};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
@@ -168,20 +168,20 @@ async fn send(
     store: &Arc<dyn WebhookStore>,
     webhook: &Webhook,
     event_kind: String,
-    event_id: taskagent_shared::EventId,
+    event_id: daruma_shared::EventId,
     body: Vec<u8>,
 ) {
     let signature = sign_body_hex(&webhook.secret, &body);
     let delivery_id = uuid::Uuid::now_v7().to_string();
-    let user_agent = format!("taskagent/{}", env!("CARGO_PKG_VERSION"));
+    let user_agent = format!("daruma/{}", env!("CARGO_PKG_VERSION"));
 
     let res = http
         .post(&webhook.url)
         .header("content-type", "application/json")
         .header("user-agent", user_agent)
-        .header("x-taskagent-delivery", &delivery_id)
-        .header("x-taskagent-event", &event_kind)
-        .header("x-taskagent-signature", &signature)
+        .header("x-daruma-delivery", &delivery_id)
+        .header("x-daruma-event", &event_kind)
+        .header("x-daruma-signature", &signature)
         .body(body)
         .timeout(Duration::from_secs(5))
         .send()
@@ -221,7 +221,7 @@ async fn send(
 async fn log_delivery(
     store: &Arc<dyn WebhookStore>,
     webhook_id: WebhookId,
-    event_id: taskagent_shared::EventId,
+    event_id: daruma_shared::EventId,
     event_kind: &str,
     status_code: Option<u16>,
     succeeded: bool,

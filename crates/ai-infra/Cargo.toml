@@ -1,5 +1,5 @@
 [package]
-name = "taskagent-ai-infra"
+name = "daruma-ai-infra"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 
 [features]
 # Exposes provider test doubles (e.g. `testing::FakeProvider`) for reuse
-# in dependent crates' tests. Enabled by `taskagent-ai` as a dev-dep.
+# in dependent crates' tests. Enabled by `daruma-ai` as a dev-dep.
 testing = []
 
 [dependencies]
-taskagent-shared = { workspace = true }
+daruma-shared = { workspace = true }
 reqwest = { workspace = true }
 tokio   = { workspace = true }
 serde   = { workspace = true }

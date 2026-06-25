@@ -1,5 +1,5 @@
 {
   "workspaces": {
-    "/absolute/path/to/your/workspace": "project-uuid-from-taskagent"
+    "/absolute/path/to/your/workspace": "project-uuid-from-daruma"
   }
 }

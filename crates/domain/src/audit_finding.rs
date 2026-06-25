@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ActorRef;
-use taskagent_shared::{
+use daruma_shared::{
     ArtifactId, AuditFindingId, DocumentId, PlanId, ProjectId, TaskId, Timestamp,
 };
 
@@ -241,8 +241,8 @@ mod tests {
             remediation: String::new(),
             source: FindingSource::Script,
             status: FindingStatus::Open,
-            first_seen_at: taskagent_shared::time::now(),
-            last_seen_at: taskagent_shared::time::now(),
+            first_seen_at: daruma_shared::time::now(),
+            last_seen_at: daruma_shared::time::now(),
             resolved_by: None,
             resolved_at: None,
         };

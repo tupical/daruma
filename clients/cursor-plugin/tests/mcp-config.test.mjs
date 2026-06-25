@@ -14,7 +14,7 @@ import {
 } from "../lib/mcp-config.mjs";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-cursor-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-cursor-test-"));
   try { return await fn(dir); }
   finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -40,19 +40,19 @@ test("readMcp returns empty mcpServers when file missing", async () => {
 test("upsertServer adds, replaces, and stays unchanged", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, ".cursor", "mcp.json");
-    const entry = { type: "stdio", command: "taskagent-mcp" };
+    const entry = { type: "stdio", command: "daruma-mcp" };
 
-    const added = await upsertServer(path, "taskagent", entry);
+    const added = await upsertServer(path, "daruma", entry);
     assert.equal(added.action, "added");
 
-    const unchanged = await upsertServer(path, "taskagent", entry);
+    const unchanged = await upsertServer(path, "daruma", entry);
     assert.equal(unchanged.action, "unchanged");
 
-    const replaced = await upsertServer(path, "taskagent", { ...entry, env: { X: "1" } });
+    const replaced = await upsertServer(path, "daruma", { ...entry, env: { X: "1" } });
     assert.equal(replaced.action, "replaced");
 
     const doc = JSON.parse(await fs.readFile(path, "utf8"));
-    assert.deepEqual(doc.mcpServers.taskagent, { type: "stdio", command: "taskagent-mcp", env: { X: "1" } });
+    assert.deepEqual(doc.mcpServers.daruma, { type: "stdio", command: "daruma-mcp", env: { X: "1" } });
   });
 });
 
@@ -64,20 +64,20 @@ test("upsertServer preserves unrelated mcpServers entries", async () => {
       mcpServers: { other: { type: "stdio", command: "other-bin" } },
     }));
 
-    await upsertServer(path, "taskagent", { type: "stdio", command: "taskagent-mcp" });
+    await upsertServer(path, "daruma", { type: "stdio", command: "daruma-mcp" });
     const list = await listServers(path);
     const names = list.map((x) => x.name).sort();
-    assert.deepEqual(names, ["other", "taskagent"]);
+    assert.deepEqual(names, ["daruma", "other"]);
   });
 });
 
 test("removeServer removes and reports missing", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, ".cursor", "mcp.json");
-    await upsertServer(path, "taskagent", { type: "stdio", command: "x" });
-    const removed = await removeServer(path, "taskagent");
+    await upsertServer(path, "daruma", { type: "stdio", command: "x" });
+    const removed = await removeServer(path, "daruma");
     assert.equal(removed.action, "removed");
-    const again = await removeServer(path, "taskagent");
+    const again = await removeServer(path, "daruma");
     assert.equal(again.action, "missing");
   });
 });

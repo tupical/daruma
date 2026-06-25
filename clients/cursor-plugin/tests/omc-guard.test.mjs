@@ -12,13 +12,13 @@ import {
 } from "../lib/omc-guard.mjs";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-omc-guard-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-omc-guard-test-"));
   try { return await fn(dir); }
   finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-const BEGIN = "<!-- taskagent-claude:begin -->";
-const END = "<!-- taskagent-claude:end -->";
+const BEGIN = "<!-- daruma-claude:begin -->";
+const END = "<!-- daruma-claude:end -->";
 
 test("installOmcGuard no-ops when .omc/ is absent", async () => {
   await withTempDir(async (dir) => {
@@ -39,7 +39,7 @@ test("installOmcGuard creates AGENTS.md with managed block when .omc/ exists", a
     const body = await fs.readFile(join(dir, ".omc", "AGENTS.md"), "utf8");
     assert.ok(body.includes(BEGIN));
     assert.ok(body.includes(END));
-    assert.match(body, /taskagent_plan_create/);
+    assert.match(body, /daruma_plan_create/);
     assert.match(body, /\.omc\/plans\//);
   });
 });
@@ -77,7 +77,7 @@ test("installOmcGuard refreshes existing managed block in place", async () => {
     assert.match(body, /^# Preamble/);
     assert.match(body, /\nAfter\n?$/);
     assert.ok(!body.includes("old stale content"));
-    assert.match(body, /taskagent_plan_create/);
+    assert.match(body, /daruma_plan_create/);
   });
 });
 

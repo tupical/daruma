@@ -1,24 +1,24 @@
 ---
-name: taskagent-tasks
-description: Show pending and in-progress tasks from taskagent as a compact table.
+name: daruma-tasks
+description: Show pending and in-progress tasks from daruma as a compact table.
 ---
 
-# /taskagent-tasks
+# /daruma-tasks
 
-Fetch the current task list from the taskagent MCP server and render it as
+Fetch the current task list from the daruma MCP server and render it as
 a markdown table.
 
 ## Steps
 
 1. Resolve the active project:
-   - Call `taskagent_workspace_info`. Use `default_project` if present.
-   - Otherwise call `taskagent_project_list` and pick the first one. If
+   - Call `daruma_workspace_info`. Use `default_project` if present.
+   - Otherwise call `daruma_project_list` and pick the first one. If
      none exist, tell the user "no projects yet — create one with
-     `taskagent_project_create`" and stop.
+     `daruma_project_create`" and stop.
 
 2. Fetch tasks (filter on the server — do **not** load everything and
    filter locally):
-   - `taskagent_list` with `project_id = <resolved>`, `status =
+   - `daruma_list` with `project_id = <resolved>`, `status =
      ["inbox", "todo", "in_progress"]`. Limit to ~50.
    - **Never** use `status=all` in this command unless the user explicitly
      asked for the full archive — `all` is token-heavy.
@@ -40,9 +40,9 @@ a markdown table.
    `Plan` column shows the short plan id (last 8 chars) or `—` if no plan.
 
 4. If there are more than 30 rows, render the first 30 and add a footer:
-   `…and <N> more — narrow with /taskagent-mine or a status filter`.
+   `…and <N> more — narrow with /daruma-mine or a status filter`.
 
-5. Do **not** invent IDs, statuses, or counts. If `taskagent_list` fails,
+5. Do **not** invent IDs, statuses, or counts. If `daruma_list` fails,
    surface the error verbatim and stop.
 
 6. Do not write anything to `.omc/plans/` or markdown task files — this
