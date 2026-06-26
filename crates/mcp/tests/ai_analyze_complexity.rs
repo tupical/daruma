@@ -1,4 +1,4 @@
-//! Integration test for `taskagent_ai_analyze_complexity` (§3.8.3).
+//! Integration test for `daruma_ai_analyze_complexity` (§3.8.3).
 //!
 //! Verifies:
 //!   1. The tool is present in `tool_definitions()`.
@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::post, Router};
 use serde_json::{json, Value};
-use taskagent_mcp::tools::call_tool;
-use taskagent_mcp::{tool_definitions, ApiClient};
+use daruma_mcp::tools::call_tool;
+use daruma_mcp::{tool_definitions, ApiClient};
 
 #[derive(Debug, Clone)]
 struct Captured {
@@ -64,8 +64,8 @@ async fn call_via_mock(tool: &str, args: Value) -> Captured {
 fn catalogue_contains_ai_analyze_complexity() {
     let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
     assert!(
-        names.contains(&"taskagent_ai_analyze_complexity"),
-        "tool_definitions() missing taskagent_ai_analyze_complexity; got: {names:?}"
+        names.contains(&"daruma_ai_analyze_complexity"),
+        "tool_definitions() missing daruma_ai_analyze_complexity; got: {names:?}"
     );
 }
 
@@ -73,7 +73,7 @@ fn catalogue_contains_ai_analyze_complexity() {
 async fn analyze_complexity_posts_to_plan_scoped_url() {
     let plan_id = "pln_test_abc";
     let captured = call_via_mock(
-        "taskagent_ai_analyze_complexity",
+        "daruma_ai_analyze_complexity",
         json!({ "plan_id": plan_id }),
     )
     .await;

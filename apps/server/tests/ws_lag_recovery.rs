@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use taskagent_domain::{Actor, NewTask};
-use taskagent_events::{Event, EventBus, EventEnvelope};
+use daruma_domain::{Actor, NewTask};
+use daruma_events::{Event, EventBus, EventEnvelope};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;

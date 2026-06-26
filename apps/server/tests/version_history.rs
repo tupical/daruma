@@ -2,8 +2,8 @@
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
-use taskagent_auth::{Capabilities, Capability, TokenKind};
-use taskagent_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
+use daruma_auth::{Capabilities, Capability, TokenKind};
+use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 
 mod common;
 use common::{json_get, json_post, mint_with_caps, spawn_server, test_app};
@@ -171,7 +171,7 @@ async fn history_mcp_tools_forward_read_api() {
 
     let history = call_tool(
         &client,
-        "taskagent_history_list",
+        "daruma_history_list",
         json!({ "entity_type": "task", "entity_id": task_id }),
     )
     .await;
@@ -180,18 +180,18 @@ async fn history_mcp_tools_forward_read_api() {
 
     let rollback = call_tool(
         &client,
-        "taskagent_history_rollback",
+        "daruma_history_rollback",
         json!({ "version_id": rollback_id }),
     )
     .await;
     assert_eq!(rollback["success"], true);
 
-    let latest = call_tool(&client, "taskagent_history_latest", json!({ "limit": 5 })).await;
+    let latest = call_tool(&client, "daruma_history_latest", json!({ "limit": 5 })).await;
     assert!(!latest.as_array().unwrap().is_empty());
 
     let summary = call_tool(
         &client,
-        "taskagent_history_summary",
+        "daruma_history_summary",
         json!({ "entity_type": "task", "entity_id": task_id }),
     )
     .await;
@@ -238,6 +238,6 @@ async fn history_rollback_requires_write_capability() {
 async fn dispatch_request(
     client: &ApiClient,
     req: JsonRpcRequest,
-) -> Option<taskagent_mcp::JsonRpcResponse> {
+) -> Option<daruma_mcp::JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }

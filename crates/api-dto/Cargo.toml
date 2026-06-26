@@ -1,14 +1,14 @@
 [package]
-name = "taskagent-api-dto"
+name = "daruma-api-dto"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-taskagent-shared  = { workspace = true }
-taskagent-domain  = { workspace = true }
-taskagent-events  = { workspace = true }
+daruma-shared  = { workspace = true }
+daruma-domain  = { workspace = true }
+daruma-events  = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 uuid       = { workspace = true }

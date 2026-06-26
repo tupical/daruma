@@ -1,7 +1,7 @@
 {
-  "name": "taskagent",
+  "name": "daruma",
   "version": "0.1.0",
-  "description": "Taskagent workflows for Codex: task/task-plan orchestration commands plus reusable skills for setup/start/doctor, branch tasks, and lessons.",
+  "description": "Daruma workflows for Codex: task/task-plan orchestration commands plus reusable skills for setup/start/doctor, branch tasks, and lessons.",
   "author": {
     "name": "tupical"
   },
@@ -10,9 +10,9 @@
   "repository": "https://github.com/tupical/daruma",
   "skills": "./skills/",
   "interface": {
-    "displayName": "TaskAgent",
-    "shortDescription": "TaskAgent workflows for Codex",
-    "longDescription": "Use TaskAgent in Codex for task and task-plan workflows, setup checks, branch task lookup, and lesson capture through the canonical tupical/daruma client plugin.",
+    "displayName": "Daruma",
+    "shortDescription": "Daruma workflows for Codex",
+    "longDescription": "Use Daruma in Codex for task and task-plan workflows, setup checks, branch task lookup, and lesson capture through the canonical tupical/daruma client plugin.",
     "developerName": "tupical",
     "category": "Productivity",
     "capabilities": [
@@ -22,7 +22,7 @@
     ],
     "websiteURL": "https://github.com/tupical/daruma/tree/main/clients/codex-plugin",
     "defaultPrompt": [
-      "Show TaskAgent tasks"
+      "Show Daruma tasks"
     ],
     "brandColor": "#0F766E",
     "screenshots": []

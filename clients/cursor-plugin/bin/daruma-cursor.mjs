@@ -1,26 +1,26 @@
 #!/usr/bin/env node
-// `taskagent-cursor` — Cursor companion CLI for tupical/daruma.
+// `daruma-cursor` — Cursor companion CLI for tupical/daruma.
 //
 // Subcommands:
 //   install [--global|--project DIR] [--transport http|stdio] [--command CMD]
 //                                      [--base-url URL] [--token T]
-//                                      Register the taskagent MCP server in
+//                                      Register the daruma MCP server in
 //                                      Cursor's mcp.json. --global (default)
 //                                      writes ~/.cursor/mcp.json; --project
 //                                      writes ./.cursor/mcp.json.
 //   uninstall [--global|--project DIR]
-//                                      Remove the taskagent entry.
+//                                      Remove the daruma entry.
 //   deeplink [--base-url URL] [--token T] [--command CMD]
 //                                      Print the official cursor:// MCP install
 //                                      URL for an "Add to Cursor" button.
 //   rules [--project DIR] [--force]
-//                                      Drop the bundled .cursor/rules/taskagent.mdc
+//                                      Drop the bundled .cursor/rules/daruma.mdc
 //                                      into a project so Cursor's agent knows
-//                                      how to drive the taskagent MCP tools.
+//                                      how to drive the daruma MCP tools.
 //   doctor [--json] [--quiet]
-//                                      Probe Cursor + taskagent-mcp + HTTP server.
+//                                      Probe Cursor + daruma-mcp + HTTP server.
 //   setup                              Print install hints for missing pieces.
-//   marketplace                        Print the taskagent marketplace manifest.
+//   marketplace                        Print the daruma marketplace manifest.
 //   --version | --help
 
 import { readFileSync } from "node:fs";
@@ -30,12 +30,12 @@ import { dirname, join } from "node:path";
 import {
   detectAll,
   detectCursor,
-  detectTaskagent,
+  detectDaruma,
   formatReport,
 } from "../lib/detect.mjs";
 import {
-  buildTaskagentInstallLinks,
-  defaultTaskagentConfig,
+  buildDarumaInstallLinks,
+  defaultDarumaConfig,
 } from "../lib/deeplink.mjs";
 import {
   resolveMcpPath,
@@ -51,21 +51,21 @@ import { createCliUi } from "../lib/cli-ui.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
 const marketplaceManifest = JSON.parse(
-  readFileSync(join(__dirname, "..", ".taskagent-plugin", "plugin.json"), "utf8"),
+  readFileSync(join(__dirname, "..", ".daruma-plugin", "plugin.json"), "utf8"),
 );
 
-const HELP = `taskagent-cursor v${pkg.version} — Cursor plugin for tupical/daruma
+const HELP = `daruma-cursor v${pkg.version} — Cursor plugin for tupical/daruma
 
 Usage:
-  taskagent-cursor install [--global|--project DIR] [--transport http|stdio]
+  daruma-cursor install [--global|--project DIR] [--transport http|stdio]
                                   [--command CMD]
                                   [--api-url URL] [--base-url URL] [--token T]
                                   [--api prod|staging|self-host] [--name NAME]
                                   [--no-rules] [--no-omc-guard]
                                   [--rules-dir DIR] [--force]
-        Register the taskagent MCP server in Cursor's mcp.json AND drop the
+        Register the daruma MCP server in Cursor's mcp.json AND drop the
         bundled .cursor/rules/ + .cursor/commands/ into the selected scope so
-        Cursor's agent defaults to taskagent for tasks/plans and OMC
+        Cursor's agent defaults to daruma for tasks/plans and OMC
         skills do not author .omc/plans/.
 
         --global  (default) → ~/.cursor/{mcp.json,rules,commands}
@@ -78,41 +78,41 @@ Usage:
         --no-omc-guard      → skip .omc/AGENTS.md guard.
         --force             → overwrite existing rules and commands.
 
-  taskagent-cursor uninstall [--global|--project DIR] [--name NAME]
+  daruma-cursor uninstall [--global|--project DIR] [--name NAME]
                                     [--rules-dir DIR] [--purge]
-        Remove the taskagent entry from mcp.json. With --purge, also remove
+        Remove the daruma entry from mcp.json. With --purge, also remove
         the bundled rules and the managed .omc/AGENTS.md block.
 
-  taskagent-cursor deeplink [--api-url URL] [--base-url URL] [--token T]
+  daruma-cursor deeplink [--api-url URL] [--base-url URL] [--token T]
                                    [--api prod|staging|self-host]
                                    [--transport http|stdio] [--command CMD]
                                    [--name NAME] [--print-scheme]
         Print the official cursor:// URL that a browser or marketplace can
         render as an "Add to Cursor" button.
 
-  taskagent-cursor rules [--project DIR] [--force]
+  daruma-cursor rules [--project DIR] [--force]
         Install the bundled .cursor/rules/*.mdc files into a project.
 
-  taskagent-cursor commands [--project DIR] [--force]
+  daruma-cursor commands [--project DIR] [--force]
         Install the bundled .cursor/commands/*.md slash commands
-        (/taskagent-tasks, /taskagent-plan, /taskagent-next,
-        /taskagent-mine) into a project.
+        (/daruma-tasks, /daruma-plan, /daruma-next,
+        /daruma-mine) into a project.
 
-  taskagent-cursor omc-guard [--project DIR]
+  daruma-cursor omc-guard [--project DIR]
         Refresh the managed .omc/AGENTS.md block that tells OMC skills to
-        route plans through taskagent and stay out of .omc/plans/.
+        route plans through daruma and stay out of .omc/plans/.
 
-  taskagent-cursor doctor [--json] [--quiet]
-        Probe Cursor + taskagent-mcp + HTTP server (exit 0 = READY).
+  daruma-cursor doctor [--json] [--quiet]
+        Probe Cursor + daruma-mcp + HTTP server (exit 0 = READY).
 
-  taskagent-cursor setup
+  daruma-cursor setup
         Print install hints for missing dependencies.
 
-  taskagent-cursor marketplace
-        Print the taskagent marketplace manifest (JSON).
+  daruma-cursor marketplace
+        Print the daruma marketplace manifest (JSON).
 
-  taskagent-cursor --version | -v
-  taskagent-cursor --help    | -h
+  daruma-cursor --version | -v
+  daruma-cursor --help    | -h
 `;
 
 function parseScopeFlags(rest) {
@@ -126,7 +126,7 @@ function parseScopeFlags(rest) {
     remote: undefined,
     token: undefined,
     transport: undefined,
-    name: "taskagent",
+    name: "daruma",
     force: false,
     printScheme: false,
     json: false,
@@ -254,7 +254,7 @@ function actionKind(action) {
 }
 
 async function cmdInstall(rest) {
-  const ui = createCliUi({ title: "TaskAgent Cursor Installer" });
+  const ui = createCliUi({ title: "Daruma Cursor Installer" });
   const opts = parseScopeFlags(rest);
   ui.header();
 
@@ -262,7 +262,7 @@ async function cmdInstall(rest) {
   const { entry, result } = await ui.task(
     "Registering Cursor MCP server...",
     async () => {
-      const entry = await defaultTaskagentConfig(installEnvOpts(opts));
+      const entry = await defaultDarumaConfig(installEnvOpts(opts));
       const result = await upsertServer(path, opts.name, entry);
       return { entry, result };
     },
@@ -329,7 +329,7 @@ async function cmdInstall(rest) {
 }
 
 async function cmdUninstall(rest) {
-  const ui = createCliUi({ title: "TaskAgent Cursor Uninstaller" });
+  const ui = createCliUi({ title: "Daruma Cursor Uninstaller" });
   const opts = parseScopeFlags(rest);
   ui.header();
   const path = resolveMcpPath({ scope: opts.scope, projectDir: opts.projectDir });
@@ -357,19 +357,19 @@ async function cmdUninstall(rest) {
 
 async function cmdDeeplink(rest) {
   const opts = parseScopeFlags(rest);
-  const { deeplink, config } = await buildTaskagentInstallLinks({
+  const { deeplink, config } = await buildDarumaInstallLinks({
     name: opts.name,
     ...installEnvOpts(opts),
   });
   process.stdout.write(deeplink + "\n");
-  if (process.env.TASKAGENT_DEBUG) {
+  if (process.env.DARUMA_DEBUG) {
     process.stderr.write("\nencoded config:\n");
     process.stderr.write(JSON.stringify(config, null, 2) + "\n");
   }
 }
 
 async function cmdRules(rest) {
-  const ui = createCliUi({ title: "TaskAgent Cursor Rules" });
+  const ui = createCliUi({ title: "Daruma Cursor Rules" });
   const opts = projectDefaultOpts(parseScopeFlags(rest));
   ui.header();
   const dir = resolveRulesDir(opts);
@@ -385,7 +385,7 @@ async function cmdRules(rest) {
 }
 
 async function cmdCommands(rest) {
-  const ui = createCliUi({ title: "TaskAgent Cursor Commands" });
+  const ui = createCliUi({ title: "Daruma Cursor Commands" });
   const opts = projectDefaultOpts(parseScopeFlags(rest));
   ui.header();
   const dir = resolveRulesDir(opts);
@@ -401,7 +401,7 @@ async function cmdCommands(rest) {
 }
 
 async function cmdOmcGuard(rest) {
-  const ui = createCliUi({ title: "TaskAgent OMC Guard" });
+  const ui = createCliUi({ title: "Daruma OMC Guard" });
   const opts = projectDefaultOpts(parseScopeFlags(rest));
   ui.header();
   const dir = resolveRulesDir(opts);
@@ -424,14 +424,14 @@ async function cmdDoctor(rest) {
         installed: report.cursor.installed,
         cli: report.cursor.cli,
       },
-      taskagent: {
-        installed: report.taskagent.installed,
-        mcpReady: report.taskagent.mcpReady,
-        cli: report.taskagent.cli,
-        http: report.taskagent.http,
-        cursorMcp: report.taskagent.cursorMcp,
-        projectRules: report.taskagent.projectRules,
-        projectCommands: report.taskagent.projectCommands,
+      daruma: {
+        installed: report.daruma.installed,
+        mcpReady: report.daruma.mcpReady,
+        cli: report.daruma.cli,
+        http: report.daruma.http,
+        cursorMcp: report.daruma.cursorMcp,
+        projectRules: report.daruma.projectRules,
+        projectCommands: report.daruma.projectCommands,
       },
       omc: report.omc,
     }) + "\n");
@@ -442,17 +442,17 @@ async function cmdDoctor(rest) {
 }
 
 async function cmdSetup() {
-  const ui = createCliUi({ title: "TaskAgent Cursor Setup" });
+  const ui = createCliUi({ title: "Daruma Cursor Setup" });
   ui.header();
   const report = await detectAll();
   if (report.ready) {
-    ui.success("Cursor + taskagent are ready. Nothing to install.");
+    ui.success("Cursor + daruma are ready. Nothing to install.");
     process.stdout.write(formatReport(report) + "\n");
     return;
   }
-  ui.warn("Install the missing pieces below, then re-run `taskagent-cursor doctor`.");
+  ui.warn("Install the missing pieces below, then re-run `daruma-cursor doctor`.");
   process.stdout.write("\n");
-  for (const tool of [report.cursor, report.taskagent]) {
+  for (const tool of [report.cursor, report.daruma]) {
     if (tool.installed && tool.mcpReady !== false) continue;
     const hint = tool.installed ? tool.mcpHint : tool.installHint;
     ui.section(tool.name);
@@ -461,9 +461,9 @@ async function cmdSetup() {
 }
 
 async function cmdMarketplace() {
-  // The taskagent marketplace consumer reads this verbatim. We embed the live
+  // The daruma marketplace consumer reads this verbatim. We embed the live
   // deeplink so the manifest never drifts from the actual install button.
-  const links = await buildTaskagentInstallLinks({ remote: "prod" });
+  const links = await buildDarumaInstallLinks({ remote: "prod" });
   const augmented = {
     ...marketplaceManifest,
     install: {
@@ -513,7 +513,7 @@ async function main(argv) {
 }
 
 main(process.argv).catch((err) => {
-  process.stderr.write(`taskagent-cursor: ${err.message ?? err}\n`);
-  if (process.env.TASKAGENT_DEBUG) process.stderr.write(`${err.stack}\n`);
+  process.stderr.write(`daruma-cursor: ${err.message ?? err}\n`);
+  if (process.env.DARUMA_DEBUG) process.stderr.write(`${err.stack}\n`);
   process.exit(1);
 });

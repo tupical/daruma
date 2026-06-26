@@ -29,9 +29,9 @@ Commons-Clause”** (the SPDX expression used in `Cargo.toml`).
 > notice or attribution required by the License must also include this
 > Commons Clause License Condition notice.
 >
-> Software:     TaskAgent
+> Software:     Daruma
 > License:      Apache License, Version 2.0
-> Licensor:     TaskAgent contributors
+> Licensor:     Daruma contributors
 
 ---
 
@@ -40,13 +40,13 @@ Commons-Clause”** (the SPDX expression used in `Cargo.toml`).
 - You may use, modify, fork, self-host for your own (or your
   organisation’s) internal needs, and contribute back. Apache-2.0
   rights apply normally for those uses.
-- You may **not** offer TaskAgent (or a derivative whose value derives
-  substantially from TaskAgent) as a paid product or paid hosted/managed
+- You may **not** offer Daruma (or a derivative whose value derives
+  substantially from Daruma) as a paid product or paid hosted/managed
   service to third parties without a commercial licence from the
   Licensor.
-- Bundling TaskAgent into a larger product whose paid value clearly
-  derives from other components is permitted, as long as the TaskAgent
+- Bundling Daruma into a larger product whose paid value clearly
+  derives from other components is permitted, as long as the Daruma
   portion itself is not the substantial source of paid value.
 
-If you want to sell TaskAgent as a service or product, contact the
+If you want to sell Daruma as a service or product, contact the
 project maintainers to obtain an enterprise/commercial licence.

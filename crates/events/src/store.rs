@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use taskagent_shared::{EventId, Result};
+use daruma_shared::{EventId, Result};
 
 use crate::envelope::EventEnvelope;
 

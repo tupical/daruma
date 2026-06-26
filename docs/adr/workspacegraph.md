@@ -6,7 +6,7 @@ Accepted for P0.
 
 ## Context
 
-TaskAgent already has canonical event storage plus read projections for tasks,
+Daruma already has canonical event storage plus read projections for tasks,
 plans, documents, comments, and task relations. Upcoming WorkspaceGraph work
 needs a fast local index for context queries such as "what is related to this
 task?", "what changes if this task moves?", and "find relevant workspace items".
@@ -18,14 +18,14 @@ of truth; WorkspaceGraph is a derived read model.
 ## Decision
 
 WorkspaceGraph will use a sidecar SQLite database named
-`workspacegraph.sqlite`, stored next to the workspace's `taskagent.sqlite`.
+`workspacegraph.sqlite`, stored next to the workspace's `daruma.sqlite`.
 
 The sidecar is rebuilt from the event log and maintained incrementally by
 applying events after the canonical projections have accepted them. If the
-sidecar is missing, corrupt, or behind, TaskAgent may reindex it without
+sidecar is missing, corrupt, or behind, Daruma may reindex it without
 changing canonical data.
 
-We choose a sidecar over inline tables in `taskagent.sqlite` because:
+We choose a sidecar over inline tables in `daruma.sqlite` because:
 
 - graph schema can evolve independently from task storage migrations;
 - failed or partial indexing cannot corrupt canonical task data;
@@ -35,7 +35,7 @@ We choose a sidecar over inline tables in `taskagent.sqlite` because:
 - Hosted and local deployments can tune sidecar storage independently.
 
 Inline tables in the primary database remain acceptable only for canonical
-entities and relations that are part of TaskAgent's mutation model.
+entities and relations that are part of Daruma's mutation model.
 
 ## Node Taxonomy
 
@@ -53,7 +53,7 @@ Each node stores:
 
 - `id`: graph id with kind prefix;
 - `kind`: one of the node kinds above;
-- `source_id`: canonical TaskAgent id;
+- `source_id`: canonical Daruma id;
 - `project_id`: owning project when known;
 - `title`: short display label;
 - `text`: searchable body or summary;
@@ -131,6 +131,6 @@ The sidecar adds an operational component: migrations, reindexing, lag metrics,
 and repair tooling are required. This is acceptable because the component is
 derived state and can be rebuilt.
 
-Core TaskAgent commands stay focused on event emission and canonical
+Core Daruma commands stay focused on event emission and canonical
 projections. WorkspaceGraph can iterate quickly on retrieval, ranking, and
 index structure without forcing task storage migrations for every experiment.

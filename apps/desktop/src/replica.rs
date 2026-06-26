@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
-use taskagent_core::embed::{
+use daruma_core::embed::{
     ActivityRepo, CommentRepo, EventEnvelope, EventStore, ProjectRepo, TaskRepo,
 };
-use taskagent_shared::{CoreError, Result};
+use daruma_shared::{CoreError, Result};
 
 use crate::remote::HttpReplicaSink;
 
@@ -124,8 +124,8 @@ impl Replica {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_core::embed::{Db, Event, SqliteEventStore};
-    use taskagent_domain::{Actor, NewTask};
+    use daruma_core::embed::{Db, Event, SqliteEventStore};
+    use daruma_domain::{Actor, NewTask};
 
     #[tokio::test]
     async fn applies_remote_events_once_and_advances_server_cursor() {

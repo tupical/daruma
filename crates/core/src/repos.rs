@@ -1,14 +1,14 @@
 //! Repository traits for plan-domain aggregates.
 //!
-//! These traits are the contract between `taskagent-core` (commands,
-//! concurrency logic) and `taskagent-storage` (concrete SQLite
+//! These traits are the contract between `daruma-core` (commands,
+//! concurrency logic) and `daruma-storage` (concrete SQLite
 //! implementations landing in W2.1).  Until W2.1 merges, the handler
 //! scaffolds against these traits; tests supply in-memory stub impls.
 
 use async_trait::async_trait;
-use taskagent_domain::{AgentSession, Document, DocumentKind, Plan, PlanTask, Run, RunNote};
-use taskagent_events::EventEnvelope;
-use taskagent_shared::{
+use daruma_domain::{AgentSession, Document, DocumentKind, Plan, PlanTask, Run, RunNote};
+use daruma_events::EventEnvelope;
+use daruma_shared::{
     AgentId, AgentSessionId, DocumentId, PlanId, ProjectId, Result, RunId, RunNoteId, TaskId,
 };
 
@@ -53,7 +53,7 @@ pub trait RunRepository: Send + Sync {
     async fn list_unresponsive_candidates(
         &self,
         threshold: std::time::Duration,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
     ) -> Result<Vec<RunId>>;
 
     /// §3.7.4 — active runs whose `last_activity_at` is at least `threshold`
@@ -61,7 +61,7 @@ pub trait RunRepository: Send + Sync {
     async fn list_stale_candidates(
         &self,
         threshold: std::time::Duration,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
     ) -> Result<Vec<RunId>>;
 
     /// Apply a persisted event to the projection.
@@ -163,21 +163,21 @@ pub trait ExternalRefRepository: Send + Sync {
 #[async_trait]
 pub trait RuleRepository: Send + Sync {
     /// Fetch a rule by id; `None` if not found.
-    async fn get(&self, id: taskagent_shared::RuleId) -> Result<Option<taskagent_domain::Rule>>;
+    async fn get(&self, id: daruma_shared::RuleId) -> Result<Option<daruma_domain::Rule>>;
 
     /// All rules defined directly at a scope level (any enabled state).
     async fn list_for_scope(
         &self,
-        scope: &taskagent_domain::RuleScope,
-    ) -> Result<Vec<taskagent_domain::Rule>>;
+        scope: &daruma_domain::RuleScope,
+    ) -> Result<Vec<daruma_domain::Rule>>;
 
     /// Effective enabled rules for a scope chain firing on `trigger`
     /// (inheritance/override resolved by `rule_key`).
     async fn effective_rules(
         &self,
-        chain: &[taskagent_domain::RuleScope],
-        trigger: taskagent_domain::RuleTrigger,
-    ) -> Result<Vec<taskagent_domain::Rule>>;
+        chain: &[daruma_domain::RuleScope],
+        trigger: daruma_domain::RuleTrigger,
+    ) -> Result<Vec<daruma_domain::Rule>>;
 
     /// Apply a persisted event to the projection.
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
@@ -193,22 +193,22 @@ pub trait EvidenceRepository: Send + Sync {
     /// Fetch evidence by id; `None` if not found.
     async fn get(
         &self,
-        id: taskagent_shared::EvidenceId,
-    ) -> Result<Option<taskagent_domain::Evidence>>;
+        id: daruma_shared::EvidenceId,
+    ) -> Result<Option<daruma_domain::Evidence>>;
 
     /// Evidence recorded directly at a scope level (newest first).
     async fn list_for_scope(
         &self,
-        scope: &taskagent_domain::RuleScope,
+        scope: &daruma_domain::RuleScope,
         include_superseded: bool,
-    ) -> Result<Vec<taskagent_domain::Evidence>>;
+    ) -> Result<Vec<daruma_domain::Evidence>>;
 
     /// Gate hot path: does live (non-superseded) evidence of `kind` exist
     /// anywhere in the scope chain, optionally matching `target`?
     async fn has_live_evidence(
         &self,
-        chain: &[taskagent_domain::RuleScope],
-        kind: taskagent_domain::EvidenceKind,
+        chain: &[daruma_domain::RuleScope],
+        kind: daruma_domain::EvidenceKind,
         target: Option<&str>,
     ) -> Result<bool>;
 
@@ -218,13 +218,13 @@ pub trait EvidenceRepository: Send + Sync {
 
 // ── Concrete implementations ──────────────────────────────────────────────────
 //
-// `taskagent-core` already depends on `taskagent-storage`, so we implement the
+// `daruma-core` already depends on `daruma-storage`, so we implement the
 // repository traits here for the concrete storage types.  The `apps/server`
 // crate then coerces `Arc<PlanRepo>` → `Arc<dyn PlanRepository>` via the
 // builder methods on `CommandHandler`.
 
-use taskagent_events::Event;
-use taskagent_storage::{
+use daruma_events::Event;
+use daruma_storage::{
     AgentClaimRepo, DocumentRepo, EvidenceRepo, ExternalRefRepo, PlanRepo, RuleRepo, RunNoteRepo,
     RunRepo, SessionRepo, WorkLeaseRepo,
 };
@@ -233,21 +233,21 @@ use taskagent_storage::{
 impl EvidenceRepository for EvidenceRepo {
     async fn get(
         &self,
-        id: taskagent_shared::EvidenceId,
-    ) -> Result<Option<taskagent_domain::Evidence>> {
+        id: daruma_shared::EvidenceId,
+    ) -> Result<Option<daruma_domain::Evidence>> {
         EvidenceRepo::get(self, id).await
     }
     async fn list_for_scope(
         &self,
-        scope: &taskagent_domain::RuleScope,
+        scope: &daruma_domain::RuleScope,
         include_superseded: bool,
-    ) -> Result<Vec<taskagent_domain::Evidence>> {
+    ) -> Result<Vec<daruma_domain::Evidence>> {
         EvidenceRepo::list_for_scope(self, scope, include_superseded).await
     }
     async fn has_live_evidence(
         &self,
-        chain: &[taskagent_domain::RuleScope],
-        kind: taskagent_domain::EvidenceKind,
+        chain: &[daruma_domain::RuleScope],
+        kind: daruma_domain::EvidenceKind,
         target: Option<&str>,
     ) -> Result<bool> {
         EvidenceRepo::has_live_evidence(self, chain, kind, target).await
@@ -259,20 +259,20 @@ impl EvidenceRepository for EvidenceRepo {
 
 #[async_trait]
 impl RuleRepository for RuleRepo {
-    async fn get(&self, id: taskagent_shared::RuleId) -> Result<Option<taskagent_domain::Rule>> {
+    async fn get(&self, id: daruma_shared::RuleId) -> Result<Option<daruma_domain::Rule>> {
         RuleRepo::get(self, id).await
     }
     async fn list_for_scope(
         &self,
-        scope: &taskagent_domain::RuleScope,
-    ) -> Result<Vec<taskagent_domain::Rule>> {
+        scope: &daruma_domain::RuleScope,
+    ) -> Result<Vec<daruma_domain::Rule>> {
         RuleRepo::list_for_scope(self, scope).await
     }
     async fn effective_rules(
         &self,
-        chain: &[taskagent_domain::RuleScope],
-        trigger: taskagent_domain::RuleTrigger,
-    ) -> Result<Vec<taskagent_domain::Rule>> {
+        chain: &[daruma_domain::RuleScope],
+        trigger: daruma_domain::RuleTrigger,
+    ) -> Result<Vec<daruma_domain::Rule>> {
         RuleRepo::effective_rules(self, chain, trigger).await
     }
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
@@ -311,14 +311,14 @@ impl RunRepository for RunRepo {
     async fn list_unresponsive_candidates(
         &self,
         threshold: std::time::Duration,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
     ) -> Result<Vec<RunId>> {
         RunRepo::list_unresponsive_candidates(self, threshold, now).await
     }
     async fn list_stale_candidates(
         &self,
         threshold: std::time::Duration,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
     ) -> Result<Vec<RunId>> {
         RunRepo::list_stale_candidates(self, threshold, now).await
     }

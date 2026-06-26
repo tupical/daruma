@@ -7,7 +7,7 @@
 //! * `apps/server` — imports `MutationResponse`, `WsServerMessage`, etc.
 //!   (re-exports these from the crates that used to define them, or defines
 //!   them here as the single source of truth).
-//! * `taskagent-web` — imports the same types, eliminating local mirrors.
+//! * `daruma-web` — imports the same types, eliminating local mirrors.
 //! * `crates/core` — re-exports `Command` / `CommandEnvelope` from here.
 //! * `crates/sync` — re-exports `WsServerMessage` / `WsClientMessage` from here.
 

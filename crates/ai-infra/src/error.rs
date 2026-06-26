@@ -1,6 +1,6 @@
 //! Error type for the AI crate and its conversion to [`CoreError`].
 
-use taskagent_shared::CoreError;
+use daruma_shared::CoreError;
 use thiserror::Error;
 
 /// All failure modes that can occur in the AI crate.

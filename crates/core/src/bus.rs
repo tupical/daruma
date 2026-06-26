@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use taskagent_domain::Actor;
-use taskagent_events::EventEnvelope;
-use taskagent_shared::Result;
+use daruma_domain::Actor;
+use daruma_events::EventEnvelope;
+use daruma_shared::Result;
 
 use crate::{lifecycle_gate::DispatchOutcome, Command, CommandHandler};
 

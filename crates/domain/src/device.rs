@@ -1,7 +1,7 @@
 //! Device identity for multi-device event origins.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{DeviceId, Timestamp};
+use daruma_shared::{DeviceId, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Device {

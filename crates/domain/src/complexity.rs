@@ -9,7 +9,7 @@
 //! score как Task field" is in the "what we don't take from CTM" list).
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{TaskId, Timestamp};
+use daruma_shared::{TaskId, Timestamp};
 
 /// Minimal task context handed to the analyser (title + optional description).
 ///

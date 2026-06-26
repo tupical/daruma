@@ -1,7 +1,7 @@
 //! Typed relations between tasks: Blocks, RelatesTo, Duplicates.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{RelationId, TaskId, Timestamp};
+use daruma_shared::{RelationId, TaskId, Timestamp};
 
 use crate::agent::Actor;
 
@@ -59,7 +59,7 @@ pub struct TaskRelations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::time;
+    use daruma_shared::time;
 
     fn make_relation(kind: RelationKind) -> Relation {
         Relation {

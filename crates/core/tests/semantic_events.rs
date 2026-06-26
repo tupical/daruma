@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{Actor, NewComment, NewTask, Status};
-use taskagent_events::{Event, EventBus, EventEnvelope, EventStore};
-use taskagent_shared::TaskId;
-use taskagent_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{Actor, NewComment, NewTask, Status};
+use daruma_events::{Event, EventBus, EventEnvelope, EventStore};
+use daruma_shared::TaskId;
+use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
 
 async fn build_handler() -> CommandHandler {
     let db = Db::memory().await.unwrap();

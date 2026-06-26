@@ -1,9 +1,9 @@
 ---
 name: lesson-recall
-description: Recall previously captured taskagent lessons through `taskagent_lesson_recall` before repeating similar work or debugging a familiar failure mode.
+description: Recall previously captured daruma lessons through `daruma_lesson_recall` before repeating similar work or debugging a familiar failure mode.
 ---
 
-# taskagent-claude: lesson-recall
+# daruma-claude: lesson-recall
 
 Use this before starting work that resembles a previous task, failure, setup issue, or project convention.
 
@@ -18,7 +18,7 @@ Call:
 }
 ```
 
-through `taskagent_lesson_recall`. Pass `project_id` or `scope_path` when the workspace has multiple taskagent scopes.
+through `daruma_lesson_recall`. Pass `project_id` or `scope_path` when the workspace has multiple daruma scopes.
 
 ## Step 2 - Apply only relevant lessons
 

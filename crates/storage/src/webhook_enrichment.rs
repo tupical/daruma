@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{PlanId, ProjectId, TaskId};
-use taskagent_webhooks::enrich::{keys, EnrichmentSource};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{PlanId, ProjectId, TaskId};
+use daruma_webhooks::enrich::{keys, EnrichmentSource};
 
 use crate::{PlanRepo, ProjectRepo, TaskRepo};
 

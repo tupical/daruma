@@ -4,9 +4,9 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
-use taskagent_domain::{Priority, Status, Task, TriageState};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, EventId, ProjectId, Result, TaskId};
+use daruma_domain::{Priority, Status, Task, TriageState};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, EventId, ProjectId, Result, TaskId};
 
 use crate::entity_version::{insert_entity_version, update_summary};
 
@@ -116,7 +116,7 @@ impl TaskRepo {
     /// Optionally scoped to a project. Ordered oldest-transition first (most
     /// stuck first).
     ///
-    /// Complements `taskagent_doctor`, which only catches `in_progress` tasks
+    /// Complements `daruma_doctor`, which only catches `in_progress` tasks
     /// without a live claim: this catches anything wedged in *any* status
     /// (e.g. `in_review` no one is reviewing), regardless of claim state.
     pub async fn list_stuck_in_status(
@@ -498,9 +498,9 @@ impl TaskRepo {
     /// value (`task.due` webhook watchdog, capped at `limit`).
     pub async fn list_due_unnotified(
         &self,
-        now: taskagent_shared::Timestamp,
+        now: daruma_shared::Timestamp,
         limit: u32,
-    ) -> Result<Vec<(TaskId, taskagent_shared::Timestamp)>> {
+    ) -> Result<Vec<(TaskId, daruma_shared::Timestamp)>> {
         let rows = sqlx::query(
             "SELECT t.id, t.due_at FROM tasks t \
              WHERE t.due_at IS NOT NULL \
@@ -832,9 +832,9 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::TaskId;
+    use daruma_domain::Actor;
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::TaskId;
 
     #[tokio::test]
     async fn task_created_and_retrieved() {
@@ -843,10 +843,10 @@ mod tests {
         let repo = TaskRepo::new(db.pool().clone());
 
         let id = TaskId::new();
-        let new_task = taskagent_domain::NewTask {
+        let new_task = daruma_domain::NewTask {
             id: Some(id),
             title: "hello".into(),
-            ..taskagent_domain::NewTask::new("hello")
+            ..daruma_domain::NewTask::new("hello")
         };
         let env = EventEnvelope::new(Actor::user(), Event::TaskCreated { task: new_task });
         repo.apply_event(&env).await.unwrap();
@@ -870,10 +870,10 @@ mod tests {
 
         // Create a task and move it to in_review.
         let id = TaskId::new();
-        let new_task = taskagent_domain::NewTask {
+        let new_task = daruma_domain::NewTask {
             id: Some(id),
             project_id: Some(project),
-            ..taskagent_domain::NewTask::new("review me")
+            ..daruma_domain::NewTask::new("review me")
         };
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
@@ -924,10 +924,10 @@ mod tests {
         let repo = TaskRepo::new(db.pool().clone());
 
         let id = TaskId::new();
-        let new_task = taskagent_domain::NewTask {
+        let new_task = daruma_domain::NewTask {
             id: Some(id),
             title: "version me".into(),
-            ..taskagent_domain::NewTask::new("version me")
+            ..daruma_domain::NewTask::new("version me")
         };
         let mut env = EventEnvelope::new(Actor::user(), Event::TaskCreated { task: new_task });
         env.seq = 7;
@@ -965,9 +965,9 @@ mod tests {
         let repo = TaskRepo::new(db.pool().clone());
 
         let id = TaskId::new();
-        let new_task = taskagent_domain::NewTask {
+        let new_task = daruma_domain::NewTask {
             id: Some(id),
-            ..taskagent_domain::NewTask::new("audit me")
+            ..daruma_domain::NewTask::new("audit me")
         };
         let mut create_env =
             EventEnvelope::new(Actor::user(), Event::TaskCreated { task: new_task });
@@ -1002,15 +1002,15 @@ mod tests {
 
     #[tokio::test]
     async fn task_closed_sets_completed_at() {
-        use taskagent_shared::time;
+        use daruma_shared::time;
         let db = Db::memory().await.unwrap();
         db.migrate().await.unwrap();
         let repo = TaskRepo::new(db.pool().clone());
 
         let id = TaskId::new();
-        let new_task = taskagent_domain::NewTask {
+        let new_task = daruma_domain::NewTask {
             id: Some(id),
-            ..taskagent_domain::NewTask::new("close me")
+            ..daruma_domain::NewTask::new("close me")
         };
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
@@ -1039,15 +1039,15 @@ mod tests {
 
     #[tokio::test]
     async fn task_reopened_clears_completed_at() {
-        use taskagent_shared::time;
+        use daruma_shared::time;
         let db = Db::memory().await.unwrap();
         db.migrate().await.unwrap();
         let repo = TaskRepo::new(db.pool().clone());
 
         let id = TaskId::new();
-        let new_task = taskagent_domain::NewTask {
+        let new_task = daruma_domain::NewTask {
             id: Some(id),
-            ..taskagent_domain::NewTask::new("reopen me")
+            ..daruma_domain::NewTask::new("reopen me")
         };
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
@@ -1093,7 +1093,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_filtered_by_status_combines_with_project_scope() {
-        use taskagent_shared::ProjectId;
+        use daruma_shared::ProjectId;
 
         let db = Db::memory().await.unwrap();
         db.migrate().await.unwrap();
@@ -1104,11 +1104,11 @@ mod tests {
 
         let mk = |title: &str, project: Option<ProjectId>, status: Status| {
             let id = TaskId::new();
-            let new_task = taskagent_domain::NewTask {
+            let new_task = daruma_domain::NewTask {
                 id: Some(id),
                 project_id: project,
                 status: Some(status),
-                ..taskagent_domain::NewTask::new(title)
+                ..daruma_domain::NewTask::new(title)
             };
             (id, new_task)
         };

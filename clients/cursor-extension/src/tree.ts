@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { Plan, Project, Task, TaskagentApiClient } from "./apiClient.js";
+import { Plan, Project, Task, DarumaApiClient } from "./apiClient.js";
 
 type Node = ProjectNode | PlanNode | TaskNode;
 
@@ -18,11 +18,11 @@ interface TaskNode {
   task: Task;
 }
 
-export class TaskagentTreeProvider implements vscode.TreeDataProvider<Node> {
+export class DarumaTreeProvider implements vscode.TreeDataProvider<Node> {
   private readonly onDidChangeTreeDataEmitter = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
-  constructor(private readonly client: TaskagentApiClient) {}
+  constructor(private readonly client: DarumaApiClient) {}
 
   refresh(): void {
     this.onDidChangeTreeDataEmitter.fire(undefined);
@@ -64,7 +64,7 @@ export class TaskagentTreeProvider implements vscode.TreeDataProvider<Node> {
     if (element.kind === "project") {
       const item = new vscode.TreeItem(element.project.title, vscode.TreeItemCollapsibleState.Collapsed);
       item.id = element.project.id;
-      item.contextValue = "taskagent.project";
+      item.contextValue = "daruma.project";
       item.iconPath = new vscode.ThemeIcon("repo");
       return item;
     }
@@ -73,10 +73,10 @@ export class TaskagentTreeProvider implements vscode.TreeDataProvider<Node> {
       const item = new vscode.TreeItem(element.plan.title, vscode.TreeItemCollapsibleState.Collapsed);
       item.id = element.plan.id;
       item.description = element.plan.status;
-      item.contextValue = "taskagent.plan";
+      item.contextValue = "daruma.plan";
       item.iconPath = new vscode.ThemeIcon("list-tree");
       item.command = {
-        command: "taskagent.openPlan",
+        command: "daruma.openPlan",
         title: "Open Plan",
         arguments: [element.plan]
       };
@@ -86,10 +86,10 @@ export class TaskagentTreeProvider implements vscode.TreeDataProvider<Node> {
     const item = new vscode.TreeItem(element.task.title, vscode.TreeItemCollapsibleState.None);
     item.id = element.task.id;
     item.description = [element.task.status, element.task.priority].filter(Boolean).join(" ");
-    item.contextValue = "taskagent.task";
+    item.contextValue = "daruma.task";
     item.iconPath = taskIcon(element.task.status);
     item.command = {
-      command: "taskagent.showTask",
+      command: "daruma.showTask",
       title: "Show Task",
       arguments: [element.task]
     };

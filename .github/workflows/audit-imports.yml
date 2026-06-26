@@ -22,7 +22,7 @@ jobs:
           # §3.4 W4.1 — the core layer (crates/{shared,domain,events,core,
           # storage,auth} and apps/server/src/) must not depend on any
           # app crate. Apps depend on core, never the reverse.
-          PATTERN='use[[:space:]]\+\(taskagent_desktop\|taskagent_cli\|taskagent_mcp_bin\|taskagent_web\)::'
+          PATTERN='use[[:space:]]\+\(daruma_desktop\|daruma_cli\|daruma_mcp_bin\|daruma_web\)::'
           CORE_PATHS=(
             crates/shared
             crates/domain
@@ -46,14 +46,14 @@ jobs:
           fi
           echo "OK: no app-crate imports in the core layer."
 
-      - name: Embed-mode clients reach for runtime only via taskagent_core::embed
+      - name: Embed-mode clients reach for runtime only via daruma_core::embed
         shell: bash
         run: |
           set -euo pipefail
           # §3.4 W2.1 — apps/desktop is the canonical embed client and must
           # not import directly from internal runtime crates. Other embed
           # clients added in the future should follow the same rule.
-          PATTERN='use[[:space:]]\+\(taskagent_storage\|taskagent_events\)::'
+          PATTERN='use[[:space:]]\+\(daruma_storage\|daruma_events\)::'
           EMBED_PATHS=(apps/desktop/src)
           violations=0
           for path in "${EMBED_PATHS[@]}"; do
@@ -64,7 +64,7 @@ jobs:
           done
           if [ "$violations" -gt 0 ]; then
             echo
-            echo "::error::Embed-mode clients must reach for the runtime via taskagent_core::embed::*, not internal crates. See docs/MODULE_CONTRACT.md#embed-mode."
+            echo "::error::Embed-mode clients must reach for the runtime via daruma_core::embed::*, not internal crates. See docs/MODULE_CONTRACT.md#embed-mode."
             exit 1
           fi
           echo "OK: no direct runtime-internal imports in embed clients."

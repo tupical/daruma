@@ -5,12 +5,12 @@
 //! in tokio / sqlx.
 
 use serde::{Deserialize, Serialize};
-use taskagent_domain::{
+use daruma_domain::{
     AgentAction, AgentSessionPlanStep, CommentPatch, CompletionNote, NewComment, NewDocument,
     NewPlan, NewTask, PlanPatch, PlanStatus, Priority, RelationKind, RunOutcome,
     SessionArtifactKind, SignalKind, Status, TaskPatch, WorkLease,
 };
-use taskagent_shared::{
+use daruma_shared::{
     AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RuleId, RunId,
     TaskId, WorkUnitId,
 };
@@ -78,7 +78,7 @@ pub enum Command {
         description: Option<String>,
     },
     CreateWorkUnit {
-        work_unit: taskagent_domain::NewWorkUnit,
+        work_unit: daruma_domain::NewWorkUnit,
     },
     CompleteWorkUnit {
         id: WorkUnitId,
@@ -92,14 +92,14 @@ pub enum Command {
     },
     SetWorkUnitStatus {
         id: WorkUnitId,
-        status: taskagent_domain::WorkUnitStatus,
+        status: daruma_domain::WorkUnitStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
     UpdateProjectSettings {
         project_id: ProjectId,
         #[serde(default)]
-        auto_append: taskagent_domain::AutoAppendPatch,
+        auto_append: daruma_domain::AutoAppendPatch,
     },
     UpdateProject {
         id: ProjectId,
@@ -351,13 +351,13 @@ pub enum Command {
     /// Create a lifecycle rule. Rejected if a rule with the same `rule_key`
     /// already exists at the same scope level.
     CreateRule {
-        rule: taskagent_domain::NewRule,
+        rule: daruma_domain::NewRule,
     },
 
     /// Patch an existing lifecycle rule (mode/condition/requirement/…).
     UpdateRule {
         id: RuleId,
-        patch: taskagent_domain::RulePatch,
+        patch: daruma_domain::RulePatch,
     },
 
     /// Disable a lifecycle rule (`enabled=false`). A disabled rule is not
@@ -371,7 +371,7 @@ pub enum Command {
     /// older record is marked superseded (not edited). Evidence is what
     /// satisfies a `required` rule's requirement at the lifecycle gate.
     RecordEvidence {
-        evidence: taskagent_domain::NewEvidence,
+        evidence: daruma_domain::NewEvidence,
     },
 }
 
@@ -455,7 +455,7 @@ impl Command {
 pub struct CommandEnvelope {
     pub command: Command,
     #[serde(default)]
-    pub actor: taskagent_domain::Actor,
+    pub actor: daruma_domain::Actor,
     /// Optional client-generated UUIDv4 for idempotent retry (Linear A.1).
     /// The dispatch layer checks `processed_command_ids` before forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -463,7 +463,7 @@ pub struct CommandEnvelope {
 }
 
 impl CommandEnvelope {
-    pub fn new(command: Command, actor: taskagent_domain::Actor) -> Self {
+    pub fn new(command: Command, actor: daruma_domain::Actor) -> Self {
         Self {
             command,
             actor,
@@ -472,11 +472,11 @@ impl CommandEnvelope {
     }
 
     pub fn by_user(command: Command) -> Self {
-        Self::new(command, taskagent_domain::Actor::user())
+        Self::new(command, daruma_domain::Actor::user())
     }
 
     pub fn by_agent(command: Command, agent_name: impl Into<String>) -> Self {
-        Self::new(command, taskagent_domain::Actor::agent(agent_name))
+        Self::new(command, daruma_domain::Actor::agent(agent_name))
     }
 
     pub fn with_idempotency_key(mut self, key: uuid::Uuid) -> Self {

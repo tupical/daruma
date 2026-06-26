@@ -9,7 +9,7 @@
 //! be created freely — `kind` is *not* unique per project.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{DocumentId, ProjectId, Timestamp};
+use daruma_shared::{DocumentId, ProjectId, Timestamp};
 
 /// Discriminator for default document slots.
 ///
@@ -108,7 +108,7 @@ impl NewDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::{time, DocumentId, ProjectId};
+    use daruma_shared::{time, DocumentId, ProjectId};
 
     fn make_doc(kind: DocumentKind) -> Document {
         let now = time::now();

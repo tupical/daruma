@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
-use taskagent_domain::{
+use daruma_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
     ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, CompletionNote, Document,
     Evidence, NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Rule, Run,
     RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
 };
-use taskagent_shared::{
+use daruma_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
     EventId, EvidenceId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId, TaskId,
     Timestamp, WorkUnitId,
@@ -25,7 +25,7 @@ pub enum ObsolescenceKind {
 }
 
 /// All mutations to the system are represented as events. Events are
-/// append-only; projections are derived in [`taskagent-storage`].
+/// append-only; projections are derived in [`daruma-storage`].
 ///
 /// `#[serde(tag = "type")]` produces a tagged-union JSON layout that is
 /// safe to consume from the web / WS clients without ambiguity.
@@ -422,7 +422,7 @@ pub enum Event {
     /// auto-append toggles). Carries the full new state for replay.
     ProjectSettingsChanged {
         project_id: ProjectId,
-        auto_append: taskagent_domain::AutoAppendSettings,
+        auto_append: daruma_domain::AutoAppendSettings,
         at: Timestamp,
     },
 
@@ -1010,8 +1010,8 @@ pub enum Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_domain::{run::RunStatus, NewTask, SessionStepStatus};
-    use taskagent_shared::{time, ProjectId};
+    use daruma_domain::{run::RunStatus, NewTask, SessionStepStatus};
+    use daruma_shared::{time, ProjectId};
 
     fn round_trip(ev: &Event) -> Event {
         let json = serde_json::to_string(ev).expect("serialize");
@@ -1298,7 +1298,7 @@ mod tests {
 
     #[test]
     fn run_note_appended_round_trip() {
-        use taskagent_shared::RunNoteId;
+        use daruma_shared::RunNoteId;
         assert_round_trip(
             Event::RunNoteAppended {
                 run_id: RunId::new(),
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn run_note_appended_channel_is_runs() {
-        use taskagent_shared::RunNoteId;
+        use daruma_shared::RunNoteId;
         let ev = Event::RunNoteAppended {
             run_id: RunId::new(),
             note_id: RunNoteId::new(),
@@ -1678,8 +1678,8 @@ mod tests {
 
     #[test]
     fn task_linked_round_trip() {
-        use taskagent_domain::{Actor, RelationKind};
-        use taskagent_shared::RelationId;
+        use daruma_domain::{Actor, RelationKind};
+        use daruma_shared::RelationId;
         assert_round_trip(
             Event::TaskLinked {
                 relation_id: RelationId::new(),
@@ -1695,8 +1695,8 @@ mod tests {
 
     #[test]
     fn task_unlinked_round_trip() {
-        use taskagent_domain::RelationKind;
-        use taskagent_shared::RelationId;
+        use daruma_domain::RelationKind;
+        use daruma_shared::RelationId;
         assert_round_trip(
             Event::TaskUnlinked {
                 relation_id: RelationId::new(),
@@ -1723,8 +1723,8 @@ mod tests {
 
     #[test]
     fn task_relation_kind_changed_round_trip() {
-        use taskagent_domain::RelationKind;
-        use taskagent_shared::RelationId;
+        use daruma_domain::RelationKind;
+        use daruma_shared::RelationId;
         assert_round_trip(
             Event::TaskRelationKindChanged {
                 relation_id: RelationId::new(),
@@ -1740,8 +1740,8 @@ mod tests {
 
     #[test]
     fn relation_event_kind_strings() {
-        use taskagent_domain::{Actor, RelationKind};
-        use taskagent_shared::RelationId;
+        use daruma_domain::{Actor, RelationKind};
+        use daruma_shared::RelationId;
         let linked = Event::TaskLinked {
             relation_id: RelationId::new(),
             from: TaskId::new(),
@@ -1769,8 +1769,8 @@ mod tests {
 
     #[test]
     fn relation_events_channel_is_tasks() {
-        use taskagent_domain::{Actor, RelationKind};
-        use taskagent_shared::RelationId;
+        use daruma_domain::{Actor, RelationKind};
+        use daruma_shared::RelationId;
         let from = TaskId::new();
         let linked = Event::TaskLinked {
             relation_id: RelationId::new(),
@@ -1799,8 +1799,8 @@ mod tests {
 
     #[test]
     fn relation_events_target_task() {
-        use taskagent_domain::{Actor, RelationKind};
-        use taskagent_shared::RelationId;
+        use daruma_domain::{Actor, RelationKind};
+        use daruma_shared::RelationId;
         let from = TaskId::new();
         let task_id = TaskId::new();
 
@@ -1833,9 +1833,9 @@ mod tests {
 
     // ── Document events (PR1 §2) ─────────────────────────────────────────────
 
-    fn sample_document() -> taskagent_domain::Document {
-        use taskagent_domain::{Document, DocumentKind};
-        use taskagent_shared::DocumentId;
+    fn sample_document() -> daruma_domain::Document {
+        use daruma_domain::{Document, DocumentKind};
+        use daruma_shared::DocumentId;
         let now = time::now();
         Document {
             id: DocumentId::new(),
@@ -1864,7 +1864,7 @@ mod tests {
 
     #[test]
     fn document_content_replaced_round_trip() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         assert_round_trip(
             Event::DocumentContentReplaced {
                 document_id: DocumentId::new(),
@@ -1877,7 +1877,7 @@ mod tests {
 
     #[test]
     fn document_content_appended_round_trip() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         assert_round_trip(
             Event::DocumentContentAppended {
                 document_id: DocumentId::new(),
@@ -1890,7 +1890,7 @@ mod tests {
 
     #[test]
     fn document_renamed_round_trip() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         assert_round_trip(
             Event::DocumentRenamed {
                 document_id: DocumentId::new(),
@@ -1903,7 +1903,7 @@ mod tests {
 
     #[test]
     fn document_archived_round_trip() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         assert_round_trip(
             Event::DocumentArchived {
                 document_id: DocumentId::new(),
@@ -1923,7 +1923,7 @@ mod tests {
 
     #[test]
     fn document_non_created_target_project_is_none() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         let evs = vec![
             Event::DocumentContentReplaced {
                 document_id: DocumentId::new(),
@@ -1952,7 +1952,7 @@ mod tests {
 
     #[test]
     fn channel_documents_variants() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         let doc_id = DocumentId::new();
         let events = vec![
             Event::DocumentCreated {
@@ -1990,7 +1990,7 @@ mod tests {
 
     #[test]
     fn document_event_kind_strings() {
-        use taskagent_shared::DocumentId;
+        use daruma_shared::DocumentId;
         assert_eq!(
             Event::DocumentCreated {
                 document: sample_document(),

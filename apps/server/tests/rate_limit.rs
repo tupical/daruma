@@ -4,8 +4,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use taskagent_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
-use taskagent_shared::AgentId;
+use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
+use daruma_shared::AgentId;
 use tower::ServiceExt;
 
 async fn mint_limited_token(

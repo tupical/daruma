@@ -1,6 +1,6 @@
 -- §3.8.3 — Per-task complexity hints produced by a batch LLM analysis.
 --
--- Materialised by `taskagent_ai_analyze_complexity { plan_id }`: one LLM
+-- Materialised by `daruma_ai_analyze_complexity { plan_id }`: one LLM
 -- call per *plan*, output upserted into this table keyed by `task_id`.
 -- Re-running analysis simply overwrites the previous row (latest wins);
 -- `batch_id` groups every row produced by the same run.

@@ -1,4 +1,4 @@
-# Документация TaskAgent
+# Документация Daruma
 
 ## Структура
 
@@ -7,11 +7,11 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Полный архитектурный контракт (EN) — single source of truth |
 | [architecture-policy.ru.md](architecture-policy.ru.md) | Зафиксированные policy-решения (RU): actors, cascade, sequence_id |
 | [guides/ai-agent.md](guides/ai-agent.md) | Правила AI-слоя и обзор tools |
-| [guides/mcp-client.md](guides/mcp-client.md) | Локальные файлы MCP-клиента (`~/.agents/taskagent/`) |
+| [guides/mcp-client.md](guides/mcp-client.md) | Локальные файлы MCP-клиента (`~/.agents/daruma/`) |
 | [guides/comment-conventions.md](guides/comment-conventions.md) | Префиксы в теле комментария (`lesson:`, `branch:`) |
 | [mcp/EXECUTOR-LOOP.md](mcp/EXECUTOR-LOOP.md) | Канонический цикл drain plan → execute → complete |
 | [adr/workspacegraph.md](adr/workspacegraph.md) | ADR WorkspaceGraph: sidecar index, nodes/edges, non-goals |
-| Cursor rule `workspacegraph.mdc` | Guardrails для `taskagent_workspacegraph_*` (граф — для связей/impact, не для списка задач). Ставится в `.cursor/rules/` командой `taskagent-cursor install` вместе с `taskagent-policy.mdc` и `taskagent.mdc`. |
+| Cursor rule `workspacegraph.mdc` | Guardrails для `daruma_workspacegraph_*` (граф — для связей/impact, не для списка задач). Ставится в `.cursor/rules/` командой `daruma-cursor install` вместе с `daruma-policy.mdc` и `daruma.mdc`. |
 | [MODULES.md](MODULES.md) | Реестр модулей (core / client / transport / embed) |
 | [MODULE_CONTRACT.md](MODULE_CONTRACT.md) | SLA между core и модулями |
 | [RELEASES.md](RELEASES.md) | Контракт релизов OSS core и правила зависимостей apps |
@@ -31,14 +31,14 @@
 
 ## Бэклог и планы
 
-Роадмап и pending work — **TaskAgent tracker** (проект TaskAgent):
+Роадмап и pending work — **Daruma tracker** (проект Daruma):
 
-- Корневой plan: **TaskAgent ROADMAP** (`019e3c8b-ace8-7e31-acf0-bd24017084b9`)
-- MCP: `taskagent_plan_list`, `taskagent_list`, web UI
+- Корневой plan: **Daruma ROADMAP** (`019e3c8b-ace8-7e31-acf0-bd24017084b9`)
+- MCP: `daruma_plan_list`, `daruma_list`, web UI
 - human_log: **Changelog**, **Research archive (Plane/Linear/CTM/TON)**
 
 История: [CHANGELOG.ru.md](../CHANGELOG.ru.md) + `git log`.
 
 ## Feature requests
 
-Перед изменениями event schema, REST/WS или MCP — сверьтесь с открытыми задачами в tracker. Крупные фичи: issue или `.omc/plans/` + задача в TaskAgent.
+Перед изменениями event schema, REST/WS или MCP — сверьтесь с открытыми задачами в tracker. Крупные фичи: issue или `.omc/plans/` + задача в Daruma.

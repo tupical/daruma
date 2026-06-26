@@ -33,7 +33,7 @@ struct ProjectView {
     roots: Vec<String>,
 }
 
-/// `GET /.well-known/taskagent-shell.json`
+/// `GET /.well-known/daruma-shell.json`
 pub async fn host_shell_config() -> impl IntoResponse {
     Json(HostShellConfig {
         home_url: "/workspaces".to_string(),
@@ -52,7 +52,7 @@ pub async fn workspace_switcher(State(state): State<AppState>) -> impl IntoRespo
 }
 
 fn current_workspace_label() -> String {
-    if let Ok(label) = std::env::var("TASKAGENT_WORKSPACE_LABEL") {
+    if let Ok(label) = std::env::var("DARUMA_WORKSPACE_LABEL") {
         let label = label.trim();
         if !label.is_empty() {
             return label.to_string();
@@ -62,21 +62,21 @@ fn current_workspace_label() -> String {
     "Local workspaces".to_string()
 }
 
-async fn load_workspaces(state: &AppState) -> taskagent_shared::Result<Vec<WorkspaceView>> {
+async fn load_workspaces(state: &AppState) -> daruma_shared::Result<Vec<WorkspaceView>> {
     let pool = state.projects.pool();
     let tenant_rows = sqlx::query("SELECT id, name FROM tenants ORDER BY created_at ASC")
         .fetch_all(pool)
         .await
-        .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?;
+        .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?;
 
     let mut workspaces = Vec::new();
     for tenant in tenant_rows {
         let id: String = tenant
             .try_get("id")
-            .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?;
+            .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?;
         let name: String = tenant
             .try_get("name")
-            .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?;
+            .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?;
         let roots = workspace_roots(pool, &id).await?;
         let projects = projects_for_workspace(pool, &id).await?;
         workspaces.push(WorkspaceView {
@@ -89,7 +89,7 @@ async fn load_workspaces(state: &AppState) -> taskagent_shared::Result<Vec<Works
 
     if workspaces.is_empty() {
         workspaces.push(WorkspaceView {
-            id: taskagent_domain::DEFAULT_TENANT_ID.to_string(),
+            id: daruma_domain::DEFAULT_TENANT_ID.to_string(),
             name: "Self-hosted".to_string(),
             roots: Vec::new(),
             projects: state
@@ -106,42 +106,42 @@ async fn load_workspaces(state: &AppState) -> taskagent_shared::Result<Vec<Works
 async fn workspace_roots(
     pool: &sqlx::SqlitePool,
     tenant_id: &str,
-) -> taskagent_shared::Result<Vec<String>> {
+) -> daruma_shared::Result<Vec<String>> {
     sqlx::query_scalar(
         "SELECT root_path FROM workspace_roots WHERE tenant_id = ? ORDER BY root_path",
     )
     .bind(tenant_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))
+    .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))
 }
 
 async fn projects_for_workspace(
     pool: &sqlx::SqlitePool,
     tenant_id: &str,
-) -> taskagent_shared::Result<Vec<ProjectView>> {
+) -> daruma_shared::Result<Vec<ProjectView>> {
     let rows = sqlx::query(
         "SELECT id, slug, title FROM projects WHERE tenant_id = ? ORDER BY created_at ASC",
     )
     .bind(tenant_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?;
+    .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?;
 
     let mut projects = Vec::new();
     for row in rows {
         let id: String = row
             .try_get("id")
-            .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?;
+            .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?;
         let roots = project_roots(pool, &id).await?;
         projects.push(ProjectView {
             id: id.clone(),
             slug: row
                 .try_get("slug")
-                .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?,
+                .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?,
             title: row
                 .try_get("title")
-                .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))?,
+                .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))?,
             roots,
         });
     }
@@ -152,17 +152,17 @@ async fn projects_for_workspace(
 async fn project_roots(
     pool: &sqlx::SqlitePool,
     project_id: &str,
-) -> taskagent_shared::Result<Vec<String>> {
+) -> daruma_shared::Result<Vec<String>> {
     sqlx::query_scalar(
         "SELECT root_path FROM project_roots WHERE project_id = ? ORDER BY root_path",
     )
     .bind(project_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| taskagent_shared::CoreError::storage(e.to_string()))
+    .map_err(|e| daruma_shared::CoreError::storage(e.to_string()))
 }
 
-fn project_views_without_roots(projects: Vec<taskagent_domain::Project>) -> Vec<ProjectView> {
+fn project_views_without_roots(projects: Vec<daruma_domain::Project>) -> Vec<ProjectView> {
     projects
         .into_iter()
         .map(|project| ProjectView {
@@ -187,7 +187,7 @@ fn render_workspace_switcher(workspaces: &[WorkspaceView]) -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TaskAgent Workspaces</title>
+  <title>Daruma Workspaces</title>
   <style>
     body {{ margin: 0; padding: 32px 16px; background: #111418; color: #cdd9e5; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
     main {{ max-width: 840px; margin: 0 auto; }}
@@ -209,7 +209,7 @@ fn render_workspace_switcher(workspaces: &[WorkspaceView]) -> String {
 </head>
 <body>
   <main>
-    <h1>TaskAgent Workspaces</h1>
+    <h1>Daruma Workspaces</h1>
     {workspace_items}
   </main>
 </body>

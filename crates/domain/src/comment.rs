@@ -4,7 +4,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{CommentId, TaskId, Timestamp};
+use daruma_shared::{CommentId, TaskId, Timestamp};
 
 use crate::agent::Actor;
 
@@ -146,7 +146,7 @@ pub struct CommentPatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::{CommentId, TaskId};
+    use daruma_shared::{CommentId, TaskId};
 
     #[test]
     fn new_comment_roundtrip_serde() {
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn comment_roundtrip_serde() {
-        use taskagent_shared::time;
+        use daruma_shared::time;
 
         let task_id = TaskId::new();
         let actor = crate::agent::Actor::user();
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn from_new_propagates_kind() {
-        use taskagent_shared::time;
+        use daruma_shared::time;
 
         let task_id = TaskId::new();
         let nc = NewComment {

@@ -4,32 +4,32 @@
 датам, новые сверху. Формат основан на
 [Keep a Changelog](https://keepachangelog.com/) и здравом смысле:
 рассказываем «что это даёт пользователю», а технические детали
-оставляем в `git log` и human_log Changelog в TaskAgent tracker.
+оставляем в `git log` и human_log Changelog в Daruma tracker.
 
 ## 2026-06-09 — релиз 0.2.0
 
 Главное: вместо россыпи бинарей и обёрток теперь **один бинарь
-`taskagent`**, через который настраивается и обслуживается всё. Облако в
+`daruma`**, через который настраивается и обслуживается всё. Облако в
 OSS больше не зашито — бинарь работает с любым сервером по
 `credentials.json`.
 
-### Единый бинарь `taskagent`
+### Единый бинарь `daruma`
 
-stdio MCP-сервер стал подкомандой CLI: один артефакт `taskagent` — это и
+stdio MCP-сервер стал подкомандой CLI: один артефакт `daruma` — это и
 CLI, и лаунчер, и MCP-сервер.
 
-- `taskagent mcp` поднимает stdio MCP-сервер вместо отдельного бинаря
-  `taskagent-mcp`. Регистрация: `claude mcp add taskagent -- taskagent mcp`.
-- Голый `taskagent` (без подкоманды) печатает инструкцию подключения
+- `daruma mcp` поднимает stdio MCP-сервер вместо отдельного бинаря
+  `daruma-mcp`. Регистрация: `claude mcp add daruma -- daruma mcp`.
+- Голый `daruma` (без подкоманды) печатает инструкцию подключения
   HTTP MCP. При наличии кред — готовый сниппет под тот сервер, на который
-  указывает `~/.agents/taskagent/credentials.json`.
-- `taskagent install --claude` пишет project-policy (`CLAUDE.md`) и
+  указывает `~/.agents/daruma/credentials.json`.
+- `daruma install --claude` пишет project-policy (`CLAUDE.md`) и
   `.omc`-guard — теперь это единственный источник этого текста (совпадает
-  байт-в-байт с плагином `taskagent-claude`).
+  байт-в-байт с плагином `daruma-claude`).
 
 ### Cloud-agnostic ядро
 
-- Бинарь `taskagent` не упоминает никакой хостинг: читает generic
+- Бинарь `daruma` не упоминает никакой хостинг: читает generic
   `server_url` + `token` из кред и работает против любого сервера —
   self-host или иного.
 - Из OSS-репозитория убраны cloud-ориентированный `install.sh` и его
@@ -38,14 +38,14 @@ CLI, и лаунчер, и MCP-сервер.
 ### Сервер
 
 - Endpoint скачивания бинаря переехал с
-  `/v1/downloads/taskagent-mcp/{platform}` на
-  `/v1/downloads/taskagent/{platform}` и отдаёт единый бинарь.
+  `/v1/downloads/daruma-mcp/{platform}` на
+  `/v1/downloads/daruma/{platform}` и отдаёт единый бинарь.
 
 ### Клиентские плагины
 
-- `taskagent-claude` делегирует запись policy бинарю `taskagent`, когда он
+- `daruma-claude` делегирует запись policy бинарю `daruma`, когда он
   на `PATH`; иначе — bundled node-writer (вывод идентичен).
-- `taskagent-cursor` больше не хардкодит хостинг-URL в подсказках.
+- `daruma-cursor` больше не хардкодит хостинг-URL в подсказках.
 
 ### Документация
 
@@ -56,12 +56,12 @@ CLI, и лаунчер, и MCP-сервер.
 ### Архитектура: OSS core как версионированная зависимость
 
 - Добавлен [docs/RELEASES.md](docs/RELEASES.md): релизный контракт OSS core,
-  git-tag формат `taskagent-vMAJOR.MINOR.PATCH`, стабильные surfaces
+  git-tag формат `daruma-vMAJOR.MINOR.PATCH`, стабильные surfaces
   (`/v1/*`, WS, MCP, events, публичные Rust crates) и чеклист релиза.
 - `MODULE_CONTRACT` и `MODULES` теперь требуют, чтобы standalone apps
   фиксировали потребляемый OSS core в `module.toml [core]`; `vendor/oss`
   считается только локальным dev override.
-- README уточняет, что базовый `taskagent-web` — read-only observability UI,
+- README уточняет, что базовый `daruma-web` — read-only observability UI,
   а write/admin workflows принадлежат MCP/CLI/desktop/embed.
 
 ### Fix: список задач снова открывается (миграция 18, `projects.slug`)
@@ -82,17 +82,17 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 - Добавлен регрессионный тест на уникальность слагов для id с общим
   префиксом.
 
-### Вынос web в отдельный репозиторий `taskagent-web`
+### Вынос web в отдельный репозиторий `daruma-web`
 
 Браузерный UI (`apps/web-leptos`, Leptos CSR → WASM) вынесен из монорепо
-в самостоятельный репозиторий `taskagent-web`. Теперь OSS-сервер —
+в самостоятельный репозиторий `daruma-web`. Теперь OSS-сервер —
 голый backend: только API (`/v1/*`, `/v1/ws`) и MCP, без раздачи
 статики.
 
 - Из `apps/server` убран `ServeDir` на `/web`.
 - `apps/web-leptos` удалён из воркспейса (members) и профиль
   `release-wasm` перенесён в новый репозиторий.
-- `taskagent-web` — отдельный Cargo-воркспейс; OSS-крейты
+- `daruma-web` — отдельный Cargo-воркспейс; OSS-крейты
   (`shared`/`domain`/`events`/`api-dto`) потребляются read-only через
   `vendor/oss` local development override.
 - Документация (`README`, `ARCHITECTURE`, `MODULES`, `Justfile`) обновлена
@@ -103,11 +103,11 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 Большой день: подчищена архитектура модулей, поднята AI-обвязка, и
 сервер обзавёлся набором новых ручек для агентов.
 
-### Бэклог перенесён в TaskAgent tracker
+### Бэклог перенесён в Daruma tracker
 
 Локальные `docs/ROADMAP.md`, research-планы (Plane/Linear/CTM/TON) и
 `docs/mcp/MCP-ROADMAP.md` / `docs/integrations/CLAUDE-PLUGIN-ROADMAP.md`
-удалены из репозитория. В трекере проекта TaskAgent:
+удалены из репозитория. В трекере проекта Daruma:
 
 - sub-plan **MCP Roadmap** — 24 задачи M1.1–M7.6 (server-side tools);
 - sub-plan **Claude Plugin (out-of-repo)** — P1–P6 с `relates_to` на MCP-зависимости;
@@ -126,26 +126,26 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 
 ### Default-проект для `plan_list` и `doc_list`
 
-`taskagent_list` давно подставлял в запрос проект из workspace
-(`taskagent_project_use` или env `TASKAGENT_PROJECT_ID`), но
-`taskagent_plan_list` и `taskagent_doc_list` про это «забывали»:
+`daruma_list` давно подставлял в запрос проект из workspace
+(`daruma_project_use` или env `DARUMA_PROJECT_ID`), но
+`daruma_plan_list` и `daruma_doc_list` про это «забывали»:
 агент без явного `project_id` либо получал планы из всех проектов
 сразу, либо упирался в 400. Теперь обе ручки симметричны:
 
-- `taskagent_plan_list` без `project_id` использует default
+- `daruma_plan_list` без `project_id` использует default
   проект; чтобы явно перейти кросс-проект, нужно передать
   `project_id: "all"`.
-- `taskagent_doc_list` без `project_id` тоже подставляет default;
+- `daruma_doc_list` без `project_id` тоже подставляет default;
   если ни параметра, ни default'а нет — MCP сразу отвечает понятной
   ошибкой, не отправляя сломанный URL на сервер.
 
 Контракт описан в `description` каждого инструмента — агент видит
 ожидание прямо в каталоге `tools/list`.
 
-### Обязательный `status` для `taskagent_list` и `taskagent_plan_list`
+### Обязательный `status` для `daruma_list` и `daruma_plan_list`
 
-`GET /v1/tasks`, `GET /v1/plans`, MCP `taskagent_list` и
-`taskagent_plan_list` **требуют** явный параметр `status`. Без него —
+`GET /v1/tasks`, `GET /v1/plans`, MCP `daruma_list` и
+`daruma_plan_list` **требуют** явный параметр `status`. Без него —
 `400 validation`.
 
 Поддерживается:
@@ -157,12 +157,12 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 - шорткат `status=active` для задач — все нетерминальные статусы,
 - `status=all` — явный запрос полного архива (включая `done`).
 
-**Для агентов:** `status=all` у `taskagent_list` / `taskagent_plan_list`
+**Для агентов:** `status=all` у `daruma_list` / `daruma_plan_list`
 вызывать только после явного подтверждения пользователя в этом же turn —
 ответ может быть очень большим и съесть контекст. По умолчанию —
 `active` (задачи) или узкий фильтр статусов (планы). То же правило
-прописано в managed-блоках `taskagent-claude` (`CLAUDE.md`) и
-`taskagent-codex` (`AGENTS.md`) после `init`.
+прописано в managed-блоках `daruma-claude` (`CLAUDE.md`) и
+`daruma-codex` (`AGENTS.md`) после `init`.
 
 Зачем: без обязательного фильтра агенты непредсказуемо тащили весь
 бэклог в контекст. Теперь выбор осознанный: `active` для «что
@@ -176,11 +176,11 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 - **Новые AI-инструменты в MCP и REST.** Появилось четыре «AI-ручки»,
   которыми можно пользоваться из любого MCP-клиента (Claude Code,
   Cursor и других) и напрямую по HTTP:
-  - `taskagent_research { query, context_task_ids?, save_to_task_id? }`
+  - `daruma_research { query, context_task_ids?, save_to_task_id? }`
     — задаёт модели вопрос, при желании опираясь на текст конкретных
     задач, и может сразу сохранить ответ как комментарий типа
     «research» на нужной задаче.
-  - `taskagent_ai_scope { task_id, direction: up|down }` — модель
+  - `daruma_ai_scope { task_id, direction: up|down }` — модель
     переписывает заголовок и описание задачи «шире» (эпик) или «уже»
     (одно конкретное действие). Возвращает готовый
     `Command::UpdateTask`, применять или нет — решает вызывающая
@@ -198,7 +198,7 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 
 - **Расширенный health-check.** Эндпоинт `/v1/healthz` теперь отвечает
   не только `status` и `version`, но ещё и:
-  - `core_version` — версия ядра (`taskagent-core`),
+  - `core_version` — версия ядра (`daruma-core`),
   - `api_version` — версия REST-контракта (сейчас `"v1"`).
   Это нужно мониторингам и клиентам, чтобы детектить рассинхрон между
   собранным бинарником и поддерживаемой версией API без копания в
@@ -232,11 +232,11 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
   «Module → Core» и описанием embed-режима.
 
 - **Десктоп переехал на публичный фасад ядра.** Появился
-  `taskagent_core::embed::*` — единственная точка, через которую
+  `daruma_core::embed::*` — единственная точка, через которую
   embed-клиенты (сейчас — `apps/desktop`) могут дотянуться до рантайма
   (`Db`, `EventBus`, `CommandBus`, `Command`, репозитории и
   `SqliteEventStore`). `apps/desktop` больше не зависит напрямую от
-  `taskagent-storage` / `taskagent-events`. Для будущих клиентов это
+  `daruma-storage` / `daruma-events`. Для будущих клиентов это
   правило: ходить *только* через `embed`.
 
 - **CI-аудит границ.** Появился новый workflow
@@ -244,8 +244,8 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
   проверяет:
   - Что ядро (`crates/{shared,domain,events,core,storage,auth}` и
     `apps/server/src/`) не импортирует ничего из `apps/*`.
-  - Что embed-клиенты не лезут в `taskagent_storage::*` /
-    `taskagent_events::*` напрямую (только через `embed`).
+  - Что embed-клиенты не лезут в `daruma_storage::*` /
+    `daruma_events::*` напрямую (только через `embed`).
   Если правило нарушено — PR красный с указанием конкретного файла.
 
 - **Web-клиент стал «полноценным модулем».** Добавился
@@ -267,7 +267,7 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 
 ### Внутренние «закрылись задачи»
 
-Закрыто 14 задач из `taskagent_list`. По разделам ROADMAP:
+Закрыто 14 задач из `daruma_list`. По разделам ROADMAP:
 
 - §3.4 Modular Architecture: W1.1, W1.2, W1.3, W2.1, W2.2, W3.2, W4.1 —
   то есть весь каркас, кроме W3.1 (mobile-scaffold на Tauri 2,
@@ -293,5 +293,5 @@ migration 18`). Причина: backfill брал слаг из `substr(id, 1, 8
 
 ---
 
-История до 2026-05-20 — см. `git log` и TaskAgent tracker (human_log Changelog). До
+История до 2026-05-20 — см. `git log` и Daruma tracker (human_log Changelog). До
 сегодняшнего дня формального changelog не велось.

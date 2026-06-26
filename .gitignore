@@ -54,5 +54,5 @@ dist/
 
 .cursor/
 
-# MCP client local state (default ~/.agents/taskagent/; may appear in-repo if misconfigured)
-.agents/taskagent/
+# MCP client local state (default ~/.agents/daruma/; may appear in-repo if misconfigured)
+.agents/daruma/

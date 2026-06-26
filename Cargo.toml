@@ -31,18 +31,18 @@ description = "Daruma — execution layer of Meisei: an agent-native, local-firs
 
 [workspace.dependencies]
 # Internal crates
-taskagent-shared  = { path = "crates/shared" }
-taskagent-domain  = { path = "crates/domain" }
-taskagent-events  = { path = "crates/events" }
-taskagent-storage = { path = "crates/storage" }
-taskagent-core    = { path = "crates/core" }
-taskagent-sync    = { path = "crates/sync" }
-taskagent-ai      = { path = "crates/ai" }
-taskagent-ai-infra = { path = "crates/ai-infra" }
-taskagent-auth    = { path = "crates/auth" }
-taskagent-webhooks = { path = "crates/webhooks" }
-taskagent-mcp     = { path = "crates/mcp" }
-taskagent-api-dto = { path = "crates/api-dto" }
+daruma-shared  = { path = "crates/shared" }
+daruma-domain  = { path = "crates/domain" }
+daruma-events  = { path = "crates/events" }
+daruma-storage = { path = "crates/storage" }
+daruma-core    = { path = "crates/core" }
+daruma-sync    = { path = "crates/sync" }
+daruma-ai      = { path = "crates/ai" }
+daruma-ai-infra = { path = "crates/ai-infra" }
+daruma-auth    = { path = "crates/auth" }
+daruma-webhooks = { path = "crates/webhooks" }
+daruma-mcp     = { path = "crates/mcp" }
+daruma-api-dto = { path = "crates/api-dto" }
 
 # Async runtime
 tokio    = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "signal", "io-util"] }
@@ -102,7 +102,7 @@ qrcode = "0.14"
 image  = { version = "0.25", default-features = false, features = ["png"] }
 
 # Internal discovery crate
-taskagent-discovery = { path = "crates/discovery" }
+daruma-discovery = { path = "crates/discovery" }
 
 # AI prompt registry (§3.8.5)
 toml         = { version = "0.8", default-features = false, features = ["parse"] }
@@ -110,7 +110,7 @@ tinytemplate = "1.2"
 once_cell    = "1.20"
 
 [package]
-name = "taskagent"
+name = "daruma"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -121,7 +121,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-taskagent-auth = { workspace = true, optional = true }
+daruma-auth = { workspace = true, optional = true }
 
 [profile.release]
 opt-level = 3

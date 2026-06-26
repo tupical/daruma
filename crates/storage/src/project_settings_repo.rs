@@ -4,9 +4,9 @@
 //! which also covers projects created before the migration.
 
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::AutoAppendSettings;
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, ProjectId, Result};
+use daruma_domain::AutoAppendSettings;
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, ProjectId, Result};
 
 const AUTO_APPEND_KEY: &str = "auto_append";
 
@@ -70,7 +70,7 @@ impl ProjectSettingsRepo {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
+    use daruma_domain::Actor;
 
     #[tokio::test]
     async fn defaults_then_event_roundtrip() {

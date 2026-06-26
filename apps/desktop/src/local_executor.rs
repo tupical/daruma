@@ -5,9 +5,9 @@ use std::sync::{
     Arc,
 };
 
-use taskagent_core::embed::{Command, CommandBus, EventEnvelope};
-use taskagent_domain::Actor;
-use taskagent_shared::{DeviceId, Result};
+use daruma_core::embed::{Command, CommandBus, EventEnvelope};
+use daruma_domain::Actor;
+use daruma_shared::{DeviceId, Result};
 
 use crate::{flush, flush::RemoteEventSink, outbox::Outbox};
 
@@ -59,11 +59,11 @@ impl LocalExecutor {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use taskagent_core::{
+    use daruma_core::{
         embed::{ActivityRepo, CommentRepo, Db, EventBus, SqliteEventStore, TaskRepo},
         CommandHandler,
     };
-    use taskagent_domain::NewTask;
+    use daruma_domain::NewTask;
 
     #[tokio::test]
     async fn dispatch_applies_locally_and_enqueues_events() {
@@ -72,7 +72,7 @@ mod tests {
         let pool = db.pool().clone();
         let store = Arc::new(SqliteEventStore::new(pool.clone()));
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
-        let projects = Arc::new(taskagent_core::embed::ProjectRepo::new(pool.clone()));
+        let projects = Arc::new(daruma_core::embed::ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
         let activity = Arc::new(ActivityRepo::new(pool));
         let bus = EventBus::new(16);

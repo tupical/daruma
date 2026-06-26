@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { COMMAND_FILES, installCommands } from "../lib/commands.mjs";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-cursor-commands-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-cursor-commands-test-"));
   try { return await fn(dir); }
   finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -21,7 +21,7 @@ test("installCommands drops every bundled slash command", async () => {
       assert.equal(r.action, "installed");
       const body = await fs.readFile(r.path, "utf8");
       assert.ok(body.startsWith("---"), `${r.name} missing frontmatter`);
-      assert.match(body, /name:\s*taskagent-/);
+      assert.match(body, /name:\s*daruma-/);
     }
   });
 });
@@ -39,7 +39,7 @@ test("installCommands is idempotent without --force", async () => {
 test("installCommands overwrites with overwrite: true", async () => {
   await withTempDir(async (dir) => {
     await installCommands({ projectDir: dir });
-    const target = join(dir, ".cursor", "commands", "taskagent-tasks.md");
+    const target = join(dir, ".cursor", "commands", "daruma-tasks.md");
     await fs.writeFile(target, "stale\n");
 
     const results = await installCommands({ projectDir: dir, overwrite: true });
@@ -47,16 +47,16 @@ test("installCommands overwrites with overwrite: true", async () => {
       assert.equal(r.action, "overwritten");
     }
     const restored = await fs.readFile(target, "utf8");
-    assert.match(restored, /name:\s*taskagent-tasks/);
+    assert.match(restored, /name:\s*daruma-tasks/);
   });
 });
 
 test("COMMAND_FILES covers tasks/plan/next/mine", () => {
   assert.deepEqual([...COMMAND_FILES].sort(), [
-    "taskagent-mine.md",
-    "taskagent-next.md",
-    "taskagent-plan.md",
-    "taskagent-tasks.md",
+    "daruma-mine.md",
+    "daruma-next.md",
+    "daruma-plan.md",
+    "daruma-tasks.md",
   ]);
 });
 

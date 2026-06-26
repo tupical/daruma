@@ -1,7 +1,7 @@
 //! Operation prompt catalogue.
 //!
 //! The prompt *rendering engine* and the shared [`SharedRegistry`] live in
-//! `taskagent-ai-infra`. This module only declares the catalogue of
+//! `daruma-ai-infra`. This module only declares the catalogue of
 //! operation prompts — one `crates/ai/prompts/*.toml` per operation
 //! (analyze_complexity) — because those prompts are operational, not
 //! infrastructure.
@@ -11,8 +11,8 @@
 
 use once_cell::sync::Lazy;
 use serde::Serialize;
-use taskagent_ai_infra::prompts::PromptRegistry as SharedRegistry;
-use taskagent_shared::CoreError;
+use daruma_ai_infra::prompts::PromptRegistry as SharedRegistry;
+use daruma_shared::CoreError;
 
 static PROMPTS: Lazy<SharedRegistry> = Lazy::new(|| {
     SharedRegistry::new(&[(

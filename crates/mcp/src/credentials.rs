@@ -1,6 +1,6 @@
-//! Bridge `~/.agents/taskagent/credentials.json` (plugin-v2 schema) into MCP env.
+//! Bridge `~/.agents/daruma/credentials.json` (plugin-v2 schema) into MCP env.
 //!
-//! Explicit `TASKAGENT_API_URL` / `TASKAGENT_TOKEN` / `TASKAGENT_WORKSPACE_ID` win.
+//! Explicit `DARUMA_API_URL` / `DARUMA_TOKEN` / `DARUMA_WORKSPACE_ID` win.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ mod tests {
     fn resolves_active_remote_profile() {
         let _guard = env_lock();
         let dir =
-            std::env::temp_dir().join(format!("taskagent-mcp-cred-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("daruma-mcp-cred-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var(ENV_AGENT_DIR, &dir);

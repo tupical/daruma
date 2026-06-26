@@ -3,9 +3,9 @@
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{WorkUnit, WorkUnitStatus};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{AgentId, CoreError, Result, TaskId, Timestamp, WorkUnitId};
+use daruma_domain::{WorkUnit, WorkUnitStatus};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{AgentId, CoreError, Result, TaskId, Timestamp, WorkUnitId};
 
 pub struct WorkUnitRepo {
     pool: SqlitePool,
@@ -281,7 +281,7 @@ fn row_to_unit(r: &sqlx::sqlite::SqliteRow) -> Result<WorkUnit> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
+    use daruma_domain::Actor;
 
     async fn repo() -> (Db, WorkUnitRepo) {
         let db = Db::memory().await.unwrap();

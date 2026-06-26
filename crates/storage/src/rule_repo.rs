@@ -7,9 +7,9 @@
 //! `off`/`enabled=false` rules are not returned to the gate (invariant 2).
 
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, Result, RuleId};
+use daruma_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, Result, RuleId};
 
 pub struct RuleRepo {
     pool: SqlitePool,
@@ -258,7 +258,7 @@ fn map_row_err(e: sqlx::Error) -> CoreError {
     CoreError::storage(e.to_string())
 }
 
-fn parse_ts(s: &str) -> Result<taskagent_shared::Timestamp> {
+fn parse_ts(s: &str) -> Result<daruma_shared::Timestamp> {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .map_err(|e| CoreError::storage(e.to_string()))
@@ -317,8 +317,8 @@ fn parse_mode(s: &str) -> Result<RuleMode> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, NewRule};
-    use taskagent_shared::ProjectId;
+    use daruma_domain::{Actor, NewRule};
+    use daruma_shared::ProjectId;
 
     fn sample(scope: RuleScope, key: &str, mode: RuleMode) -> Rule {
         NewRule {
@@ -336,7 +336,7 @@ mod tests {
             override_allowed: true,
             enabled: true,
         }
-        .into_rule(taskagent_shared::time::now())
+        .into_rule(daruma_shared::time::now())
     }
 
     async fn repo() -> RuleRepo {
@@ -390,7 +390,7 @@ mod tests {
             &repo,
             Event::RuleDisabled {
                 rule_id: id,
-                at: taskagent_shared::time::now(),
+                at: daruma_shared::time::now(),
             },
         )
         .await;

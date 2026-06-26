@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use taskagent_domain::{RelationKind, Status};
-use taskagent_shared::{CoreError, Result, TaskId};
-use taskagent_storage::{RelationRepo, TaskRepo};
+use daruma_domain::{RelationKind, Status};
+use daruma_shared::{CoreError, Result, TaskId};
+use daruma_storage::{RelationRepo, TaskRepo};
 
 /// Maximum DFS depth before aborting with `relation_graph_too_deep`.
 const MAX_DEPTH: usize = 1000;
@@ -127,9 +127,9 @@ pub async fn list_downstream_to_unblock(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_domain::{Actor, Relation};
-    use taskagent_shared::{time, RelationId};
-    use taskagent_storage::{Db, RelationRepo};
+    use daruma_domain::{Actor, Relation};
+    use daruma_shared::{time, RelationId};
+    use daruma_storage::{Db, RelationRepo};
 
     async fn make_repo() -> RelationRepo {
         let db = Db::memory().await.unwrap();

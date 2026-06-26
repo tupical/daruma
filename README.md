@@ -12,11 +12,11 @@ It is an **agent-native, local-first execution runtime**: AI agents are first-cl
 users, every change is a realtime event, and the desktop app runs **fully offline**.
 Keyboard-first, command-palette driven, and fast.
 
-One binary — `taskagent` — is the CLI, the launcher, and the MCP server your agents
+One binary — `daruma` — is the CLI, the launcher, and the MCP server your agents
 talk to. Point Claude, Cursor, or Codex at it and they share the same plans, work
 items, and live activity stream as you do.
 
-> The binary and crate ids keep the `taskagent` name for now; the project, repo, and
+> The binary and crate ids keep the `daruma` name for now; the project, repo, and
 > brand are **Daruma** under the Meisei umbrella. A full id migration is tracked separately.
 
 <sub>
@@ -32,7 +32,7 @@ torii · satori · enma · yatagarasu · fujin · <b>daruma</b> · hyakki
   projections. The desktop app needs no server; sync is optional.
 - **⚡ Realtime by design.** Every command becomes an event, fanned out over
   WebSocket and a per-agent inbox cursor with catch-up and resync.
-- **🔌 One binary, any client.** `taskagent` speaks MCP over stdio **and** HTTP
+- **🔌 One binary, any client.** `daruma` speaks MCP over stdio **and** HTTP
   (`/v1/mcp`). Cloud-agnostic: it talks to whatever server your credentials point at.
 - **🔐 Capability-scoped.** Bearer tokens (argon2id) with capability bit-flags
   and project scope; HMAC-signed outbound webhooks.
@@ -47,9 +47,9 @@ torii · satori · enma · yatagarasu · fujin · <b>daruma</b> · hyakki
 | Sync     | WebSocket-bridged `EventEnvelope` stream + per-agent inbox cursor   |
 | Auth     | Bearer tokens (argon2id) with capability bit-flags + project scope  |
 | Webhooks | HMAC-SHA256 signed outbound POST per match                          |
-| MCP      | JSON-RPC 2.0 over stdio **and** HTTP (`/v1/mcp`) — one `taskagent` binary |
+| MCP      | JSON-RPC 2.0 over stdio **and** HTTP (`/v1/mcp`) — one `daruma` binary |
 | AI       | OpenAI Responses API, tool-calling only — emits commands, never writes DB |
-| Web      | Rust + [Leptos](https://leptos.dev) 0.7 CSR → WASM — standalone [`taskagent-web`](../taskagent-web) repo, talks to `/v1/*` + `/v1/ws` |
+| Web      | Rust + [Leptos](https://leptos.dev) 0.7 CSR → WASM — standalone [`daruma-web`](../daruma-web) repo, talks to `/v1/*` + `/v1/ws` |
 
 ## Quick start
 
@@ -58,41 +58,41 @@ Native Rust on the host — Docker is kept only for optional release/runtime par
 ```sh
 # 1. Boot the server. On first run it prints a long-lived `ta_svc_…` admin
 #    token once (also written to <data_dir>/bootstrap.token, mode 0600).
-cargo run -p taskagent-server          # API on :8080, data in ~/.agents/taskagent/data
+cargo run -p daruma-server          # API on :8080, data in ~/.agents/daruma/data
 
 # 2. Drive the API.
-export TASKAGENT_TOKEN=ta_svc_…
-curl -H "Authorization: Bearer $TASKAGENT_TOKEN" http://localhost:8080/v1/tasks
+export DARUMA_TOKEN=ta_svc_…
+curl -H "Authorization: Bearer $DARUMA_TOKEN" http://localhost:8080/v1/tasks
 
 # 3. Build the unified launcher and let it walk you through connecting.
-cargo build -p taskagent-cli           # produces the `taskagent` binary
-taskagent                              # prints connect instructions for your setup
+cargo build -p daruma-cli           # produces the `daruma` binary
+daruma                              # prints connect instructions for your setup
 ```
 
 Handy shortcuts live in the `Justfile`: `just check`, `just test`, `just clippy`,
-`just server`. The desktop app (`cargo run -p taskagent-desktop`) runs offline and
+`just server`. The desktop app (`cargo run -p daruma-desktop`) runs offline and
 needs no server — the server adds cross-device sync, the web companion, agent
 realtime, webhooks, and remote MCP.
 
 ## MCP
 
-`taskagent` **is** the MCP server. The same tool surface — tasks, plans,
+`daruma` **is** the MCP server. The same tool surface — tasks, plans,
 documents, sessions, runs, webhooks — is served over stdio and over HTTP.
 
 ```sh
 # Claude Code / Claude Desktop (stdio)
-claude mcp add taskagent -- taskagent mcp
+claude mcp add daruma -- daruma mcp
 
 # Cursor (remote HTTP MCP at /v1/mcp) — prints a ready-to-paste mcp.json
-taskagent install --print-config cursor
+daruma install --print-config cursor
 ```
 
-Auth comes from `$TASKAGENT_TOKEN` or `~/.agents/taskagent/credentials.json`.
+Auth comes from `$DARUMA_TOKEN` or `~/.agents/daruma/credentials.json`.
 Call any tool the same way over either transport:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call",
- "params":{"name":"taskagent_inbox_pull",
+ "params":{"name":"daruma_inbox_pull",
            "arguments":{"agent_id":"<uuid>","long_poll_secs":30}}}
 ```
 
@@ -107,8 +107,8 @@ Optional local glue for popular agent environments, on top of the binary:
 
 | npm package | Role |
 | --- | --- |
-| [`taskagent-cursor`](clients/cursor-plugin/) | Cursor MCP registration, deeplink install, rules/commands |
-| [`taskagent-claude`](clients/claude-plugin/) | Claude Code + oh-my-claudecode orchestration (`start`, `doctor`, `setup`) |
+| [`daruma-cursor`](clients/cursor-plugin/) | Cursor MCP registration, deeplink install, rules/commands |
+| [`daruma-claude`](clients/claude-plugin/) | Claude Code + oh-my-claudecode orchestration (`start`, `doctor`, `setup`) |
 
 ## Docs
 

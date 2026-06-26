@@ -1,14 +1,14 @@
 [package]
-name = "taskagent-webhooks"
+name = "daruma-webhooks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-taskagent-shared = { workspace = true }
-taskagent-events = { workspace = true, features = ["runtime"] }
-taskagent-auth   = { workspace = true }
+daruma-shared = { workspace = true }
+daruma-events = { workspace = true, features = ["runtime"] }
+daruma-auth   = { workspace = true }
 
 # HTTP client + crypto
 reqwest = { workspace = true }
@@ -29,4 +29,4 @@ futures     = { workspace = true }
 [dev-dependencies]
 axum  = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
-taskagent-domain = { workspace = true }
+daruma-domain = { workspace = true }

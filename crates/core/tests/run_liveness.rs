@@ -12,11 +12,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{Actor, NewPlan, PlanStatus, RunOutcome};
-use taskagent_events::{Event, EventBus, EventStore};
-use taskagent_shared::{AgentId, ProjectId, RunId, TaskId};
-use taskagent_storage::{
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{Actor, NewPlan, PlanStatus, RunOutcome};
+use daruma_events::{Event, EventBus, EventStore};
+use daruma_shared::{AgentId, ProjectId, RunId, TaskId};
+use daruma_storage::{
     ActivityRepo, AgentClaimRepo, CommentRepo, Db, ExternalRefRepo, PlanRepo, ProjectRepo,
     RelationRepo, RunRepo, SessionRepo, SqliteEventStore, TaskRepo,
 };
@@ -50,7 +50,7 @@ async fn build_stack() -> (CommandHandler, Arc<dyn EventStore>) {
 }
 
 /// Create an Active plan and return its id.
-async fn create_active_plan(handler: &CommandHandler) -> taskagent_shared::PlanId {
+async fn create_active_plan(handler: &CommandHandler) -> daruma_shared::PlanId {
     let envs = handler
         .handle(
             Command::CreatePlan {
@@ -97,7 +97,7 @@ async fn start_run(handler: &CommandHandler) -> RunId {
     }
 }
 
-fn count_kind(events: &[taskagent_events::EventEnvelope], kind: &str) -> usize {
+fn count_kind(events: &[daruma_events::EventEnvelope], kind: &str) -> usize {
     events.iter().filter(|e| e.payload.kind() == kind).count()
 }
 

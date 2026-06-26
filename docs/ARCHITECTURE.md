@@ -1,6 +1,6 @@
 # Architecture
 
-TaskAgent is an **AI-native, local-first** task runtime with a real-time
+Daruma is an **AI-native, local-first** task runtime with a real-time
 multi-agent surface. This document is the canonical contract every crate
 and app must respect.
 
@@ -26,23 +26,23 @@ Task/document version records — [VERSION_HISTORY.md](VERSION_HISTORY.md).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ apps/desktop (GPUI)  taskagent-web↗  apps/server (Axum)  apps/cli │  UI / transports
+│ apps/desktop (GPUI)  daruma-web↗  apps/server (Axum)  apps/cli │  UI / transports
 ├──────────────────────────────────────────────────────────────────┤
-│ taskagent-ai   taskagent-sync   taskagent-webhooks  taskagent-mcp│  agent + realtime
+│ daruma-ai   daruma-sync   daruma-webhooks  daruma-mcp│  agent + realtime
 ├──────────────────────────────────────────────────────────────────┤
-│ taskagent-auth (bearer / capability / scope)                     │  authn / authz
+│ daruma-auth (bearer / capability / scope)                     │  authn / authz
 ├──────────────────────────────────────────────────────────────────┤
-│ taskagent-core    (commands → events → projections)              │  business logic
+│ daruma-core    (commands → events → projections)              │  business logic
 ├──────────────────────────────────────────────────────────────────┤
-│ taskagent-storage (SQLite, event log, projections)               │  persistence
+│ daruma-storage (SQLite, event log, projections)               │  persistence
 ├──────────────────────────────────────────────────────────────────┤
-│ taskagent-events  taskagent-domain  taskagent-shared             │  pure types
+│ daruma-events  daruma-domain  daruma-shared             │  pure types
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core and modules (§3.4)
 
-TaskAgent draws an explicit line between **core** (the part with the
+Daruma draws an explicit line between **core** (the part with the
 event log, the contract, the auth, the public REST/WS/MCP surface) and
 **modules** (clients, embed binaries, future integrations). The split
 is what lets independent teams ship without coordinating on every
@@ -62,7 +62,7 @@ The **core** is the set of crates and apps that own the contract:
   trio; the only place that turns commands into events.
 - `apps/server` — Axum router on `/v1/*` (HTTP) + `/v1/ws`
   (WebSocket); the only network-facing surface.
-- `apps/cli` (`taskagent mcp`) — stdio MCP transport (re-exports the
+- `apps/cli` (`daruma mcp`) — stdio MCP transport (re-exports the
   same command/event semantics over MCP framing via `crates/mcp`).
 - `crates/sync`, `crates/webhooks`, `crates/ai`, `crates/mcp` —
   realtime fanout, outbound webhooks, AI tools, MCP wiring. Counted
@@ -78,9 +78,9 @@ ritual in [docs/MODULE_CONTRACT.md](docs/MODULE_CONTRACT.md#versioning).
 Every other tree is a **module**, classified by *kind*:
 
 - **transport** — a transport implementation that ships inside the
-  workspace (today: `apps/server`, the `taskagent mcp` stdio entry in
+  workspace (today: `apps/server`, the `daruma mcp` stdio entry in
   `apps/cli`, `crates/sync`, `crates/webhooks`).
-- **client** — `/v1/*` consumers with their own UI/CLI: `taskagent-web`
+- **client** — `/v1/*` consumers with their own UI/CLI: `daruma-web`
   (standalone repo), `apps/cli`, planned `apps/mobile`.
 - **embed** — runs the core in-process. `apps/desktop` (GPUI) is the
   shipped example; it does not open a port and goes through
@@ -93,12 +93,12 @@ Every other tree is a **module**, classified by *kind*:
 ```mermaid
 flowchart LR
   subgraph Core
-    domain[taskagent-domain / shared / events]
-    storage[taskagent-storage]
-    coreL[taskagent-core<br/>Command→Event→Projection]
-    auth[taskagent-auth]
+    domain[daruma-domain / shared / events]
+    storage[daruma-storage]
+    coreL[daruma-core<br/>Command→Event→Projection]
+    auth[daruma-auth]
     server[apps/server<br/>HTTP / WS]
-    mcp[taskagent mcp<br/>stdio MCP framing]
+    mcp[daruma mcp<br/>stdio MCP framing]
     domain --> coreL
     storage --> coreL
     auth --> server
@@ -106,7 +106,7 @@ flowchart LR
     coreL --> mcp
   end
   subgraph Modules
-    web[taskagent-web repo<br/>client]
+    web[daruma-web repo<br/>client]
     cli[apps/cli<br/>client]
     mobile[apps/mobile<br/>client • planned]
     desktop[apps/desktop<br/>embed]
@@ -126,7 +126,7 @@ A module never reaches across to another module — only to core.
 
 ### Embed mode
 
-`apps/desktop` runs the same `taskagent-core` runtime in its own
+`apps/desktop` runs the same `daruma-core` runtime in its own
 process, with no network in the data path. The only public entry point
 is `crates/core/src/embed.rs` (W2.1), which re-exports
 `{Db, EventBus, CommandBus}` with identical semantics to the network
@@ -142,7 +142,7 @@ network by design.
 
 ## Crate contracts
 
-### `taskagent-shared`
+### `daruma-shared`
 - `ids::{TaskId, ProjectId, EventId, AgentId, CommentId, ActivityId,
          TokenId, WebhookId, WebhookDeliveryId,
          PlanId, RunId, AgentSessionId, RelationId}`
@@ -155,7 +155,7 @@ network by design.
   `serialization_error`, `io_error`, `unauthorized`, `forbidden`).
 - `Result<T, E = CoreError>`.
 
-### `taskagent-domain`
+### `daruma-domain`
 - `Task { id, project_id, title, description, status, priority,
           due_at, created_at, updated_at, started_at?, completed_at? }`
   — `started_at` is set lazily on the first non-terminal-to-InProgress
@@ -216,7 +216,7 @@ network by design.
   per-tenant idempotency key with composite PK
   `(tenant, kind, external_id)`.
 
-### `taskagent-events`
+### `daruma-events`
 - `Event` enum — canonical schema; see `crates/events/src/event.rs`.
   Categories:
   - **Tasks** (mechanical): `TaskCreated`, `TaskUpdated`,
@@ -264,7 +264,7 @@ network by design.
   `latest_seq`.
 - `EventBus` — `tokio::sync::broadcast`-backed in-process bus.
 
-### `taskagent-storage`
+### `daruma-storage`
 - `Db::open(path)` / `Db::memory()` / `Db::migrate()`.
 - Migrations in `crates/storage/migrations/`:
   - `0001_initial.sql` — events + tasks + projects.
@@ -342,7 +342,7 @@ guard.
   Root plans have `parent_plan_id = None`. No mandatory "root" singleton;
   any plan can be a root or a child.
 - **Cycle invariant:** `detect_parent_cycle(plans, plan_id, candidate)`
-  (in `taskagent-core::plan_concurrency`) runs iterative DFS upward,
+  (in `daruma-core::plan_concurrency`) runs iterative DFS upward,
   capping at `MAX_PARENT_DEPTH = 3`. Rejects reparent with
   `CoreError::Validation("cycle_detected")` if candidate would create a cycle.
 - **Progress aggregation:** `PlanProgress` already includes
@@ -353,7 +353,7 @@ guard.
   a new `parent_plan_id` (whether reparenting to a new parent, to None,
   or staying the same). Recorded in `activity` projection with verb
   `"plan_modified"`.
-- **MCP:** `taskagent_plan_update { id, parent_plan_id: string | null | omit }`
+- **MCP:** `daruma_plan_update { id, parent_plan_id: string | null | omit }`
   (from §3.3 W3 commit c72c67d). Null value unparents to root; omit leaves
   parent unchanged. Gated by `Capability::PlanWrite`.
 - **WS broadcast:** `PlanUpdated` diff in `Channel::Plans` includes
@@ -363,7 +363,7 @@ guard.
   CSS `--depth` custom property for indentation; max visual depth ~5 levels
   (no hard limit on the model; UI culls for UX).
 
-### `taskagent-core`
+### `daruma-core`
 - `Command` enum (every mutation is a command):
   - `CreateTask`, `UpdateTask`, `CompleteTask`, `DeleteTask`,
     `SetStatus`, `SetPriority`, `SplitTask`, `RecordAgentAction`.
@@ -418,7 +418,7 @@ guard.
   `TaskUnblocked` events for newly unblocked downstreams.
 - `CommandBus` — owns Arc'd handler; `dispatch(cmd, actor)`.
 
-### `taskagent-auth`
+### `daruma-auth`
 - `Capability` bit-flag enum (fine-grained + `Admin` wildcard) —
   the 6 W3-era bits are `PlanRead`, `PlanWrite`, `RunRead`, `RunWrite`,
   `SubscribePlans`, `SubscribeRuns`. §3.2 adds `TaskRelationRead`
@@ -442,63 +442,63 @@ guard.
   `Missing | Malformed | Unknown | Mismatch | Revoked | Expired`.
 - `AuthContext { agent_id, token_id, scope }`; handlers gate with
   `ctx.require(Capability::…)`.
-### `taskagent-webhooks`
+### `daruma-webhooks`
 - `Webhook { id, url, secret, events: Vec<String>, project_filter,
             is_active, created_at, updated_at }`.
 - `sign_body_hex(secret, body)` — lowercase hex HMAC-SHA256 used by the
-  `X-Taskagent-Signature` header.
+  `X-Daruma-Signature` header.
 - `WebhookStore` async trait (CRUD + `record_delivery`).
 - `spawn_dispatcher(receiver, store, http)` — subscribes to the bus,
   filters each envelope by `events_mask` + `project_filter`, then fans
   out a fire-and-forget POST. Each request carries:
   - `Content-Type: application/json`
-  - `User-Agent: taskagent/<version>`
-  - `X-Taskagent-Delivery: <uuid-v7>`
-  - `X-Taskagent-Event: <kind>`
-  - `X-Taskagent-Signature: hex(hmac_sha256(secret, body))`
+  - `User-Agent: daruma/<version>`
+  - `X-Daruma-Delivery: <uuid-v7>`
+  - `X-Daruma-Event: <kind>`
+  - `X-Daruma-Signature: hex(hmac_sha256(secret, body))`
   Delivery is single-shot for the MVP; retries-with-backoff are a
   follow-up.
 - Webhook event kinds include (§3.2 additions): `task.linked`,
   `task.unlinked`, `task.unblocked`, plus `task.due` (due-date watchdog:
   an active task's `due_at` passed; emitted once per (task, due_at)
-  value by a server tick, `TASKAGENT_DUE_TICK_SECS`, default 60, 0
+  value by a server tick, `DARUMA_DUE_TICK_SECS`, default 60, 0
   disables) — dispatched automatically via `Event::kind()` through the
   existing dispatcher; no new dispatcher code required.
 
-### `taskagent-mcp` (served via `taskagent mcp` / `/v1/mcp`)
+### `daruma-mcp` (served via `daruma mcp` / `/v1/mcp`)
 - 44 MCP tools — original 20 from B.5/W2.x plus 21 new in W3.2 covering
   the full plan/run/session/claim/signal surface, plus 3 new in §3.2
   for typed task relations:
   - **Tasks / projects / comments / agent / housekeeping** (20):
-    `taskagent_{create, get, list, project_list, project_create,
+    `daruma_{create, get, list, project_list, project_create,
     project_use, workspace_info, set_status, set_priority, complete,
     delete, split, ai_parse, ai_decompose, comment, reopen,
     inbox_pull, subscribe_project, events_since, healthz}`.
-  - **Plans** (9): `taskagent_plan_{create, update, get, list,
+  - **Plans** (9): `daruma_plan_{create, update, get, list,
     add_task, remove_task, reorder, next_task, archive}`.
-  - **Runs** (5): `taskagent_run_{start, start_step, finish_step,
+  - **Runs** (5): `daruma_run_{start, start_step, finish_step,
     complete, abort}`.
-  - **Sessions** (3, Linear B.1): `taskagent_session_{start, end,
+  - **Sessions** (3, Linear B.1): `daruma_session_{start, end,
     set_plan}`.
-  - **Signals** (2, Linear B.5): `taskagent_signal_{send, respond}`.
-  - **Claims** (2): `taskagent_{claim, release}`.
-  - **Relations** (3, §3.2): `taskagent_link { from, to, kind,
-    client_command_id? }`, `taskagent_unlink { relation_id }`,
-    `taskagent_relations { task_id }` (returns 5 groups: blocks,
+  - **Signals** (2, Linear B.5): `daruma_signal_{send, respond}`.
+  - **Claims** (2): `daruma_{claim, release}`.
+  - **Relations** (3, §3.2): `daruma_link { from, to, kind,
+    client_command_id? }`, `daruma_unlink { relation_id }`,
+    `daruma_relations { task_id }` (returns 5 groups: blocks,
     blocked_by, relates_to, duplicates, duplicated_by).
 - Dependency-light: hand-rolled JSON-RPC 2.0 over stdio (no `rmcp` SDK),
   with `initialize`, `tools/list`, `tools/call`, `ping`.
 - Tool handlers funnel through `ApiClient` → bearer-authed HTTP to
-  `taskagent-server`. The binary reads `TASKAGENT_API_URL` (default
-  `http://localhost:8080`) + `TASKAGENT_TOKEN` from env; logs go to
+  `daruma-server`. The binary reads `DARUMA_API_URL` (default
+  `http://localhost:8080`) + `DARUMA_TOKEN` from env; logs go to
   stderr, stdout is reserved for JSON-RPC frames.
 - Per-workspace default `project_id` is persisted under
-  `~/.agents/taskagent/workspaces.json` (override via
-  `TASKAGENT_AGENT_DIR` / `TASKAGENT_WORKSPACES_FILE`). Legacy
-  `~/.config/taskagent/` and repo-local `taskagent/workspaces.json` are
+  `~/.agents/daruma/workspaces.json` (override via
+  `DARUMA_AGENT_DIR` / `DARUMA_WORKSPACES_FILE`). Legacy
+  `~/.config/daruma/` and repo-local `daruma/workspaces.json` are
   migrated once — see [guides/mcp-client.md](guides/mcp-client.md).
 
-### `taskagent-sync`
+### `daruma-sync`
 - `Hub` — bridges `EventBus` to a WebSocket fanout; cheap to clone.
 - `WsClientMessage` / `WsServerMessage` — JSON, tagged-union shape. v2
   extensions:
@@ -522,7 +522,7 @@ guard.
   route to `Channel::Tasks` and are therefore gated by `SubscribeTasks`
   — not by `TaskRelationRead`, which only gates the REST GET endpoint.
 
-### `taskagent-ai`
+### `daruma-ai`
 - `OpenAiClient` wraps the OpenAI Responses API. Returns `Command`
   values only — never touches storage.
 
@@ -636,9 +636,9 @@ direct REST endpoints (`POST /v1/plans`, `POST /v1/runs`, …) — returns:
 - Embeds `Db` + `EventBus` + `CommandBus` in-process; no HTTP needed.
 - Dark theme, keyboard-first; AI calls produce commands.
 
-### `taskagent-web` (Leptos CSR client — standalone repo)
+### `daruma-web` (Leptos CSR client — standalone repo)
 
-Extracted from this monorepo into the sibling **`taskagent-web`** repo so the
+Extracted from this monorepo into the sibling **`daruma-web`** repo so the
 OSS server stays a bare API + MCP backend. It consumes the OSS crates read-only
 via a `vendor/oss` symlink (Cargo path deps), matching the documented local
 development override pattern.
@@ -646,12 +646,12 @@ development override pattern.
 - **Stack:** Leptos 0.7 CSR (client-side rendering, no SSR/hydration),
   compiled to WASM via Trunk. HTTP calls via `gloo-net`, WebSocket
   subscription via `gloo-net::websocket`. Bearer auth passed through
-  `Sec-WebSocket-Protocol: taskagent.v1, bearer.<token>` on the WS handshake.
-- **Dependencies:** `taskagent-domain` (task/project/plan types shared
-  with the server — no manual `types.ts`), `taskagent-shared` (IDs,
-  Timestamp), `taskagent-events` with `default-features = false` (no
+  `Sec-WebSocket-Protocol: daruma.v1, bearer.<token>` on the WS handshake.
+- **Dependencies:** `daruma-domain` (task/project/plan types shared
+  with the server — no manual `types.ts`), `daruma-shared` (IDs,
+  Timestamp), `daruma-events` with `default-features = false` (no
   Tokio runtime; only pure types for deserialising `WsServerMessage`),
-  `taskagent-api-dto` — all via `vendor/oss/crates/*`.
+  `daruma-api-dto` — all via `vendor/oss/crates/*`.
 - **Wire mirrors:** `CommandEnvelope`, `MutationResponse`,
   `WsServerMessage`, `WsClientMessage` are re-declared locally in
   `src/api.rs` to avoid pulling Axum/Tokio into the WASM build.
@@ -659,7 +659,7 @@ development override pattern.
   `dist/` bundle behind any static host (or the remote `/app/` mount) and
   point it at the server's `/v1/*` + `/v1/ws`. `trunk serve` proxies
   `/v1/*` to `127.0.0.1:8080` for local dev.
-- **Build:** `cd ../taskagent-web && sh scripts/link-oss.sh && trunk build
+- **Build:** `cd ../daruma-web && sh scripts/link-oss.sh && trunk build
   --release` produces `dist/`.
 
 ## End-to-end flow
@@ -697,7 +697,7 @@ and webhook bodies) all mirror it. If they diverge, events win.
 - All async traits use `async-trait`.
 - All public types derive `Clone`, `Debug`, `Serialize`, `Deserialize`
   unless there's a reason not to.
-- Errors propagate as `taskagent_shared::CoreError`.
+- Errors propagate as `daruma_shared::CoreError`.
 - Keep files under ~300 lines (split modules as needed).
 - No business logic in views or HTTP handlers — everything goes through
   `CommandBus`.

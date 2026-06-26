@@ -1,7 +1,7 @@
 {
-  "name": "taskagent-cursor-extension",
+  "name": "daruma-cursor-extension",
   "version": "0.1.0",
-  "description": "Native Cursor/VSCode sidebar for TaskAgent projects, plans, and tasks.",
+  "description": "Native Cursor/VSCode sidebar for Daruma projects, plans, and tasks.",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -16,121 +16,121 @@
   },
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onView:taskagent.tasks",
-    "onCommand:taskagent.refresh"
+    "onView:daruma.tasks",
+    "onCommand:daruma.refresh"
   ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "taskagent",
-          "title": "TaskAgent",
-          "icon": "media/taskagent.svg"
+          "id": "daruma",
+          "title": "Daruma",
+          "icon": "media/daruma.svg"
         }
       ]
     },
     "views": {
-      "taskagent": [
+      "daruma": [
         {
-          "id": "taskagent.tasks",
+          "id": "daruma.tasks",
           "name": "Tasks"
         }
       ]
     },
     "commands": [
       {
-        "command": "taskagent.refresh",
-        "title": "TaskAgent: Refresh",
+        "command": "daruma.refresh",
+        "title": "Daruma: Refresh",
         "icon": "$(refresh)"
       },
       {
-        "command": "taskagent.completeTask",
-        "title": "TaskAgent: Complete Task",
+        "command": "daruma.completeTask",
+        "title": "Daruma: Complete Task",
         "icon": "$(pass)"
       },
       {
-        "command": "taskagent.claimTask",
-        "title": "TaskAgent: Claim Task",
+        "command": "daruma.claimTask",
+        "title": "Daruma: Claim Task",
         "icon": "$(account)"
       },
       {
-        "command": "taskagent.commentTask",
-        "title": "TaskAgent: Comment on Task",
+        "command": "daruma.commentTask",
+        "title": "Daruma: Comment on Task",
         "icon": "$(comment)"
       },
       {
-        "command": "taskagent.setTaskPriority",
-        "title": "TaskAgent: Set Task Priority",
+        "command": "daruma.setTaskPriority",
+        "title": "Daruma: Set Task Priority",
         "icon": "$(symbol-number)"
       },
       {
-        "command": "taskagent.splitTask",
-        "title": "TaskAgent: Split Task",
+        "command": "daruma.splitTask",
+        "title": "Daruma: Split Task",
         "icon": "$(type-hierarchy-sub)"
       },
       {
-        "command": "taskagent.showTask",
-        "title": "TaskAgent: Show Task"
+        "command": "daruma.showTask",
+        "title": "Daruma: Show Task"
       },
       {
-        "command": "taskagent.openPlan",
-        "title": "TaskAgent: Open Plan",
+        "command": "daruma.openPlan",
+        "title": "Daruma: Open Plan",
         "icon": "$(list-tree)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "taskagent.refresh",
-          "when": "view == taskagent.tasks",
+          "command": "daruma.refresh",
+          "when": "view == daruma.tasks",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "taskagent.openPlan",
-          "when": "view == taskagent.tasks && viewItem == taskagent.plan",
+          "command": "daruma.openPlan",
+          "when": "view == daruma.tasks && viewItem == daruma.plan",
           "group": "inline"
         },
         {
-          "command": "taskagent.completeTask",
-          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "command": "daruma.completeTask",
+          "when": "view == daruma.tasks && viewItem == daruma.task",
           "group": "inline@1"
         },
         {
-          "command": "taskagent.claimTask",
-          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "command": "daruma.claimTask",
+          "when": "view == daruma.tasks && viewItem == daruma.task",
           "group": "inline@2"
         },
         {
-          "command": "taskagent.commentTask",
-          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "command": "daruma.commentTask",
+          "when": "view == daruma.tasks && viewItem == daruma.task",
           "group": "inline@3"
         },
         {
-          "command": "taskagent.setTaskPriority",
-          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "command": "daruma.setTaskPriority",
+          "when": "view == daruma.tasks && viewItem == daruma.task",
           "group": "1_actions@1"
         },
         {
-          "command": "taskagent.splitTask",
-          "when": "view == taskagent.tasks && viewItem == taskagent.task",
+          "command": "daruma.splitTask",
+          "when": "view == daruma.tasks && viewItem == daruma.task",
           "group": "1_actions@2"
         }
       ]
     },
     "configuration": {
-      "title": "TaskAgent",
+      "title": "Daruma",
       "properties": {
-        "taskagent.apiUrl": {
+        "daruma.apiUrl": {
           "type": "string",
           "default": "http://localhost:8080",
-          "description": "TaskAgent server base URL."
+          "description": "Daruma server base URL."
         },
-        "taskagent.token": {
+        "daruma.token": {
           "type": "string",
           "default": "",
-          "description": "TaskAgent bearer token."
+          "description": "Daruma bearer token."
         }
       }
     }

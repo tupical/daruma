@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Status;
-use taskagent_shared::{PlanId, ProjectId, RuleId, TaskId, Timestamp};
+use daruma_shared::{PlanId, ProjectId, RuleId, TaskId, Timestamp};
 
 /// How strictly a rule is enforced (spec §1, `RuleMode`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ impl RuleScope {
 }
 
 /// Lifecycle trigger a rule fires on (spec §1.1). Mirrors the v1-active subset
-/// of `taskagent_core::TriggerEvent`; the wire strings are identical so a rule
+/// of `daruma_core::TriggerEvent`; the wire strings are identical so a rule
 /// stored here matches a gate check there without translation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn patch_merges_and_leaves_unset_fields() {
-        let now = taskagent_shared::time::now();
+        let now = daruma_shared::time::now();
         let rule = NewRule {
             id: None,
             rule_key: "completion-note".into(),

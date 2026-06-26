@@ -1,14 +1,14 @@
 [package]
-name = "taskagent-mcp"
+name = "daruma-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-taskagent-shared = { workspace = true }
+daruma-shared = { workspace = true }
 
-# HTTP client to taskagent-server (HTTP-hop architecture for W3.2 MVP).
+# HTTP client to daruma-server (HTTP-hop architecture for W3.2 MVP).
 reqwest = { workspace = true }
 
 # Async / serde

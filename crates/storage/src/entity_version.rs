@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{sqlite::SqliteRow, Row, Sqlite, SqlitePool, Transaction};
-use taskagent_domain::Actor;
-use taskagent_events::EventEnvelope;
-use taskagent_shared::{CoreError, Result, VersionId};
+use daruma_domain::Actor;
+use daruma_events::EventEnvelope;
+use daruma_shared::{CoreError, Result, VersionId};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EntityVersion {

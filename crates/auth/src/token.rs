@@ -9,7 +9,7 @@ use argon2::{
 use base64::Engine as _;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{time, AgentId, Result, Timestamp, TokenId};
+use daruma_shared::{time, AgentId, Result, Timestamp, TokenId};
 
 use crate::scope::TokenScope;
 
@@ -168,7 +168,7 @@ fn hash_plaintext(plaintext: &str) -> Result<String> {
     Argon2::default()
         .hash_password(plaintext.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| taskagent_shared::CoreError::storage(format!("argon2 hash failed: {e}")))
+        .map_err(|e| daruma_shared::CoreError::storage(format!("argon2 hash failed: {e}")))
 }
 
 #[cfg(test)]

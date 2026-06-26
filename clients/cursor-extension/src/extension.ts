@@ -1,17 +1,17 @@
 import * as vscode from "vscode";
-import { Plan, Task, TaskagentApiClient } from "./apiClient.js";
-import { TaskagentTreeProvider } from "./tree.js";
+import { Plan, Task, DarumaApiClient } from "./apiClient.js";
+import { DarumaTreeProvider } from "./tree.js";
 
 export function activate(context: vscode.ExtensionContext): void {
   const client = createClient();
-  const treeProvider = new TaskagentTreeProvider(client);
-  const tree = vscode.window.createTreeView("taskagent.tasks", {
+  const treeProvider = new DarumaTreeProvider(client);
+  const tree = vscode.window.createTreeView("daruma.tasks", {
     treeDataProvider: treeProvider,
     showCollapseAll: true
   });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  status.text = "$(checklist) TaskAgent";
-  status.command = "taskagent.refresh";
+  status.text = "$(checklist) Daruma";
+  status.command = "daruma.refresh";
   status.show();
 
   let eventCursor: string | undefined;
@@ -46,9 +46,9 @@ export function activate(context: vscode.ExtensionContext): void {
     tree,
     status,
     { dispose: () => clearInterval(timer) },
-    vscode.commands.registerCommand("taskagent.refresh", refresh),
+    vscode.commands.registerCommand("daruma.refresh", refresh),
 
-    vscode.commands.registerCommand("taskagent.completeTask", async (task?: Task) => {
+    vscode.commands.registerCommand("daruma.completeTask", async (task?: Task) => {
       if (!task?.id) {
         return;
       }
@@ -56,7 +56,7 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
 
-    vscode.commands.registerCommand("taskagent.claimTask", async (task?: Task) => {
+    vscode.commands.registerCommand("daruma.claimTask", async (task?: Task) => {
       if (!task?.id) {
         return;
       }
@@ -64,7 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
 
-    vscode.commands.registerCommand("taskagent.commentTask", async (task?: Task) => {
+    vscode.commands.registerCommand("daruma.commentTask", async (task?: Task) => {
       if (!task?.id) {
         return;
       }
@@ -79,7 +79,7 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
 
-    vscode.commands.registerCommand("taskagent.setTaskPriority", async (task?: Task) => {
+    vscode.commands.registerCommand("daruma.setTaskPriority", async (task?: Task) => {
       if (!task?.id) {
         return;
       }
@@ -94,7 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
 
-    vscode.commands.registerCommand("taskagent.splitTask", async (task?: Task) => {
+    vscode.commands.registerCommand("daruma.splitTask", async (task?: Task) => {
       if (!task?.id) {
         return;
       }
@@ -118,17 +118,17 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
 
-    vscode.commands.registerCommand("taskagent.showTask", async (task: Task) => {
+    vscode.commands.registerCommand("daruma.showTask", async (task: Task) => {
       await vscode.window.showInformationMessage(`${task.title} (${task.status ?? "unknown"})`);
     }),
 
-    vscode.commands.registerCommand("taskagent.openPlan", async (plan?: Plan) => {
+    vscode.commands.registerCommand("daruma.openPlan", async (plan?: Plan) => {
       if (!plan?.id) {
         return;
       }
       const detail = await client.getPlan(plan.id);
       const panel = vscode.window.createWebviewPanel(
-        "taskagent.plan",
+        "daruma.plan",
         detail.plan.title,
         vscode.ViewColumn.One,
         { enableScripts: false }
@@ -169,25 +169,25 @@ function escapeHtml(value: string): string {
   });
 }
 
-async function updateStatus(status: vscode.StatusBarItem, client: TaskagentApiClient): Promise<void> {
+async function updateStatus(status: vscode.StatusBarItem, client: DarumaApiClient): Promise<void> {
   try {
     const tasks = await client.listTasks();
     const open = tasks.filter((task) => task.status !== "done" && task.status !== "cancelled").length;
-    status.text = `$(checklist) TaskAgent ${open}`;
-    status.tooltip = `${open} open TaskAgent task(s)`;
+    status.text = `$(checklist) Daruma ${open}`;
+    status.tooltip = `${open} open Daruma task(s)`;
   } catch {
-    status.text = "$(warning) TaskAgent";
-    status.tooltip = "TaskAgent server is unreachable";
+    status.text = "$(warning) Daruma";
+    status.tooltip = "Daruma server is unreachable";
   }
 }
 
 export function deactivate(): void {}
 
-function createClient(): TaskagentApiClient {
-  const config = vscode.workspace.getConfiguration("taskagent");
-  const apiUrl = config.get<string>("apiUrl") || process.env.TASKAGENT_API_URL || "http://localhost:8080";
-  const token = config.get<string>("token") || process.env.TASKAGENT_TOKEN || "";
-  return new TaskagentApiClient(apiUrl, token);
+function createClient(): DarumaApiClient {
+  const config = vscode.workspace.getConfiguration("daruma");
+  const apiUrl = config.get<string>("apiUrl") || process.env.DARUMA_API_URL || "http://localhost:8080";
+  const token = config.get<string>("token") || process.env.DARUMA_TOKEN || "";
+  return new DarumaApiClient(apiUrl, token);
 }
 
 function registerCursorMcpServer(): void {
@@ -197,11 +197,11 @@ function registerCursorMcpServer(): void {
     if (!registerServer) {
       return;
     }
-    const config = vscode.workspace.getConfiguration("taskagent");
-    const apiUrl = config.get<string>("apiUrl") || process.env.TASKAGENT_API_URL || "http://localhost:8080";
-    const token = config.get<string>("token") || process.env.TASKAGENT_TOKEN || "";
+    const config = vscode.workspace.getConfiguration("daruma");
+    const apiUrl = config.get<string>("apiUrl") || process.env.DARUMA_API_URL || "http://localhost:8080";
+    const token = config.get<string>("token") || process.env.DARUMA_TOKEN || "";
     registerServer({
-      name: "taskagent",
+      name: "daruma",
       server: {
         url: `${apiUrl.replace(/\/$/, "")}/v1/mcp`,
         headers: token ? { Authorization: `Bearer ${token}` } : undefined

@@ -1,6 +1,6 @@
-# `taskagent` — terse CLI
+# `daruma` — terse CLI
 
-`apps/cli/` builds a single binary, `taskagent`, that is a thin wrapper
+`apps/cli/` builds a single binary, `daruma`, that is a thin wrapper
 over `crates/mcp/src/client.rs` (i.e. the same HTTP surface the MCP
 server hops through). It exists for two callers:
 
@@ -15,22 +15,22 @@ the most when typed by hand: `next`, `show`, `done`, `list`, `history`.
 ## Build & install
 
 ```bash
-cargo build --release -p taskagent-cli
-# binary at target/release/taskagent
+cargo build --release -p daruma-cli
+# binary at target/release/daruma
 ```
 
 ## Configure
 
 ```bash
-export TASKAGENT_API_URL=http://localhost:8080
-export TASKAGENT_TOKEN=ag_dev_xxxxxxxx
+export DARUMA_API_URL=http://localhost:8080
+export DARUMA_TOKEN=ag_dev_xxxxxxxx
 # Optional — scopes `next` / `list` to a single project:
-export TASKAGENT_PROJECT_ID=01939e35-...
+export DARUMA_PROJECT_ID=01939e35-...
 # Optional — workspace key (MCP persists defaults; CLI uses env only):
-export TASKAGENT_WORKSPACE="$PWD"
+export DARUMA_WORKSPACE="$PWD"
 ```
 
-MCP client disk layout (`taskagent-mcp`): [docs/guides/mcp-client.md](../../docs/guides/mcp-client.md).
+MCP client disk layout (`daruma-mcp`): [docs/guides/mcp-client.md](../../docs/guides/mcp-client.md).
 
 You can also pass `--api-url` and `--token` per-invocation. They override
 the env.
@@ -40,57 +40,57 @@ the env.
 For Cursor remote MCP, print a ready-to-merge `mcp.json` snippet:
 
 ```bash
-taskagent install --print-config cursor
+daruma install --print-config cursor
 ```
 
-The snippet uses `<TASKAGENT_API_URL>/v1/mcp` and adds an
+The snippet uses `<DARUMA_API_URL>/v1/mcp` and adds an
 `Authorization: Bearer ...` header when a token is available from env or
-`~/.agents/taskagent/credentials.json`.
+`~/.agents/daruma/credentials.json`.
 
 To persist a self-host/local profile non-interactively:
 
 ```bash
-TASKAGENT_API_URL=http://127.0.0.1:8080 \
-TASKAGENT_TOKEN=ta_svc_... \
-taskagent install --mode self-host -y
+DARUMA_API_URL=http://127.0.0.1:8080 \
+DARUMA_TOKEN=ta_svc_... \
+daruma install --mode self-host -y
 ```
 
-For local mode, `TASKAGENT_TOKEN` may be omitted when
-`$TASKAGENT_DATA_DIR/bootstrap.token` exists:
+For local mode, `DARUMA_TOKEN` may be omitted when
+`$DARUMA_DATA_DIR/bootstrap.token` exists:
 
 ```bash
-TASKAGENT_DATA_DIR=~/.agents/taskagent/data \
-taskagent install --mode local -y
+DARUMA_DATA_DIR=~/.agents/daruma/data \
+daruma install --mode local -y
 ```
 
 ## Verbs
 
 ```bash
 # Next claim-ready task in the current project (todo → in_progress → inbox).
-taskagent next
+daruma next
 
 # Show one task + its comments.
-taskagent show 019e351b-3f3a-7850-a0bd-85135c0b24d0
+daruma show 019e351b-3f3a-7850-a0bd-85135c0b24d0
 
 # Mark a task done.
-taskagent done 019e351b-3f3a-7850-a0bd-85135c0b24d0
+daruma done 019e351b-3f3a-7850-a0bd-85135c0b24d0
 
 # List open tasks in the current project (status filter is required).
-taskagent list --status active
+daruma list --status active
 
 # Filter by a specific status.
-taskagent list --status todo
-taskagent list --status in_progress
+daruma list --status todo
+daruma list --status in_progress
 
 # Full archive (including done/cancelled).
-taskagent list --status all
+daruma list --status all
 
 # Ignore the workspace default project scope.
-taskagent list --status active --project-id all
+daruma list --status active --project-id all
 
 # Show version history for a task or document.
-taskagent history task 019e351b-3f3a-7850-a0bd-85135c0b24d0
-taskagent history document doc_019e351b-3f3a-7850-a0bd-85135c0b24d0 --limit 20
+daruma history task 019e351b-3f3a-7850-a0bd-85135c0b24d0
+daruma history document doc_019e351b-3f3a-7850-a0bd-85135c0b24d0 --limit 20
 ```
 
 ## `--json` for agents
@@ -100,11 +100,11 @@ nothing else (logs go to stderr). The shape mirrors what the server
 returns:
 
 ```bash
-taskagent next --json                 # one task object, or `null`
-taskagent show <id> --json            # { "task": {...}, "comments": [...] }
-taskagent list --status todo --json   # array of task objects
-taskagent done <id> --json            # MutationResponse from the server
-taskagent history task <id> --json    # array of version records
+daruma next --json                 # one task object, or `null`
+daruma show <id> --json            # { "task": {...}, "comments": [...] }
+daruma list --status todo --json   # array of task objects
+daruma done <id> --json            # MutationResponse from the server
+daruma history task <id> --json    # array of version records
 ```
 
 This is the integration contract — feel free to script against it.

@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use taskagent_core::{Command, CommandBus};
-use taskagent_domain::{Actor, NewTask};
+use daruma_core::{Command, CommandBus};
+use daruma_domain::{Actor, NewTask};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;
@@ -127,7 +127,7 @@ async fn slow_consumer_does_not_drop_fast_peers() {
             .expect("dispatch CreateTask must succeed");
         // Capture the task id so we can match frames precisely.
         let id = match &envs[0].payload {
-            taskagent_events::Event::TaskCreated { task } => task
+            daruma_events::Event::TaskCreated { task } => task
                 .id
                 .expect("TaskCreated must carry id")
                 .as_uuid()

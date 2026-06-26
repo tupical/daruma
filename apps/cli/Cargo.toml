@@ -1,16 +1,16 @@
 [package]
-name = "taskagent-cli"
+name = "daruma-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "taskagent"
+name = "daruma"
 path = "src/main.rs"
 
 [dependencies]
-taskagent-mcp = { workspace = true }
+daruma-mcp = { workspace = true }
 
 tokio       = { workspace = true }
 reqwest     = { workspace = true }

@@ -1,7 +1,7 @@
 //! Token scope — what a token may read/write, in which projects.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::ProjectId;
+use daruma_shared::ProjectId;
 
 use crate::capability::Capabilities;
 
@@ -76,7 +76,7 @@ impl TokenScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_shared::ProjectId;
+    use daruma_shared::ProjectId;
 
     #[test]
     fn project_filter_all_allows_anything() {

@@ -31,11 +31,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::json;
-use taskagent_api_dto::MutationWarning;
-use taskagent_domain::{
+use daruma_api_dto::MutationWarning;
+use daruma_domain::{
     Actor, Condition, EvidenceKind, Requirement, Rule, RuleMode, RuleScope, RuleTrigger,
 };
-use taskagent_shared::Result;
+use daruma_shared::Result;
 
 use crate::lifecycle_gate::{GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent};
 use crate::repos::{EvidenceRepository, RuleRepository};

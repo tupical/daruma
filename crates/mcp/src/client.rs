@@ -1,17 +1,17 @@
 //! Thin wrapper around `reqwest::Client` that knows how to talk to the
-//! `taskagent-server` HTTP surface — every tool handler funnels its HTTP
+//! `daruma-server` HTTP surface — every tool handler funnels its HTTP
 //! work through this client so the auth bearer is set in exactly one
 //! place.
 
 use serde_json::{json, Value};
-use taskagent_shared::AgentId;
+use daruma_shared::AgentId;
 
 /// HTTP-hop client used by every tool handler.
 #[derive(Clone)]
 pub struct ApiClient {
     base: String,
     token: String,
-    /// Logical workspace scope sent as `X-TaskAgent-Workspace-Id`.
+    /// Logical workspace scope sent as `X-Daruma-Workspace-Id`.
     workspace_id: Option<String>,
     http: reqwest::Client,
     /// Stable per-session agent id so every command this MCP process dispatches
@@ -64,7 +64,7 @@ impl ApiClient {
     }
 
     /// Wire-format Actor for every command this process dispatches.
-    /// Matches `Actor::Agent` in `taskagent-domain` (serde tag = "kind").
+    /// Matches `Actor::Agent` in `daruma-domain` (serde tag = "kind").
     fn actor_json(&self) -> Value {
         json!({ "kind": "agent", "id": self.agent_id, "name": "mcp" })
     }
@@ -85,9 +85,9 @@ impl ApiClient {
     fn auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let builder = builder
             .bearer_auth(&self.token)
-            .header("X-TaskAgent-Plugin-Contract", "1");
+            .header("X-Daruma-Plugin-Contract", "1");
         match &self.workspace_id {
-            Some(id) => builder.header("X-TaskAgent-Workspace-Id", id.as_str()),
+            Some(id) => builder.header("X-Daruma-Workspace-Id", id.as_str()),
             None => builder,
         }
     }

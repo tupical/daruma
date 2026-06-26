@@ -1,7 +1,7 @@
 //! Plan-related response DTOs.
 
 use serde::{Deserialize, Serialize};
-use taskagent_domain::{Plan, PlanProgress};
+use daruma_domain::{Plan, PlanProgress};
 
 /// Response from `GET /v1/plans/{id}`.
 ///

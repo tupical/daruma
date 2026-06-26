@@ -2,19 +2,19 @@
 
 use std::sync::Arc;
 
-use taskagent_ai::OpenAiClient;
-use taskagent_auth::TokenStore;
-use taskagent_core::CommandBus;
-use taskagent_discovery::PairingStore;
-use taskagent_events::EventStore;
-use taskagent_storage::{
+use daruma_ai::OpenAiClient;
+use daruma_auth::TokenStore;
+use daruma_core::CommandBus;
+use daruma_discovery::PairingStore;
+use daruma_events::EventStore;
+use daruma_storage::{
     ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, DocumentRepo,
     EntityVersionRepo, EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo,
     RelationRepo, RuleRepo, RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo,
     TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
-use taskagent_sync::Hub;
-use taskagent_webhooks::WebhookStore;
+use daruma_sync::Hub;
+use daruma_webhooks::WebhookStore;
 
 use crate::middleware::rate_limit::RateLimiter;
 
@@ -76,9 +76,9 @@ pub struct AppState {
     /// Document projection repo.
     pub documents: Arc<DocumentRepo>,
     /// Per-project settings projection (auto-append toggles).
-    pub project_settings: Arc<taskagent_storage::ProjectSettingsRepo>,
+    pub project_settings: Arc<daruma_storage::ProjectSettingsRepo>,
     /// WorkUnit projection (P3 multi-agent coordination).
-    pub work_units: Arc<taskagent_storage::WorkUnitRepo>,
+    pub work_units: Arc<daruma_storage::WorkUnitRepo>,
     /// Lifecycle-rule projection (docs/LIFECYCLE_RULES_SPEC.md §4).
     pub rules: Arc<RuleRepo>,
     /// Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3).
@@ -90,11 +90,11 @@ pub struct AppState {
     /// Immutable task/document version history repo.
     pub entity_versions: Arc<EntityVersionRepo>,
     // ── AI-derived projection (§3.8.3) ───────────────────────────────────────
-    /// Per-task complexity hints produced by `taskagent_ai_analyze_complexity`.
+    /// Per-task complexity hints produced by `daruma_ai_analyze_complexity`.
     pub complexity_hints: Arc<TaskComplexityRepo>,
     /// WorkspaceGraph sidecar projection (derived read model).
     pub workspace_graph: Arc<WorkspaceGraphRepo>,
-    /// Bundled `taskagent-mcp` binaries for authenticated download.
+    /// Bundled `daruma-mcp` binaries for authenticated download.
     pub mcp_downloads: crate::mcp_downloads::McpDownloads,
     /// In-memory per-workspace/per-token HTTP rate limiter.
     pub rate_limiter: RateLimiter,

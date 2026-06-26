@@ -1,18 +1,18 @@
 {
-  "_comment": "Generate a token and download taskagent-mcp from the web UI: Settings (gear icon) → MCP section. Copy the snippet from there — do not commit real tokens.",
-  "_binary": "Download taskagent-mcp for your OS from Settings, not from this repo. Point command at the saved binary path.",
-  "_local_state": "MCP client writes ~/.agents/taskagent/workspaces.json (see docs/guides/mcp-client.md). Optional: TASKAGENT_WORKSPACE, TASKAGENT_AGENT_DIR.",
+  "_comment": "Generate a token and download daruma-mcp from the web UI: Settings (gear icon) → MCP section. Copy the snippet from there — do not commit real tokens.",
+  "_binary": "Download daruma-mcp for your OS from Settings, not from this repo. Point command at the saved binary path.",
+  "_local_state": "MCP client writes ~/.agents/daruma/workspaces.json (see docs/guides/mcp-client.md). Optional: DARUMA_WORKSPACE, DARUMA_AGENT_DIR.",
 
   "mcpServers": {
-    "taskagent": {
+    "daruma": {
       "type": "stdio",
-      "command": "C:\\Tools\\taskagent-mcp.exe",
+      "command": "C:\\Tools\\daruma-mcp.exe",
       "args": [],
       "env": {
-        "TASKAGENT_API_URL": "http://localhost:8080",
-        "TASKAGENT_TOKEN": "ta_svc_…",
-        "TASKAGENT_WORKSPACE_ID": "01HQK7Y8ZJC…",
-        "TASKAGENT_PROJECT_ID": "optional-project-uuid"
+        "DARUMA_API_URL": "http://localhost:8080",
+        "DARUMA_TOKEN": "ta_svc_…",
+        "DARUMA_WORKSPACE_ID": "01HQK7Y8ZJC…",
+        "DARUMA_PROJECT_ID": "optional-project-uuid"
       }
     }
   }

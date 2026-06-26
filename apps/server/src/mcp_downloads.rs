@@ -1,4 +1,4 @@
-//! Resolve paths to the bundled unified `taskagent` binary for HTTP download.
+//! Resolve paths to the bundled unified `daruma` binary for HTTP download.
 
 use std::path::{Path, PathBuf};
 
@@ -14,13 +14,13 @@ impl McpDownloads {
     pub fn discover() -> Self {
         let mut out = Self::default();
 
-        if let Ok(p) = std::env::var("TASKAGENT_MCP_BIN_LINUX") {
+        if let Ok(p) = std::env::var("DARUMA_MCP_BIN_LINUX") {
             let path = PathBuf::from(p);
             if path.is_file() {
                 out.linux = Some(path);
             }
         }
-        if let Ok(p) = std::env::var("TASKAGENT_MCP_BIN_WINDOWS") {
+        if let Ok(p) = std::env::var("DARUMA_MCP_BIN_WINDOWS") {
             let path = PathBuf::from(p);
             if path.is_file() {
                 out.windows = Some(path);
@@ -28,12 +28,12 @@ impl McpDownloads {
         }
 
         if out.linux.is_none() || out.windows.is_none() {
-            let dir = std::env::var("TASKAGENT_MCP_BIN_DIR")
+            let dir = std::env::var("DARUMA_MCP_BIN_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/app/bin"));
 
             if out.linux.is_none() {
-                for name in ["taskagent-linux", "taskagent"] {
+                for name in ["daruma-linux", "daruma"] {
                     let candidate = dir.join(name);
                     if candidate.is_file() {
                         out.linux = Some(candidate);
@@ -42,7 +42,7 @@ impl McpDownloads {
                 }
             }
             if out.windows.is_none() {
-                for name in ["taskagent-windows.exe", "taskagent.exe"] {
+                for name in ["daruma-windows.exe", "daruma.exe"] {
                     let candidate = dir.join(name);
                     if candidate.is_file() {
                         out.windows = Some(candidate);
@@ -52,12 +52,12 @@ impl McpDownloads {
             }
         }
 
-        // Local dev: cargo build -p taskagent-cli
+        // Local dev: cargo build -p daruma-cli
         if out.linux.is_none() {
-            out.linux = dev_release_binary("taskagent");
+            out.linux = dev_release_binary("daruma");
         }
         if out.windows.is_none() {
-            out.windows = dev_release_binary("taskagent.exe");
+            out.windows = dev_release_binary("daruma.exe");
         }
 
         out
@@ -93,8 +93,8 @@ mod tests {
     #[test]
     fn path_for_platforms() {
         let dl = McpDownloads {
-            linux: Some(PathBuf::from("/tmp/taskagent-mcp")),
-            windows: Some(PathBuf::from("/tmp/taskagent-mcp.exe")),
+            linux: Some(PathBuf::from("/tmp/daruma-mcp")),
+            windows: Some(PathBuf::from("/tmp/daruma-mcp.exe")),
         };
         assert!(dl.path_for("linux").is_some());
         assert!(dl.path_for("windows").is_some());

@@ -10,9 +10,9 @@
 //! place except to set `superseded_by`.
 
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{ActorRef, Evidence, EvidenceKind, RuleScope};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{CoreError, EvidenceId, Result};
+use daruma_domain::{ActorRef, Evidence, EvidenceKind, RuleScope};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{CoreError, EvidenceId, Result};
 
 pub struct EvidenceRepo {
     pool: SqlitePool,
@@ -265,7 +265,7 @@ fn map_row_err(e: sqlx::Error) -> CoreError {
     CoreError::storage(e.to_string())
 }
 
-fn parse_ts(s: &str) -> Result<taskagent_shared::Timestamp> {
+fn parse_ts(s: &str) -> Result<daruma_shared::Timestamp> {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .map_err(|e| CoreError::storage(e.to_string()))
@@ -301,8 +301,8 @@ fn scope_id<T: std::str::FromStr>(id: Option<&str>, kind: &str) -> Result<T> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, NewEvidence};
-    use taskagent_shared::ProjectId;
+    use daruma_domain::{Actor, NewEvidence};
+    use daruma_shared::ProjectId;
 
     fn sample(scope: RuleScope, kind: EvidenceKind, target: Option<&str>) -> Evidence {
         NewEvidence {
@@ -323,7 +323,7 @@ mod tests {
         }
         .into_evidence(
             ActorRef::from_actor(&Actor::User),
-            taskagent_shared::time::now(),
+            daruma_shared::time::now(),
         )
     }
 
@@ -388,7 +388,7 @@ mod tests {
             Event::EvidenceSuperseded {
                 evidence_id: id,
                 superseded_by: newer_id,
-                at: taskagent_shared::time::now(),
+                at: daruma_shared::time::now(),
             },
         )
         .await;

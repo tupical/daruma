@@ -1,7 +1,7 @@
 # Module ⇄ Core Contract
 
-This is the formal SLA between **TaskAgent core** (the `taskagent-*`
-crates plus `apps/server` and the `taskagent mcp` stdio entry in `apps/cli`) and every **module** (client,
+This is the formal SLA between **Daruma core** (the `daruma-*`
+crates plus `apps/server` and the `daruma mcp` stdio entry in `apps/cli`) and every **module** (client,
 embed, integration) that consumes it. See
 [docs/MODULES.md](MODULES.md) for the live registry of modules.
 
@@ -12,7 +12,7 @@ modules silently.
 
 Releases and app dependency pinning are defined in
 [docs/RELEASES.md](RELEASES.md). External app repositories should depend on an
-immutable TaskAgent OSS git tag and use `vendor/oss` only as a local development
+immutable Daruma OSS git tag and use `vendor/oss` only as a local development
 override.
 
 ## What core guarantees
@@ -48,14 +48,14 @@ override.
    another `apps/*` crate. The only legal cross-crate dependency for an
    embed module is the public surface of
    [`crates/core/src/embed.rs`](../crates/core/src/embed.rs) (W2.1) plus
-   `taskagent-domain` types.
+   `daruma-domain` types.
 2. **No direct DB access.** Modules go through the HTTP/WS/MCP API or
    the embed surface. SQL lives in `crates/storage/` only.
 3. **No state mutation outside the bus.** All writes go through
    `CommandBus::dispatch`. WebSocket clients receive events from the
    bus; they do not write back to it.
 4. **No private capability bits.** Modules use only capabilities
-   declared in `taskagent_auth::Capability`. New requirements go through
+   declared in `daruma_auth::Capability`. New requirements go through
    a core-side PR that adds the bit and gates the route.
 
 ## Versioning
@@ -63,9 +63,9 @@ override.
 | Surface          | Stable contract            | Breaking-change ritual |
 |------------------|----------------------------|------------------------|
 | REST `/v1/*`     | Semver-minor additive      | New `/v2/*` + 6-month `Sunset:` header on `/v1/*` |
-| WS `/v1/ws`      | Additive `Hello` fields    | New subproto `taskagent.v2`; `taskagent.v1` deprecated with a Sunset window |
+| WS `/v1/ws`      | Additive `Hello` fields    | New subproto `daruma.v2`; `daruma.v1` deprecated with a Sunset window |
 | MCP tools        | Tool names + JSON schema   | New tool name suffix `_v2`; old tool returns `"deprecated": true` for one minor cycle |
-| Webhooks         | Body = `EventEnvelope`     | Bumped `X-TaskAgent-Schema-Version` header; consumers pick |
+| Webhooks         | Body = `EventEnvelope`     | Bumped `X-Daruma-Schema-Version` header; consumers pick |
 | Event schema     | Additive variants/fields   | New variant requires migration + ROADMAP entry |
 
 `api_version` in `/healthz` reflects the *minimum-promise* version the
@@ -91,7 +91,7 @@ All HTTP error responses are JSON of the shape:
 ```
 
 The `code` strings are stable identifiers consumers may switch on. The
-inventory lives in `taskagent_shared::CoreError::code()`:
+inventory lives in `daruma_shared::CoreError::code()`:
 `not_found | validation | conflict | storage_error | sync_error |
 ai_unavailable | serialization_error | io_error | unauthorized |
 forbidden`, plus route-specific codes (`auth_missing`, `auth_invalid`,
@@ -115,12 +115,12 @@ directly, only via `CommandBus::dispatch`.
 
 ## AI layer primitive/product boundary
 
-`taskagent-ai-infra` is a **primitive** crate: provider-neutral infrastructure
+`daruma-ai-infra` is a **primitive** crate: provider-neutral infrastructure
 (HTTP client, config, prompt renderer, tool schemas, injection hardening) with
 no knowledge of task operations. It lives in the OSS core and is consumed by
 upper layers through `vendor/oss/crates/ai-infra`.
 
-`taskagent-ai` holds the one core AI operation (`analyze_complexity`) and the
+`daruma-ai` holds the one core AI operation (`analyze_complexity`) and the
 operation prompt catalogue. It depends on `ai-infra` and is also vendored via
 `vendor/oss`.
 
@@ -128,7 +128,7 @@ AI operations that are **product** concerns — parse, decompose, scope,
 research — live in the upper-layer repos (`intake_oss`, `sensemaking_oss`,
 `planning_oss`). They depend on `ai-infra` through `vendor/oss`; the
 dependency arrow never reverses. Do not add parse/decompose/scope/research back
-to `taskagent-ai` or `taskagent-ai-infra`.
+to `daruma-ai` or `daruma-ai-infra`.
 
 ## Lifecycle
 

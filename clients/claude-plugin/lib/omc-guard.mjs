@@ -1,7 +1,7 @@
 // OMC guard — when a project already has a `.omc/` directory
 // (oh-my-claudecode artifacts), this drops a managed block into
 // `.omc/AGENTS.md` telling OMC-aware agents to route plan persistence
-// through taskagent instead of writing `.omc/plans/` or
+// through daruma instead of writing `.omc/plans/` or
 // `.omc/ultragoal/` files. Idempotent: the block is delimited and
 // replaced on subsequent runs.
 //
@@ -13,13 +13,13 @@
 import { promises as fs } from "node:fs";
 import { join, resolve } from "node:path";
 
-const BEGIN = "<!-- taskagent-claude:begin -->";
-const END = "<!-- taskagent-claude:end -->";
+const BEGIN = "<!-- daruma-claude:begin -->";
+const END = "<!-- daruma-claude:end -->";
 
-const BLOCK_BODY = `# taskagent override — task & plan persistence
+const BLOCK_BODY = `# daruma override — task & plan persistence
 
-This project uses the **taskagent** MCP server as the single source of
-truth for tasks and plans. The taskagent-claude Cursor plugin manages
+This project uses the **daruma** MCP server as the single source of
+truth for tasks and plans. The daruma-claude Cursor plugin manages
 this block; do not hand-edit between the markers.
 
 **For any OMC skill that would normally write under \`.omc/\` plans**
@@ -29,18 +29,18 @@ this block; do not hand-edit between the markers.
 - **Do not create or update** \`.omc/plans/\`, \`.omc/ultragoal/\`, or
   \`.omc/state/plans*\`. Those paths are reserved as no-write for plan
   authoring in this workspace.
-- **Author plans via taskagent first:** \`taskagent_workspace_info\` →
-  \`taskagent_create\` → \`taskagent_plan_create\` →
-  \`taskagent_plan_add_task\`. OMC may still execute, but the plan it
-  consumes is fetched via \`taskagent_plan_get\` /
-  \`taskagent_plan_next_task\`.
+- **Author plans via daruma first:** \`daruma_workspace_info\` →
+  \`daruma_create\` → \`daruma_plan_create\` →
+  \`daruma_plan_add_task\`. OMC may still execute, but the plan it
+  consumes is fetched via \`daruma_plan_get\` /
+  \`daruma_plan_next_task\`.
 - **OMC logs, state/sessions, notepad, and research artifacts**
   (\`.omc/logs/\`, \`.omc/state/sessions/\`, \`.omc/notepad.md\`,
   \`.omc/research/\`) remain untouched by this rule — only plan
   persistence is redirected.
 
-If \`taskagent_healthz\` fails, surface that to the user and ask them to
-start the taskagent server. Do not silently fall back to \`.omc/plans/\`.
+If \`daruma_healthz\` fails, surface that to the user and ask them to
+start the daruma server. Do not silently fall back to \`.omc/plans/\`.
 `;
 
 function buildBlock() {

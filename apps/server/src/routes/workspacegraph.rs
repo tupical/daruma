@@ -6,8 +6,8 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use taskagent_auth::{AuthContext, Capability};
-use taskagent_shared::{CoreError, ProjectId};
+use daruma_auth::{AuthContext, Capability};
+use daruma_shared::{CoreError, ProjectId};
 
 use crate::{error::ApiError, state::AppState};
 

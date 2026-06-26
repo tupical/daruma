@@ -3,7 +3,7 @@
 //! Previously defined as `MutationResponse` in `apps/server/src/routes/mod.rs`.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::EventId;
+use daruma_shared::EventId;
 
 /// Non-fatal mutation warning. Clients can surface these without treating the
 /// mutation as failed.

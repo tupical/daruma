@@ -1,6 +1,6 @@
 //! Event types, envelope, in-memory bus, and the [`EventStore`] trait.
 //!
-//! Storage implementations live in `taskagent-storage`.
+//! Storage implementations live in `daruma-storage`.
 //!
 //! Feature flags:
 //! - `runtime` (default: off): enables the tokio-backed [`EventBus`] and the

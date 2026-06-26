@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_shared::{time, AgentId, CoreError, Result};
+use daruma_shared::{time, AgentId, CoreError, Result};
 
 /// Read/write access to the `agent_acks` table.
 #[derive(Clone)]

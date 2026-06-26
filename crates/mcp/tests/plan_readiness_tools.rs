@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
 use serde_json::{json, Value};
-use taskagent_mcp::tools::call_tool;
-use taskagent_mcp::{tool_definitions, ApiClient};
+use daruma_mcp::tools::call_tool;
+use daruma_mcp::{tool_definitions, ApiClient};
 
 #[derive(Debug, Clone)]
 struct Captured {
@@ -57,12 +57,12 @@ fn catalogue_contains_plan_readiness_tools() {
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
     for expected in [
-        "taskagent_plan_graph",
-        "taskagent_plan_fanout",
-        "taskagent_plan_drain_next",
-        "taskagent_can_start",
-        "taskagent_search",
-        "taskagent_lesson_recall",
+        "daruma_plan_graph",
+        "daruma_plan_fanout",
+        "daruma_plan_drain_next",
+        "daruma_can_start",
+        "daruma_search",
+        "daruma_lesson_recall",
     ] {
         assert!(
             names.contains(&expected),
@@ -73,20 +73,20 @@ fn catalogue_contains_plan_readiness_tools() {
 
 #[tokio::test]
 async fn plan_graph_posts_to_graph_endpoint() {
-    let captured = call_via_mock("taskagent_plan_graph", json!({"plan_id": "pln_1"})).await;
+    let captured = call_via_mock("daruma_plan_graph", json!({"plan_id": "pln_1"})).await;
     assert_eq!(captured.path, "/v1/plans/pln_1/graph");
 }
 
 #[tokio::test]
 async fn plan_fanout_posts_to_fanout_endpoint() {
-    let captured = call_via_mock("taskagent_plan_fanout", json!({"plan_id": "pln_1"})).await;
+    let captured = call_via_mock("daruma_plan_fanout", json!({"plan_id": "pln_1"})).await;
     assert_eq!(captured.path, "/v1/plans/pln_1/fanout");
 }
 
 #[tokio::test]
 async fn plan_drain_next_posts_to_drain_endpoint() {
     let captured = call_via_mock(
-        "taskagent_plan_drain_next",
+        "daruma_plan_drain_next",
         json!({"plan_id": "pln_1", "claim_ttl_secs": 60}),
     )
     .await;
@@ -95,20 +95,20 @@ async fn plan_drain_next_posts_to_drain_endpoint() {
 
 #[tokio::test]
 async fn can_start_posts_to_task_endpoint() {
-    let captured = call_via_mock("taskagent_can_start", json!({"task_id": "tsk_1"})).await;
+    let captured = call_via_mock("daruma_can_start", json!({"task_id": "tsk_1"})).await;
     assert_eq!(captured.path, "/v1/tasks/tsk_1/can_start");
 }
 
 #[tokio::test]
 async fn search_posts_to_search_endpoint() {
-    let captured = call_via_mock("taskagent_search", json!({"query": "needle"})).await;
+    let captured = call_via_mock("daruma_search", json!({"query": "needle"})).await;
     assert_eq!(captured.path, "/v1/search");
 }
 
 #[tokio::test]
 async fn lesson_recall_searches_lesson_comment_prefix() {
     let captured = call_via_mock(
-        "taskagent_lesson_recall",
+        "daruma_lesson_recall",
         json!({"query": "branch", "project_id": "all", "limit": 5}),
     )
     .await;

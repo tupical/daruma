@@ -81,7 +81,7 @@ impl CertBundle {
             hostname.to_string().try_into().context("SAN hostname")?,
         )];
         let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, format!("taskagent@{hostname}"));
+        dn.push(DnType::CommonName, format!("daruma@{hostname}"));
         params.distinguished_name = dn;
         // 10-year validity
         params.not_before = rcgen::date_time_ymd(2024, 1, 1);

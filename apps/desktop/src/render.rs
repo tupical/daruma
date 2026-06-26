@@ -1,6 +1,6 @@
 //! Tiny ASCII renderer for the CLI. No dependencies.
 
-use taskagent_domain::{Status, Task};
+use daruma_domain::{Status, Task};
 
 const COL_ID: usize = 8;
 const COL_STATUS: usize = 12;
@@ -9,7 +9,7 @@ const COL_DUE: usize = 16;
 
 pub fn print_tasks(tasks: &[Task]) {
     if tasks.is_empty() {
-        println!("(no tasks — add one with `taskagent add \"…\"`)");
+        println!("(no tasks — add one with `daruma add \"…\"`)");
         return;
     }
 

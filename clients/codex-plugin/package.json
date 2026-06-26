@@ -1,11 +1,11 @@
 {
-  "name": "taskagent-codex-plugin",
+  "name": "daruma-codex-plugin",
   "version": "0.1.0",
-  "description": "Codex plugin for tupical/daruma. Ships taskagent command prompts and skills for parse/decompose/plan/execute workflows.",
+  "description": "Codex plugin for tupical/daruma. Ships daruma command prompts and skills for parse/decompose/plan/execute workflows.",
   "keywords": [
     "codex",
     "codex-plugin",
-    "taskagent",
+    "daruma",
     "mcp",
     "planning",
     "multi-agent"
@@ -23,8 +23,8 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "taskagent-codex": "bin/taskagent-codex.mjs",
-    "taskagent-codex-install": "bin/install.mjs"
+    "daruma-codex": "bin/daruma-codex.mjs",
+    "daruma-codex-install": "bin/install.mjs"
   },
   "files": [
     "bin/",

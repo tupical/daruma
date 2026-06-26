@@ -17,11 +17,11 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use taskagent_auth::{AuthContext, Capability};
-use taskagent_core::Command;
-use taskagent_domain::{Relation, RelationKind, TaskRelations};
-use taskagent_events::Event;
-use taskagent_shared::{CoreError, RelationId, TaskId};
+use daruma_auth::{AuthContext, Capability};
+use daruma_core::Command;
+use daruma_domain::{Relation, RelationKind, TaskRelations};
+use daruma_events::Event;
+use daruma_shared::{CoreError, RelationId, TaskId};
 
 use crate::{error::ApiError, routes::MutationResponse, state::AppState};
 
@@ -141,7 +141,7 @@ pub async fn link(
 
 async fn load_cached_relation_id(
     state: &AppState,
-    event_id: taskagent_shared::EventId,
+    event_id: daruma_shared::EventId,
     event_seq: u64,
 ) -> Result<RelationId, ApiError> {
     let events = state

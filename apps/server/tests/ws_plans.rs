@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use taskagent_auth::{
+use daruma_auth::{
     generate, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope,
     TokenStore,
 };
-use taskagent_domain::{Actor, NewTask, Plan, PlanPatch, PlanStatus, Run, RunStatus};
-use taskagent_events::{Event, EventBus, EventEnvelope};
-use taskagent_shared::{AgentId, PlanId, ProjectId, RunId};
+use daruma_domain::{Actor, NewTask, Plan, PlanPatch, PlanStatus, Run, RunStatus};
+use daruma_events::{Event, EventBus, EventEnvelope};
+use daruma_shared::{AgentId, PlanId, ProjectId, RunId};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;
@@ -113,7 +113,7 @@ async fn no_event_in(stream: &mut WsStream, timeout: Duration) -> bool {
 
 /// Build a `PlanCreated` envelope with the given project and seq (must be > 0).
 fn plan_created_env(project_id: ProjectId, seq: u64) -> EventEnvelope {
-    use taskagent_shared::time;
+    use daruma_shared::time;
     let now = time::now();
     let plan = Plan {
         id: PlanId::new(),
@@ -138,7 +138,7 @@ fn plan_created_env(project_id: ProjectId, seq: u64) -> EventEnvelope {
 
 /// Build a `RunStarted` envelope with the given seq.
 fn run_started_env(seq: u64) -> EventEnvelope {
-    use taskagent_shared::time;
+    use daruma_shared::time;
     let run = Run {
         id: RunId::new(),
         plan_id: PlanId::new(),

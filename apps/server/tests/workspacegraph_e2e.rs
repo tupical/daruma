@@ -2,12 +2,12 @@
 
 use axum::http::StatusCode;
 use serde_json::Value;
-use taskagent_auth::{Capabilities, Capability};
-use taskagent_shared::{ProjectId, TaskId};
+use daruma_auth::{Capabilities, Capability};
+use daruma_shared::{ProjectId, TaskId};
 
 mod common;
 use common::{json_get, json_post, mint_pat, test_app};
-use taskagent_server::workspace_graph;
+use daruma_server::workspace_graph;
 
 async fn sync_graph(app: &common::TestApp) {
     workspace_graph::catch_up_from_events(&app.state.workspace_graph, &*app.event_store())
@@ -161,13 +161,13 @@ async fn requires_task_read_capability() {
     let (read_token, _) = mint_pat(
         &app.auth_store(),
         Capabilities::from([Capability::TaskRead]),
-        taskagent_auth::ProjectFilter::All,
+        daruma_auth::ProjectFilter::All,
     )
     .await;
     let (no_read_token, _) = mint_pat(
         &app.auth_store(),
         Capabilities::from([Capability::ProjectRead]),
-        taskagent_auth::ProjectFilter::All,
+        daruma_auth::ProjectFilter::All,
     )
     .await;
 

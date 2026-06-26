@@ -1,11 +1,11 @@
-//! SQLite-backed implementation of [`taskagent_webhooks::WebhookStore`].
+//! SQLite-backed implementation of [`daruma_webhooks::WebhookStore`].
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_auth::ProjectFilter;
-use taskagent_shared::{time, CoreError, EventId, Result, WebhookDeliveryId, WebhookId};
-use taskagent_webhooks::{Webhook, WebhookPatch, WebhookStore};
+use daruma_auth::ProjectFilter;
+use daruma_shared::{time, CoreError, EventId, Result, WebhookDeliveryId, WebhookId};
+use daruma_webhooks::{Webhook, WebhookPatch, WebhookStore};
 
 /// Read/write access to the `webhooks` + `webhook_deliveries` tables.
 #[derive(Clone)]
@@ -254,7 +254,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_webhooks::NewWebhook;
+    use daruma_webhooks::NewWebhook;
 
     async fn make_repo() -> WebhookRepo {
         let db = Db::memory().await.unwrap();

@@ -2,9 +2,9 @@
 
 use std::str::FromStr;
 
-use taskagent_core::embed::Command;
-use taskagent_domain::{Actor, NewTask, Priority, Status};
-use taskagent_shared::TaskId;
+use daruma_core::embed::Command;
+use daruma_domain::{Actor, NewTask, Priority, Status};
+use daruma_shared::TaskId;
 
 use crate::{context::Context, remote::HttpReplicaSink, render};
 
@@ -32,7 +32,7 @@ pub async fn list(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 pub async fn add(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     let title = args
         .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: taskagent add \"<title>\" [--p0|--p1|--p2|--p3]"))?
+        .ok_or_else(|| anyhow::anyhow!("usage: daruma add \"<title>\" [--p0|--p1|--p2|--p3]"))?
         .clone();
 
     let mut priority: Option<Priority> = None;
@@ -64,7 +64,7 @@ pub async fn add(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 pub async fn done(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     let raw_id = args
         .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: taskagent done <task_id>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: daruma done <task_id>"))?;
     let id = parse_task_id(ctx, raw_id).await?;
 
     let envelopes = ctx
@@ -82,7 +82,7 @@ pub async fn done(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 pub async fn delete(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     let raw_id = args
         .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: taskagent delete <task_id>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: daruma delete <task_id>"))?;
     let id = parse_task_id(ctx, raw_id).await?;
 
     ctx.local
@@ -128,7 +128,7 @@ fn parse_limit(args: &[String]) -> anyhow::Result<u32> {
         }
         return Ok(limit);
     }
-    anyhow::bail!("usage: taskagent sync [--limit N]")
+    anyhow::bail!("usage: daruma sync [--limit N]")
 }
 
 fn parse_status(s: &str) -> anyhow::Result<Status> {

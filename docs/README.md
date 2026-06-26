@@ -1,6 +1,6 @@
 # Documentation
 
-TaskAgent is your last next task manager: crafted for speed and collaboration
+Daruma is your last next task manager: crafted for speed and collaboration
 with humans and AI.
 
 ## Core docs

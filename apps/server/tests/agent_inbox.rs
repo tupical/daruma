@@ -2,8 +2,8 @@
 //! advance the cursor, optional long-poll.
 
 use axum::http::StatusCode;
-use taskagent_auth::{generate, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope};
-use taskagent_shared::AgentId;
+use daruma_auth::{generate, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope};
+use daruma_shared::AgentId;
 
 mod common;
 use common::{json_get, json_post, TestAppBuilder};

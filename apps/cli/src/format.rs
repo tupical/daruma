@@ -1,11 +1,11 @@
-//! Output formatting helpers for the `taskagent` CLI.
+//! Output formatting helpers for the `daruma` CLI.
 //!
 //! Everything in here is pure-function over `serde_json::Value` so the
 //! handlers in `main.rs` stay one-liners and the formatting can be unit-
 //! tested without spinning up a server.
 //!
 //! We intentionally accept loosely-typed `Value`s instead of importing
-//! `taskagent-domain` types: the CLI is a thin wrapper, and tracking
+//! `daruma-domain` types: the CLI is a thin wrapper, and tracking
 //! domain schema changes in two crates is the wrong trade-off here.
 
 use comfy_table::{ContentArrangement, Table};
@@ -13,7 +13,7 @@ use serde_json::Value;
 
 /// Pick the "next" claim-ready task from the project's task list.
 ///
-/// Ordering rule (mirrors what an agent typing `taskagent next` would
+/// Ordering rule (mirrors what an agent typing `daruma next` would
 /// expect): `todo` first, then `in_progress`, then `inbox`. Tasks already
 /// `done`/`cancelled` are skipped. Ties broken by priority (`p0` highest)
 /// and finally `updated_at` descending.

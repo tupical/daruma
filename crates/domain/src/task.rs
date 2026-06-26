@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{time, EventId, ProjectId, TaskId, Timestamp};
+use daruma_shared::{time, EventId, ProjectId, TaskId, Timestamp};
 
 use crate::agent::Actor;
 

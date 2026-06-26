@@ -1,6 +1,6 @@
 //! MCP tool catalogue + dispatch.
 //!
-//! Every tool is a thin shim over a `taskagent-server` HTTP endpoint —
+//! Every tool is a thin shim over a `daruma-server` HTTP endpoint —
 //! the inputs come in as JSON arguments from the MCP client and the
 //! outputs are forwarded as JSON `content` text frames.
 
@@ -14,7 +14,7 @@ use crate::client::ApiClient;
 use crate::session_metadata;
 use crate::workspace;
 
-/// In-memory store of one-time confirm tokens used by `taskagent_project_delete`.
+/// In-memory store of one-time confirm tokens used by `daruma_project_delete`.
 ///
 /// `token → (project_id, issued_at)`.  Tokens expire after [`CONFIRM_TTL`].
 /// Cleared on MCP process restart — that is by design: the agent must
@@ -68,7 +68,7 @@ fn consume_confirm_token(token: &str, project_id: &str) -> std::result::Result<(
 /// * `Full`    — the complete catalogue (backward-compatible superset).
 ///
 /// Resolution order: explicit override (CLI `--profile`, `/v1/mcp?profile=`)
-/// → `TASKAGENT_MCP_PROFILE` env → built-in `Default`. Clients that need the
+/// → `DARUMA_MCP_PROFILE` env → built-in `Default`. Clients that need the
 /// advanced tools must opt into `full` (see docs/mcp/PROFILES.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolProfile {
@@ -85,9 +85,9 @@ impl ToolProfile {
         }
     }
 
-    /// Resolve from `TASKAGENT_MCP_PROFILE`; unset or unrecognized → `Default`.
+    /// Resolve from `DARUMA_MCP_PROFILE`; unset or unrecognized → `Default`.
     pub fn from_env() -> Self {
-        std::env::var("TASKAGENT_MCP_PROFILE")
+        std::env::var("DARUMA_MCP_PROFILE")
             .ok()
             .and_then(|v| Self::parse(&v))
             .unwrap_or(Self::Default)
@@ -216,126 +216,126 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         // ── Tasks ─────────────────────────────────────────────────────────
         tool(
-            "taskagent_create",
+            "daruma_create",
             "Create task",
             "Create a new task. `title` is required; everything else is optional.",
             schema_create(),
             Dom::Tasks, D, Ann::Write,
         ),
         tool(
-            "taskagent_capture",
+            "daruma_capture",
             "Capture inbox task",
             "Quick-capture a fleeting idea as an inbox task (priority p3). Uses the resolved repo project when unambiguous; pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Pass `project_id: null` for a project-less inbox task.",
             schema_capture(),
             Dom::Tasks, D, Ann::Write,
         ),
         tool(
-            "taskagent_capture_batch",
+            "daruma_capture_batch",
             "Capture multiple inbox tasks",
             "Capture multiple inbox tasks in one call. Each string becomes a separate task (priority p3).",
             schema_capture_batch(),
             Dom::Tasks, F, Ann::Write,
         ),
         tool(
-            "taskagent_get",
+            "daruma_get",
             "Get task",
             "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority).",
             schema_with_id("id"),
             Dom::Tasks, D, Ann::Read,
         ),
         tool(
-            "taskagent_update",
+            "daruma_update",
             "Update task",
             "Update a task's title, description, or due date. Recorded in the task event/activity log.",
             schema_update(),
             Dom::Tasks, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_list",
+            "daruma_list",
             "List tasks",
             "List tasks — the default tool for \"what's open / inventory\". Required `status`: a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, `active` (all non-terminal), or `all`. Avoid `status=all` unless the user explicitly asked for the archive — it can return a very large response. Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
             schema_list(),
             Dom::Tasks, D, Ann::Read,
         ),
         tool(
-            "taskagent_search",
+            "daruma_search",
             "Search tasks and comments",
-            "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `taskagent_list status=active` instead. Always pass `limit`.",
+            "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `daruma_list status=active` instead. Always pass `limit`.",
             schema_search(),
             Dom::Tasks, D, Ann::Read,
         ),
         tool(
-            "taskagent_lesson_recall",
+            "daruma_lesson_recall",
             "Recall lessons",
             "Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix.",
             schema_lesson_recall(),
             Dom::Tasks, F, Ann::Read,
         ),
         tool(
-            "taskagent_set_status",
+            "daruma_set_status",
             "Set task status",
             "Set a task's status (inbox / todo / in_progress / in_review / done / cancelled).",
             schema_set_status(),
             Dom::Tasks, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_set_priority",
+            "daruma_set_priority",
             "Set task priority",
             "Set a task's priority (p0 / p1 / p2 / p3).",
             schema_set_priority(),
             Dom::Tasks, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_move_project",
+            "daruma_move_project",
             "Move task to another project",
             "Move a task to another project while preserving its id, comments, relations, and event history. Pass `project_id`, `project_scope`, or `scope_path`.",
             schema_move_project(),
             Dom::Tasks, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_complete",
+            "daruma_complete",
             "Complete task",
             "Mark a task as completed. Optionally attach a completion note (reason / result_summary / acceptance_criteria_status / related_artifacts); the completing actor (user vs agent) is recorded automatically.",
             schema_complete(),
             Dom::Tasks, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_reopen",
+            "daruma_reopen",
             "Reopen task",
             "Reopen a completed task (sets status back to `todo`).",
             schema_with_id("id"),
             Dom::Tasks, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_delete",
+            "daruma_delete",
             "Delete task",
             "Delete a task permanently.",
             schema_with_id("id"),
             Dom::Tasks, F, Ann::Destructive,
         ),
         tool(
-            "taskagent_split",
+            "daruma_split",
             "Split task into subtasks",
             "Split a parent task into 2+ subtasks.",
             schema_split(),
             Dom::Tasks, F, Ann::Write,
         ),
         tool(
-            "taskagent_bulk_set_status",
+            "daruma_bulk_set_status",
             "Bulk set task status",
             "Atomically set the same status on up to 50 tasks. Duplicate ids are deduped; fail-fast if any id is missing.",
             schema_bulk_set_status(),
             Dom::Tasks, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_comment",
+            "daruma_comment",
             "Comment on task",
             "Add a comment to a task. Optional semantic `kind` (intent/progress/outcome/blocker/research).",
             schema_comment(),
             Dom::Tasks, D, Ann::Write,
         ),
         tool(
-            "taskagent_can_start",
+            "daruma_can_start",
             "Check task readiness",
             "Check whether a task is ready to start, returning active blockers with title and status.",
             schema_can_start(),
@@ -343,70 +343,70 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Projects / workspace ──────────────────────────────────────────
         tool(
-            "taskagent_project_list",
+            "daruma_project_list",
             "List projects",
             "List every project (id, title, description).",
             empty_schema(),
             Dom::Projects, D, Ann::Read,
         ),
         tool(
-            "taskagent_project_create",
+            "daruma_project_create",
             "Create project",
             "Create a new project.",
             schema_project_create(),
             Dom::Projects, F, Ann::Write,
         ),
         tool(
-            "taskagent_project_use",
+            "daruma_project_use",
             "Bind workspace to project",
-            "Bind a workspace/repo scope to a taskagent project. When MCP runs in a folder containing multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
+            "Bind a workspace/repo scope to a daruma project. When MCP runs in a folder containing multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
             schema_project_use(),
             Dom::Projects, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_project_delete",
+            "daruma_project_delete",
             "Delete project",
             "Delete a project. Two-step, destructive: (1) call with only `id` to receive a one-time `confirm_token` (TTL 5 min) plus a contents summary; (2) call again with the same `id`, the issued `confirm_token`, AND `confirm` set to the project's exact title. The server still refuses unless the project has 0 tasks and 0 plans.",
             schema_project_delete(),
             Dom::Projects, F, Ann::Destructive,
         ),
         tool(
-            "taskagent_workspace_info",
+            "daruma_workspace_info",
             "Show workspace info",
             "Show this MCP session's workspace key, inferred project, inference error, and known repo scopes.",
             empty_schema(),
             Dom::Admin, D, Ann::Read,
         ),
         tool(
-            "taskagent_workspace_resolve",
+            "daruma_workspace_resolve",
             "Resolve/bind workspace for a path",
-            "Resolve a filesystem root to its logical workspace + default project via the server registry. Unknown roots are created-and-bound on first call (pass `create:false` to probe only); the resolved project is persisted as this scope's default. Use when starting in a repo taskagent has never seen.",
+            "Resolve a filesystem root to its logical workspace + default project via the server registry. Unknown roots are created-and-bound on first call (pass `create:false` to probe only); the resolved project is persisted as this scope's default. Use when starting in a repo daruma has never seen.",
             schema_workspace_resolve(),
             Dom::Projects, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_workspace_list",
+            "daruma_workspace_list",
             "List logical workspaces",
             "List logical workspaces from the server registry: id, name, bound filesystem roots, and project count.",
             empty_schema(),
             Dom::Projects, F, Ann::Read,
         ),
         tool(
-            "taskagent_project_move_workspace",
+            "daruma_project_move_workspace",
             "Move project to workspace",
             "Move a project into another logical workspace (registry API), optionally binding a filesystem root to the project.",
             schema_project_move_workspace(),
             Dom::Projects, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_project_settings_get",
+            "daruma_project_settings_get",
             "Get project settings",
             "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default).",
             schema_with_id("project_id"),
             Dom::Projects, F, Ann::Read,
         ),
         tool(
-            "taskagent_project_settings_update",
+            "daruma_project_settings_update",
             "Update project settings",
             "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document.",
             schema_project_settings_update(),
@@ -414,35 +414,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md) ──────────────────
         tool(
-            "taskagent_rule_list",
+            "daruma_rule_list",
             "List lifecycle rules",
             "List lifecycle rules at a scope. No scope params = tenant (workspace) rules; pass `project_id`, `plan_id`, or `task_id` for a narrower scope. Rules declare what evidence a lifecycle transition requires (read a doc, check impact, attach a completion note). At transition time the gate already reports the active requirement in `rule_warnings`/`rule_blocked`, so this admin tool is for managing rules, not for the hot path.",
             schema_rule_list(),
             Dom::Admin, F, Ann::Read,
         ),
         tool(
-            "taskagent_rule_get",
+            "daruma_rule_get",
             "Get a lifecycle rule",
             "Fetch a single lifecycle rule by id.",
             schema_with_id("id"),
             Dom::Admin, F, Ann::Read,
         ),
         tool(
-            "taskagent_rule_create",
+            "daruma_rule_create",
             "Create a lifecycle rule",
             "Create a lifecycle rule (admin). A rule is `event → condition → requirement → allowed|warning|blocked`; it has no actions. Pass the `rule` object (rule_key, title, scope, trigger, requirement, mode, message, override_allowed). `mode: required` blocks the transition until satisfied; `recommendation` warns; `off` is inert.",
             schema_rule_create(),
             Dom::Admin, F, Ann::Write,
         ),
         tool(
-            "taskagent_rule_update",
+            "daruma_rule_update",
             "Update a lifecycle rule",
             "Patch a lifecycle rule (admin): any of mode, condition, requirement, message, override_allowed, enabled, title. `scope`, `trigger` and `rule_key` are immutable.",
             schema_rule_update(),
             Dom::Admin, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_rule_disable",
+            "daruma_rule_disable",
             "Disable a lifecycle rule",
             "Disable a lifecycle rule (admin). A disabled rule is not evaluated by the gate.",
             schema_with_id("id"),
@@ -450,14 +450,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Evidence registry (OSS task 019eb65a-3185) ─────────────────────
         tool(
-            "taskagent_evidence_submit",
+            "daruma_evidence_submit",
             "Record lifecycle evidence",
             "Record evidence that a lifecycle requirement is satisfied, so a `required` rule unblocks the transition. Pass the `evidence` object: `kind` (document_read_ack | impact_assessment | decision_record | completion_note | artifact_created | owner_assigned | acceptance_criteria_defined | risk_check_completed), `scope` (tenant/project/plan/task — same shape as a rule scope), an optional `target` (the doc/module the requirement names; omit to satisfy any target), plus optional bindings (project_id/plan_id/task_id/run_id/artifact_id/rule_id), `reason`, `payload`, and `doc_version` (for document_read_ack). Evidence is immutable; set `supersedes` to replace an earlier record.",
             schema_evidence_submit(),
             Dom::Admin, F, Ann::Write,
         ),
         tool(
-            "taskagent_evidence_list",
+            "daruma_evidence_list",
             "List lifecycle evidence",
             "List evidence recorded at a scope (tenant by default; pass `project_id`, `plan_id`, or `task_id` for a narrower scope). Superseded records are hidden unless `include_superseded` is true.",
             schema_evidence_list(),
@@ -465,35 +465,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Audit primitives ───────────────────────────────────────────────
         tool(
-            "taskagent_audit_findings",
+            "daruma_audit_findings",
             "List audit findings",
             "List audit findings for a project (problems a server-side check raised: stale docs, stuck tasks, missing owners, …). Filter by `severity` (error|warn|info), `category`, or `status` (open|acknowledged|muted|resolved). Newest activity first.",
             schema_audit_findings(),
             Dom::Coordination, D, Ann::Read,
         ),
         tool(
-            "taskagent_audit_finding_ack",
+            "daruma_audit_finding_ack",
             "Acknowledge/mute/resolve a finding",
             "Set the status of an audit finding (operator action): `open`, `acknowledged`, `muted`, or `resolved`. Use `acknowledged` to mark it seen, `muted` to silence it, `resolved` to close it.",
             schema_audit_finding_ack(),
             Dom::Coordination, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_audit_stuck_tasks",
+            "daruma_audit_stuck_tasks",
             "Tasks stuck in a status",
-            "Tasks stuck in a status longer than a threshold (heuristic, no LLM). `status` defaults to `in_progress`; `threshold_hours` defaults to 72. Complements taskagent_doctor — this catches tasks wedged in *any* status, not just claim-less in_progress.",
+            "Tasks stuck in a status longer than a threshold (heuristic, no LLM). `status` defaults to `in_progress`; `threshold_hours` defaults to 72. Complements daruma_doctor — this catches tasks wedged in *any* status, not just claim-less in_progress.",
             schema_audit_stuck_tasks(),
             Dom::Coordination, D, Ann::Read,
         ),
         tool(
-            "taskagent_audit_duplicate_tasks",
+            "daruma_audit_duplicate_tasks",
             "Duplicate-task candidates",
             "Lexical duplicate-task candidates within a project (heuristic, no LLM): title-similar task pairs to review. Not semantic duplicates — a cheap pre-filter for a human pass.",
             schema_audit_duplicate_tasks(),
             Dom::Coordination, D, Ann::Read,
         ),
         tool(
-            "taskagent_audit_unread_documents",
+            "daruma_audit_unread_documents",
             "Documents not read recently",
             "Documents in a project not read in the last N `days` (default 30); documents never read always qualify. Built on passive read-tracking, distinct from the explicit evidence document_read_ack.",
             schema_audit_unread_documents(),
@@ -501,36 +501,36 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
-            "taskagent_ai_analyze_complexity",
+            "daruma_ai_analyze_complexity",
             "AI: analyze plan complexity",
-            "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `taskagent_ai_decompose { hint }` to chain analyze → decompose.",
+            "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `daruma_ai_decompose { hint }` to chain analyze → decompose.",
             schema_ai_analyze_complexity(),
             Dom::Ai, F, Ann::AiWrite,
         ),
         // ── Events / health ───────────────────────────────────────────────
         tool(
-            "taskagent_inbox_pull",
+            "daruma_inbox_pull",
             "Pull agent inbox",
             "Poll a single agent's inbox; optionally long-poll up to 60 s.",
             schema_inbox_pull(),
             Dom::Coordination, F, Ann::Write,
         ),
         tool(
-            "taskagent_subscribe_project",
+            "daruma_subscribe_project",
             "Snapshot project events",
             "One-shot snapshot of events for a project (the streaming form lives on /v1/ws).",
             schema_subscribe_project(),
             Dom::Events, F, Ann::Read,
         ),
         tool(
-            "taskagent_events_since",
+            "daruma_events_since",
             "Load events since seq",
             "Load events with `seq > since`, capped at `limit` (default 100).",
             schema_events_since(),
             Dom::Events, F, Ann::Read,
         ),
         tool(
-            "taskagent_healthz",
+            "daruma_healthz",
             "Server health check",
             "Server health check — no auth required.",
             empty_schema(),
@@ -538,105 +538,105 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Plans ─────────────────────────────────────────────────────────
         tool(
-            "taskagent_plan_create",
+            "daruma_plan_create",
             "Create plan",
             "Create a new execution plan for a project.",
             schema_plan_create(),
             Dom::Plans, D, Ann::Write,
         ),
         tool(
-            "taskagent_plan_update",
+            "daruma_plan_update",
             "Update plan",
             "Update a plan's title, description, goal, success criteria, or parent. Pass null for parent_plan_id to unparent (move to root); omit the field to leave the parent unchanged.",
             schema_plan_update(),
             Dom::Plans, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_plan_get",
+            "daruma_plan_get",
             "Get plan",
             "Fetch a plan by id, including progress metrics — the cheap way to summarize one plan's status (prefer this over enumerating completed plans or tasks).",
             schema_with_id("id"),
             Dom::Plans, D, Ann::Read,
         ),
         tool(
-            "taskagent_plan_list",
+            "daruma_plan_list",
             "List plans",
-            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans carry their full goal + success criteria and are token-heavy — summarize a single plan with `taskagent_plan_get` instead of enumerating. `project_id` uses the resolved repo project when unambiguous; pass `all` to query across projects.",
+            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans carry their full goal + success criteria and are token-heavy — summarize a single plan with `daruma_plan_get` instead of enumerating. `project_id` uses the resolved repo project when unambiguous; pass `all` to query across projects.",
             schema_plan_list(),
             Dom::Plans, D, Ann::Read,
         ),
         tool(
-            "taskagent_plan_add_task",
+            "daruma_plan_add_task",
             "Attach task to plan",
             "Attach a task to a plan at an optional position with optional dependencies.",
             schema_plan_add_task(),
             Dom::Plans, D, Ann::Write,
         ),
         tool(
-            "taskagent_plan_remove_task",
+            "daruma_plan_remove_task",
             "Detach task from plan",
             "Detach a task from a plan. Aborts any in-progress step atomically.",
             schema_plan_task_ref(),
             Dom::Plans, F, Ann::Write,
         ),
         tool(
-            "taskagent_plan_reorder",
+            "daruma_plan_reorder",
             "Reorder plan tasks",
             "Replace the full task order within a plan.",
             schema_plan_reorder(),
             Dom::Plans, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_plan_archive",
+            "daruma_plan_archive",
             "Archive plan",
             "Archive a plan and atomically abort all active runs.",
             schema_with_id("id"),
             Dom::Plans, F, Ann::Destructive,
         ),
         tool(
-            "taskagent_plan_set_status",
+            "daruma_plan_set_status",
             "Set plan status",
             "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
             schema_plan_set_status(),
             Dom::Plans, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_plan_next_task",
+            "daruma_plan_next_task",
             "Peek next eligible plan task",
-            "Return the first eligible task in a plan for a given run, respecting dependencies. May acquire a claim when `claim_ttl_secs` is set — prefer `taskagent_plan_drain_next` for parallel agents.",
+            "Return the first eligible task in a plan for a given run, respecting dependencies. May acquire a claim when `claim_ttl_secs` is set — prefer `daruma_plan_drain_next` for parallel agents.",
             schema_plan_next_task(),
             Dom::Plans, F, Ann::Write,
         ),
         tool(
-            "taskagent_plan_progress",
+            "daruma_plan_progress",
             "Plan progress snapshot",
             "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
             schema_with_id("plan_id"),
             Dom::Plans, D, Ann::Read,
         ),
         tool(
-            "taskagent_plan_drain_next",
+            "daruma_plan_drain_next",
             "Claim next plan task",
             "Atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Concurrent callers each get a distinct task; returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
             schema_plan_drain_next(),
             Dom::Plans, D, Ann::Write,
         ),
         tool(
-            "taskagent_plan_graph",
+            "daruma_plan_graph",
             "Read plan DAG",
             "Read a plan's execution DAG: task nodes plus depends_on and blocks edges.",
             schema_with_plan_id(),
             Dom::Plans, F, Ann::Read,
         ),
         tool(
-            "taskagent_plan_fanout",
+            "daruma_plan_fanout",
             "Plan execution waves",
             "Return parallel execution waves for a plan, respecting depends_on and active Blocks relations.",
             schema_with_plan_id(),
             Dom::Plans, F, Ann::Read,
         ),
         tool(
-            "taskagent_bulk_attach_to_plan",
+            "daruma_bulk_attach_to_plan",
             "Bulk attach tasks to plan",
             "Atomically attach up to 50 tasks to a single plan. Already-attached tasks are skipped (idempotent); fail-fast if any task or the plan is missing.",
             schema_bulk_attach_to_plan(),
@@ -644,7 +644,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Artifact Registry (P4) ───────────────────────────────────────
         tool(
-            "taskagent_artifact_register",
+            "daruma_artifact_register",
             "Register artifact",
             "Register a named artifact URI in the registry (creates a Pending artifact node). \
              `uri` must use a supported scheme: `artifact://`, `file://`, `contract://`, or `env://`. \
@@ -653,7 +653,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::WorkspaceGraph, F, Ann::Write,
         ),
         tool(
-            "taskagent_artifact_list",
+            "daruma_artifact_list",
             "List artifacts",
             "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
              owner, version. Use to answer \"who owns this\" before writing.",
@@ -661,7 +661,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
-            "taskagent_artifact_impact",
+            "daruma_artifact_impact",
             "Artifact impact analysis",
             "Downstream dependents of an artifact node via ArtDependsOn, ArtImplements, \
              ArtTests, ArtDocuments, ArtSupersedes, ArtConflictsWith, and Produces edges. \
@@ -671,35 +671,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── WorkspaceGraph ────────────────────────────────────────────────
         tool(
-            "taskagent_workspacegraph_status",
+            "daruma_workspacegraph_status",
             "WorkspaceGraph index health",
             "WorkspaceGraph index health: schema version, node/edge counts, event lag, and last error.",
             empty_schema(),
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
-            "taskagent_workspacegraph_context",
+            "daruma_workspacegraph_context",
             "Graph node neighborhood",
             "Immediate neighborhood of a graph node (incoming/outgoing edges plus ranked neighbors).",
             schema_workspacegraph_context(),
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
-            "taskagent_workspacegraph_related",
+            "daruma_workspacegraph_related",
             "Graph related nodes",
             "Breadth-first related nodes around a graph node, capped by depth and limit.",
             schema_workspacegraph_related(),
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
-            "taskagent_workspacegraph_search",
+            "daruma_workspacegraph_search",
             "Search WorkspaceGraph nodes",
-            "Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Not for listing open work (use `taskagent_list status=active`).",
+            "Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Not for listing open work (use `daruma_list status=active`).",
             schema_workspacegraph_search(),
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
-            "taskagent_workspacegraph_impact",
+            "daruma_workspacegraph_impact",
             "Graph impact analysis",
             "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges.",
             schema_workspacegraph_impact(),
@@ -707,56 +707,56 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Runs ──────────────────────────────────────────────────────────
         tool(
-            "taskagent_run_start",
+            "daruma_run_start",
             "Start run",
             "Start a new agent run of a plan.",
             schema_run_start(),
             Dom::Runs, D, Ann::Write,
         ),
         tool(
-            "taskagent_run_start_step",
+            "daruma_run_start_step",
             "Start run step",
             "Mark the beginning of a task step within a run.",
             schema_run_step(),
             Dom::Runs, F, Ann::Write,
         ),
         tool(
-            "taskagent_run_finish_step",
+            "daruma_run_finish_step",
             "Finish run step",
             "Mark the completion of a task step with an outcome.",
             schema_run_finish_step(),
             Dom::Runs, F, Ann::Write,
         ),
         tool(
-            "taskagent_run_complete",
+            "daruma_run_complete",
             "Complete run",
             "Terminate a run successfully.",
             schema_with_id("run_id"),
             Dom::Runs, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_run_abort",
+            "daruma_run_abort",
             "Abort run",
             "Abort a run with a reason (e.g. plan archived or explicit stop).",
             schema_run_abort(),
             Dom::Runs, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_run_note_append",
+            "daruma_run_note_append",
             "Append run note",
             "Append a free-form journal note to an active run. The actor is taken from the MCP session token; body is required (≤ 4 KiB).",
             schema_run_note_append(),
             Dom::Runs, D, Ann::Write,
         ),
         tool(
-            "taskagent_run_log",
+            "daruma_run_log",
             "Append run log entry",
             "Append a leveled progress log entry to an active run. Uses the run notes stream with body formatted as `[level] message`.",
             schema_run_log(),
             Dom::Runs, F, Ann::Write,
         ),
         tool(
-            "taskagent_run_notes_list",
+            "daruma_run_notes_list",
             "List run notes",
             "List journal notes for a run in chronological order. Optional `limit` (default 50, max 500) and `after` (cursor = id of last note from previous page).",
             schema_run_notes_list(),
@@ -764,98 +764,98 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Claims & leases (parallel-agent coordination) ─────────────────
         tool(
-            "taskagent_claim",
+            "daruma_claim",
             "Claim task",
             "Acquire an optimistic claim on a task for a given TTL in seconds.",
             schema_claim(),
             Dom::Coordination, D, Ann::Write,
         ),
         tool(
-            "taskagent_release",
+            "daruma_release",
             "Release task claim",
             "Release a previously-acquired task claim.",
             schema_release(),
             Dom::Coordination, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_reserve_files",
+            "daruma_reserve_files",
             "Reserve file paths",
             "Reserve resources for a task so parallel agents don't collide. Pass repo-relative `paths` (globs) and/or `targets` URIs (file://, artifact://, contract://, env://) plus an optional `mode` (exclusive default; shared_read/review coexist; intent is advisory). Returns `reserved:true` with leases carrying `fencing_token`, or `reserved:false` with `conflict_path` + `holder` — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
             schema_reserve_files(),
             Dom::Coordination, F, Ann::Write,
         ),
         tool(
-            "taskagent_release_files",
+            "daruma_release_files",
             "Release file leases",
             "Release all file/path leases held by an agent for a task. Usually automatic on task completion; call explicitly to free files early.",
             schema_release_files(),
             Dom::Coordination, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_active_work",
+            "daruma_active_work",
             "List active file leases",
             "List the active work backlog: live file/path leases (who is touching which files) for a project. Use before reserving to see contended areas. Pass `project_id` to scope; omit for all.",
             schema_active_work(),
             Dom::Coordination, F, Ann::Read,
         ),
         tool(
-            "taskagent_ready",
+            "daruma_ready",
             "List project ready pool",
-            "List the project-wide ready pool: tasks across ALL active plans whose dependencies are satisfied and that no other agent holds. The read-only view behind `taskagent_ready_drain`.",
+            "List the project-wide ready pool: tasks across ALL active plans whose dependencies are satisfied and that no other agent holds. The read-only view behind `daruma_ready_drain`.",
             schema_ready(),
             Dom::Coordination, F, Ann::Read,
         ),
         tool(
-            "taskagent_ready_drain",
+            "daruma_ready_drain",
             "Claim next ready task (project-wide)",
             "Atomically claim the next ready task across the project's active plans. Concurrent callers each get a distinct task; sets it in_progress. Returns null when nothing is ready — loop until null.",
             schema_ready_drain(),
             Dom::Coordination, F, Ann::Write,
         ),
         tool(
-            "taskagent_doctor",
+            "daruma_doctor",
             "Reconcile stuck parallel work",
             "Reconcile parallel-agent state for a project: reports tasks stuck `in_progress` with no live claim (an agent likely crashed and its claim TTL lapsed). These are reclaimable — reopen or re-drain them.",
             schema_doctor(),
             Dom::Coordination, F, Ann::Read,
         ),
         tool(
-            "taskagent_suggest_files",
+            "daruma_suggest_files",
             "Suggest paths to reserve",
-            "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `taskagent_reserve_files` at claim time. Heuristic only — review before reserving.",
+            "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `daruma_reserve_files` at claim time. Heuristic only — review before reserving.",
             schema_suggest_files(),
             Dom::Coordination, F, Ann::Read,
         ),
         tool(
-            "taskagent_work_unit_create",
+            "daruma_work_unit_create",
             "Create work unit",
             "Create a work unit under a task — the minimal dispatchable unit for multi-agent work on one task. Declare `artifact_refs` (file://, artifact://, contract://, env://) so the dispatcher can lease them on claim. Simple tasks don't need work units.",
             schema_work_unit_create(),
             Dom::Coordination, F, Ann::Write,
         ),
         tool(
-            "taskagent_work_unit_list",
+            "daruma_work_unit_list",
             "List task work units",
             "List all work units under a task (full decomposition state, including done/cancelled).",
             schema_with_id("task_id"),
             Dom::Coordination, F, Ann::Read,
         ),
         tool(
-            "taskagent_work_unit_drain_next",
+            "daruma_work_unit_drain_next",
             "Claim next work unit",
             "Atomically claim the next dispatchable work unit under a task and acquire its declared exclusive resource leases. Concurrent callers each get a distinct unit. Returns a briefing {work_unit, leases (with fencing_token), acceptance}; null when nothing is dispatchable; lease_conflict (claim reverted) when the unit's resources are held elsewhere.",
             schema_work_unit_drain(),
             Dom::Coordination, F, Ann::Write,
         ),
         tool(
-            "taskagent_work_unit_complete",
+            "daruma_work_unit_complete",
             "Complete work unit",
             "Mark a work unit done with an outcome and the produced artifact URIs (mineable payload). Releases the holder claim.",
             schema_work_unit_complete(),
             Dom::Coordination, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_work_unit_release",
+            "daruma_work_unit_release",
             "Release work unit claim",
             "Release a claimed work unit back to the dispatch pool (status returns to ready).",
             schema_with_id("id"),
@@ -863,49 +863,49 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Sessions ──────────────────────────────────────────────────────
         tool(
-            "taskagent_session_start",
+            "daruma_session_start",
             "Start agent session",
             "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
             schema_session_start(),
             Dom::Sessions, F, Ann::Write,
         ),
         tool(
-            "taskagent_session_get",
+            "daruma_session_get",
             "Get agent session",
             "Fetch an agent session by id (includes metadata: client, model, chat_id, transcript_path).",
             schema_with_id("id"),
             Dom::Sessions, F, Ann::Read,
         ),
         tool(
-            "taskagent_session_list",
+            "daruma_session_list",
             "List agent sessions",
             "List agent sessions for an agent id (defaults to this MCP process).",
             schema_session_list(),
             Dom::Sessions, F, Ann::Read,
         ),
         tool(
-            "taskagent_session_end",
+            "daruma_session_end",
             "End agent session",
             "End an agent session.",
             schema_with_id("id"),
             Dom::Sessions, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_session_set_plan",
+            "daruma_session_set_plan",
             "Set session plan steps",
             "Replace the session's plan-steps list (max 100 steps).",
             schema_session_set_plan(),
             Dom::Sessions, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_session_artifact",
+            "daruma_session_artifact",
             "Attach session artifact",
             "Attach a file/url/diff artifact reference to an agent session.",
             schema_session_artifact(),
             Dom::Sessions, F, Ann::Write,
         ),
         tool(
-            "taskagent_session_artifacts_list",
+            "daruma_session_artifacts_list",
             "List session artifacts",
             "List artifact references attached to an agent session.",
             schema_with_id("id"),
@@ -913,14 +913,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Signals ───────────────────────────────────────────────────────
         tool(
-            "taskagent_signal_send",
+            "daruma_signal_send",
             "Send run signal",
             "Send a typed signal to a run (stop / elicit / auth_required).",
             schema_signal_send(),
             Dom::Signals, F, Ann::Write,
         ),
         tool(
-            "taskagent_signal_respond",
+            "daruma_signal_respond",
             "Respond to run signal",
             "Human responds to an elicitation request on a run.",
             schema_signal_respond(),
@@ -928,21 +928,21 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Relations ─────────────────────────────────────────────────────
         tool(
-            "taskagent_link",
+            "daruma_link",
             "Link tasks",
             "Create a typed relation (blocks / relates_to / duplicates) between two tasks. Idempotent via `client_command_id`.",
             schema_link(),
             Dom::Relations, D, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_unlink",
+            "daruma_unlink",
             "Delete task relation",
             "Delete a relation by its id.",
             schema_unlink(),
             Dom::Relations, F, Ann::Destructive,
         ),
         tool(
-            "taskagent_relations",
+            "daruma_relations",
             "Read task relations",
             "Read 5-group relations projection for a task (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
             schema_relations(),
@@ -950,49 +950,49 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Documents ─────────────────────────────────────────────────────
         tool(
-            "taskagent_doc_create",
+            "daruma_doc_create",
             "Create document",
             "Create a markdown document for a project. `kind` is `interview` or `human_log`; multiple docs of the same kind are allowed.",
             schema_doc_create(),
             Dom::Documents, F, Ann::Write,
         ),
         tool(
-            "taskagent_doc_get",
+            "daruma_doc_get",
             "Get document",
             "Fetch a document by id, including its full markdown body.",
             schema_with_id("document_id"),
             Dom::Documents, F, Ann::Read,
         ),
         tool(
-            "taskagent_doc_append",
+            "daruma_doc_append",
             "Append to document",
             "Append markdown to a document. A blank-line separator is inserted by the server when the existing body is non-empty.",
             schema_doc_append(),
             Dom::Documents, F, Ann::Write,
         ),
         tool(
-            "taskagent_doc_replace",
+            "daruma_doc_replace",
             "Replace document body",
             "Replace a document's entire markdown body.",
             schema_doc_replace(),
             Dom::Documents, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_doc_rename",
+            "daruma_doc_rename",
             "Rename document",
             "Rename a document (title only; body is unchanged).",
             schema_doc_rename(),
             Dom::Documents, F, Ann::WriteIdem,
         ),
         tool(
-            "taskagent_doc_archive",
+            "daruma_doc_archive",
             "Archive document",
-            "Soft-archive a document. It remains queryable via `taskagent_doc_list` when `include_archived=true`.",
+            "Soft-archive a document. It remains queryable via `daruma_doc_list` when `include_archived=true`.",
             schema_with_id("document_id"),
             Dom::Documents, F, Ann::Destructive,
         ),
         tool(
-            "taskagent_doc_list",
+            "daruma_doc_list",
             "List documents",
             "List documents for a project. `project_id` uses the resolved repo project when unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `kind` filter; archived docs are hidden unless `include_archived=true`.",
             schema_doc_list(),
@@ -1000,42 +1000,42 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ),
         // ── Version history ───────────────────────────────────────────────
         tool(
-            "taskagent_history_list",
+            "daruma_history_list",
             "List version history",
             "List immutable version records for one task or document, newest first.",
             schema_history_entity(),
             Dom::History, F, Ann::Read,
         ),
         tool(
-            "taskagent_history_get",
+            "daruma_history_get",
             "Get version record",
             "Fetch one immutable version record by version id.",
             schema_with_id("version_id"),
             Dom::History, F, Ann::Read,
         ),
         tool(
-            "taskagent_history_compare",
+            "daruma_history_compare",
             "Compare versions",
             "Compare two version numbers for the same task or document.",
             schema_history_compare(),
             Dom::History, F, Ann::Read,
         ),
         tool(
-            "taskagent_history_latest",
+            "daruma_history_latest",
             "List latest versions",
             "List latest task/document version records visible to this token.",
             schema_history_latest(),
             Dom::History, F, Ann::Read,
         ),
         tool(
-            "taskagent_history_summary",
+            "daruma_history_summary",
             "Version summary timeline",
             "Return a compact agent-readable summary timeline for one task or document.",
             schema_history_entity(),
             Dom::History, F, Ann::Read,
         ),
         tool(
-            "taskagent_history_rollback",
+            "daruma_history_rollback",
             "Rollback to version",
             "Restore a task or document to a selected immutable version by creating a new rollback version.",
             schema_with_id("version_id"),
@@ -1074,8 +1074,8 @@ pub async fn call_tool_in_profile(
     if tool_hidden_in_profile(name, profile) {
         anyhow::bail!(
             "tool `{name}` is not available in the `{}` MCP profile; \
-             restart the MCP server with TASKAGENT_MCP_PROFILE=full \
-             (or `taskagent mcp --profile full`) to enable the full catalogue",
+             restart the MCP server with DARUMA_MCP_PROFILE=full \
+             (or `daruma mcp --profile full`) to enable the full catalogue",
             profile.as_str()
         );
     }
@@ -1089,7 +1089,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
     let args = arguments.as_object().cloned().unwrap_or_default();
 
     match name {
-        "taskagent_create" => {
+        "daruma_create" => {
             let mut task = args.get("task").cloned().unwrap_or_else(|| json!({}));
             // Inject the workspace default project if the task didn't
             // specify one explicitly. Use `"project_id": null` in the
@@ -1115,11 +1115,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_command(json!({"type":"create_task","task": task}))
                 .await
         }
-        "taskagent_capture" => {
+        "daruma_capture" => {
             let text = required_string(&args, "text")?;
             create_captured_task(client, &text, &args).await
         }
-        "taskagent_capture_batch" => {
+        "daruma_capture_batch" => {
             let texts = args
                 .get("texts")
                 .and_then(|v| v.as_array())
@@ -1137,11 +1137,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             Ok(json!({ "count": tasks.len(), "tasks": tasks }))
         }
-        "taskagent_get" => {
+        "daruma_get" => {
             let id = required_string(&args, "id")?;
             client.get_json(&format!("/v1/tasks/{id}")).await
         }
-        "taskagent_update" => {
+        "daruma_update" => {
             let id = required_string(&args, "id")?;
             let mut patch = Map::new();
             if let Some(title) = args.get("title") {
@@ -1176,7 +1176,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_command(json!({"type":"update_task","id": id, "patch": patch}))
                 .await
         }
-        "taskagent_list" => {
+        "daruma_list" => {
             let status = required_string(&args, "status")?;
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
@@ -1193,7 +1193,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .join("&");
             client.get_json(&format!("/v1/tasks?{qs}")).await
         }
-        "taskagent_search" => {
+        "daruma_search" => {
             let query = required_string(&args, "query")?;
             let scope = args.get("scope").and_then(|v| v.as_str());
             let limit = args.get("limit").and_then(|v| v.as_u64());
@@ -1219,7 +1219,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .join("&");
             client.get_json(&format!("/v1/search?{qs}")).await
         }
-        "taskagent_lesson_recall" => {
+        "daruma_lesson_recall" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let lesson_query = if query.trim().is_empty() {
@@ -1246,8 +1246,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .join("&");
             client.get_json(&format!("/v1/search?{qs}")).await
         }
-        "taskagent_project_list" => client.get_json("/v1/projects").await,
-        "taskagent_project_create" => {
+        "daruma_project_list" => client.get_json("/v1/projects").await,
+        "daruma_project_create" => {
             let title = required_string(&args, "title")?;
             let description = args
                 .get("description")
@@ -1270,7 +1270,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             });
             Ok(json!({ "project_id": project_id, "events": resp }))
         }
-        "taskagent_project_delete" => {
+        "daruma_project_delete" => {
             let id = required_string(&args, "id")?;
             let confirm_token = args.get("confirm_token").and_then(|v| v.as_str());
             let confirm = args.get("confirm").and_then(|v| v.as_str());
@@ -1356,7 +1356,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 "response": resp,
             }))
         }
-        "taskagent_project_use" => {
+        "daruma_project_use" => {
             let ws = workspace::global()
                 .ok_or_else(|| anyhow::anyhow!("workspace state not initialised"))?;
             let scope_path = args.get("scope_path").and_then(|v| v.as_str());
@@ -1375,7 +1375,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 None => anyhow::bail!("`project_id` is required (use null to clear)"),
             }
         }
-        "taskagent_workspace_info" => {
+        "daruma_workspace_info" => {
             let ws = workspace::global();
             let inferred = ws.map(|w| w.inferred_project());
             let (inferred_project, inferred_project_error) = match inferred {
@@ -1404,7 +1404,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }).unwrap_or_default(),
             }))
         }
-        "taskagent_set_status" => {
+        "daruma_set_status" => {
             let id = required_string(&args, "id")?;
             let status = required_string(&args, "status")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1414,14 +1414,14 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_set_priority" => {
+        "daruma_set_priority" => {
             let id = required_string(&args, "id")?;
             let priority = required_string(&args, "priority")?;
             client
                 .post_command(json!({"type":"set_priority","id": id, "priority": priority}))
                 .await
         }
-        "taskagent_move_project" => {
+        "daruma_move_project" => {
             let id = required_string(&args, "id")?;
             let project_id = match resolve_project_filter(&args, false, false, true)? {
                 ProjectFilter::Project(pid) => pid,
@@ -1440,7 +1440,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }))
                 .await
         }
-        "taskagent_complete" => {
+        "daruma_complete" => {
             let id = required_string(&args, "id")?;
             // Assemble an optional completion note from the loose args. Only
             // include `note` when at least one field is present, so a bare
@@ -1462,13 +1462,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_command(cmd).await
         }
-        "taskagent_delete" => {
+        "daruma_delete" => {
             let id = required_string(&args, "id")?;
             client
                 .post_command(json!({"type":"delete_task","id": id}))
                 .await
         }
-        "taskagent_split" => {
+        "daruma_split" => {
             let parent = required_string(&args, "parent")?;
             let subtasks = args
                 .get("subtasks")
@@ -1478,7 +1478,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_command(json!({"type":"split_task","parent": parent, "subtasks": subtasks}))
                 .await
         }
-        "taskagent_bulk_set_status" => {
+        "daruma_bulk_set_status" => {
             let ids = args
                 .get("ids")
                 .cloned()
@@ -1488,7 +1488,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_command(json!({"type":"bulk_set_status","ids": ids, "status": status}))
                 .await
         }
-        "taskagent_bulk_attach_to_plan" => {
+        "daruma_bulk_attach_to_plan" => {
             let plan_id = required_string(&args, "plan_id")?;
             let task_ids = args
                 .get("ids")
@@ -1503,7 +1503,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }))
                 .await
         }
-        "taskagent_ai_analyze_complexity" => {
+        "daruma_ai_analyze_complexity" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
             if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
@@ -1513,13 +1513,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/ai/analyze-complexity/{plan_id}"), body)
                 .await
         }
-        "taskagent_comment" => {
+        "daruma_comment" => {
             let task_id = required_string(&args, "task_id")?;
             let body_text = required_string(&args, "body")?;
             // §3.8.8: optional semantic classification. We validate locally
             // against the canonical set so MCP callers get an immediate
             // error rather than a server-side 400. The authoritative parser
-            // lives in `taskagent_domain::CommentKind::FromStr`, mirrored
+            // lives in `daruma_domain::CommentKind::FromStr`, mirrored
             // here so the mcp crate doesn't need a domain dependency.
             let mut body_json = json!({"body": body_text});
             if let Some(kind_raw) = args.get("kind").and_then(|v| v.as_str()) {
@@ -1530,13 +1530,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/tasks/{task_id}/comments"), body_json)
                 .await
         }
-        "taskagent_reopen" => {
+        "daruma_reopen" => {
             let id = required_string(&args, "id")?;
             client
                 .post_command(json!({"type":"set_status","id": id, "status": "todo"}))
                 .await
         }
-        "taskagent_inbox_pull" => {
+        "daruma_inbox_pull" => {
             let agent_id = required_string(&args, "agent_id")?;
             let long_poll = args
                 .get("long_poll_secs")
@@ -1549,7 +1549,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_subscribe_project" => {
+        "daruma_subscribe_project" => {
             // One-shot polling form: deliver any events whose target_project
             // matches the requested project. The streaming form lives on
             // `/v1/ws` (subscribe with `projects: [...]`). For MVP, we just
@@ -1560,17 +1560,17 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/events?since={since}&limit={limit}"))
                 .await
         }
-        "taskagent_events_since" => {
+        "daruma_events_since" => {
             let since = args.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
             client
                 .get_json(&format!("/v1/events?since={since}&limit={limit}"))
                 .await
         }
-        "taskagent_healthz" => client.get_json("/v1/healthz").await,
+        "daruma_healthz" => client.get_json("/v1/healthz").await,
 
         // ── Plan tools (W3.2) ─────────────────────────────────────────────
-        "taskagent_plan_create" => {
+        "daruma_plan_create" => {
             let title = required_string(&args, "title")?;
             let project_id = required_string(&args, "project_id")?;
             // Server expects {plan: NewPlan, external_ref?}; NewPlan requires
@@ -1595,7 +1595,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/plans", json!({ "plan": plan })).await
         }
-        "taskagent_plan_update" => {
+        "daruma_plan_update" => {
             let id = required_string(&args, "id")?;
             let patch = args
                 .get("patch")
@@ -1606,11 +1606,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .patch_json(&format!("/v1/plans/{id}"), json!({ "patch": patch }))
                 .await
         }
-        "taskagent_plan_get" => {
+        "daruma_plan_get" => {
             let id = required_string(&args, "id")?;
             client.get_json(&format!("/v1/plans/{id}")).await
         }
-        "taskagent_plan_list" => {
+        "daruma_plan_list" => {
             let status = required_string(&args, "status")?;
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
@@ -1626,7 +1626,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .join("&");
             client.get_json(&format!("/v1/plans?{qs}")).await
         }
-        "taskagent_plan_add_task" => {
+        "daruma_plan_add_task" => {
             let plan_id = required_string(&args, "plan_id")?;
             let task_id = required_string(&args, "task_id")?;
             let mut body = json!({"task_id": task_id});
@@ -1640,14 +1640,14 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/plans/{plan_id}/tasks"), body)
                 .await
         }
-        "taskagent_plan_remove_task" => {
+        "daruma_plan_remove_task" => {
             let plan_id = required_string(&args, "plan_id")?;
             let task_id = required_string(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/plans/{plan_id}/tasks/{task_id}"))
                 .await
         }
-        "taskagent_plan_reorder" => {
+        "daruma_plan_reorder" => {
             let plan_id = required_string(&args, "plan_id")?;
             let order = args
                 .get("order")
@@ -1660,13 +1660,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_plan_archive" => {
+        "daruma_plan_archive" => {
             let id = required_string(&args, "id")?;
             client
                 .post_json(&format!("/v1/plans/{id}/archive"), json!({}))
                 .await
         }
-        "taskagent_plan_set_status" => {
+        "daruma_plan_set_status" => {
             let id = required_string(&args, "plan_id")?;
             let status = required_string(&args, "status")?;
             client
@@ -1676,7 +1676,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_plan_next_task" => {
+        "daruma_plan_next_task" => {
             let id = required_string(&args, "id")?;
             let run_id = required_string(&args, "run_id")?;
             let ttl = args
@@ -1689,13 +1689,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_plan_progress" => {
+        "daruma_plan_progress" => {
             let plan_id = required_string(&args, "plan_id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/progress"))
                 .await
         }
-        "taskagent_plan_drain_next" => {
+        "daruma_plan_drain_next" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
             if let Some(run_id) = args.get("run_id").and_then(|v| v.as_str()) {
@@ -1708,17 +1708,17 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/plans/{plan_id}/drain-next"), body)
                 .await
         }
-        "taskagent_plan_graph" => {
+        "daruma_plan_graph" => {
             let plan_id = required_string(&args, "plan_id")?;
             client.get_json(&format!("/v1/plans/{plan_id}/graph")).await
         }
-        "taskagent_plan_fanout" => {
+        "daruma_plan_fanout" => {
             let plan_id = required_string(&args, "plan_id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/fanout"))
                 .await
         }
-        "taskagent_can_start" => {
+        "daruma_can_start" => {
             let task_id = required_string(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/can_start"))
@@ -1726,8 +1726,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── WorkspaceGraph tools (P3) ─────────────────────────────────────
-        "taskagent_workspacegraph_status" => client.get_json("/v1/workspacegraph/status").await,
-        "taskagent_workspacegraph_context" => {
+        "daruma_workspacegraph_status" => client.get_json("/v1/workspacegraph/status").await,
+        "daruma_workspacegraph_context" => {
             let node_id = required_string(&args, "node_id")?;
             let mut params: Vec<(&str, String)> = vec![("node_id", urlencode(&node_id))];
             if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
@@ -1742,7 +1742,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/workspacegraph/context?{qs}"))
                 .await
         }
-        "taskagent_workspacegraph_related" => {
+        "daruma_workspacegraph_related" => {
             let node_id = required_string(&args, "node_id")?;
             let mut params: Vec<(&str, String)> = vec![("node_id", urlencode(&node_id))];
             if let Some(depth) = args.get("depth").and_then(|v| v.as_u64()) {
@@ -1760,7 +1760,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/workspacegraph/related?{qs}"))
                 .await
         }
-        "taskagent_workspacegraph_search" => {
+        "daruma_workspacegraph_search" => {
             let query = required_string(&args, "query")?;
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
@@ -1781,7 +1781,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/workspacegraph/search?{qs}"))
                 .await
         }
-        "taskagent_workspacegraph_impact" => {
+        "daruma_workspacegraph_impact" => {
             let node_id = required_string(&args, "node_id")?;
             let mut params: Vec<(&str, String)> = vec![("node_id", urlencode(&node_id))];
             if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
@@ -1798,7 +1798,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Run tools (W3.2) ──────────────────────────────────────────────
-        "taskagent_run_start" => {
+        "daruma_run_start" => {
             let plan_id = required_string(&args, "plan_id")?;
             let agent_id = required_string(&args, "agent_id")?;
             let mut body = json!({"plan_id": plan_id, "agent_id": agent_id});
@@ -1807,7 +1807,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/runs", body).await
         }
-        "taskagent_run_start_step" => {
+        "daruma_run_start_step" => {
             let run_id = required_string(&args, "run_id")?;
             let task_id = required_string(&args, "task_id")?;
             client
@@ -1817,7 +1817,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_run_finish_step" => {
+        "daruma_run_finish_step" => {
             let run_id = required_string(&args, "run_id")?;
             let task_id = required_string(&args, "task_id")?;
             let outcome = args.get("outcome").cloned().ok_or_else(|| {
@@ -1830,13 +1830,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_run_complete" => {
+        "daruma_run_complete" => {
             let run_id = required_string(&args, "run_id")?;
             client
                 .post_json(&format!("/v1/runs/{run_id}/complete"), json!({}))
                 .await
         }
-        "taskagent_run_abort" => {
+        "daruma_run_abort" => {
             let run_id = required_string(&args, "run_id")?;
             let reason = args
                 .get("reason")
@@ -1852,14 +1852,14 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Run note tools (§3.8.2) ───────────────────────────────────────
-        "taskagent_run_note_append" => {
+        "daruma_run_note_append" => {
             let run_id = required_string(&args, "run_id")?;
             let body = required_string(&args, "body")?;
             client
                 .post_json(&format!("/v1/runs/{run_id}/notes"), json!({"body": body}))
                 .await
         }
-        "taskagent_run_log" => {
+        "daruma_run_log" => {
             let run_id = required_string(&args, "run_id")?;
             let level = args
                 .get("level")
@@ -1879,7 +1879,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_run_notes_list" => {
+        "daruma_run_notes_list" => {
             let run_id = required_string(&args, "run_id")?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
             let mut path = format!("/v1/runs/{run_id}/notes?limit={limit}");
@@ -1891,7 +1891,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Claim tools (W3.2) ────────────────────────────────────────────
-        "taskagent_claim" => {
+        "daruma_claim" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
             let ttl_secs = args.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(300);
@@ -1902,7 +1902,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_release" => {
+        "daruma_release" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
             client
@@ -1911,7 +1911,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
-        "taskagent_work_unit_create" => {
+        "daruma_work_unit_create" => {
             let task_id = required_string(&args, "task_id")?;
             let title = required_string(&args, "title")?;
             let mut wu = json!({ "task_id": task_id, "title": title });
@@ -1929,13 +1929,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json("/v1/work-units", json!({ "work_unit": wu }))
                 .await
         }
-        "taskagent_work_unit_list" => {
+        "daruma_work_unit_list" => {
             let task_id = required_string(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/work-units"))
                 .await
         }
-        "taskagent_work_unit_drain_next" => {
+        "daruma_work_unit_drain_next" => {
             let task_id = required_string(&args, "task_id")?;
             let mut body = json!({ "task_id": task_id });
             if let Some(ttl) = args.get("ttl_secs").and_then(|v| v.as_u64()) {
@@ -1943,7 +1943,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/work-units/drain-next", body).await
         }
-        "taskagent_work_unit_complete" => {
+        "daruma_work_unit_complete" => {
             let id = required_string(&args, "id")?;
             let mut body = json!({});
             if let Some(o) = args.get("outcome").and_then(|v| v.as_str()) {
@@ -1956,19 +1956,19 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/work-units/{id}/complete"), body)
                 .await
         }
-        "taskagent_work_unit_release" => {
+        "daruma_work_unit_release" => {
             let id = required_string(&args, "id")?;
             client
                 .post_json(&format!("/v1/work-units/{id}/release"), json!({}))
                 .await
         }
-        "taskagent_project_settings_get" => {
+        "daruma_project_settings_get" => {
             let project_id = required_string(&args, "project_id")?;
             client
                 .get_json(&format!("/v1/projects/{project_id}/settings"))
                 .await
         }
-        "taskagent_project_settings_update" => {
+        "daruma_project_settings_update" => {
             let project_id = required_string(&args, "project_id")?;
             let mut auto_append = json!({});
             if let Some(v) = args.get("interview").and_then(|v| v.as_bool()) {
@@ -1984,7 +1984,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_rule_list" => {
+        "daruma_rule_list" => {
             let mut qs = Vec::new();
             for key in ["project_id", "plan_id", "task_id"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
@@ -1998,18 +1998,18 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             };
             client.get_json(&path).await
         }
-        "taskagent_rule_get" => {
+        "daruma_rule_get" => {
             let id = required_string(&args, "id")?;
             client.get_json(&format!("/v1/rules/{id}")).await
         }
-        "taskagent_rule_create" => {
+        "daruma_rule_create" => {
             let rule = args
                 .get("rule")
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("`rule` is required"))?;
             client.post_json("/v1/rules", json!({ "rule": rule })).await
         }
-        "taskagent_rule_update" => {
+        "daruma_rule_update" => {
             let id = required_string(&args, "id")?;
             let mut patch = args.clone();
             patch.remove("id");
@@ -2017,11 +2017,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .patch_json(&format!("/v1/rules/{id}"), Value::Object(patch))
                 .await
         }
-        "taskagent_rule_disable" => {
+        "daruma_rule_disable" => {
             let id = required_string(&args, "id")?;
             client.delete_json(&format!("/v1/rules/{id}")).await
         }
-        "taskagent_evidence_submit" => {
+        "daruma_evidence_submit" => {
             let evidence = args
                 .get("evidence")
                 .cloned()
@@ -2030,7 +2030,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json("/v1/evidence", json!({ "evidence": evidence }))
                 .await
         }
-        "taskagent_evidence_list" => {
+        "daruma_evidence_list" => {
             let mut qs = Vec::new();
             for key in ["project_id", "plan_id", "task_id"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
@@ -2048,7 +2048,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         // ── Audit primitives ─────────────────────────────────────────────
-        "taskagent_audit_findings" => {
+        "daruma_audit_findings" => {
             let project_id = required_string(&args, "project_id")?;
             let mut qs = vec![format!("project_id={project_id}")];
             for key in ["severity", "category", "status"] {
@@ -2060,7 +2060,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/audit/findings?{}", qs.join("&")))
                 .await
         }
-        "taskagent_audit_finding_ack" => {
+        "daruma_audit_finding_ack" => {
             let id = required_string(&args, "id")?;
             let status = required_string(&args, "status")?;
             client
@@ -2070,7 +2070,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_audit_stuck_tasks" => {
+        "daruma_audit_stuck_tasks" => {
             let project_id = required_string(&args, "project_id")?;
             let mut qs = vec![format!("project_id={project_id}")];
             if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
@@ -2086,7 +2086,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_audit_duplicate_tasks" => {
+        "daruma_audit_duplicate_tasks" => {
             let project_id = required_string(&args, "project_id")?;
             let mut qs = vec![format!("project_id={project_id}")];
             if let Some(t) = args.get("threshold").and_then(|v| v.as_f64()) {
@@ -2102,7 +2102,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_audit_unread_documents" => {
+        "daruma_audit_unread_documents" => {
             let project_id = required_string(&args, "project_id")?;
             let mut qs = vec![format!("project_id={project_id}")];
             if let Some(d) = args.get("days").and_then(|v| v.as_i64()) {
@@ -2115,7 +2115,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_workspace_resolve" => {
+        "daruma_workspace_resolve" => {
             let ws = workspace::global();
             let raw_path = args.get("scope_path").and_then(|v| v.as_str());
             let root_path = match (raw_path, ws) {
@@ -2149,8 +2149,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             Ok(resp)
         }
-        "taskagent_workspace_list" => client.get_json("/v1/workspace-registry").await,
-        "taskagent_project_move_workspace" => {
+        "daruma_workspace_list" => client.get_json("/v1/workspace-registry").await,
+        "daruma_project_move_workspace" => {
             let project_id = required_string(&args, "project_id")?;
             let workspace_id = required_string(&args, "workspace_id")?;
             let mut body = json!({ "workspace_id": workspace_id });
@@ -2161,7 +2161,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .patch_json(&format!("/v1/projects/{project_id}/workspace"), body)
                 .await
         }
-        "taskagent_reserve_files" => {
+        "daruma_reserve_files" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
             let paths = args.get("paths").and_then(|v| v.as_array()).cloned();
@@ -2192,14 +2192,14 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/leases", body).await
         }
-        "taskagent_release_files" => {
+        "daruma_release_files" => {
             let agent_id = required_string(&args, "agent_id")?;
             let task_id = required_string(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/leases/{agent_id}/{task_id}"))
                 .await
         }
-        "taskagent_active_work" => {
+        "daruma_active_work" => {
             let path = match args.get("project_id").and_then(|v| v.as_str()) {
                 Some(p) if !p.is_empty() => format!("/v1/leases?project_id={p}"),
                 _ => "/v1/leases".to_string(),
@@ -2208,13 +2208,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Project-wide ready pool ──────────────────────────────────────
-        "taskagent_ready" => {
+        "daruma_ready" => {
             let project_id = required_string(&args, "project_id")?;
             client
                 .get_json(&format!("/v1/ready?project_id={project_id}"))
                 .await
         }
-        "taskagent_ready_drain" => {
+        "daruma_ready_drain" => {
             let project_id = required_string(&args, "project_id")?;
             let mut body = json!({});
             if let Some(ttl) = args.get("claim_ttl_secs").and_then(|v| v.as_u64()) {
@@ -2224,13 +2224,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/ready/drain?project_id={project_id}"), body)
                 .await
         }
-        "taskagent_doctor" => {
+        "daruma_doctor" => {
             let project_id = required_string(&args, "project_id")?;
             client
                 .get_json(&format!("/v1/doctor?project_id={project_id}"))
                 .await
         }
-        "taskagent_suggest_files" => {
+        "daruma_suggest_files" => {
             let task_id = required_string(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/leases/suggest?task_id={task_id}"))
@@ -2238,7 +2238,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
-        "taskagent_session_start" => {
+        "daruma_session_start" => {
             let agent_id = args
                 .get("agent_id")
                 .and_then(|v| v.as_str())
@@ -2252,11 +2252,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             body["metadata"] = session_metadata::merge_defaults(metadata);
             client.post_json("/v1/sessions", body).await
         }
-        "taskagent_session_get" => {
+        "daruma_session_get" => {
             let id = required_string(&args, "id")?;
             client.get_json(&format!("/v1/sessions/{id}")).await
         }
-        "taskagent_session_list" => {
+        "daruma_session_list" => {
             let agent_id = args
                 .get("agent_id")
                 .and_then(|v| v.as_str())
@@ -2266,13 +2266,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/sessions?agent_id={agent_id}"))
                 .await
         }
-        "taskagent_session_end" => {
+        "daruma_session_end" => {
             let id = required_string(&args, "id")?;
             client
                 .post_json(&format!("/v1/sessions/{id}/end"), json!({}))
                 .await
         }
-        "taskagent_session_set_plan" => {
+        "daruma_session_set_plan" => {
             let id = required_string(&args, "id")?;
             let steps = args
                 .get("steps")
@@ -2282,7 +2282,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/sessions/{id}/plan"), json!({"steps": steps}))
                 .await
         }
-        "taskagent_session_artifact" => {
+        "daruma_session_artifact" => {
             let session_id = required_string(&args, "session_id")?;
             let kind = required_string(&args, "kind")?;
             let reference = required_string(&args, "ref")?;
@@ -2294,7 +2294,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/sessions/{session_id}/artifacts"), body)
                 .await
         }
-        "taskagent_session_artifacts_list" => {
+        "daruma_session_artifacts_list" => {
             let id = required_string(&args, "id")?;
             client
                 .get_json(&format!("/v1/sessions/{id}/artifacts"))
@@ -2302,7 +2302,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Signal tools (W3.2 / Linear B.5) ─────────────────────────────
-        "taskagent_signal_send" => {
+        "daruma_signal_send" => {
             let run_id = required_string(&args, "run_id")?;
             let kind = args
                 .get("kind")
@@ -2312,7 +2312,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json(&format!("/v1/runs/{run_id}/signals"), json!({"kind": kind}))
                 .await
         }
-        "taskagent_signal_respond" => {
+        "daruma_signal_respond" => {
             let run_id = required_string(&args, "run_id")?;
             let choice = required_string(&args, "choice")?;
             client
@@ -2324,7 +2324,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Relation tools (§3.2 W3.2) ───────────────────────────────────
-        "taskagent_link" => {
+        "daruma_link" => {
             let from = required_string(&args, "from")?;
             let to = required_string(&args, "to")?;
             let kind = required_string(&args, "kind")?;
@@ -2334,13 +2334,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/relations", body).await
         }
-        "taskagent_unlink" => {
+        "daruma_unlink" => {
             let relation_id = required_string(&args, "relation_id")?;
             client
                 .delete_json(&format!("/v1/relations/{relation_id}"))
                 .await
         }
-        "taskagent_relations" => {
+        "daruma_relations" => {
             let task_id = required_string(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/relations"))
@@ -2348,7 +2348,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Document tools (PR1 §7) ───────────────────────────────────────
-        "taskagent_doc_create" => {
+        "daruma_doc_create" => {
             let project_id = required_string(&args, "project_id")?;
             let kind = required_string(&args, "kind")?;
             let title = required_string(&args, "title")?;
@@ -2364,11 +2364,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .post_json("/v1/documents", json!({ "new_doc": new_doc }))
                 .await
         }
-        "taskagent_doc_get" => {
+        "daruma_doc_get" => {
             let id = required_string(&args, "document_id")?;
             client.get_json(&format!("/v1/documents/{id}")).await
         }
-        "taskagent_doc_append" => {
+        "daruma_doc_append" => {
             let id = required_string(&args, "document_id")?;
             let content = required_string(&args, "content")?;
             client
@@ -2378,7 +2378,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_doc_replace" => {
+        "daruma_doc_replace" => {
             let id = required_string(&args, "document_id")?;
             let content = required_string(&args, "content")?;
             client
@@ -2388,20 +2388,20 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
-        "taskagent_doc_rename" => {
+        "daruma_doc_rename" => {
             let id = required_string(&args, "document_id")?;
             let title = required_string(&args, "title")?;
             client
                 .patch_json(&format!("/v1/documents/{id}"), json!({ "title": title }))
                 .await
         }
-        "taskagent_doc_archive" => {
+        "daruma_doc_archive" => {
             let id = required_string(&args, "document_id")?;
             client
                 .post_json(&format!("/v1/documents/{id}/archive"), json!({}))
                 .await
         }
-        "taskagent_doc_list" => {
+        "daruma_doc_list" => {
             // `project_id` falls back to the workspace default. The URL
             // path requires a project id, so we bail with a friendly error
             // if neither is set instead of producing a malformed URL.
@@ -2409,7 +2409,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ProjectFilter::Project(pid) => pid,
                 ProjectFilter::None => {
                     anyhow::bail!(
-                        "`project_id`, `project_scope`, or `scope_path` is required and no taskagent scope is resolved"
+                        "`project_id`, `project_scope`, or `scope_path` is required and no daruma scope is resolved"
                     )
                 }
                 ProjectFilter::All => unreachable!("allow_all=false"),
@@ -2429,7 +2429,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Version-history tools ─────────────────────────────────────────
-        "taskagent_history_list" => {
+        "daruma_history_list" => {
             let entity_type = required_string(&args, "entity_type")?;
             let entity_id = required_string(&args, "entity_id")?;
             let limit = optional_u32(&args, "limit").unwrap_or(50);
@@ -2441,11 +2441,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_history_get" => {
+        "daruma_history_get" => {
             let id = required_string(&args, "version_id")?;
             client.get_json(&format!("/v1/history/{id}")).await
         }
-        "taskagent_history_compare" => {
+        "daruma_history_compare" => {
             let entity_type = required_string(&args, "entity_type")?;
             let entity_id = required_string(&args, "entity_id")?;
             let from = required_i64(&args, "from")?;
@@ -2458,13 +2458,13 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_history_latest" => {
+        "daruma_history_latest" => {
             let limit = optional_u32(&args, "limit").unwrap_or(50);
             client
                 .get_json(&format!("/v1/history/latest?limit={limit}"))
                 .await
         }
-        "taskagent_history_summary" => {
+        "daruma_history_summary" => {
             let entity_type = required_string(&args, "entity_type")?;
             let entity_id = required_string(&args, "entity_id")?;
             let limit = optional_u32(&args, "limit").unwrap_or(50);
@@ -2476,7 +2476,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
                 .await
         }
-        "taskagent_history_rollback" => {
+        "daruma_history_rollback" => {
             let id = required_string(&args, "version_id")?;
             client
                 .post_json(&format!("/v1/history/{id}/rollback"), json!({}))
@@ -2484,7 +2484,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
 
         // ── Artifact Registry (P4) ───────────────────────────────────────
-        "taskagent_artifact_register" => {
+        "daruma_artifact_register" => {
             let uri = required_string(&args, "uri")?;
             let title = required_string(&args, "title")?;
             let mut body = json!({"uri": uri, "title": title});
@@ -2495,7 +2495,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/artifacts", body).await
         }
-        "taskagent_artifact_list" => {
+        "daruma_artifact_list" => {
             let mut params: Vec<(&str, String)> = vec![];
             if let Some(p) = args.get("project_id").and_then(|v| v.as_str()) {
                 params.push(("project_id", urlencode(p)));
@@ -2518,7 +2518,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             };
             client.get_json(&path).await
         }
-        "taskagent_artifact_impact" => {
+        "daruma_artifact_impact" => {
             let artifact_id = required_string(&args, "artifact_id")?;
             let mut params: Vec<(&str, String)> =
                 vec![("node_id", urlencode(&format!("artifact:{artifact_id}")))];
@@ -2748,15 +2748,15 @@ fn schema_create() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named taskagent scope (usually repo folder name) used when task.project_id is omitted."
+                "description":"Named daruma scope (usually repo folder name) used when task.project_id is omitted."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named taskagent scope (alias-safe form; preferred when a tool already has a `scope` option)."
+                "description":"Named daruma scope (alias-safe form; preferred when a tool already has a `scope` option)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+                "description":"Filesystem path used to resolve the nearest configured daruma scope."
             }
         },
         "required":["task"]
@@ -2788,9 +2788,9 @@ fn schema_capture() -> Value {
                 "description":"Optional project scope. Omitted uses the resolved repo project when unambiguous; null means inbox-only.",
                 "anyOf": [{"type":"string"}, {"type":"null"}]
             },
-            "scope": {"type":"string", "description":"Named taskagent scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named taskagent scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured taskagent scope."}
+            "scope": {"type":"string", "description":"Named daruma scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named daruma scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured daruma scope."}
         },
         "required":["text"]
     })
@@ -2810,9 +2810,9 @@ fn schema_capture_batch() -> Value {
                 "description":"Optional project scope. Omitted uses the resolved repo project when unambiguous; null means inbox-only.",
                 "anyOf": [{"type":"string"}, {"type":"null"}]
             },
-            "scope": {"type":"string", "description":"Named taskagent scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named taskagent scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured taskagent scope."}
+            "scope": {"type":"string", "description":"Named daruma scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named daruma scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured daruma scope."}
         },
         "required":["texts"]
     })
@@ -2850,9 +2850,9 @@ fn schema_move_project() -> Value {
         "properties": {
             "id": {"type":"string", "description":"Task id to move."},
             "project_id": {"type":"string", "description":"Destination project id."},
-            "scope": {"type":"string", "description":"Destination taskagent scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Destination taskagent scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the destination taskagent scope."}
+            "scope": {"type":"string", "description":"Destination daruma scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Destination daruma scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the destination daruma scope."}
         },
         "required":["id"]
     })
@@ -2983,15 +2983,15 @@ fn schema_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named taskagent scope (usually repo folder name)."
+                "description":"Named daruma scope (usually repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named taskagent scope (alias-safe form)."
+                "description":"Named daruma scope (alias-safe form)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+                "description":"Filesystem path used to resolve the nearest configured daruma scope."
             },
             "status": {
                 "type":"string",
@@ -3017,11 +3017,11 @@ fn schema_search() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named taskagent scope (use this instead of `scope`, which filters search domains)."
+                "description":"Named daruma scope (use this instead of `scope`, which filters search domains)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+                "description":"Filesystem path used to resolve the nearest configured daruma scope."
             },
             "limit": {
                 "type":"integer",
@@ -3048,11 +3048,11 @@ fn schema_lesson_recall() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named taskagent scope."
+                "description":"Named daruma scope."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+                "description":"Filesystem path used to resolve the nearest configured daruma scope."
             },
             "limit": {
                 "type":"integer",
@@ -3106,7 +3106,7 @@ fn schema_project_use() -> Value {
             },
             "scope_path": {
                 "type": "string",
-                "description": "Workspace or repository path to bind. Relative paths are resolved from TASKAGENT_WORKSPACE / process CWD. Omit only when MCP is running inside the repository scope."
+                "description": "Workspace or repository path to bind. Relative paths are resolved from DARUMA_WORKSPACE / process CWD. Omit only when MCP is running inside the repository scope."
             }
         },
         "required":["project_id"]
@@ -3199,15 +3199,15 @@ fn schema_plan_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named taskagent scope (usually repo folder name)."
+                "description":"Named daruma scope (usually repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named taskagent scope (alias-safe form)."
+                "description":"Named daruma scope (alias-safe form)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+                "description":"Filesystem path used to resolve the nearest configured daruma scope."
             },
             "status": {
                 "type":"string",
@@ -3321,15 +3321,15 @@ fn schema_workspacegraph_search() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named taskagent scope (usually repo folder name)."
+                "description":"Named daruma scope (usually repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named taskagent scope (alias-safe form)."
+                "description":"Named daruma scope (alias-safe form)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured taskagent scope."
+                "description":"Filesystem path used to resolve the nearest configured daruma scope."
             },
             "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
         },
@@ -3685,12 +3685,12 @@ fn schema_session_start() -> Value {
         "properties": {
             "agent_id":        {
                 "type":"string",
-                "description":"Defaults to this MCP process agent id (see taskagent_workspace_info.mcp_agent_id)."
+                "description":"Defaults to this MCP process agent id (see daruma_workspace_info.mcp_agent_id)."
             },
             "parent_agent_id": {"type":"string"},
             "metadata":        {
                 "type":"object",
-                "description":"Traceability payload. Recommended keys: client, model, chat_id, transcript_path, workspace_path. Env defaults: TASKAGENT_CLIENT, TASKAGENT_MODEL, TASKAGENT_CHAT_ID, TASKAGENT_TRANSCRIPT_PATH.",
+                "description":"Traceability payload. Recommended keys: client, model, chat_id, transcript_path, workspace_path. Env defaults: DARUMA_CLIENT, DARUMA_MODEL, DARUMA_CHAT_ID, DARUMA_TRANSCRIPT_PATH.",
                 "properties": {
                     "client": {"type":"string", "description":"IDE client, e.g. cursor, codex, claude-code"},
                     "model": {"type":"string", "description":"Model display name or id"},
@@ -3881,9 +3881,9 @@ fn schema_doc_list() -> Value {
                 "type":"string",
                 "description":"Project id. When omitted, the resolved repo project is used only if unambiguous."
             },
-            "scope": {"type":"string", "description":"Named taskagent scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named taskagent scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured taskagent scope."},
+            "scope": {"type":"string", "description":"Named daruma scope (usually repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named daruma scope (alias-safe form)."},
+            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured daruma scope."},
             "kind":             {"type":"string","enum":["interview","human_log"]},
             "include_archived": {"type":"boolean","default":false}
         }
@@ -3963,7 +3963,7 @@ fn resolve_project_filter(
             .project_for_path(scope_path)
             .map(ProjectFilter::Project)
             .ok_or_else(|| {
-                anyhow::anyhow!("no taskagent scope configured for path `{scope_path}`")
+                anyhow::anyhow!("no daruma scope configured for path `{scope_path}`")
             });
     }
 
@@ -3976,7 +3976,7 @@ fn resolve_project_filter(
 fn resolve_named_scope(ws: &workspace::Workspace, scope: &str) -> anyhow::Result<ProjectFilter> {
     ws.project_for_scope(scope)?
         .map(ProjectFilter::Project)
-        .ok_or_else(|| anyhow::anyhow!("unknown taskagent scope `{scope}`"))
+        .ok_or_else(|| anyhow::anyhow!("unknown daruma scope `{scope}`"))
 }
 
 async fn project_selection_response(
@@ -4000,12 +4000,12 @@ async fn project_selection_response(
         .unwrap_or_default();
     Ok(json!({
         "needs_project_selection": true,
-        "reason": "No default TaskAgent project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
+        "reason": "No default Daruma project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
         "requested_status": requested_status,
         "projects": projects,
-        "next_step": "Ask the user which project to use, then call taskagent_project_use with that project_id. After that, retry taskagent_list with the same status; the saved default project will be reused by later calls.",
+        "next_step": "Ask the user which project to use, then call daruma_project_use with that project_id. After that, retry daruma_list with the same status; the saved default project will be reused by later calls.",
         "next_tool": {
-            "name": "taskagent_project_use",
+            "name": "daruma_project_use",
             "arguments": {
                 "project_id": "<selected_project_id>"
             }
@@ -4058,10 +4058,10 @@ fn optional_u32(args: &serde_json::Map<String, Value>, key: &str) -> Option<u32>
 
 /// Canonical snake_case form for a `CommentKind` (§3.8.8).
 ///
-/// Mirrors `taskagent_domain::CommentKind::FromStr`: accepts the
+/// Mirrors `daruma_domain::CommentKind::FromStr`: accepts the
 /// snake_case canonical form (`"research"`), the PascalCase Rust
 /// variant name (`"Research"`), and tolerates surrounding whitespace
-/// and case. The mcp crate doesn't depend on `taskagent-domain`, so
+/// and case. The mcp crate doesn't depend on `daruma-domain`, so
 /// we inline the closed variant list here.
 fn normalise_comment_kind(raw: &str) -> anyhow::Result<&'static str> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -4131,14 +4131,14 @@ mod tests {
             names.len()
         );
         for required in [
-            "taskagent_subscribe_project",
-            "taskagent_inbox_pull",
-            "taskagent_comment",
-            "taskagent_reopen",
-            "taskagent_project_list",
-            "taskagent_project_create",
-            "taskagent_project_use",
-            "taskagent_move_project",
+            "daruma_subscribe_project",
+            "daruma_inbox_pull",
+            "daruma_comment",
+            "daruma_reopen",
+            "daruma_project_list",
+            "daruma_project_create",
+            "daruma_project_use",
+            "daruma_move_project",
         ] {
             assert!(
                 names.contains(&required),
@@ -4157,49 +4157,49 @@ mod tests {
         );
         for required in [
             // Plan tools
-            "taskagent_plan_create",
-            "taskagent_plan_update",
-            "taskagent_plan_get",
-            "taskagent_plan_list",
-            "taskagent_plan_add_task",
-            "taskagent_plan_remove_task",
-            "taskagent_plan_reorder",
-            "taskagent_plan_archive",
-            "taskagent_plan_next_task",
+            "daruma_plan_create",
+            "daruma_plan_update",
+            "daruma_plan_get",
+            "daruma_plan_list",
+            "daruma_plan_add_task",
+            "daruma_plan_remove_task",
+            "daruma_plan_reorder",
+            "daruma_plan_archive",
+            "daruma_plan_next_task",
             // Run tools
-            "taskagent_run_start",
-            "taskagent_run_start_step",
-            "taskagent_run_finish_step",
-            "taskagent_run_complete",
-            "taskagent_run_abort",
+            "daruma_run_start",
+            "daruma_run_start_step",
+            "daruma_run_finish_step",
+            "daruma_run_complete",
+            "daruma_run_abort",
             // Claim tools
-            "taskagent_claim",
-            "taskagent_release",
+            "daruma_claim",
+            "daruma_release",
             // Work-lease tools
-            "taskagent_reserve_files",
-            "taskagent_release_files",
-            "taskagent_active_work",
+            "daruma_reserve_files",
+            "daruma_release_files",
+            "daruma_active_work",
             // Project-wide ready pool
-            "taskagent_ready",
-            "taskagent_ready_drain",
+            "daruma_ready",
+            "daruma_ready_drain",
             // Doctor + file suggestion
-            "taskagent_doctor",
-            "taskagent_suggest_files",
+            "daruma_doctor",
+            "daruma_suggest_files",
             // Session tools (Linear B.1)
-            "taskagent_session_start",
-            "taskagent_session_get",
-            "taskagent_session_list",
-            "taskagent_session_end",
-            "taskagent_session_set_plan",
-            "taskagent_session_artifact",
-            "taskagent_session_artifacts_list",
+            "daruma_session_start",
+            "daruma_session_get",
+            "daruma_session_list",
+            "daruma_session_end",
+            "daruma_session_set_plan",
+            "daruma_session_artifact",
+            "daruma_session_artifacts_list",
             // Signal tools (Linear B.5)
-            "taskagent_signal_send",
-            "taskagent_signal_respond",
+            "daruma_signal_send",
+            "daruma_signal_respond",
             // Relation tools (§3.2 W3.2 / AC-9)
-            "taskagent_link",
-            "taskagent_unlink",
-            "taskagent_relations",
+            "daruma_link",
+            "daruma_unlink",
+            "daruma_relations",
         ] {
             assert!(names.contains(&required), "missing W3.2 tool: {required}");
         }
@@ -4209,13 +4209,13 @@ mod tests {
     fn catalogue_includes_document_tools() {
         let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
         for required in [
-            "taskagent_doc_create",
-            "taskagent_doc_get",
-            "taskagent_doc_append",
-            "taskagent_doc_replace",
-            "taskagent_doc_rename",
-            "taskagent_doc_archive",
-            "taskagent_doc_list",
+            "daruma_doc_create",
+            "daruma_doc_get",
+            "daruma_doc_append",
+            "daruma_doc_replace",
+            "daruma_doc_rename",
+            "daruma_doc_archive",
+            "daruma_doc_list",
         ] {
             assert!(names.contains(&required), "missing PR1 tool: {required}");
         }
@@ -4225,8 +4225,8 @@ mod tests {
     fn catalogue_includes_ai_analyze_complexity() {
         let names: Vec<&str> = tool_definitions().iter().map(|t| t.name).collect();
         assert!(
-            names.contains(&"taskagent_ai_analyze_complexity"),
-            "§3.8.3: missing tool taskagent_ai_analyze_complexity in {names:?}"
+            names.contains(&"daruma_ai_analyze_complexity"),
+            "§3.8.3: missing tool daruma_ai_analyze_complexity in {names:?}"
         );
     }
 
@@ -4274,32 +4274,32 @@ mod profile_tests {
             default.len()
         );
         for required in [
-            "taskagent_capture",
-            "taskagent_create",
-            "taskagent_list",
-            "taskagent_get",
-            "taskagent_search",
-            "taskagent_comment",
-            "taskagent_set_status",
-            "taskagent_complete",
-            "taskagent_plan_create",
-            "taskagent_plan_get",
-            "taskagent_plan_drain_next",
-            "taskagent_claim",
-            "taskagent_release",
-            "taskagent_run_start",
-            "taskagent_run_complete",
-            "taskagent_link",
+            "daruma_capture",
+            "daruma_create",
+            "daruma_list",
+            "daruma_get",
+            "daruma_search",
+            "daruma_comment",
+            "daruma_set_status",
+            "daruma_complete",
+            "daruma_plan_create",
+            "daruma_plan_get",
+            "daruma_plan_drain_next",
+            "daruma_claim",
+            "daruma_release",
+            "daruma_run_start",
+            "daruma_run_complete",
+            "daruma_link",
         ] {
             assert!(default.contains(&required), "default must keep {required}");
         }
         // Advanced/destructive surfaces stay out of default.
         for excluded in [
-            "taskagent_delete",
-            "taskagent_project_delete",
-            "taskagent_history_rollback",
-            "taskagent_workspacegraph_search",
-            "taskagent_session_start",
+            "daruma_delete",
+            "daruma_project_delete",
+            "daruma_history_rollback",
+            "daruma_workspacegraph_search",
+            "daruma_session_start",
         ] {
             assert!(
                 !default.contains(&excluded),
@@ -4337,12 +4337,12 @@ mod profile_tests {
             .map(|t| t.name)
             .collect();
         for expected in [
-            "taskagent_delete",
-            "taskagent_project_delete",
-            "taskagent_plan_archive",
-            "taskagent_doc_archive",
-            "taskagent_unlink",
-            "taskagent_history_rollback",
+            "daruma_delete",
+            "daruma_project_delete",
+            "daruma_plan_archive",
+            "daruma_doc_archive",
+            "daruma_unlink",
+            "daruma_history_rollback",
         ] {
             assert!(
                 destructive.contains(&expected),
@@ -4354,7 +4354,7 @@ mod profile_tests {
             .filter(|t| t.annotations.open_world_hint)
             .map(|t| t.name)
             .collect();
-        for expected in ["taskagent_ai_analyze_complexity"] {
+        for expected in ["daruma_ai_analyze_complexity"] {
             assert!(
                 open_world.contains(&expected),
                 "{expected} must be open-world"
@@ -4365,7 +4365,7 @@ mod profile_tests {
     #[test]
     fn serialized_tool_matches_mcp_shape() {
         let tools = tool_definitions();
-        let sample = tools.iter().find(|t| t.name == "taskagent_list").unwrap();
+        let sample = tools.iter().find(|t| t.name == "daruma_list").unwrap();
         let v = serde_json::to_value(sample).unwrap();
         assert!(v.get("inputSchema").is_some(), "inputSchema key");
         assert!(v.get("title").is_some(), "title key");
@@ -4387,15 +4387,15 @@ mod profile_tests {
     #[test]
     fn hidden_tools_are_not_callable_in_default_profile() {
         assert!(tool_hidden_in_profile(
-            "taskagent_delete",
+            "daruma_delete",
             ToolProfile::Default
         ));
         assert!(!tool_hidden_in_profile(
-            "taskagent_list",
+            "daruma_list",
             ToolProfile::Default
         ));
         assert!(!tool_hidden_in_profile(
-            "taskagent_delete",
+            "daruma_delete",
             ToolProfile::Full
         ));
         // Unknown names fall through to the normal unknown-tool error.
@@ -4410,12 +4410,12 @@ mod profile_tests {
         assert_eq!(ToolProfile::parse("compat"), Some(ToolProfile::Full));
         assert_eq!(ToolProfile::parse("nope"), None);
 
-        std::env::remove_var("TASKAGENT_MCP_PROFILE");
+        std::env::remove_var("DARUMA_MCP_PROFILE");
         assert_eq!(ToolProfile::from_env(), ToolProfile::Default);
-        std::env::set_var("TASKAGENT_MCP_PROFILE", "full");
+        std::env::set_var("DARUMA_MCP_PROFILE", "full");
         assert_eq!(ToolProfile::from_env(), ToolProfile::Full);
-        std::env::set_var("TASKAGENT_MCP_PROFILE", "garbage");
+        std::env::set_var("DARUMA_MCP_PROFILE", "garbage");
         assert_eq!(ToolProfile::from_env(), ToolProfile::Default);
-        std::env::remove_var("TASKAGENT_MCP_PROFILE");
+        std::env::remove_var("DARUMA_MCP_PROFILE");
     }
 }

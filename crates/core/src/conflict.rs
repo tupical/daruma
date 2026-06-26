@@ -2,9 +2,9 @@
 
 use std::cmp::Ordering;
 
-use taskagent_domain::Status;
-use taskagent_events::Event;
-use taskagent_shared::{EventId, Timestamp};
+use daruma_domain::Status;
+use daruma_events::Event;
+use daruma_shared::{EventId, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConflictRecord {

@@ -1,11 +1,11 @@
 //! Storage trait for token persistence.
 //!
-//! `taskagent-storage` implements [`TokenStore`] over SQLite. Keeping the
+//! `daruma-storage` implements [`TokenStore`] over SQLite. Keeping the
 //! trait here lets the verifier and the bootstrap logic live in this crate
 //! without pulling sqlx in.
 
 use async_trait::async_trait;
-use taskagent_shared::{AgentId, Result, TokenId};
+use daruma_shared::{AgentId, Result, TokenId};
 
 use crate::token::ApiToken;
 

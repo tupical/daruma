@@ -26,13 +26,13 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
-use taskagent_auth::{
+use daruma_auth::{
     verify_bearer, AuthContext, Capabilities, Capability, ProjectFilter, TokenStore,
 };
-use taskagent_events::{Channel, Event, EventEnvelope};
-use taskagent_shared::{AgentId, EventId, PlanId, ProjectId, TaskId};
-use taskagent_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
-use taskagent_sync::{WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
+use daruma_events::{Channel, Event, EventEnvelope};
+use daruma_shared::{AgentId, EventId, PlanId, ProjectId, TaskId};
+use daruma_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
+use daruma_sync::{WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -41,11 +41,11 @@ use crate::state::AppState;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_PAGE: usize = 1000;
-const WS_PROTOCOL: &str = "taskagent.v1";
+const WS_PROTOCOL: &str = "daruma.v1";
 const BEARER_PROTOCOL_PREFIX: &str = "bearer.";
 
 /// Legacy query string for `/v1/ws`. Browser clients should use
-/// `Sec-WebSocket-Protocol: taskagent.v1, bearer.<token>` instead.
+/// `Sec-WebSocket-Protocol: daruma.v1, bearer.<token>` instead.
 #[derive(Debug, Deserialize)]
 pub struct WsAuthQuery {
     #[serde(default)]
@@ -492,25 +492,25 @@ async fn handle_dispatch(
     state: &AppState,
     auth: &AuthContext,
     out_tx: &mpsc::Sender<Message>,
-    command: taskagent_core::Command,
-    _actor: Option<taskagent_domain::Actor>,
+    command: daruma_core::Command,
+    _actor: Option<daruma_domain::Actor>,
     client_event_id: Option<EventId>,
 ) {
     // Mirror the HTTP-side capability check.
     let needed = match &command {
-        taskagent_core::Command::CreateTask { .. }
-        | taskagent_core::Command::UpdateTask { .. }
-        | taskagent_core::Command::CompleteTask { .. }
-        | taskagent_core::Command::DeleteTask { .. }
-        | taskagent_core::Command::SetStatus { .. }
-        | taskagent_core::Command::SetPriority { .. }
-        | taskagent_core::Command::SplitTask { .. } => Capability::TaskWrite,
-        taskagent_core::Command::CreateProject { .. }
-        | taskagent_core::Command::UpdateProject { .. } => Capability::ProjectWrite,
-        taskagent_core::Command::RecordAgentAction { .. } => Capability::AgentDispatch,
-        taskagent_core::Command::AddComment { .. }
-        | taskagent_core::Command::EditComment { .. }
-        | taskagent_core::Command::DeleteComment { .. } => Capability::CommentWrite,
+        daruma_core::Command::CreateTask { .. }
+        | daruma_core::Command::UpdateTask { .. }
+        | daruma_core::Command::CompleteTask { .. }
+        | daruma_core::Command::DeleteTask { .. }
+        | daruma_core::Command::SetStatus { .. }
+        | daruma_core::Command::SetPriority { .. }
+        | daruma_core::Command::SplitTask { .. } => Capability::TaskWrite,
+        daruma_core::Command::CreateProject { .. }
+        | daruma_core::Command::UpdateProject { .. } => Capability::ProjectWrite,
+        daruma_core::Command::RecordAgentAction { .. } => Capability::AgentDispatch,
+        daruma_core::Command::AddComment { .. }
+        | daruma_core::Command::EditComment { .. }
+        | daruma_core::Command::DeleteComment { .. } => Capability::CommentWrite,
         // W3.1 placeholder: plan/run/session/signal/claim commands gated to admin
         // until their per-capability mapping lands. See ROADMAP §3.1, plan §3.2.
         _ => Capability::Admin,

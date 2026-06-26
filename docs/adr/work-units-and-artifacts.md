@@ -8,7 +8,7 @@ code; later phases (P1–P7) implement against this document.
 
 ## Context
 
-TaskAgent already coordinates parallel agents at two levels: atomic task
+Daruma already coordinates parallel agents at two levels: atomic task
 claims (`agent_claims` CAS, `plan_drain_next` / `ready_drain`) and exclusive
 path-glob work leases with auto-release (see
 [parallel-agent-isolation.md](parallel-agent-isolation.md)). Both shipped.

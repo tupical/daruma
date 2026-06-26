@@ -531,6 +531,336 @@ dependencies = [
 ]
 
 [[package]]
+name = "daruma"
+version = "0.2.0"
+dependencies = [
+ "daruma-auth",
+]
+
+[[package]]
+name = "daruma-ai"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "daruma-ai-infra",
+ "daruma-core",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-shared",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-ai-infra"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "daruma-shared",
+ "once_cell",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tinytemplate",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "daruma-api-dto"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-shared",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-auth"
+version = "0.2.0"
+dependencies = [
+ "argon2",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "daruma-domain",
+ "daruma-shared",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "daruma-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "comfy-table",
+ "daruma-mcp",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-core"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daruma-api-dto",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-shared",
+ "daruma-storage",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-desktop"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "daruma-ai",
+ "daruma-core",
+ "daruma-discovery",
+ "daruma-domain",
+ "daruma-shared",
+ "daruma-sync",
+ "futures",
+ "hex",
+ "mdns-sd",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "subtle",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "daruma-discovery"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "hex",
+ "hmac",
+ "image",
+ "mdns-sd",
+ "qrcode",
+ "rand 0.8.6",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
+name = "daruma-domain"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "daruma-shared",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-events"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daruma-domain",
+ "daruma-shared",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "daruma-mcp"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "daruma-shared",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-mobile"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "daruma-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chrono",
+ "daruma-ai",
+ "daruma-api-dto",
+ "daruma-auth",
+ "daruma-core",
+ "daruma-discovery",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-mcp",
+ "daruma-shared",
+ "daruma-storage",
+ "daruma-sync",
+ "daruma-webhooks",
+ "futures",
+ "hex",
+ "hmac",
+ "hyper",
+ "hyper-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-shared"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-storage"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "daruma-auth",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-shared",
+ "daruma-webhooks",
+ "fastbloom",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-sync"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "daruma-api-dto",
+ "daruma-core",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-shared",
+ "dashmap",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "daruma-webhooks"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "daruma-auth",
+ "daruma-domain",
+ "daruma-events",
+ "daruma-shared",
+ "futures",
+ "hex",
+ "hmac",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2741,336 +3071,6 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
-]
-
-[[package]]
-name = "taskagent"
-version = "0.2.0"
-dependencies = [
- "taskagent-auth",
-]
-
-[[package]]
-name = "taskagent-ai"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "once_cell",
- "serde",
- "serde_json",
- "taskagent-ai-infra",
- "taskagent-core",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-shared",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-ai-infra"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "once_cell",
- "reqwest",
- "serde",
- "serde_json",
- "taskagent-shared",
- "thiserror",
- "tinytemplate",
- "tokio",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "taskagent-api-dto"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-shared",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-auth"
-version = "0.2.0"
-dependencies = [
- "argon2",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "taskagent-domain",
- "taskagent-shared",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "taskagent-cli"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "clap",
- "comfy-table",
- "reqwest",
- "serde",
- "serde_json",
- "taskagent-mcp",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-core"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "taskagent-api-dto",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-shared",
- "taskagent-storage",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-desktop"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "futures",
- "hex",
- "mdns-sd",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "subtle",
- "taskagent-ai",
- "taskagent-core",
- "taskagent-discovery",
- "taskagent-domain",
- "taskagent-shared",
- "taskagent-sync",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "taskagent-discovery"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "base64",
- "chrono",
- "hex",
- "hmac",
- "image",
- "mdns-sd",
- "qrcode",
- "rand 0.8.6",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tracing",
-]
-
-[[package]]
-name = "taskagent-domain"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "taskagent-shared",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-events"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "taskagent-domain",
- "taskagent-shared",
- "tokio",
-]
-
-[[package]]
-name = "taskagent-mcp"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "reqwest",
- "serde",
- "serde_json",
- "taskagent-shared",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-mobile"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "reqwest",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "taskagent-server"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "futures",
- "hex",
- "hmac",
- "hyper",
- "hyper-util",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "taskagent-ai",
- "taskagent-api-dto",
- "taskagent-auth",
- "taskagent-core",
- "taskagent-discovery",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-mcp",
- "taskagent-shared",
- "taskagent-storage",
- "taskagent-sync",
- "taskagent-webhooks",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-shared"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "serde",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-storage"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "chrono",
- "fastbloom",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "taskagent-auth",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-shared",
- "taskagent-webhooks",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-sync"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "dashmap",
- "futures",
- "serde",
- "serde_json",
- "taskagent-api-dto",
- "taskagent-core",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-shared",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "taskagent-webhooks"
-version = "0.2.0"
-dependencies = [
- "async-trait",
- "axum",
- "chrono",
- "futures",
- "hex",
- "hmac",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "taskagent-auth",
- "taskagent-domain",
- "taskagent-events",
- "taskagent-shared",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

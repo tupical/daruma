@@ -1,8 +1,8 @@
 ---
-description: Mark one or more taskagent tasks as done (or cancelled).
+description: Mark one or more daruma tasks as done (or cancelled).
 ---
 
-The user invoked `/taskagent-claude:close [<task_id> ...] [--cancel] [--comment "<text>"]`.
+The user invoked `/daruma-claude:close [<task_id> ...] [--cancel] [--comment "<text>"]`.
 
 ## Flags
 
@@ -13,10 +13,10 @@ The user invoked `/taskagent-claude:close [<task_id> ...] [--cancel] [--comment 
 
 ### With explicit task IDs
 
-1. For each `<task_id>` (short suffixes resolved via `taskagent_search`):
-   a. `taskagent_get task_id=<id>` — confirm it exists and is not already closed.
-   b. If `--comment` was given: `taskagent_comment task_id=<id> body="<text>"`.
-   c. `taskagent_complete task_id=<id>` (or `taskagent_set_status … status=cancelled`
+1. For each `<task_id>` (short suffixes resolved via `daruma_search`):
+   a. `daruma_get task_id=<id>` — confirm it exists and is not already closed.
+   b. If `--comment` was given: `daruma_comment task_id=<id> body="<text>"`.
+   c. `daruma_complete task_id=<id>` (or `daruma_set_status … status=cancelled`
       if `--cancel`).
    d. Print: `✅ Closed <short_id>: <title>`
 
@@ -25,8 +25,8 @@ The user invoked `/taskagent-claude:close [<task_id> ...] [--cancel] [--comment 
 
 ### Without arguments — interactive close
 
-1. Resolve project via `taskagent_workspace_info`.
-2. `taskagent_list status=["in_progress","in_review"] project_id=<id> limit=20`.
+1. Resolve project via `daruma_workspace_info`.
+2. `daruma_list status=["in_progress","in_review"] project_id=<id> limit=20`.
 3. If 0 items: `No in-progress tasks to close.` and stop.
 4. Render a numbered list:
 
@@ -46,5 +46,5 @@ The user invoked `/taskagent-claude:close [<task_id> ...] [--cancel] [--comment 
   and skip it.
 - Never close a task that has unresolved blockers unless the user confirms.
 - Never use `status=all` for listing — keep to `in_progress` / `in_review`.
-- After closing, suggest `/taskagent-claude:next` if there are remaining
+- After closing, suggest `/daruma-claude:next` if there are remaining
   open tasks in the plan.

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use taskagent_shared::time;
+use daruma_shared::time;
 
 use crate::context::AuthContext;
 use crate::store::TokenStore;
@@ -141,7 +141,7 @@ mod tests {
     use crate::token::{generate, NewTokenSpec, TokenKind};
     use async_trait::async_trait;
     use std::sync::Mutex;
-    use taskagent_shared::{AgentId, Result, TokenId};
+    use daruma_shared::{AgentId, Result, TokenId};
 
     // ── in-memory store for verifier tests ────────────────────────────────────
 

@@ -7,10 +7,10 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::{json, Value};
-use taskagent_auth::{Capabilities, Capability, ProjectFilter};
-use taskagent_core::Command;
-use taskagent_domain::{Actor, NewTask};
-use taskagent_shared::TaskId;
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
+use daruma_core::Command;
+use daruma_domain::{Actor, NewTask};
+use daruma_shared::TaskId;
 use tower::ServiceExt;
 
 mod common;
@@ -48,7 +48,7 @@ async fn create_task(h: &common::TestApp, title: &str) -> TaskId {
         .unwrap();
     envs.iter()
         .find_map(|e| match &e.payload {
-            taskagent_events::Event::TaskCreated { task } => task.id,
+            daruma_events::Event::TaskCreated { task } => task.id,
             _ => None,
         })
         .unwrap()
@@ -129,7 +129,7 @@ async fn claim_acquires_declared_leases_and_conflict_reverts() {
 
     // Another agent pre-holds the artifact exclusively.
     let blocker_task = create_task(&h, "Blocker").await;
-    let other = taskagent_shared::AgentId::new();
+    let other = daruma_shared::AgentId::new();
     let out = h
         .state
         .work_leases
@@ -138,14 +138,14 @@ async fn claim_acquires_declared_leases_and_conflict_reverts() {
             blocker_task,
             None,
             vec!["artifact://api/users".into()],
-            taskagent_domain::LeaseMode::Exclusive,
+            daruma_domain::LeaseMode::Exclusive,
             chrono::Duration::seconds(60),
         )
         .await
         .unwrap();
     assert!(matches!(
         out,
-        taskagent_storage::work_lease_repo::ReserveOutcome::Reserved { .. }
+        daruma_storage::work_lease_repo::ReserveOutcome::Reserved { .. }
     ));
 
     // Drain: claim must revert on the lease conflict and report the holder.

@@ -4,17 +4,17 @@ import assert from "node:assert/strict";
 import {
   buildCursorDeeplink,
   buildHttpsInstallUrl,
-  buildTaskagentInstallLinks,
+  buildDarumaInstallLinks,
   decodeConfig,
-  defaultTaskagentConfig,
-  defaultTaskagentHttpConfig,
-  defaultTaskagentConfigSync,
+  defaultDarumaConfig,
+  defaultDarumaHttpConfig,
+  defaultDarumaConfigSync,
   encodeConfig,
   DEFAULT_API_URL,
 } from "../lib/deeplink.mjs";
 
 test("encodeConfig / decodeConfig round-trip", () => {
-  const cfg = { type: "stdio", command: "taskagent-mcp", env: { X: "1" } };
+  const cfg = { type: "stdio", command: "daruma-mcp", env: { X: "1" } };
   const b64 = encodeConfig(cfg);
   assert.equal(typeof b64, "string");
   assert.deepEqual(decodeConfig(b64), cfg);
@@ -26,9 +26,9 @@ test("encodeConfig rejects non-objects", () => {
 });
 
 test("buildCursorDeeplink uses the official anysphere scheme", () => {
-  const url = buildCursorDeeplink("taskagent", { command: "x" });
+  const url = buildCursorDeeplink("daruma", { command: "x" });
   assert.match(url, /^cursor:\/\/anysphere\.cursor-deeplink\/mcp\/install\?/);
-  assert.match(url, /name=taskagent/);
+  assert.match(url, /name=daruma/);
   assert.match(url, /config=/);
 });
 
@@ -38,40 +38,40 @@ test("buildCursorDeeplink rejects bad names", () => {
 });
 
 test("buildHttpsInstallUrl is a legacy alias for the official Cursor deeplink", () => {
-  const url = buildHttpsInstallUrl("taskagent", { command: "x" });
+  const url = buildHttpsInstallUrl("daruma", { command: "x" });
   assert.match(url, /^cursor:\/\/anysphere\.cursor-deeplink\/mcp\/install\?/);
 });
 
-test("defaultTaskagentConfigSync produces hosted HTTP config by default", () => {
-  const cfg = defaultTaskagentConfigSync({ apiUrl: "http://localhost:8080" });
+test("defaultDarumaConfigSync produces hosted HTTP config by default", () => {
+  const cfg = defaultDarumaConfigSync({ apiUrl: "http://localhost:8080" });
   assert.deepEqual(cfg, {
     type: "http",
     url: "http://localhost:8080/v1/mcp",
   });
 });
 
-test("defaultTaskagentConfigSync supports explicit stdio fallback", () => {
-  const cfg = defaultTaskagentConfigSync({
+test("defaultDarumaConfigSync supports explicit stdio fallback", () => {
+  const cfg = defaultDarumaConfigSync({
     transport: "stdio",
-    command: "/usr/local/bin/taskagent-mcp",
-    apiUrl: "https://taskagent.example",
+    command: "/usr/local/bin/daruma-mcp",
+    apiUrl: "https://daruma.example",
     token: "t0p",
     workspaceId: "ws-1",
   });
-  assert.equal(cfg.command, "/usr/local/bin/taskagent-mcp");
-  assert.equal(cfg.env.TASKAGENT_API_URL, "https://taskagent.example");
-  assert.equal(cfg.env.TASKAGENT_TOKEN, "t0p");
-  assert.equal(cfg.env.TASKAGENT_WORKSPACE_ID, "ws-1");
+  assert.equal(cfg.command, "/usr/local/bin/daruma-mcp");
+  assert.equal(cfg.env.DARUMA_API_URL, "https://daruma.example");
+  assert.equal(cfg.env.DARUMA_TOKEN, "t0p");
+  assert.equal(cfg.env.DARUMA_WORKSPACE_ID, "ws-1");
 });
 
-test("defaultTaskagentConfig uses remote prod preset", async () => {
-  const cfg = await defaultTaskagentConfig({ remote: "prod" });
-  assert.deepEqual(cfg, defaultTaskagentHttpConfig({ apiUrl: DEFAULT_API_URL }));
+test("defaultDarumaConfig uses remote prod preset", async () => {
+  const cfg = await defaultDarumaConfig({ remote: "prod" });
+  assert.deepEqual(cfg, defaultDarumaHttpConfig({ apiUrl: DEFAULT_API_URL }));
 });
 
-test("buildTaskagentInstallLinks returns the official Cursor deeplink", async () => {
-  const links = await buildTaskagentInstallLinks({ remote: "prod" });
-  assert.equal(links.name, "taskagent");
+test("buildDarumaInstallLinks returns the official Cursor deeplink", async () => {
+  const links = await buildDarumaInstallLinks({ remote: "prod" });
+  assert.equal(links.name, "daruma");
   assert.match(links.deeplink, /^cursor:\/\/anysphere\.cursor-deeplink\/mcp\/install/);
   assert.equal(links.httpsUrl, links.deeplink);
   const decoded = decodeConfig(

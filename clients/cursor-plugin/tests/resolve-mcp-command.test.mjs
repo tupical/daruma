@@ -10,7 +10,7 @@ import {
 } from "../lib/resolve-mcp-command.mjs";
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(join(tmpdir(), "taskagent-mcp-cmd-"));
+  const dir = await mkdtemp(join(tmpdir(), "daruma-mcp-cmd-"));
   try {
     return await fn(dir);
   } finally {
@@ -20,7 +20,7 @@ async function withTempDir(fn) {
 
 test("resolveMcpCommand keeps explicit absolute executable", async () => {
   await withTempDir(async (dir) => {
-    const bin = join(dir, "taskagent-mcp");
+    const bin = join(dir, "daruma-mcp");
     await writeFile(bin, "#!/bin/sh\nexit 0\n", "utf8");
     await chmod(bin, 0o755);
     const resolved = await resolveMcpCommand({ command: bin, cwd: dir });
@@ -34,7 +34,7 @@ test("resolveMcpCommand discovers release binary near cwd", async () => {
   await withTempDir(async (dir) => {
     const releaseDir = join(dir, "target", "release");
     await mkdir(releaseDir, { recursive: true });
-    const bin = join(releaseDir, "taskagent-mcp");
+    const bin = join(releaseDir, "daruma-mcp");
     await writeFile(bin, "#!/bin/sh\nexit 0\n", "utf8");
     await chmod(bin, 0o755);
     const resolved = await resolveMcpCommand({
@@ -50,14 +50,14 @@ test("resolveMcpCommand discovers release binary near cwd", async () => {
   });
 });
 
-test("resolveMcpCommand honours TASKAGENT_MCP_BIN", async () => {
+test("resolveMcpCommand honours DARUMA_MCP_BIN", async () => {
   await withTempDir(async (dir) => {
     const bin = join(dir, "custom-mcp");
     await writeFile(bin, "#!/bin/sh\nexit 0\n", "utf8");
     await chmod(bin, 0o755);
     const resolved = await resolveMcpCommand({
       cwd: dir,
-      env: { TASKAGENT_MCP_BIN: bin },
+      env: { DARUMA_MCP_BIN: bin },
     });
     assert.equal(resolved.command, bin);
     assert.equal(resolved.resolved, true);
@@ -67,7 +67,7 @@ test("resolveMcpCommand honours TASKAGENT_MCP_BIN", async () => {
 test("candidateMcpCommandPaths includes local bin and release dirs", async () => {
   await withTempDir(async (dir) => {
     const paths = candidateMcpCommandPaths({ cwd: dir, env: {} });
-    assert.ok(paths.includes("taskagent-mcp"));
-    assert.ok(paths.some((p) => p.endsWith("/target/release/taskagent-mcp")));
+    assert.ok(paths.includes("daruma-mcp"));
+    assert.ok(paths.some((p) => p.endsWith("/target/release/daruma-mcp")));
   });
 });

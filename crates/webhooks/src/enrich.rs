@@ -5,7 +5,7 @@
 //! The resulting key/value pairs are folded into the outbound JSON under a
 //! top-level `context` field.
 //!
-//! The trait lives in this crate rather than in `taskagent-storage` because:
+//! The trait lives in this crate rather than in `daruma-storage` because:
 //!   * the dispatcher must not depend on storage (storage already depends on
 //!     this crate via `impl WebhookStore for WebhookRepo`);
 //!   * the contract is small and stable — `apps/server` wires the concrete
@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use taskagent_events::EventEnvelope;
+use daruma_events::EventEnvelope;
 
 /// Reserved enrich keys recognised by the built-in
 /// [`EnrichmentSource`] implementation. Anything else is logged + skipped.
@@ -95,7 +95,7 @@ pub async fn build_context(
                 // Quiet by default — a key that doesn't apply to this event
                 // is a normal occurrence (e.g. `task` on a `ProjectCreated`).
                 // We only debug-log so operators can audit by enabling
-                // `taskagent_webhooks=debug` if a subscriber is missing
+                // `daruma_webhooks=debug` if a subscriber is missing
                 // expected context.
                 tracing::debug!(
                     key = %key,
@@ -116,9 +116,9 @@ pub async fn build_context(
 mod tests {
     use super::*;
     use serde_json::json;
-    use taskagent_domain::Actor;
-    use taskagent_events::Event;
-    use taskagent_shared::{ProjectId, TaskId};
+    use daruma_domain::Actor;
+    use daruma_events::Event;
+    use daruma_shared::{ProjectId, TaskId};
 
     #[derive(Default)]
     struct StubSource;

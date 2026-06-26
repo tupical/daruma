@@ -1,4 +1,4 @@
-//! `taskagent-desktop` — local-first CLI client.
+//! `daruma-desktop` — local-first CLI client.
 //!
 //! Embeds the same engine (storage + core + ai) that the server uses, so
 //! it works fully offline. A GPUI graphical client will land in a future
@@ -8,10 +8,10 @@
 //! Subcommands (all idempotent, all event-sourced):
 //!
 //! ```text
-//! taskagent list            [inbox|todo|in_progress|done]
-//! taskagent add  "<title>"  [--p0|--p1|--p2|--p3]
-//! taskagent done <id|prefix>
-//! taskagent delete <id|prefix>
+//! daruma list            [inbox|todo|in_progress|done]
+//! daruma add  "<title>"  [--p0|--p1|--p2|--p3]
+//! daruma done <id|prefix>
+//! daruma delete <id|prefix>
 //! ```
 
 mod cmds;
@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,taskagent_desktop=info"));
+        .unwrap_or_else(|_| EnvFilter::new("warn,daruma_desktop=info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -97,28 +97,28 @@ fn init_tracing() {
 
 fn print_help() {
     println!(
-        "taskagent — local-first task runtime\n\n\
+        "daruma — local-first task runtime\n\n\
          USAGE\n  \
-         taskagent <subcommand> [args]\n\n\
+         daruma <subcommand> [args]\n\n\
          SUBCOMMANDS\n  \
          list [inbox|todo|in_progress|done]   show tasks\n  \
          add  \"<title>\" [--p0..--p3]          create a task\n  \
          done <id|prefix>                     mark complete\n  \
          delete <id|prefix>                   delete a task\n  \
          sync [--limit N]                     flush offline events to server\n  \
-         discover [--timeout <secs>]          scan LAN for taskagent servers (mDNS)\n  \
-         pair <taskagent://pair?…>            pair with a server via QR/paste URL\n  \
+         discover [--timeout <secs>]          scan LAN for daruma servers (mDNS)\n  \
+         pair <daruma://pair?…>            pair with a server via QR/paste URL\n  \
          where                                print the DB path\n  \
          help                                 this message\n\n\
          ENV\n  \
-         TASKAGENT_DATA_DIR   directory for replica.sqlite (default: `.`)\n  \
-         TASKAGENT_API_URL    server base for `sync` (default: http://localhost:8080)\n  \
-         TASKAGENT_TOKEN      bearer token for `sync`\n  \
+         DARUMA_DATA_DIR   directory for replica.sqlite (default: `.`)\n  \
+         DARUMA_API_URL    server base for `sync` (default: http://localhost:8080)\n  \
+         DARUMA_TOKEN      bearer token for `sync`\n  \
          OPENAI_API_KEY       required for `ai *` subcommands\n  \
          OPENAI_MODEL         model id (default: gpt-4.1-mini)\n  \
-         TASKAGENT_MDNS_DISABLE  set to disable mDNS advertisement on the server\n  \
-         TASKAGENT_HOSTNAME   override hostname in mDNS + TLS cert (server)\n  \
-         TASKAGENT_TLS_PORT   TLS listen port (server, default: 8443)\n  \
+         DARUMA_MDNS_DISABLE  set to disable mDNS advertisement on the server\n  \
+         DARUMA_HOSTNAME   override hostname in mDNS + TLS cert (server)\n  \
+         DARUMA_TLS_PORT   TLS listen port (server, default: 8443)\n  \
          RUST_LOG             tracing filter\n"
     );
 }

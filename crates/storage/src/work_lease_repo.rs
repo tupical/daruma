@@ -10,8 +10,8 @@
 
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
-use taskagent_shared::{AgentId, CoreError, ProjectId, Result, TaskId, WorkLeaseId};
+use daruma_domain::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
+use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, WorkLeaseId};
 
 /// Outcome of an atomic [`WorkLeaseRepo::try_reserve`] attempt.
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ pub enum ReserveOutcome {
     Reserved { leases: Vec<WorkLease> },
     /// A requested path overlaps a live lease held by another agent. Carries the
     /// holder + the task they're working so the requester can negotiate (e.g.
-    /// `taskagent_signal_send`) or back off to a different task.
+    /// `daruma_signal_send`) or back off to a different task.
     Conflict {
         path: String,
         holder: AgentId,

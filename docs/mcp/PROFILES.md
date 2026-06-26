@@ -1,6 +1,6 @@
 # MCP tool-surface profiles
 
-TaskAgent's MCP catalogue grew API-first to ~94 tools. Most agent sessions
+Daruma's MCP catalogue grew API-first to ~94 tools. Most agent sessions
 use a dozen of them, and a 94-tool `tools/list` burns context before the
 user's request is even read. Profiles split the surface:
 
@@ -15,9 +15,9 @@ user's request is even read. Profiles split the surface:
 
 Resolution order (first match wins):
 
-1. **Explicit override** — `taskagent mcp --profile full` (stdio) or
+1. **Explicit override** — `daruma mcp --profile full` (stdio) or
    `POST /v1/mcp?profile=full` (HTTP).
-2. **Environment** — `TASKAGENT_MCP_PROFILE=default|full` (aliases:
+2. **Environment** — `DARUMA_MCP_PROFILE=default|full` (aliases:
    `core` → default, `all`/`compat` → full).
 3. **Built-in default** — `default`.
 
@@ -34,9 +34,9 @@ AI ops, bulk ops), pin the full surface explicitly:
 
 ```bash
 # stdio (Claude Code, Codex, …)
-claude mcp add taskagent -- taskagent mcp --profile full
+claude mcp add daruma -- daruma mcp --profile full
 # or
-export TASKAGENT_MCP_PROFILE=full
+export DARUMA_MCP_PROFILE=full
 ```
 
 ```text
@@ -48,7 +48,7 @@ Guarantees:
 
 - `full` keeps every tool name, input schema, and response shape unchanged.
 - No tool was renamed or removed as part of profiles.
-- There is no single generic `taskagent_call` wrapper and none is planned —
+- There is no single generic `daruma_call` wrapper and none is planned —
   tools stay individually addressable (non-goal).
 
 ## Default profile composition

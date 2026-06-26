@@ -5,9 +5,9 @@
 
 use chrono::DateTime;
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{Actor, Relation, RelationKind};
-use taskagent_events::Event;
-use taskagent_shared::{CoreError, RelationId, Result, TaskId, Timestamp};
+use daruma_domain::{Actor, Relation, RelationKind};
+use daruma_events::Event;
+use daruma_shared::{CoreError, RelationId, Result, TaskId, Timestamp};
 
 /// Read/write access to the `task_relations` table.
 pub struct RelationRepo {
@@ -206,7 +206,7 @@ impl RelationRepo {
     /// Apply an event to the relation projection.
     ///
     /// Currently a no-op placeholder.  `TaskLinked` / `TaskUnlinked` wiring
-    /// is added in W2 once those event variants exist in `taskagent-events`.
+    /// is added in W2 once those event variants exist in `daruma-events`.
     // wired in W2
     pub async fn apply_event(&self, _event: &Event) {}
 }
@@ -284,8 +284,8 @@ fn row_to_relation(row: &sqlx::sqlite::SqliteRow) -> Result<Relation> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::Actor;
-    use taskagent_shared::time;
+    use daruma_domain::Actor;
+    use daruma_shared::time;
 
     async fn make_repo() -> RelationRepo {
         let db = Db::memory().await.unwrap();

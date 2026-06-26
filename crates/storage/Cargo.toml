@@ -1,16 +1,16 @@
 [package]
-name = "taskagent-storage"
+name = "daruma-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-taskagent-shared    = { workspace = true }
-taskagent-domain    = { workspace = true }
-taskagent-events    = { workspace = true, features = ["runtime"] }
-taskagent-auth      = { workspace = true }
-taskagent-webhooks  = { workspace = true }
+daruma-shared    = { workspace = true }
+daruma-domain    = { workspace = true }
+daruma-events    = { workspace = true, features = ["runtime"] }
+daruma-auth      = { workspace = true }
+daruma-webhooks  = { workspace = true }
 sqlx        = { workspace = true }
 tokio       = { workspace = true }
 async-trait = { workspace = true }

@@ -1,4 +1,4 @@
-//! Axum-compatible error wrapper for [`taskagent_shared::CoreError`].
+//! Axum-compatible error wrapper for [`daruma_shared::CoreError`].
 
 use axum::{
     http::StatusCode,
@@ -6,8 +6,8 @@ use axum::{
     Json,
 };
 use serde_json::json;
-use taskagent_auth::MissingCapability;
-use taskagent_shared::CoreError;
+use daruma_auth::MissingCapability;
+use daruma_shared::CoreError;
 
 /// HTTP error response produced by route handlers.
 pub struct ApiError(pub CoreError);

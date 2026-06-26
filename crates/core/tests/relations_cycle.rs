@@ -1,9 +1,9 @@
 //! AC-5: Cycle detection tests for `detect_cycle` (§3.2 W2.1).
 
-use taskagent_core::relation_enforcement::detect_cycle;
-use taskagent_domain::{Actor, Relation, RelationKind};
-use taskagent_shared::{time, CoreError, RelationId, TaskId};
-use taskagent_storage::{Db, RelationRepo};
+use daruma_core::relation_enforcement::detect_cycle;
+use daruma_domain::{Actor, Relation, RelationKind};
+use daruma_shared::{time, CoreError, RelationId, TaskId};
+use daruma_storage::{Db, RelationRepo};
 
 async fn make_repo() -> RelationRepo {
     let db = Db::memory().await.unwrap();

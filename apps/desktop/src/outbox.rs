@@ -2,8 +2,8 @@
 
 #![allow(dead_code)] // Wired into local_executor/reconnect flush in the next Phase 2 block.
 
-use taskagent_core::embed::{Db, EventEnvelope};
-use taskagent_shared::{CoreError, DeviceId, Result};
+use daruma_core::embed::{Db, EventEnvelope};
+use daruma_shared::{CoreError, DeviceId, Result};
 
 #[derive(Clone, Debug)]
 pub struct OutboxEntry {
@@ -141,8 +141,8 @@ impl TryFrom<OutboxRow> for OutboxEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_core::embed::{Event, EventEnvelope};
-    use taskagent_domain::{Actor, NewTask};
+    use daruma_core::embed::{Event, EventEnvelope};
+    use daruma_domain::{Actor, NewTask};
 
     #[tokio::test]
     async fn enqueue_orders_and_marks_pending_events() {

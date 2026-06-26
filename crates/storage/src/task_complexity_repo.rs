@@ -2,15 +2,15 @@
 //!
 //! Unlike most projections in this crate, complexity hints are NOT
 //! event-sourced. They are direct output of one batch LLM call invoked
-//! by `taskagent_ai_analyze_complexity { plan_id }`; the handler simply
+//! by `daruma_ai_analyze_complexity { plan_id }`; the handler simply
 //! upserts the rows. Re-running analysis overwrites the previous row
 //! per `task_id` (latest wins); `batch_id` lets callers correlate every
 //! row produced by the same run.
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::ComplexityHint;
-use taskagent_shared::{CoreError, PlanId, Result, TaskId};
+use daruma_domain::ComplexityHint;
+use daruma_shared::{CoreError, PlanId, Result, TaskId};
 
 /// Read/write access to the `task_complexity_hints` projection table.
 pub struct TaskComplexityRepo {
@@ -172,7 +172,7 @@ fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_shared::{time, TaskId};
+    use daruma_shared::{time, TaskId};
 
     async fn make_repo() -> (Db, TaskComplexityRepo) {
         let db = Db::memory().await.unwrap();

@@ -1,11 +1,11 @@
 ---
-description: Capture a durable lesson from the current session as a taskagent comment.
+description: Capture a durable lesson from the current session as a daruma comment.
 ---
 
-The user invoked `/taskagent-claude:capture`.
+The user invoked `/daruma-claude:capture`.
 
 Record a reusable lesson (command, invariant, bug pattern, file convention)
-discovered during this session. The lesson is stored as a `taskagent_comment`
+discovered during this session. The lesson is stored as a `daruma_comment`
 with a `lesson:` prefix on the active or most-relevant task.
 
 ## When to capture
@@ -19,9 +19,9 @@ would save time in a future session. Skip for:
 ## Steps
 
 1. **Identify the target task.**
-   - Check `TASKAGENT_ACTIVE_TASK` environment variable first (set by
-     the agent when it claims a task via `taskagent_plan_next_task`).
-   - If absent: `taskagent_workspace_info` → `taskagent_list` with
+   - Check `DARUMA_ACTIVE_TASK` environment variable first (set by
+     the agent when it claims a task via `daruma_plan_next_task`).
+   - If absent: `daruma_workspace_info` → `daruma_list` with
      `status = ["in_progress"]`, pick the most-recently updated task.
    - If still none: ask the user which task to attach the lesson to.
 
@@ -33,7 +33,7 @@ would save time in a future session. Skip for:
 
 3. **Post the comment:**
    ```
-   taskagent_comment
+   daruma_comment
      task_id = <task_id>
      body    = "lesson: <short durable lesson — one paragraph max>"
    ```

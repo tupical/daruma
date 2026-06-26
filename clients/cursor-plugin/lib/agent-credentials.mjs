@@ -8,7 +8,7 @@ import {
   urlForApiPreset,
 } from "./api-urls.mjs";
 
-const AGENT_DIR_NAME = "taskagent";
+const AGENT_DIR_NAME = "daruma";
 const CREDENTIALS_FILE = "credentials.json";
 const MODE_REMOTE = "remote";
 const MODE_CLOUD = "cloud";
@@ -28,9 +28,9 @@ function isSelfHostUrl(url) {
   }
 }
 
-/** Canonical agent data root (`~/.agents/taskagent` or `%USERPROFILE%\.agents\taskagent`). */
+/** Canonical agent data root (`~/.agents/daruma` or `%USERPROFILE%\.agents\daruma`). */
 export function agentDirRoot() {
-  const override = process.env.TASKAGENT_AGENT_DIR?.trim();
+  const override = process.env.DARUMA_AGENT_DIR?.trim();
   if (override) return override.replace(/\/$/, "");
   if (process.platform === "win32") {
     const base =
@@ -44,7 +44,7 @@ export function credentialsPath() {
   return join(agentDirRoot(), CREDENTIALS_FILE);
 }
 
-/** Retired XDG path (`~/.config/taskagent/credentials.json`). */
+/** Retired XDG path (`~/.config/daruma/credentials.json`). */
 export function legacyCredentialsPath() {
   if (process.platform === "win32") {
     const base = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
@@ -65,7 +65,7 @@ async function fileExists(path) {
 }
 
 /**
- * On first use: copy legacy `~/.config/taskagent/credentials.json` into agent dir.
+ * On first use: copy legacy `~/.config/daruma/credentials.json` into agent dir.
  * @returns {Promise<boolean>} true if migration ran
  */
 export async function migrateLegacyCredentialsIfNeeded() {
@@ -168,7 +168,7 @@ export function resolveProfileForInstall(creds, overrides = {}) {
 }
 
 /**
- * Build MCP stdio `env` for taskagent-mcp from stored credentials (after remote pair).
+ * Build MCP stdio `env` for daruma-mcp from stored credentials (after remote pair).
  * @param {{ apiUrl?: string, token?: string, workspaceId?: string, remote?: import("./api-urls.mjs").ApiPreset }} [overrides]
  */
 export async function resolveMcpEnvFromCredentials(overrides = {}) {
@@ -180,37 +180,37 @@ export async function resolveMcpEnvFromCredentials(overrides = {}) {
     presetUrl;
 
   if (explicitUrl) {
-    env.TASKAGENT_API_URL = explicitUrl;
+    env.DARUMA_API_URL = explicitUrl;
   }
 
   if (overrides.token) {
-    env.TASKAGENT_TOKEN = overrides.token;
+    env.DARUMA_TOKEN = overrides.token;
   }
   if (overrides.workspaceId) {
-    env.TASKAGENT_WORKSPACE_ID = overrides.workspaceId;
+    env.DARUMA_WORKSPACE_ID = overrides.workspaceId;
   }
 
   const creds = await loadCredentials();
   const profile = creds ? resolveProfileForInstall(creds, overrides) : null;
   if (!profile?.token) {
-    if (!env.TASKAGENT_API_URL) {
-      env.TASKAGENT_API_URL = SELFHOST_URL_DEFAULT;
+    if (!env.DARUMA_API_URL) {
+      env.DARUMA_API_URL = SELFHOST_URL_DEFAULT;
     }
     return env;
   }
 
-  if (!env.TASKAGENT_API_URL) {
-    env.TASKAGENT_API_URL = profileServerUrl(profile);
+  if (!env.DARUMA_API_URL) {
+    env.DARUMA_API_URL = profileServerUrl(profile);
   }
-  if (!env.TASKAGENT_TOKEN) {
-    env.TASKAGENT_TOKEN = profile.token;
+  if (!env.DARUMA_TOKEN) {
+    env.DARUMA_TOKEN = profile.token;
   }
   if (
-    !env.TASKAGENT_WORKSPACE_ID &&
+    !env.DARUMA_WORKSPACE_ID &&
     isRemoteMode(profile.mode) &&
     profile.workspace_id
   ) {
-    env.TASKAGENT_WORKSPACE_ID = profile.workspace_id;
+    env.DARUMA_WORKSPACE_ID = profile.workspace_id;
   }
 
   return env;
@@ -223,8 +223,8 @@ export async function resolveHttpProbeUrl(overrides = {}) {
   if (presetUrl) return presetUrl;
 
   const fromEnv =
-    process.env.TASKAGENT_API_URL ??
-    process.env.TASKAGENT_BASE_URL;
+    process.env.DARUMA_API_URL ??
+    process.env.DARUMA_BASE_URL;
   if (fromEnv?.trim()) return fromEnv.trim().replace(/\/$/, "");
 
   const creds = await loadCredentials();

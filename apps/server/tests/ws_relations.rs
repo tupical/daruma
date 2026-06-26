@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use taskagent_auth::{
+use daruma_auth::{
     generate, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope,
     TokenStore,
 };
-use taskagent_shared::AgentId;
+use daruma_shared::AgentId;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;

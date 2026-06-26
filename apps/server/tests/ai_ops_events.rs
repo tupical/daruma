@@ -1,8 +1,8 @@
 //! §3.8.12 — AI operation progress is pushed as typed events on
 //! `Channel::AiOps` (started → phase → completed), not polled.
 
-use taskagent_events::{Channel, Event};
-use taskagent_shared::AiOpId;
+use daruma_events::{Channel, Event};
+use daruma_shared::AiOpId;
 
 mod common;
 use common::test_app;

@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
 use serde_json::{json, Value};
-use taskagent_mcp::tools::call_tool;
-use taskagent_mcp::{tool_definitions, ApiClient};
+use daruma_mcp::tools::call_tool;
+use daruma_mcp::{tool_definitions, ApiClient};
 
 #[derive(Debug, Clone)]
 struct Captured {
@@ -58,14 +58,14 @@ fn catalogue_contains_session_artifact_tools() {
         .iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    assert!(names.contains(&"taskagent_session_artifact"));
-    assert!(names.contains(&"taskagent_session_artifacts_list"));
+    assert!(names.contains(&"daruma_session_artifact"));
+    assert!(names.contains(&"daruma_session_artifacts_list"));
 }
 
 #[tokio::test]
 async fn session_artifact_posts_to_session_artifacts_endpoint() {
     let captured = call_via_mock(
-        "taskagent_session_artifact",
+        "daruma_session_artifact",
         json!({
             "session_id": "ags_123",
             "kind": "file",
@@ -85,7 +85,7 @@ async fn session_artifact_posts_to_session_artifacts_endpoint() {
 #[tokio::test]
 async fn session_artifacts_list_gets_session_artifacts_endpoint() {
     let captured =
-        call_via_mock("taskagent_session_artifacts_list", json!({"id": "ags_123"})).await;
+        call_via_mock("daruma_session_artifacts_list", json!({"id": "ags_123"})).await;
 
     assert_eq!(captured.method, "GET");
     assert_eq!(captured.path, "/v1/sessions/ags_123/artifacts");

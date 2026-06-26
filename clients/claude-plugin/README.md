@@ -6,7 +6,7 @@
   <br/>
   ◯ ─────────── ◯
   <br/><br/>
-  <strong>taskagent-claude</strong>
+  <strong>daruma-claude</strong>
   <br/>
   <sub>tupical/daruma × oh-my-claudecode</sub>
   <br/><br/>
@@ -21,15 +21,15 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/taskagent-claude"><img src="https://img.shields.io/npm/v/taskagent-claude?color=blue" alt="npm"></a>
-  <a href="https://www.npmjs.com/package/taskagent-claude"><img src="https://img.shields.io/npm/dm/taskagent-claude" alt="downloads"></a>
-  <img src="https://img.shields.io/node/v/taskagent-claude" alt="node">
+  <a href="https://www.npmjs.com/package/daruma-claude"><img src="https://img.shields.io/npm/v/daruma-claude?color=blue" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/daruma-claude"><img src="https://img.shields.io/npm/dm/daruma-claude" alt="downloads"></a>
+  <img src="https://img.shields.io/node/v/daruma-claude" alt="node">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license"></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#why-taskagent-claude">Why</a> ·
+  <a href="#why-daruma-claude">Why</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#the-caveat">Caveat</a> ·
@@ -44,12 +44,12 @@
 
 **One shell command drives the full `tupical/daruma` pipeline — parse a task, optionally AI-decompose it into a plan, then execute every eligible task with parallel oh-my-claudecode `/team` agents. No upstream forks, no glue prompts, no copy-paste between sessions.**
 
-`taskagent-claude` is a thin Claude Code plugin plus an npm CLI that composes two existing projects:
+`daruma-claude` is a thin Claude Code plugin plus an npm CLI that composes two existing projects:
 
 - [**tupical/daruma**](https://github.com/tupical/daruma) — owns **projects / tasks / plans / AI decomposition** (the MCP-driven workflow store).
 - [**oh-my-claudecode**](https://github.com/Yeachan-Heo/oh-my-claudecode) — owns **task execution**, replaced with `omc team` so each task runs on parallel specialized agents instead of one sequential pass.
 
-`taskagent-claude` adds **nothing of its own**. It detects both, points the user at the official install commands when they're missing, and orchestrates them.
+`daruma-claude` adds **nothing of its own**. It detects both, points the user at the official install commands when they're missing, and orchestrates them.
 
 ---
 
@@ -58,16 +58,16 @@
 > **On Windows: run from WSL.** `omc team` relies on a Unix-y tmux + bash environment. On Windows-native PowerShell + Git Bash tmux workers spawn but their I/O bleeds into the leader pane and the session dies when tmux exits. From WSL it works as designed.
 
 ```bash
-# 1. taskagent — build from source (Rust workspace)
+# 1. daruma — build from source (Rust workspace)
 git clone https://github.com/tupical/daruma.git
 cd daruma
-cargo build --release -p taskagent-server -p taskagent-cli
+cargo build --release -p daruma-server -p daruma-cli
 
 # 2. start the HTTP server (keep this running)
-./target/release/taskagent-server
+./target/release/daruma-server
 
 # 3. register the MCP stdio shim with Claude Code
-claude mcp add taskagent -- /abs/path/taskagent/target/release/taskagent-mcp
+claude mcp add daruma -- /abs/path/daruma/target/release/daruma-mcp
 
 # 4. oh-my-claudecode (the `omc team` executor)
 npm i -g oh-my-claude-sisyphus@latest
@@ -75,30 +75,30 @@ omc setup
 # enable native teams in ~/.claude/settings.json:
 #   { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
 
-# 5. taskagent-claude (the glue + CLI)
-npm i -g taskagent-claude
+# 5. daruma-claude (the glue + CLI)
+npm i -g daruma-claude
 
 # 6. verify
-taskagent-claude doctor          # should print READY
+daruma-claude doctor          # should print READY
 
 # 7. go
-taskagent-claude start "refactor the auth module to use OAuth2 with PKCE"
+daruma-claude start "refactor the auth module to use OAuth2 with PKCE"
 ```
 
-That's the whole workflow. Inside Claude Code, the equivalent slash commands are `/taskagent-claude:start <task>`, `/taskagent-claude:doctor`, `/taskagent-claude:setup`.
+That's the whole workflow. Inside Claude Code, the equivalent slash commands are `/daruma-claude:start <task>`, `/daruma-claude:doctor`, `/daruma-claude:setup`.
 
-> **Requirements.** Node.js ≥ 20, Rust toolchain (for taskagent build), Claude Code on `PATH`.
+> **Requirements.** Node.js ≥ 20, Rust toolchain (for daruma build), Claude Code on `PATH`.
 
 ---
 
-## Why taskagent-claude
+## Why daruma-claude
 
-|                                          | Without `taskagent-claude`                                  | With `taskagent-claude`                                                            |
+|                                          | Without `daruma-claude`                                  | With `daruma-claude`                                                            |
 | ---------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| **Driving taskagent**                    | Hand-call MCP tools (`workspace_info`, `create`, `plan_*`)  | One `taskagent-claude start "<task>"` walks the whole pipeline                     |
-| **Decomposition**                        | Optional, opt-in via `--plan` flag                          | `taskagent_ai_decompose` + `plan_create` + `plan_add_task` in one go               |
+| **Driving daruma**                    | Hand-call MCP tools (`workspace_info`, `create`, `plan_*`)  | One `daruma-claude start "<task>"` walks the whole pipeline                     |
+| **Decomposition**                        | Optional, opt-in via `--plan` flag                          | `daruma_ai_decompose` + `plan_create` + `plan_add_task` in one go               |
 | **Execute step**                         | One sequential agent per task                               | Each task runs on **N parallel agents** via `omc team`                             |
-| **Setup**                                | Three installs + manual orchestration                       | One `taskagent-claude start "<task>"`                                              |
+| **Setup**                                | Three installs + manual orchestration                       | One `daruma-claude start "<task>"`                                              |
 
 ---
 
@@ -106,26 +106,26 @@ That's the whole workflow. Inside Claude Code, the equivalent slash commands are
 
 ```
 ┌──────────────────────────────┐
-│ taskagent-claude start <T>   │ shell
+│ daruma-claude start <T>   │ shell
 └──────────────┬───────────────┘
-               │ spawn taskagent-mcp (stdio JSON-RPC)
+               │ spawn daruma-mcp (stdio JSON-RPC)
                ▼
 ┌──────────────────────────────────────────────────┐
 │ 1. parse        → derive {title, description}    │
 │ 2. project      → workspace_info / project_list  │
-│ 3. seed         → taskagent_create(root task)    │
-│ 4. [--plan]     → taskagent_ai_decompose         │
+│ 3. seed         → daruma_create(root task)    │
+│ 4. [--plan]     → daruma_ai_decompose         │
 │                   + plan_create + plan_add_task  │
 │ 5. execute loop                                  │
 │      a. plan_next_task (or just the root)        │
 │      b. omc team N:claude "<title>\n<desc>"      │
-│      c. taskagent_comment(artifact)              │
+│      c. daruma_comment(artifact)              │
 │      d. complete / retry up to --max-retries     │
 │ 6. report      → plan_get progress + summaries   │
 └──────────────────────────────────────────────────┘
 ```
 
-`taskagent-claude` never opens a nested Claude Code session at the orchestrator level — `omc team` workers are the only Claude Code panes.
+`daruma-claude` never opens a nested Claude Code session at the orchestrator level — `omc team` workers are the only Claude Code panes.
 
 ---
 
@@ -133,21 +133,21 @@ That's the whole workflow. Inside Claude Code, the equivalent slash commands are
 
 | Shell                                              | Effect                                                                |
 | -------------------------------------------------- | --------------------------------------------------------------------- |
-| `taskagent-claude start "<task>"`                  | Full pipeline (parse → project → seed → [plan] → execute → report)    |
-| `taskagent-claude doctor`                          | Detect both deps + MCP tool / `omc team` readiness                    |
-| `taskagent-claude setup`                           | Print install hints for missing dependencies                          |
-| `taskagent-claude update`                          | Self-update + omc update; print upgrade hint for taskagent            |
-| `taskagent-claude platform`                        | Print execution mode (`omc-team` or `task-fallback`)                  |
-| `taskagent-claude --version` / `--help`            |                                                                       |
+| `daruma-claude start "<task>"`                  | Full pipeline (parse → project → seed → [plan] → execute → report)    |
+| `daruma-claude doctor`                          | Detect both deps + MCP tool / `omc team` readiness                    |
+| `daruma-claude setup`                           | Print install hints for missing dependencies                          |
+| `daruma-claude update`                          | Self-update + omc update; print upgrade hint for daruma            |
+| `daruma-claude platform`                        | Print execution mode (`omc-team` or `task-fallback`)                  |
+| `daruma-claude --version` / `--help`            |                                                                       |
 
 Inside a Claude Code REPL session:
 
 | Slash                                  | Effect                              |
 | -------------------------------------- | ----------------------------------- |
-| `/taskagent-claude:start <task>`       | Same as `taskagent-claude start`    |
-| `/taskagent-claude:doctor`             | Same as `taskagent-claude doctor`   |
-| `/taskagent-claude:setup`              | Same as `taskagent-claude setup`    |
-| `/taskagent-claude:branch-tasks`       | Show tasks linked to the current git branch |
+| `/daruma-claude:start <task>`       | Same as `daruma-claude start`    |
+| `/daruma-claude:doctor`             | Same as `daruma-claude doctor`   |
+| `/daruma-claude:setup`              | Same as `daruma-claude setup`    |
+| `/daruma-claude:branch-tasks`       | Show tasks linked to the current git branch |
 
 Bundled skills:
 
@@ -155,7 +155,7 @@ Bundled skills:
 | ----- | ------ |
 | `branch-tasks` | Find tasks linked to the current git branch through `branch:` comments. |
 | `lesson-capture` | Save a durable reusable lesson as a `lesson:` task comment. |
-| `lesson-recall` | Search captured lessons through `taskagent_lesson_recall`. |
+| `lesson-recall` | Search captured lessons through `daruma_lesson_recall`. |
 
 ---
 
@@ -166,7 +166,7 @@ Bundled skills:
 | `--workers N`              | Parallel agents per `omc team` invocation. Integer 1-20. Default `3`.                                                 |
 | `--max-retries M`          | Retries after the first attempt for each task (total attempts = `M + 1`). Default `2`.                                |
 | `--agent claude\|codex\|gemini` | Agent type used for `omc team` workers. Default `claude`.                                                        |
-| `--plan`                   | AI-decompose the root task into subtasks via `taskagent_ai_decompose`, then execute each subtask. See [Caveat](#the-caveat). |
+| `--plan`                   | AI-decompose the root task into subtasks via `daruma_ai_decompose`, then execute each subtask. See [Caveat](#the-caveat). |
 | `--project ID`             | Override default project resolution (workspace info / cwd basename).                                                  |
 | `--yes` / `-y`             | Skip y/n confirmations (implied when stdin is not a TTY).                                                             |
 
@@ -174,10 +174,10 @@ Bundled skills:
 
 ## The caveat
 
-AI decomposition (`--plan`) requires `OPENAI_API_KEY` set on the **taskagent server**. Without it, `taskagent_ai_decompose` returns `502 ai_unavailable` and `taskagent-claude` silently falls back to single-task execution on the root task. To use real decomposition, export the key before starting the server:
+AI decomposition (`--plan`) requires `OPENAI_API_KEY` set on the **daruma server**. Without it, `daruma_ai_decompose` returns `502 ai_unavailable` and `daruma-claude` silently falls back to single-task execution on the root task. To use real decomposition, export the key before starting the server:
 
 ```bash
-OPENAI_API_KEY=sk-... ./target/release/taskagent-server
+OPENAI_API_KEY=sk-... ./target/release/daruma-server
 ```
 
 ---
@@ -185,9 +185,9 @@ OPENAI_API_KEY=sk-... ./target/release/taskagent-server
 ## Limitations
 
 - Single fixed role: `--agent` selects one role for all workers; mixed roles (`1:planner + 2:executor + 1:verifier`) are TODO.
-- Artifact capture from `omc team` relies on text summaries written as taskagent comments — not yet structured.
-- No `taskagent-claude cancel`. Use the `cancelomc` keyword or interrupt the shell.
-- `taskagent-claude doctor` only probes the shell it's run from. On a Windows host run it from inside WSL.
+- Artifact capture from `omc team` relies on text summaries written as daruma comments — not yet structured.
+- No `daruma-claude cancel`. Use the `cancelomc` keyword or interrupt the shell.
+- `daruma-claude doctor` only probes the shell it's run from. On a Windows host run it from inside WSL.
 - Plan-mode retries reset task status to `todo` and re-execute — they do **not** mutate the plan (no re-decomposition on repeated failure in v1).
 
 ---
@@ -197,15 +197,15 @@ OPENAI_API_KEY=sk-... ./target/release/taskagent-server
 ```text
 .
 ├── .claude-plugin/plugin.json          # Claude Code plugin manifest
-├── package.json                        # npm package + `taskagent-claude` bin
-├── bin/taskagent-claude.mjs            # CLI entry point
+├── package.json                        # npm package + `daruma-claude` bin
+├── bin/daruma-claude.mjs            # CLI entry point
 ├── lib/
 │   ├── detect.mjs                      # cross-platform dependency detection
-│   ├── orchestrator.mjs                # taskagent pipeline driver
-│   ├── mcp-client.mjs                  # stdio JSON-RPC client for taskagent-mcp
+│   ├── orchestrator.mjs                # daruma pipeline driver
+│   ├── mcp-client.mjs                  # stdio JSON-RPC client for daruma-mcp
 │   ├── omc-team-runner.mjs             # spawns `omc team` per task
 │   └── update.mjs                      # self-update via npm registry
-├── commands/                           # /taskagent-claude:{start,doctor,setup}
+├── commands/                           # /daruma-claude:{start,doctor,setup}
 └── skills/                             # the actual contracts
     ├── start/SKILL.md                  # parse → project → seed → [plan] → execute
     ├── doctor/SKILL.md                 # readiness contract
@@ -220,9 +220,9 @@ OPENAI_API_KEY=sk-... ./target/release/taskagent-server
 ## Updates
 
 ```bash
-taskagent-claude update                                  # taskagent-claude + omc
-cd /path/to/taskagent && git pull \
-  && cargo build --release -p taskagent-server -p taskagent-cli   # taskagent
+daruma-claude update                                  # daruma-claude + omc
+cd /path/to/daruma && git pull \
+  && cargo build --release -p daruma-server -p daruma-cli   # daruma
 npm i -g oh-my-claude-sisyphus@latest                    # oh-my-claudecode (manual)
 ```
 
@@ -249,7 +249,7 @@ This bumps `package.json`, creates a `vX.Y.Z` git tag, and pushes both. The work
 2. Publishes to npm with `--provenance` (signed attestation).
 3. Creates a GitHub Release with auto-generated notes.
 
-Auth uses npm **Trusted Publishing** (OIDC). One-time setup: on npmjs.com → `taskagent-claude` → Settings → Trusted Publishers → add GitHub Actions with org=`tupical`, repo=`taskagent-claude`, workflow=`publish.yml`. No secrets are stored in GitHub.
+Auth uses npm **Trusted Publishing** (OIDC). One-time setup: on npmjs.com → `daruma-claude` → Settings → Trusted Publishers → add GitHub Actions with org=`tupical`, repo=`daruma-claude`, workflow=`publish.yml`. No secrets are stored in GitHub.
 
 ## License
 

@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use taskagent_domain::{
+use daruma_domain::{
     CanStart, CanStartBlocker, PlanFanoutWave, PlanGraph, PlanGraphEdge, PlanGraphNode,
     RelationKind, Status,
 };
-use taskagent_shared::{CoreError, PlanId, Result, TaskId};
-use taskagent_storage::{PlanRepo, RelationRepo, TaskRepo};
+use daruma_shared::{CoreError, PlanId, Result, TaskId};
+use daruma_storage::{PlanRepo, RelationRepo, TaskRepo};
 
 pub async fn plan_graph(
     plans: &PlanRepo,
@@ -201,7 +201,7 @@ async fn ensure_plan_exists(plans: &PlanRepo, plan_id: PlanId) -> Result<()> {
 async fn load_tasks(
     tasks: &TaskRepo,
     task_ids: impl IntoIterator<Item = TaskId>,
-) -> Result<HashMap<TaskId, taskagent_domain::Task>> {
+) -> Result<HashMap<TaskId, daruma_domain::Task>> {
     let ids: Vec<TaskId> = task_ids.into_iter().collect();
     if ids.is_empty() {
         return Ok(HashMap::new());

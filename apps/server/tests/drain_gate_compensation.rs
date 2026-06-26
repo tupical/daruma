@@ -14,11 +14,11 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use serde_json::Value;
-use taskagent_auth::{Capabilities, Capability, ProjectFilter};
-use taskagent_core::lifecycle_gate::{
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
+use daruma_core::lifecycle_gate::{
     GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
 };
-use taskagent_domain::Actor;
+use daruma_domain::Actor;
 use tower::ServiceExt;
 
 mod common;
@@ -36,7 +36,7 @@ impl LifecycleGate for ToggleGate {
         _actor: &Actor,
         check: &GateCheck,
         _gate_override: &GateOverride,
-    ) -> taskagent_shared::Result<GateDecision> {
+    ) -> daruma_shared::Result<GateDecision> {
         if check.trigger == TriggerEvent::TaskBeforeStart
             && self.block_before_start.load(Ordering::SeqCst)
         {

@@ -1,4 +1,4 @@
-//! mDNS service advertisement for `_taskagent._tcp.local.`
+//! mDNS service advertisement for `_daruma._tcp.local.`
 //!
 //! Wraps [`mdns_sd`] to broadcast the server's presence on the local network
 //! with TXT records that carry enough metadata for a client to initiate
@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 
 /// Service type advertised on the LAN.
-pub const SERVICE_TYPE: &str = "_taskagent._tcp.local.";
+pub const SERVICE_TYPE: &str = "_daruma._tcp.local.";
 
 /// Handle to an active mDNS advertisement.  Drop to stop advertising.
 pub struct MdnsAdvertiser {
@@ -29,7 +29,7 @@ pub struct MdnsAdvertiser {
 }
 
 impl MdnsAdvertiser {
-    /// Start advertising `_taskagent._tcp` on the local network.
+    /// Start advertising `_daruma._tcp` on the local network.
     ///
     /// # Parameters
     ///
@@ -97,8 +97,8 @@ mod tests {
 
         let result = ServiceInfo::new(
             SERVICE_TYPE,
-            "taskagent-test",
-            "taskagent-test.local.",
+            "daruma-test",
+            "daruma-test.local.",
             "",
             8443u16,
             props,

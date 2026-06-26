@@ -12,15 +12,15 @@
 
 use std::sync::Arc;
 
-use taskagent_core::rule_engine::RuleEngineGate;
-use taskagent_core::{Command, CommandHandler};
-use taskagent_domain::{
+use daruma_core::rule_engine::RuleEngineGate;
+use daruma_core::{Command, CommandHandler};
+use daruma_domain::{
     Actor, EvidenceKind, NewEvidence, NewPlan, NewRule, PlanStatus, Requirement, Rule, RuleMode,
     RuleScope, RuleTrigger, Status,
 };
-use taskagent_events::{Event, EventBus, EventStore};
-use taskagent_shared::{CoreError, PlanId, ProjectId, TaskId};
-use taskagent_storage::{
+use daruma_events::{Event, EventBus, EventStore};
+use daruma_shared::{CoreError, PlanId, ProjectId, TaskId};
+use daruma_storage::{
     ActivityRepo, CommentRepo, Db, EvidenceRepo, PlanRepo, ProjectRepo, RuleRepo, SqliteEventStore,
     TaskRepo,
 };
@@ -131,7 +131,7 @@ async fn create_task(stack: &Stack, title: &str) -> TaskId {
         .handler
         .handle(
             Command::CreateTask {
-                task: taskagent_domain::NewTask::new(title),
+                task: daruma_domain::NewTask::new(title),
             },
             Actor::user(),
         )

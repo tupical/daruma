@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
 use serde_json::json;
-use taskagent_mcp::tools::call_tool;
-use taskagent_mcp::ApiClient;
+use daruma_mcp::tools::call_tool;
+use daruma_mcp::ApiClient;
 
 #[derive(Debug, Clone)]
 struct Captured {
@@ -28,15 +28,15 @@ fn recording_router(capture: Arc<Mutex<Vec<Captured>>>) -> Router {
                     StatusCode::OK,
                     axum::Json(json!([
                         {
-                            "id": "prj_taskagent_web",
-                            "title": "taskagent-web",
-                            "slug": "taskagent-web",
+                            "id": "prj_daruma_web",
+                            "title": "daruma-web",
+                            "slug": "daruma-web",
                             "description": "large field omitted by tool response"
                         },
                         {
-                            "id": "prj_taskagent",
-                            "title": "taskagent",
-                            "slug": "taskagent"
+                            "id": "prj_daruma",
+                            "title": "daruma",
+                            "slug": "daruma"
                         }
                     ])),
                 )
@@ -68,13 +68,13 @@ async fn list_without_resolved_project_returns_project_selection() {
     let client = ApiClient::new(base, "test-token");
     let result = call_tool(
         &client,
-        "taskagent_list",
+        "daruma_list",
         json!({
             "status": "active"
         }),
     )
     .await
-    .expect("taskagent_list should return project selection");
+    .expect("daruma_list should return project selection");
 
     server_handle.abort();
 
@@ -90,8 +90,8 @@ async fn list_without_resolved_project_returns_project_selection() {
     assert_eq!(result["needs_project_selection"], true);
     assert_eq!(result["requested_status"], "active");
     assert_eq!(result["projects"].as_array().unwrap().len(), 2);
-    assert_eq!(result["projects"][0]["id"], "prj_taskagent_web");
-    assert_eq!(result["projects"][0]["title"], "taskagent-web");
+    assert_eq!(result["projects"][0]["id"], "prj_daruma_web");
+    assert_eq!(result["projects"][0]["title"], "daruma-web");
     assert!(result["projects"][0].get("description").is_none());
-    assert_eq!(result["next_tool"]["name"], "taskagent_project_use");
+    assert_eq!(result["next_tool"]["name"], "daruma_project_use");
 }

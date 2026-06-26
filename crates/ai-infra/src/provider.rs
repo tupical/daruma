@@ -20,7 +20,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use taskagent_shared::CoreError;
+use daruma_shared::CoreError;
 
 use crate::client::{OpenAiClient, ResponseOutput, ResponseRequest};
 
@@ -90,7 +90,7 @@ impl AiProvider for OpenAiClient {
 /// Test doubles for the [`AiProvider`] trait, shared across crates.
 ///
 /// Gated behind the `testing` feature so downstream crates
-/// (`taskagent-ai`, future upper layers) can reuse [`FakeProvider`] in
+/// (`daruma-ai`, future upper layers) can reuse [`FakeProvider`] in
 /// their own tests without re-implementing it. Always compiled — not
 /// `#[cfg(test)]` — because a dependent crate's tests cannot see this
 /// crate's `cfg(test)` items.

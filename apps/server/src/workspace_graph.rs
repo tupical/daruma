@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use taskagent_events::{EventBus, EventStore};
-use taskagent_shared::Result;
-use taskagent_storage::WorkspaceGraphRepo;
+use daruma_events::{EventBus, EventStore};
+use daruma_shared::Result;
+use daruma_storage::WorkspaceGraphRepo;
 use tokio::sync::broadcast::error::RecvError;
 
 pub const CATCHUP_BATCH_SIZE: usize = 500;

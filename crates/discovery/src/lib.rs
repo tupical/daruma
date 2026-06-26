@@ -1,15 +1,15 @@
-//! LAN discovery and device pairing for taskagent.
+//! LAN discovery and device pairing for daruma.
 //!
 //! ## Responsibilities
 //!
 //! - **TLS**: generate a self-signed certificate on first run, persist it in
 //!   the data directory, expose a DER-encoded SHA-256 fingerprint for
 //!   out-of-band verification (§3.3.5 AC).
-//! - **mDNS**: advertise `_taskagent._tcp.local.` with TXT records
+//! - **mDNS**: advertise `_daruma._tcp.local.` with TXT records
 //!   `version`, `host_id`, `tls_fingerprint` (§3.3.5 §1).
 //! - **Pairing**: single-use, TTL-5-min tokens stored in-process; the
 //!   `/v1/devices/pair` endpoint consumes them (§3.3.5 §2).
-//! - **QR**: encode a `taskagent://pair?host=…&token=…&fpr=sha256:…` URL as
+//! - **QR**: encode a `daruma://pair?host=…&token=…&fpr=sha256:…` URL as
 //!   a PNG (§3.3.5 §2).
 //!
 //! ## Security invariants

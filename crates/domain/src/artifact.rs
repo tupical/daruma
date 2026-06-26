@@ -6,7 +6,7 @@
 //! work-lease on the underlying resource.
 
 use serde::{Deserialize, Serialize};
-use taskagent_shared::{AgentId, ArtifactId, ArtifactRelationId, ProjectId, TaskId, Timestamp};
+use daruma_shared::{AgentId, ArtifactId, ArtifactRelationId, ProjectId, TaskId, Timestamp};
 
 /// Lifecycle status of an artifact.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

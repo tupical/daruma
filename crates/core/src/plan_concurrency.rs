@@ -6,9 +6,9 @@
 
 use std::time::Duration;
 
-use taskagent_domain::{PlanStatus, Status};
-use taskagent_shared::{time, AgentId, CoreError, PlanId, Result, RunId, TaskId, Timestamp};
-use taskagent_storage::{AgentClaimRepo, RelationRepo, TaskRepo};
+use daruma_domain::{PlanStatus, Status};
+use daruma_shared::{time, AgentId, CoreError, PlanId, Result, RunId, TaskId, Timestamp};
+use daruma_storage::{AgentClaimRepo, RelationRepo, TaskRepo};
 
 use crate::relation_enforcement::list_active_blockers;
 use crate::repos::PlanRepository;
@@ -197,9 +197,9 @@ mod tests {
     use crate::repos::PlanRepository;
     use async_trait::async_trait;
     use std::{collections::HashMap, sync::Mutex};
-    use taskagent_domain::{Plan, PlanStatus as PS, PlanTask};
-    use taskagent_events::EventEnvelope;
-    use taskagent_shared::{time, ProjectId};
+    use daruma_domain::{Plan, PlanStatus as PS, PlanTask};
+    use daruma_events::EventEnvelope;
+    use daruma_shared::{time, ProjectId};
 
     // ── Minimal stub ──────────────────────────────────────────────────────────
 
@@ -253,7 +253,7 @@ mod tests {
             goal: String::new(),
             success_criteria: vec![],
             status,
-            owner: taskagent_domain::Actor::user(),
+            owner: daruma_domain::Actor::user(),
             created_at: now,
             updated_at: now,
             archived_at: None,

@@ -1,22 +1,22 @@
-# Contributing to TaskAgent
+# Contributing to Daruma
 
 Thanks for considering a contribution. This document covers the
 mechanics: how to file an issue, how to open a pull request, the DCO
 sign-off requirement, and the commit-message style. The product
-direction and backlog live in the **TaskAgent** tracker project (plan
-**TaskAgent ROADMAP**, MCP `taskagent_plan_list` / web UI); see
+direction and backlog live in the **Daruma** tracker project (plan
+**Daruma ROADMAP**, MCP `daruma_plan_list` / web UI); see
 [docs/README.md](docs/README.md). The architecture contract is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## License & scope
 
-TaskAgent is **Apache-2.0 WITH Commons-Clause**
+Daruma is **Apache-2.0 WITH Commons-Clause**
 (see [LICENSE](LICENSE) and
 [LICENSE.commons-clause.md](LICENSE.commons-clause.md)). In plain
 terms:
 
 - Self-host, fork, modify, contribute back — all welcome.
-- Sell TaskAgent as a paid product or managed service — needs a
+- Sell Daruma as a paid product or managed service — needs a
   commercial licence from the maintainers (see README).
 
 By submitting a contribution you agree to license it under the same
@@ -63,13 +63,13 @@ about a missing sign-off, rebase the offending commits with
 ## Issues
 
 - **Bug reports** — include the version (from `/v1/healthz` if running
-  the server, or `cargo pkgid -p taskagent-server`), the platform, the
+  the server, or `cargo pkgid -p daruma-server`), the platform, the
   exact command or request that failed, and the observed vs. expected
   behaviour.
 - **Feature requests** — open a discussion before writing code if the
   change touches the event schema, public REST/WS contract, MCP tools,
   or storage migrations. These have wide blast radius; the
-  TaskAgent tracker (catalogue plans §3.7 / §3.8 / MCP Roadmap) lists
+  Daruma tracker (catalogue plans §3.7 / §3.8 / MCP Roadmap) lists
   what is open.
 - **Security issues** — do not file in the public tracker. Email the
   maintainers (see README) so the fix can ship before disclosure.
@@ -90,12 +90,12 @@ Workflow:
 
    ```bash
    cargo build --workspace
-   cargo test  --workspace --exclude taskagent-desktop
+   cargo test  --workspace --exclude daruma-desktop
    cargo clippy --workspace --all-targets -- -D warnings
    cargo fmt --all -- --check
    ```
 
-   `taskagent-desktop` is excluded from the workspace test step because
+   `daruma-desktop` is excluded from the workspace test step because
    it pulls GPUI on graphical hosts; CI runs it separately.
 5. Open the PR against `main`. Mark it as draft if you want early
    review.
@@ -155,8 +155,8 @@ If your change adds a new app, crate, or integration:
 2. Read [docs/MODULE_CONTRACT.md](docs/MODULE_CONTRACT.md) — it lists
    what core promises and what modules must not do.
 3. For non-`core` modules, do **not** import from `apps/*` or directly
-   from `taskagent-storage` / `taskagent-events`. Reach for the
-   runtime through `taskagent_core::embed::*` (embed clients) or the
+   from `daruma-storage` / `daruma-events`. Reach for the
+   runtime through `daruma_core::embed::*` (embed clients) or the
    HTTP/WS/MCP API (network clients).
 
 ## Getting help
@@ -165,7 +165,7 @@ If your change adds a new app, crate, or integration:
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and crate contracts.
 - [docs/architecture-policy.md](docs/architecture-policy.md) — fixed policy decisions.
 - [docs/guides/ai-agent.md](docs/guides/ai-agent.md) — AI layer rules and tools.
-- [docs/README.md](docs/README.md) — docs layout; backlog in TaskAgent tracker.
+- [docs/README.md](docs/README.md) — docs layout; backlog in Daruma tracker.
 
 Open a discussion or a draft PR if any of the above is unclear; the
 contract bits in particular benefit from being challenged early.

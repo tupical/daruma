@@ -1,4 +1,4 @@
-//! Common primitives shared across all taskagent crates.
+//! Common primitives shared across all daruma crates.
 //!
 //! Intentionally dependency-free of business logic — only IDs, time
 //! helpers, and the top-level error live here.

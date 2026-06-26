@@ -1,13 +1,13 @@
 [package]
-name = "taskagent-mobile"
+name = "daruma-mobile"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "TaskAgent mobile client scaffold (Tauri 2 target; HTTP probe binary today)"
+description = "Daruma mobile client scaffold (Tauri 2 target; HTTP probe binary today)"
 
 [[bin]]
-name = "taskagent-mobile"
+name = "daruma-mobile"
 path = "src/main.rs"
 
 [dependencies]

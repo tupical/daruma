@@ -2,7 +2,7 @@ set dotenv-load := true
 set shell := ["bash", "-uc"]
 
 home := env_var_or_default("HOME", ".")
-data_dir := env_var_or_default("TASKAGENT_DATA_DIR", home + "/.agents/taskagent/data")
+data_dir := env_var_or_default("DARUMA_DATA_DIR", home + "/.agents/daruma/data")
 
 default:
     @just --list
@@ -29,16 +29,16 @@ hooks:
 
 server:
     mkdir -p "{{data_dir}}"
-    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" TASKAGENT_DATA_DIR="{{data_dir}}" cargo run -p taskagent-server
+    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" DARUMA_DATA_DIR="{{data_dir}}" cargo run -p daruma-server
 
 mcp:
-    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p taskagent-cli -- mcp
+    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p daruma-cli -- mcp
 
 desktop:
-    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p taskagent-desktop
+    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p daruma-desktop
 
-# The browser UI now lives in the standalone `taskagent-web` repo (sibling
-# checkout). Build/serve it there: `cd ../taskagent-web && trunk build|serve`.
+# The browser UI now lives in the standalone `daruma-web` repo (sibling
+# checkout). Build/serve it there: `cd ../daruma-web && trunk build|serve`.
 
 docker-build:
     docker compose build server

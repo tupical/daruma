@@ -28,10 +28,10 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use taskagent_core::{Command, CommandBus};
-use taskagent_domain::Actor;
-use taskagent_events::{EventBus, EventEnvelope, EventReceiver};
-use taskagent_shared::Result;
+use daruma_core::{Command, CommandBus};
+use daruma_domain::Actor;
+use daruma_events::{EventBus, EventEnvelope, EventReceiver};
+use daruma_shared::Result;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -240,8 +240,8 @@ fn spawn_fanout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskagent_domain::{Actor, NewTask};
-    use taskagent_events::{Event, EventBus, EventEnvelope};
+    use daruma_domain::{Actor, NewTask};
+    use daruma_events::{Event, EventBus, EventEnvelope};
 
     fn synthetic_envelope(seq: u64) -> EventEnvelope {
         let mut env = EventEnvelope::new(

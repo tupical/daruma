@@ -3,9 +3,9 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
-use taskagent_domain::{AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind};
-use taskagent_events::{Event, EventEnvelope};
-use taskagent_shared::{AgentId, AgentSessionId, CoreError, Result, SessionArtifactId, Timestamp};
+use daruma_domain::{AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind};
+use daruma_events::{Event, EventEnvelope};
+use daruma_shared::{AgentId, AgentSessionId, CoreError, Result, SessionArtifactId, Timestamp};
 
 /// Read/write access to the `agent_sessions` projection table.
 pub struct SessionRepo {
@@ -283,9 +283,9 @@ fn row_to_artifact(row: &sqlx::sqlite::SqliteRow) -> Result<SessionArtifact> {
 mod tests {
     use super::*;
     use crate::Db;
-    use taskagent_domain::{Actor, SessionArtifactKind, SessionStepStatus};
-    use taskagent_events::{Event, EventEnvelope};
-    use taskagent_shared::{time, AgentId, AgentSessionId, SessionArtifactId};
+    use daruma_domain::{Actor, SessionArtifactKind, SessionStepStatus};
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::{time, AgentId, AgentSessionId, SessionArtifactId};
 
     async fn make_repo() -> (Db, SessionRepo) {
         let db = Db::memory().await.unwrap();

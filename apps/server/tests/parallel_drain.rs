@@ -8,7 +8,7 @@ use axum::{
 };
 use serde_json::Value;
 use std::collections::HashSet;
-use taskagent_auth::{Capabilities, Capability, ProjectFilter};
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
 use tower::ServiceExt;
 
 mod common;

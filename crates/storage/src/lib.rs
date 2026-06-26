@@ -1,12 +1,12 @@
-//! SQLite-backed persistence for TaskAgent.
+//! SQLite-backed persistence for Daruma.
 //!
 //! # Quick start
 //!
 //! ```rust,no_run
-//! use taskagent_storage::{Db, SqliteEventStore, TaskRepo, ProjectRepo};
+//! use daruma_storage::{Db, SqliteEventStore, TaskRepo, ProjectRepo};
 //!
-//! # async fn example() -> taskagent_shared::Result<()> {
-//! let db = Db::open("taskagent.db").await?;
+//! # async fn example() -> daruma_shared::Result<()> {
+//! let db = Db::open("daruma.db").await?;
 //! db.migrate().await?;
 //!
 //! let pool = db.pool().clone();
