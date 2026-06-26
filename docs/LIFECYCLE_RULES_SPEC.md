@@ -5,7 +5,7 @@
   находок закрыты правками, 2026-06-11)
 - **Дата:** 2026-06-11
 - **Контекст:** план «Правила жизненного цикла задач и триггеры» (`019eb654-f391`),
-  задача Этапа 1 (`019eb655-92f7`); ADR — daruma-cloud/docs/adr-lifecycle-rules.md
+  задача Этапа 1 (`019eb655-92f7`); ADR — your-project/docs/adr-lifecycle-rules.md
 - **Источники:** tupical-personal/docs/{manifest,vision,architecture,plan}.md
 - **Реализация:** OSS rule engine (`019eb659-daf5`), pre-transition hooks (`019eb659-74e6`),
   evidence registry (`019eb65a-3185`), inheritance (`019eb65a-e5cd`)
@@ -317,7 +317,7 @@ Effective rules для сущности E:
 {
   "rule_key": "read-architecture-md",
   "title": "Перед утверждением плана прочитать architecture.md",
-  "scope": {"project": "daruma-cloud"},
+  "scope": {"project": "your-project"},
   "trigger": "plan.before_approve",
   "requirement": {"type": "read_artifact",
                   "doc_ref": "architecture.md", "min_version": "latest"},
@@ -330,7 +330,7 @@ Effective rules для сущности E:
 {
   "rule_key": "auth-impact-check",
   "title": "Проверка влияния задачи на модуль авторизации",
-  "scope": {"project": "daruma-cloud"},
+  "scope": {"project": "your-project"},
   "trigger": "task.before_start",
   "condition": {"changed_paths": ["crates/auth/**", "**/users/**", "**/permissions/**"]},
   "requirement": {"type": "impact_check", "target": "auth-module",
