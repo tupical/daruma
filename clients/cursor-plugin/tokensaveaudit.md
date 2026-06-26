@@ -46,7 +46,7 @@ MCP-ответы вместо ~3–6K. Ниже — разбор расхода 
    комментариев + планов. Нужен был только список **незакрытых** задач.
    **~25–35K токенов.**
 
-3. **`Glob **/*` и `Glob **/daruma-cloud/**`** — тысячи путей артефактов
+3. **`Glob **/*` и `Glob **/your-project/**`** — тысячи путей артефактов
    сборки. Для аудита не нужны. **~15–25K токенов.**
 
 4. **`daruma_get` ×13** — проверка задач, которые в search уже были `done`
@@ -55,7 +55,7 @@ MCP-ответы вместо ~3–6K. Ниже — разбор расхода 
 5. **Ошибочный вызов** — `daruma_search` без `project_scope` → ambiguous
    scope. Мало токенов, но лишний hop.
 
-6. **`codegraph_files`** на daruma-cloud — индекс пустой, ответ бесполезен.
+6. **`codegraph_files`** на your-project — индекс пустой, ответ бесполезен.
 
 ---
 
@@ -65,10 +65,10 @@ MCP-ответы вместо ~3–6K. Ниже — разбор расхода 
 
 | # | Вызов | Зачем |
 |---|-------|-------|
-| 1 | `daruma_workspace_info` | scope `daruma-cloud` |
-| 2 | `daruma_list status=active project_scope=daruma-cloud` | **1 inbox-задача** |
-| 3 | `daruma_plan_list status=completed project_scope=daruma-cloud` | планы закрыты |
-| 4 | `Grep elicit` в `/home/av/projects/daruma-cloud` | фича не в коде |
+| 1 | `daruma_workspace_info` | scope `your-project` |
+| 2 | `daruma_list status=active project_scope=your-project` | **1 inbox-задача** |
+| 3 | `daruma_plan_list status=completed project_scope=your-project` | планы закрыты |
+| 4 | `Grep elicit` в `/home/av/projects/your-project` | фича не в коде |
 | 5 | `daruma_comment` на inbox-задачу | зафиксировать аудит |
 
 **Оценка: ~3–6K токенов MCP-ответов** (вместо ~85–120K).
@@ -77,11 +77,11 @@ MCP-ответы вместо ~3–6K. Ниже — разбор расхода 
 
 ### Как получить тот же результат дешевле
 
-1. **Сначала узкий list, не search** — `daruma_list { status: "active", project_scope: "daruma-cloud" }`.
+1. **Сначала узкий list, не search** — `daruma_list { status: "active", project_scope: "your-project" }`.
 2. **Не вызывать workspacegraph_search для «что открыто»** — `list active` достаточен.
 3. **Не сканировать репо Glob'ом** — один точечный `Grep` по ключевому слову.
 4. **Не перепроверять get'ами то, что уже done** — если `list` вернул 1 inbox, проверять репо только для неё.
-5. **Всегда передавать scope с первого вызова** — `project_scope: "daruma-cloud"`.
+5. **Всегда передавать scope с первого вызова** — `project_scope: "your-project"`.
 6. **Codegraph — только если индекс есть** — иначе сразу `Grep` в репо.
 7. **Закрывать только после верификации открытых** — `list active` → grep/read → complete.
 
