@@ -72,14 +72,14 @@ test("resolveProfileForInstall prefers cloud profile for cloud api-url", async (
         },
         "cloud-default": {
           mode: "cloud",
-          server_url: "https://taskagent.vskideas.ru",
+          server_url: "https://cloud.example.com",
           token: "ta_pat_cloud",
           workspace_id: "ws-cloud",
         },
       },
     };
     const profile = resolveProfileForInstall(creds, {
-      apiUrl: "https://taskagent.vskideas.ru",
+      apiUrl: "https://cloud.example.com",
     });
     assert.equal(profile.name, "cloud-default");
     assert.equal(profile.token, "ta_pat_cloud");
@@ -103,7 +103,7 @@ test("resolveMcpEnvFromCredentials uses cloud profile for cloud api-url", async 
           },
           "cloud-default": {
             mode: "cloud",
-            server_url: "https://taskagent.vskideas.ru",
+            server_url: "https://cloud.example.com",
             token: "ta_pat_cloud",
             workspace_id: "ws-cloud",
           },
@@ -112,9 +112,9 @@ test("resolveMcpEnvFromCredentials uses cloud profile for cloud api-url", async 
       "utf8",
     );
     const env = await resolveMcpEnvFromCredentials({
-      apiUrl: "https://taskagent.vskideas.ru",
+      apiUrl: "https://cloud.example.com",
     });
-    assert.equal(env.DARUMA_API_URL, "https://taskagent.vskideas.ru");
+    assert.equal(env.DARUMA_API_URL, "https://cloud.example.com");
     assert.equal(env.DARUMA_TOKEN, "ta_pat_cloud");
     assert.equal(env.DARUMA_WORKSPACE_ID, "ws-cloud");
   });
