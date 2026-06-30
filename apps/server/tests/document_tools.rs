@@ -1,10 +1,11 @@
 //! MCP tool integration tests for document tools (PR1 §9).
 //!
 //! Covers the spec scenarios end-to-end through the MCP dispatcher:
-//!   1. `daruma_project_create` auto-seeds two documents (Interview + HumanLog).
+//!   1. `daruma_project_create` does NOT auto-seed documents (execution core
+//!      starts a project bare; narrative docs are a product concern).
 //!   2. `daruma_doc_append` → `daruma_doc_get` reflects the appended chunk.
 //!   3. `daruma_doc_create(kind=Interview)` allows duplicate kinds.
-//!   4. `daruma_doc_list(project_id, kind=HumanLog)` returns exactly one.
+//!   4. `daruma_doc_list(project_id, kind=HumanLog)` filters by kind.
 //!   5. `daruma_doc_archive` hides the doc from `daruma_doc_list`
 //!      until `include_archived=true`.
 
@@ -60,12 +61,28 @@ async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
         .to_owned()
 }
 
-/// Project creation auto-seeds two documents: one `interview` and one
-/// `human_log`. Both must be visible via `daruma_doc_list`, share the
-/// project_id, and the HumanLog body must include the rendered "_Created"
-/// stamp added by the handler.
+/// Create a document of `kind` under `pid` via MCP and return its id.
+/// The core no longer auto-seeds docs, so tests that need a document seed it
+/// explicitly through the same public tool agents use.
+async fn create_doc_via_mcp(client: &ApiClient, pid: &str, kind: &str, title: &str) -> String {
+    let resp = call_tool(
+        client,
+        "daruma_doc_create",
+        json!({ "project_id": pid, "kind": kind, "title": title }),
+    )
+    .await;
+    assert_eq!(resp["success"], true, "doc_create must succeed: {resp}");
+    resp["document_id"]
+        .as_str()
+        .expect("document_id must be a string in response")
+        .to_owned()
+}
+
+/// Project creation does NOT auto-seed documents: a freshly created project
+/// has an empty document list. Narrative Interview / Human Log docs are a
+/// product concern and are created explicitly, not by the execution core.
 #[tokio::test]
-async fn project_create_seeds_interview_and_human_log() {
+async fn project_create_does_not_seed_documents() {
     let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
@@ -73,36 +90,7 @@ async fn project_create_seeds_interview_and_human_log() {
 
     let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
     let arr = docs.as_array().expect("doc list must be array");
-    assert_eq!(arr.len(), 2, "two default docs: {arr:?}");
-
-    let mut kinds: Vec<String> = arr
-        .iter()
-        .map(|d| d["kind"].as_str().unwrap().to_string())
-        .collect();
-    kinds.sort();
-    assert_eq!(
-        kinds,
-        vec!["human_log".to_string(), "interview".to_string()],
-        "both default kinds present"
-    );
-
-    for d in arr {
-        assert_eq!(
-            d["project_id"].as_str().unwrap(),
-            pid,
-            "doc must belong to project"
-        );
-        assert!(d["archived_at"].is_null(), "seeded doc not archived: {d:?}");
-    }
-    let human_log = arr
-        .iter()
-        .find(|d| d["kind"] == "human_log")
-        .expect("HumanLog present");
-    let body = human_log["content"].as_str().unwrap();
-    assert!(
-        body.starts_with("# Human Log") && body.contains("_Created "),
-        "HumanLog body has header + created stamp: {body:?}"
-    );
+    assert!(arr.is_empty(), "fresh project has no auto-seeded docs: {arr:?}");
 }
 
 /// Appending a chunk via `daruma_doc_append` must show up in
@@ -113,15 +101,7 @@ async fn doc_append_reflected_in_doc_get() {
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
-    let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
-    let interview_id = docs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|d| d["kind"] == "interview")
-        .and_then(|d| d["id"].as_str())
-        .expect("Interview id")
-        .to_owned();
+    let interview_id = create_doc_via_mcp(&client, &pid, "interview", "Interview").await;
 
     let appended_snippet = "appended-chunk-marker";
     let append_resp = call_tool(
@@ -156,6 +136,9 @@ async fn doc_create_allows_duplicate_kind() {
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
+
+    // First Interview (created explicitly — nothing is auto-seeded).
+    create_doc_via_mcp(&client, &pid, "interview", "First Interview").await;
 
     let resp = call_tool(
         &client,
@@ -193,6 +176,9 @@ async fn doc_list_filters_by_kind() {
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
+    // Seed one doc of each kind explicitly.
+    create_doc_via_mcp(&client, &pid, "interview", "Interview").await;
+    create_doc_via_mcp(&client, &pid, "human_log", "Human Log").await;
 
     let only_log = call_tool(
         &client,
@@ -213,15 +199,10 @@ async fn doc_archive_hides_from_default_list() {
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
-    let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
-    let interview_id = docs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|d| d["kind"] == "interview")
-        .and_then(|d| d["id"].as_str())
-        .expect("Interview id")
-        .to_owned();
+    // Seed one doc of each kind; archive the Interview, expect the HumanLog
+    // to remain in the default view.
+    let interview_id = create_doc_via_mcp(&client, &pid, "interview", "Interview").await;
+    create_doc_via_mcp(&client, &pid, "human_log", "Human Log").await;
 
     let archive_resp = call_tool(
         &client,

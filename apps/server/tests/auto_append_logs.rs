@@ -1,20 +1,22 @@
-//! Auto-append into the auto-created Interview / Human Log documents:
+//! Auto-append into the narrative Interview / Human Log documents:
 //! agent activity → Interview, human milestones → Human Log, toggleable
 //! per project (ON by default) via /v1/projects/{id}/settings.
+//!
+//! The execution core no longer auto-seeds these narrative documents on
+//! project creation, so the test harness creates them explicitly (mirroring
+//! what a product layer would do) before exercising the auto-append routing.
 
 use serde_json::json;
 use daruma_core::Command;
-use daruma_domain::{Actor, AutoAppendPatch, DocumentKind, NewTask};
+use daruma_domain::{Actor, AutoAppendPatch, DocumentKind, NewDocument, NewTask};
 use daruma_shared::{AgentId, ProjectId};
 
 mod common;
 use common::test_app;
 
 async fn create_project(h: &common::TestApp, title: &str) -> ProjectId {
-    let envs = h
-        .state
-        .commands
-        .handler()
+    let handler = h.state.commands.handler();
+    let envs = handler
         .handle(
             Command::CreateProject {
                 title: title.into(),
@@ -24,12 +26,38 @@ async fn create_project(h: &common::TestApp, title: &str) -> ProjectId {
         )
         .await
         .expect("create project");
-    envs.iter()
+    let project_id = envs
+        .iter()
         .find_map(|e| match &e.payload {
             daruma_events::Event::ProjectCreated { project } => Some(project.id),
             _ => None,
         })
-        .expect("project id")
+        .expect("project id");
+
+    // Seed the two narrative target documents explicitly — the core does not
+    // auto-create them, but auto-append still routes into them when present.
+    for (kind, title) in [
+        (DocumentKind::Interview, "Interview"),
+        (DocumentKind::HumanLog, "Human Log"),
+    ] {
+        handler
+            .handle(
+                Command::CreateDocument {
+                    new_doc: NewDocument {
+                        id: None,
+                        project_id,
+                        kind,
+                        title: title.into(),
+                        content: None,
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .expect("seed narrative doc");
+    }
+
+    project_id
 }
 
 async fn doc_body(h: &common::TestApp, project: ProjectId, kind: DocumentKind) -> String {
@@ -39,7 +67,7 @@ async fn doc_body(h: &common::TestApp, project: ProjectId, kind: DocumentKind) -
         .list_by_project(project, Some(kind), false)
         .await
         .expect("list docs");
-    let doc = docs.first().expect("auto-created doc exists");
+    let doc = docs.first().expect("seeded narrative doc exists");
     h.state
         .documents
         .get(doc.id)

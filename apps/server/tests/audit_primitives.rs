@@ -217,8 +217,8 @@ async fn doc_read_tracking_and_unread_heuristic() {
             .any(|d| d["document_id"].as_str() == Some(id))
     };
 
-    // Before any read: the new doc is among the unread (never read). (The project
-    // also auto-creates default Interview/Human Log docs, also unread.)
+    // Before any read: the new doc is among the unread (never read). (The
+    // project is created bare — the core no longer auto-seeds any documents.)
     let (s, unread0) = json_get(
         app.router.clone(),
         &token,
@@ -253,8 +253,8 @@ async fn doc_read_tracking_and_unread_heuristic() {
         "read_count should advance: {got2}"
     );
 
-    // Now "unread in the last 1 day" excludes the freshly-read doc (the unread
-    // default docs may still be present, but ours must not be).
+    // Now "unread in the last 1 day" excludes the freshly-read doc (ours must
+    // not be present in the unread set).
     let (_s, unread1) = json_get(
         app.router.clone(),
         &token,

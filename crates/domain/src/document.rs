@@ -2,21 +2,23 @@
 //!
 //! Spec: `.omc/plans/document-pr1-spec.md` §1.
 //!
-//! A `Document` is a free-form markdown blob that belongs to a project. Two
-//! default documents (`Interview` and `Human Log`) are auto-created on
-//! `Command::CreateProject` so every project has a known place to store
-//! requirements-gathering notes and a working log. Additional documents may
-//! be created freely — `kind` is *not* unique per project.
+//! A `Document` is a free-form markdown blob that belongs to a project — the
+//! execution layer's structured task-artifact store. Documents are created
+//! explicitly via `Command::CreateDocument` (`kind` is *not* unique per
+//! project); the core no longer auto-seeds any default documents on
+//! `Command::CreateProject`. The narrative `Interview` / `Human Log` kinds
+//! exist for product layers (Intake / Sensemaking) that opt into them, but
+//! seeding them is product behaviour, not an execution-core default.
 
 use serde::{Deserialize, Serialize};
 use daruma_shared::{DocumentId, ProjectId, Timestamp};
 
-/// Discriminator for default document slots.
+/// Discriminator for document kinds.
 ///
-/// Today this is a closed set: every project gets exactly one default
-/// `Interview` and one default `Human Log` created by the
-/// `Command::CreateProject` handler. Users may create additional documents
-/// of either kind via `Command::CreateDocument`.
+/// Today this is a closed set of two narrative kinds (`Interview`,
+/// `Human Log`). These are *not* auto-created by the core; callers create
+/// documents of either kind explicitly via `Command::CreateDocument`, and a
+/// project may have zero, one, or many of each.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentKind {
