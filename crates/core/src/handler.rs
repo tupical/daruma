@@ -1201,43 +1201,14 @@ impl CommandHandler {
                     slug = format!("{base_slug}-{suffix}");
                 }
                 let project = Project::new_with_slug(trimmed, slug, description);
-                let project_id = project.id;
-                let created_at = project.created_at;
 
-                // PR1 §6.1 — auto-create two default documents alongside the
-                // project: an empty Interview doc and a Human Log stamped with
-                // the project's `created_at` so the log starts in a known
-                // state. Projector applies INSERT OR REPLACE, so replaying
-                // these events is idempotent.
-                let interview = daruma_domain::NewDocument {
-                    id: None,
-                    project_id,
-                    kind: DocumentKind::Interview,
-                    title: "Interview".to_string(),
-                    content: None,
-                }
-                .into_document(DocumentId::new(), created_at);
-
-                let human_log_body =
-                    format!("# Human Log\n\n_Created {}_\n", created_at.to_rfc3339());
-                let human_log = daruma_domain::NewDocument {
-                    id: None,
-                    project_id,
-                    kind: DocumentKind::HumanLog,
-                    title: "Human Log".to_string(),
-                    content: Some(human_log_body),
-                }
-                .into_document(DocumentId::new(), created_at);
-
-                Ok(vec![
-                    Event::ProjectCreated { project },
-                    Event::DocumentCreated {
-                        document: interview,
-                    },
-                    Event::DocumentCreated {
-                        document: human_log,
-                    },
-                ])
+                // Execution-layer projects are created bare: no narrative
+                // documents are seeded. The `Document` primitive remains a
+                // structured task-artifact store (see `doc_create`/`doc_list`);
+                // narrative Interview / Human Log default docs are a
+                // product concern (Intake / Sensemaking) and are no longer
+                // auto-created by the core on project creation.
+                Ok(vec![Event::ProjectCreated { project }])
             }
 
             Command::UpdateProject {

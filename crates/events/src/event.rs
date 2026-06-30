@@ -491,9 +491,9 @@ pub enum Event {
     },
 
     // ── Documents (PR1 §1-2) ──────────────────────────────────────────────────
-    /// A new document was created. Emitted by `Command::CreateDocument` and
-    /// also by `Command::CreateProject` for the two default documents
-    /// (Interview, Human Log).
+    /// A new document was created. Emitted by `Command::CreateDocument`.
+    /// (The core no longer auto-seeds default documents on
+    /// `Command::CreateProject`.)
     DocumentCreated {
         document: Document,
     },

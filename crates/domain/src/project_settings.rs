@@ -1,5 +1,7 @@
 //! Per-project settings — currently the auto-append toggles for the
-//! auto-created `Interview` (AI log) and `Human Log` documents.
+//! project's narrative `Interview` (AI log) and `Human Log` documents.
+//! These docs are no longer auto-created by the core; when a narrative
+//! document of the matching kind exists, activity is appended to it.
 
 use serde::{Deserialize, Serialize};
 

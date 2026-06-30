@@ -1,8 +1,8 @@
-//! Integration tests for PR1 §5-6 — Document commands + auto-template.
+//! Integration tests for PR1 §5-6 — Document commands.
 //!
 //! Covers:
-//!   * `Command::CreateProject` emits `ProjectCreated` + two `DocumentCreated`
-//!     events (Interview + HumanLog), and both rows appear in the projection.
+//!   * `Command::CreateProject` emits only `ProjectCreated` — the core no
+//!     longer auto-seeds narrative Interview / Human Log documents.
 //!   * Each Document command emits the corresponding event and updates state.
 //!   * Validation: empty titles rejected; unknown document → NotFound;
 //!     archiving an already-archived document is a no-op.
@@ -60,10 +60,59 @@ async fn build_stack() -> (CommandHandler, Arc<DocumentRepo>) {
 #[allow(dead_code)]
 fn _silence(_: NewTask, _: NewPlan, _: PlanStatus, _: Priority, _: Status) {}
 
-/// `CreateProject` must emit `ProjectCreated` plus two `DocumentCreated`
-/// events (Interview + HumanLog), and the projection must contain both rows.
+/// Create a project and return its id, asserting `CreateProject` emits only
+/// `ProjectCreated` (no auto-seeded documents).
+async fn create_bare_project(handler: &CommandHandler) -> ProjectId {
+    let envs = handler
+        .handle(
+            Command::CreateProject {
+                title: "Demo".into(),
+                description: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1, "CreateProject emits only ProjectCreated");
+    match &envs[0].payload {
+        Event::ProjectCreated { project } => project.id,
+        other => panic!("expected ProjectCreated, got {other:?}"),
+    }
+}
+
+/// Create one document under `project_id` and return its id.
+async fn create_doc(
+    handler: &CommandHandler,
+    project_id: ProjectId,
+    kind: DocumentKind,
+    title: &str,
+) -> DocumentId {
+    let envs = handler
+        .handle(
+            Command::CreateDocument {
+                new_doc: NewDocument {
+                    id: None,
+                    project_id,
+                    kind,
+                    title: title.into(),
+                    content: None,
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    match &envs[0].payload {
+        Event::DocumentCreated { document } => document.id,
+        other => panic!("expected DocumentCreated, got {other:?}"),
+    }
+}
+
+/// `CreateProject` must emit only `ProjectCreated`: the execution core no
+/// longer auto-seeds narrative Interview / Human Log documents, so a fresh
+/// project starts with an empty document projection.
 #[tokio::test]
-async fn create_project_seeds_interview_and_human_log() {
+async fn create_project_does_not_seed_documents() {
     let (handler, documents) = build_stack().await;
 
     let envs = handler
@@ -77,57 +126,19 @@ async fn create_project_seeds_interview_and_human_log() {
         .await
         .unwrap();
 
-    assert_eq!(envs.len(), 3, "expected 3 events (project + 2 documents)");
+    assert_eq!(envs.len(), 1, "expected only the ProjectCreated event");
     let project_id = match &envs[0].payload {
         Event::ProjectCreated { project } => project.id,
         other => panic!("expected ProjectCreated, got {other:?}"),
     };
-    let mut kinds: Vec<DocumentKind> = vec![];
-    for env in &envs[1..] {
-        match &env.payload {
-            Event::DocumentCreated { document } => {
-                assert_eq!(
-                    document.project_id, project_id,
-                    "doc must belong to project"
-                );
-                assert!(document.archived_at.is_none(), "auto-doc not archived");
-                kinds.push(document.kind);
-            }
-            other => panic!("expected DocumentCreated, got {other:?}"),
-        }
-    }
-    kinds.sort_by_key(|k| k.as_str());
-    assert_eq!(
-        kinds,
-        vec![DocumentKind::HumanLog, DocumentKind::Interview],
-        "both default kinds emitted"
-    );
 
     let docs = documents
         .list_by_project(project_id, None, false)
         .await
         .unwrap();
-    assert_eq!(docs.len(), 2, "both docs projected");
-    let interview = docs
-        .iter()
-        .find(|d| d.kind == DocumentKind::Interview)
-        .expect("Interview in projection");
-    assert_eq!(interview.title, "Interview");
-    assert_eq!(interview.content, "", "Interview body empty");
-    let human_log = docs
-        .iter()
-        .find(|d| d.kind == DocumentKind::HumanLog)
-        .expect("HumanLog in projection");
-    assert_eq!(human_log.title, "Human Log");
     assert!(
-        human_log.content.starts_with("# Human Log"),
-        "HumanLog body has header: {:?}",
-        human_log.content
-    );
-    assert!(
-        human_log.content.contains("_Created "),
-        "HumanLog body has created stamp: {:?}",
-        human_log.content
+        docs.is_empty(),
+        "fresh project must have no auto-seeded documents: {docs:?}"
     );
 }
 
@@ -137,20 +148,10 @@ async fn create_project_seeds_interview_and_human_log() {
 async fn create_document_emits_event_and_allows_duplicate_kind() {
     let (handler, documents) = build_stack().await;
 
-    let envs = handler
-        .handle(
-            Command::CreateProject {
-                title: "Demo".into(),
-                description: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let project_id = match &envs[0].payload {
-        Event::ProjectCreated { project } => project.id,
-        _ => unreachable!(),
-    };
+    let project_id = create_bare_project(&handler).await;
+
+    // First Interview document (created explicitly — nothing is auto-seeded).
+    create_doc(&handler, project_id, DocumentKind::Interview, "First Interview").await;
 
     // Second Interview document — kind is not unique per project.
     let envs = handler
@@ -235,20 +236,9 @@ async fn append_unknown_document_is_not_found() {
 async fn rename_document_updates_projection() {
     let (handler, documents) = build_stack().await;
 
-    let envs = handler
-        .handle(
-            Command::CreateProject {
-                title: "Demo".into(),
-                description: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let interview_id = match &envs[1].payload {
-        Event::DocumentCreated { document } => document.id,
-        _ => unreachable!(),
-    };
+    let project_id = create_bare_project(&handler).await;
+    let interview_id =
+        create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
 
     handler
         .handle(
@@ -269,20 +259,9 @@ async fn rename_document_updates_projection() {
 async fn replace_then_append_compose() {
     let (handler, documents) = build_stack().await;
 
-    let envs = handler
-        .handle(
-            Command::CreateProject {
-                title: "Demo".into(),
-                description: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let interview_id = match &envs[1].payload {
-        Event::DocumentCreated { document } => document.id,
-        _ => unreachable!(),
-    };
+    let project_id = create_bare_project(&handler).await;
+    let interview_id =
+        create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
 
     handler
         .handle(
@@ -317,20 +296,9 @@ async fn replace_then_append_compose() {
 async fn archive_is_idempotent_on_already_archived() {
     let (handler, _documents) = build_stack().await;
 
-    let envs = handler
-        .handle(
-            Command::CreateProject {
-                title: "Demo".into(),
-                description: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let interview_id = match &envs[1].payload {
-        Event::DocumentCreated { document } => document.id,
-        _ => unreachable!(),
-    };
+    let project_id = create_bare_project(&handler).await;
+    let interview_id =
+        create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
 
     let first = handler
         .handle(
