@@ -267,7 +267,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_lesson_recall",
             "Recall lessons",
-            "Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix.",
+            "[Sensemaking layer / deprecated in core] Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix. Lesson recall is a knowledge concern owned by the Sensemaking layer (`satori::lesson_recall`); the core comment store stays, but this tool is out of the default execution profile and reachable only under `full`.",
             schema_lesson_recall(),
             Dom::Tasks, F, Ann::Read,
         ),
@@ -694,14 +694,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_workspacegraph_search",
             "Search WorkspaceGraph nodes",
-            "Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Not for listing open work (use `daruma_list status=active`).",
+            "[Sensemaking layer / deprecated in core] Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Semantic search is a knowledge concern owned by the Sensemaking layer (`satori::semantic_search`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`. Not for listing open work (use `daruma_list status=active`).",
             schema_workspacegraph_search(),
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_impact",
             "Graph impact analysis",
-            "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges.",
+            "[Sensemaking layer / deprecated in core] Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges. Behavioral impact analysis is a knowledge concern owned by the Sensemaking layer (`satori::impact`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`.",
             schema_workspacegraph_impact(),
             Dom::WorkspaceGraph, F, Ann::Read,
         ),
