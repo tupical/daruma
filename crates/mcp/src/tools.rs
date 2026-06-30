@@ -1503,6 +1503,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }))
                 .await
         }
+        // Deprecated delegation-shim: this is a thin HTTP forward to the
+        // `/v1/ai/analyze-complexity` route, whose complexity-analysis logic
+        // now canonically lives in the planning layer
+        // (`yatagarasu::analyze_complexity_batch`). Kept until the cloud
+        // cutover rewires the route to the planning layer (separate plan).
         "daruma_ai_analyze_complexity" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
