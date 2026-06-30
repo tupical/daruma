@@ -2828,6 +2828,14 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
 /// the resulting hints into the `task_complexity_hints` projection. The
 /// response surfaces `batch_id` + the freshly written hints so callers (e.g.
 /// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
+///
+/// **Deprecated delegation-shim.** The complexity *analysis* (raw tasks →
+/// scores/hints) is planning-layer logic whose canonical home is
+/// `yatagarasu::analyze_complexity_batch` (`planning_oss`). This route is
+/// retained unchanged until the cloud cutover wires the call to the
+/// planning layer (separate plan); only the **write-back** half — building
+/// `TaskBrief`s and upserting `task_complexity_hints` — is structural
+/// execution work that stays in core regardless.
 /// Optional body for `POST /v1/ai/analyze-complexity/{plan_id}`.
 ///
 /// Pre-§3.8.13 callers send no body (or `{}`); the new

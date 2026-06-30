@@ -1,11 +1,27 @@
-//! `daruma-ai` — NL→Command operations on top of [`daruma_ai_infra`].
+//! `daruma-ai` — thin proxy over [`daruma_ai_infra`] + a deprecated
+//! planning shim.
 //!
 //! The provider-neutral infrastructure (Responses API client, config,
 //! [`AiProvider`] abstraction, prompt rendering engine, tool schemas,
-//! prompt-injection hardening) lives in `daruma-ai-infra`. This crate
-//! holds the task operations — currently analyze-complexity — that turn
-//! model output into [`daruma_core::Command`]s or plain strings, plus
-//! the operation prompt catalogue ([`prompts`]) those operations render.
+//! prompt-injection hardening) lives in `daruma-ai-infra` and is simply
+//! re-exported here so existing `daruma_ai::*` consumers (server, mcp,
+//! desktop) keep compiling.
+//!
+//! # Layer boundary (execution vs planning)
+//! daruma is the **execution** layer. The planning operations that
+//! transform raw task text into structure — `decompose`, `scope` and
+//! `analyze_complexity` — belong in the open-core **planning** layer
+//! (`yatagarasu` / `planning_oss`), not here. `decompose` and `scope`
+//! have already moved out; [`analyze_complexity`] remains only as a
+//! **deprecated delegation-shim** retained until the cloud cutover wires
+//! the server route directly to the planning layer (separate plan). New
+//! callers must use `yatagarasu::analyze_complexity_batch`; this crate
+//! should converge to a pure re-export of `daruma-ai-infra` once that
+//! cutover lands.
+//!
+//! What survives here today is therefore only: the infra re-exports, the
+//! batch [`analyze_complexity`] shim, and the operation prompt catalogue
+//! ([`prompts`]) that shim renders.
 //!
 //! # Contract
 //! - The AI layer **never** writes to storage. Every output is a
