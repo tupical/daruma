@@ -121,6 +121,25 @@ pub enum ToolDomain {
     Admin,
 }
 
+/// Feature tier in the Meisei/Daruma three-tier rubric. Internal catalogue
+/// metadata; never serialized to MCP clients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    Core,
+    Enhancing,
+    Extending,
+}
+
+impl Tier {
+    pub fn ru_label(self) -> &'static str {
+        match self {
+            Self::Core => "основные",
+            Self::Enhancing => "усиливающие",
+            Self::Extending => "расширяющие",
+        }
+    }
+}
+
 /// MCP `ToolAnnotations` (spec 2025-06-18): behavior hints for clients.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,7 +188,7 @@ impl Ann {
 
 /// Static description of a tool, returned by `tools/list`.
 ///
-/// `domain` and `profile` are internal catalogue metadata (skipped in
+/// `domain`, `profile`, and `tier` are internal catalogue metadata (skipped in
 /// serialization); everything else maps 1:1 onto the MCP `Tool` object.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ToolDefinition {
@@ -183,6 +202,8 @@ pub struct ToolDefinition {
     pub domain: ToolDomain,
     #[serde(skip)]
     pub profile: ToolProfile,
+    #[serde(skip)]
+    pub tier: Tier,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -193,6 +214,7 @@ fn tool(
     input_schema: Value,
     domain: ToolDomain,
     profile: ToolProfile,
+    tier: Tier,
     ann: Ann,
 ) -> ToolDefinition {
     ToolDefinition {
@@ -203,6 +225,7 @@ fn tool(
         annotations: ann.build(title),
         domain,
         profile,
+        tier,
     }
 }
 
@@ -212,6 +235,9 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     use ToolDomain as Dom;
     const D: ToolProfile = ToolProfile::Default;
     const F: ToolProfile = ToolProfile::Full;
+    const C: Tier = Tier::Core;
+    const E: Tier = Tier::Enhancing;
+    const X: Tier = Tier::Extending;
 
     vec![
         // ── Tasks ─────────────────────────────────────────────────────────
@@ -220,126 +246,126 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Create task",
             "Create a new task. `title` is required; everything else is optional.",
             schema_create(),
-            Dom::Tasks, D, Ann::Write,
+            Dom::Tasks, D, C, Ann::Write,
         ),
         tool(
             "daruma_capture",
             "Capture inbox task",
             "Quick-capture a fleeting idea as an inbox task (priority p3). Uses the resolved repo project when unambiguous; pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Pass `project_id: null` for a project-less inbox task.",
             schema_capture(),
-            Dom::Tasks, D, Ann::Write,
+            Dom::Tasks, D, X, Ann::Write,
         ),
         tool(
             "daruma_capture_batch",
             "Capture multiple inbox tasks",
             "Capture multiple inbox tasks in one call. Each string becomes a separate task (priority p3).",
             schema_capture_batch(),
-            Dom::Tasks, F, Ann::Write,
+            Dom::Tasks, F, X, Ann::Write,
         ),
         tool(
             "daruma_get",
             "Get task",
             "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority).",
             schema_with_id("id"),
-            Dom::Tasks, D, Ann::Read,
+            Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
             "daruma_update",
             "Update task",
             "Update a task's title, description, or due date. Recorded in the task event/activity log.",
             schema_update(),
-            Dom::Tasks, D, Ann::WriteIdem,
+            Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_list",
             "List tasks",
             "List tasks — the default tool for \"what's open / inventory\". Required `status`: a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, `active` (all non-terminal), or `all`. Avoid `status=all` unless the user explicitly asked for the archive — it can return a very large response. Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
             schema_list(),
-            Dom::Tasks, D, Ann::Read,
+            Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
             "daruma_search",
             "Search tasks and comments",
             "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `daruma_list status=active` instead. Always pass `limit`.",
             schema_search(),
-            Dom::Tasks, D, Ann::Read,
+            Dom::Tasks, D, X, Ann::Read,
         ),
         tool(
             "daruma_lesson_recall",
             "Recall lessons",
             "[Sensemaking layer / deprecated in core] Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix. Lesson recall is a knowledge concern owned by the Sensemaking layer (`satori::lesson_recall`); the core comment store stays, but this tool is out of the default execution profile and reachable only under `full`.",
             schema_lesson_recall(),
-            Dom::Tasks, F, Ann::Read,
+            Dom::Tasks, F, X, Ann::Read,
         ),
         tool(
             "daruma_set_status",
             "Set task status",
             "Set a task's status (inbox / todo / in_progress / in_review / done / cancelled).",
             schema_set_status(),
-            Dom::Tasks, D, Ann::WriteIdem,
+            Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_set_priority",
             "Set task priority",
             "Set a task's priority (p0 / p1 / p2 / p3).",
             schema_set_priority(),
-            Dom::Tasks, D, Ann::WriteIdem,
+            Dom::Tasks, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_move_project",
             "Move task to another project",
             "Move a task to another project while preserving its id, comments, relations, and event history. Pass `project_id`, `project_scope`, or `scope_path`.",
             schema_move_project(),
-            Dom::Tasks, F, Ann::WriteIdem,
+            Dom::Tasks, F, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_complete",
             "Complete task",
             "Mark a task as completed. Optionally attach a completion note (reason / result_summary / acceptance_criteria_status / related_artifacts); the completing actor (user vs agent) is recorded automatically.",
             schema_complete(),
-            Dom::Tasks, D, Ann::WriteIdem,
+            Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_reopen",
             "Reopen task",
             "Reopen a completed task (sets status back to `todo`).",
             schema_with_id("id"),
-            Dom::Tasks, D, Ann::WriteIdem,
+            Dom::Tasks, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_delete",
             "Delete task",
             "Delete a task permanently.",
             schema_with_id("id"),
-            Dom::Tasks, F, Ann::Destructive,
+            Dom::Tasks, F, C, Ann::Destructive,
         ),
         tool(
             "daruma_split",
             "Split task into subtasks",
             "Split a parent task into 2+ subtasks.",
             schema_split(),
-            Dom::Tasks, F, Ann::Write,
+            Dom::Tasks, F, E, Ann::Write,
         ),
         tool(
             "daruma_bulk_set_status",
             "Bulk set task status",
             "Atomically set the same status on up to 50 tasks. Duplicate ids are deduped; fail-fast if any id is missing.",
             schema_bulk_set_status(),
-            Dom::Tasks, F, Ann::WriteIdem,
+            Dom::Tasks, F, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_comment",
             "Comment on task",
             "Add a comment to a task. Optional semantic `kind` (intent/progress/outcome/blocker/research).",
             schema_comment(),
-            Dom::Tasks, D, Ann::Write,
+            Dom::Tasks, D, E, Ann::Write,
         ),
         tool(
             "daruma_can_start",
             "Check task readiness",
             "Check whether a task is ready to start, returning active blockers with title and status.",
             schema_can_start(),
-            Dom::Tasks, D, Ann::Read,
+            Dom::Tasks, D, X, Ann::Read,
         ),
         // ── Projects / workspace ──────────────────────────────────────────
         tool(
@@ -347,70 +373,70 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List projects",
             "List every project (id, title, description).",
             empty_schema(),
-            Dom::Projects, D, Ann::Read,
+            Dom::Projects, D, C, Ann::Read,
         ),
         tool(
             "daruma_project_create",
             "Create project",
             "Create a new project.",
             schema_project_create(),
-            Dom::Projects, F, Ann::Write,
+            Dom::Projects, F, C, Ann::Write,
         ),
         tool(
             "daruma_project_use",
             "Bind workspace to project",
             "Bind a workspace/repo scope to a daruma project. When MCP runs in a folder containing multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
             schema_project_use(),
-            Dom::Projects, D, Ann::WriteIdem,
+            Dom::Projects, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_project_delete",
             "Delete project",
             "Delete a project. Two-step, destructive: (1) call with only `id` to receive a one-time `confirm_token` (TTL 5 min) plus a contents summary; (2) call again with the same `id`, the issued `confirm_token`, AND `confirm` set to the project's exact title. The server still refuses unless the project has 0 tasks and 0 plans.",
             schema_project_delete(),
-            Dom::Projects, F, Ann::Destructive,
+            Dom::Projects, F, E, Ann::Destructive,
         ),
         tool(
             "daruma_workspace_info",
             "Show workspace info",
             "Show this MCP session's workspace key, inferred project, inference error, and known repo scopes.",
             empty_schema(),
-            Dom::Admin, D, Ann::Read,
+            Dom::Admin, D, X, Ann::Read,
         ),
         tool(
             "daruma_workspace_resolve",
             "Resolve/bind workspace for a path",
             "Resolve a filesystem root to its logical workspace + default project via the server registry. Unknown roots are created-and-bound on first call (pass `create:false` to probe only); the resolved project is persisted as this scope's default. Use when starting in a repo daruma has never seen.",
             schema_workspace_resolve(),
-            Dom::Projects, F, Ann::WriteIdem,
+            Dom::Projects, F, X, Ann::WriteIdem,
         ),
         tool(
             "daruma_workspace_list",
             "List logical workspaces",
             "List logical workspaces from the server registry: id, name, bound filesystem roots, and project count.",
             empty_schema(),
-            Dom::Projects, F, Ann::Read,
+            Dom::Projects, F, X, Ann::Read,
         ),
         tool(
             "daruma_project_move_workspace",
             "Move project to workspace",
             "Move a project into another logical workspace (registry API), optionally binding a filesystem root to the project.",
             schema_project_move_workspace(),
-            Dom::Projects, F, Ann::WriteIdem,
+            Dom::Projects, F, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_project_settings_get",
             "Get project settings",
             "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default).",
             schema_with_id("project_id"),
-            Dom::Projects, F, Ann::Read,
+            Dom::Projects, F, E, Ann::Read,
         ),
         tool(
             "daruma_project_settings_update",
             "Update project settings",
             "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document.",
             schema_project_settings_update(),
-            Dom::Projects, F, Ann::WriteIdem,
+            Dom::Projects, F, E, Ann::WriteIdem,
         ),
         // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md) ──────────────────
         tool(
@@ -418,35 +444,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List lifecycle rules",
             "List lifecycle rules at a scope. No scope params = tenant (workspace) rules; pass `project_id`, `plan_id`, or `task_id` for a narrower scope. Rules declare what evidence a lifecycle transition requires (read a doc, check impact, attach a completion note). At transition time the gate already reports the active requirement in `rule_warnings`/`rule_blocked`, so this admin tool is for managing rules, not for the hot path.",
             schema_rule_list(),
-            Dom::Admin, F, Ann::Read,
+            Dom::Admin, F, E, Ann::Read,
         ),
         tool(
             "daruma_rule_get",
             "Get a lifecycle rule",
             "Fetch a single lifecycle rule by id.",
             schema_with_id("id"),
-            Dom::Admin, F, Ann::Read,
+            Dom::Admin, F, E, Ann::Read,
         ),
         tool(
             "daruma_rule_create",
             "Create a lifecycle rule",
             "Create a lifecycle rule (admin). A rule is `event → condition → requirement → allowed|warning|blocked`; it has no actions. Pass the `rule` object (rule_key, title, scope, trigger, requirement, mode, message, override_allowed). `mode: required` blocks the transition until satisfied; `recommendation` warns; `off` is inert.",
             schema_rule_create(),
-            Dom::Admin, F, Ann::Write,
+            Dom::Admin, F, E, Ann::Write,
         ),
         tool(
             "daruma_rule_update",
             "Update a lifecycle rule",
             "Patch a lifecycle rule (admin): any of mode, condition, requirement, message, override_allowed, enabled, title. `scope`, `trigger` and `rule_key` are immutable.",
             schema_rule_update(),
-            Dom::Admin, F, Ann::WriteIdem,
+            Dom::Admin, F, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_rule_disable",
             "Disable a lifecycle rule",
             "Disable a lifecycle rule (admin). A disabled rule is not evaluated by the gate.",
             schema_with_id("id"),
-            Dom::Admin, F, Ann::Destructive,
+            Dom::Admin, F, E, Ann::Destructive,
         ),
         // ── Evidence registry (OSS task 019eb65a-3185) ─────────────────────
         tool(
@@ -454,14 +480,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Record lifecycle evidence",
             "Record evidence that a lifecycle requirement is satisfied, so a `required` rule unblocks the transition. Pass the `evidence` object: `kind` (document_read_ack | impact_assessment | decision_record | completion_note | artifact_created | owner_assigned | acceptance_criteria_defined | risk_check_completed), `scope` (tenant/project/plan/task — same shape as a rule scope), an optional `target` (the doc/module the requirement names; omit to satisfy any target), plus optional bindings (project_id/plan_id/task_id/run_id/artifact_id/rule_id), `reason`, `payload`, and `doc_version` (for document_read_ack). Evidence is immutable; set `supersedes` to replace an earlier record.",
             schema_evidence_submit(),
-            Dom::Admin, F, Ann::Write,
+            Dom::Admin, F, E, Ann::Write,
         ),
         tool(
             "daruma_evidence_list",
             "List lifecycle evidence",
             "List evidence recorded at a scope (tenant by default; pass `project_id`, `plan_id`, or `task_id` for a narrower scope). Superseded records are hidden unless `include_superseded` is true.",
             schema_evidence_list(),
-            Dom::Admin, F, Ann::Read,
+            Dom::Admin, F, E, Ann::Read,
         ),
         // ── Audit primitives ───────────────────────────────────────────────
         tool(
@@ -469,35 +495,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List audit findings",
             "List audit findings for a project (problems a server-side check raised: stale docs, stuck tasks, missing owners, …). Filter by `severity` (error|warn|info), `category`, or `status` (open|acknowledged|muted|resolved). Newest activity first.",
             schema_audit_findings(),
-            Dom::Coordination, D, Ann::Read,
+            Dom::Coordination, D, E, Ann::Read,
         ),
         tool(
             "daruma_audit_finding_ack",
             "Acknowledge/mute/resolve a finding",
             "Set the status of an audit finding (operator action): `open`, `acknowledged`, `muted`, or `resolved`. Use `acknowledged` to mark it seen, `muted` to silence it, `resolved` to close it.",
             schema_audit_finding_ack(),
-            Dom::Coordination, F, Ann::WriteIdem,
+            Dom::Coordination, F, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_audit_stuck_tasks",
             "Tasks stuck in a status",
             "Tasks stuck in a status longer than a threshold (heuristic, no LLM). `status` defaults to `in_progress`; `threshold_hours` defaults to 72. Complements daruma_doctor — this catches tasks wedged in *any* status, not just claim-less in_progress.",
             schema_audit_stuck_tasks(),
-            Dom::Coordination, D, Ann::Read,
+            Dom::Coordination, D, E, Ann::Read,
         ),
         tool(
             "daruma_audit_duplicate_tasks",
             "Duplicate-task candidates",
             "Lexical duplicate-task candidates within a project (heuristic, no LLM): title-similar task pairs to review. Not semantic duplicates — a cheap pre-filter for a human pass.",
             schema_audit_duplicate_tasks(),
-            Dom::Coordination, D, Ann::Read,
+            Dom::Coordination, D, E, Ann::Read,
         ),
         tool(
             "daruma_audit_unread_documents",
             "Documents not read recently",
             "Documents in a project not read in the last N `days` (default 30); documents never read always qualify. Built on passive read-tracking, distinct from the explicit evidence document_read_ack.",
             schema_audit_unread_documents(),
-            Dom::Coordination, D, Ann::Read,
+            Dom::Coordination, D, E, Ann::Read,
         ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
@@ -505,7 +531,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "AI: analyze plan complexity",
             "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `daruma_ai_decompose { hint }` to chain analyze → decompose.",
             schema_ai_analyze_complexity(),
-            Dom::Ai, F, Ann::AiWrite,
+            Dom::Ai, F, X, Ann::AiWrite,
         ),
         // ── Events / health ───────────────────────────────────────────────
         tool(
@@ -513,28 +539,28 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Pull agent inbox",
             "Poll a single agent's inbox; optionally long-poll up to 60 s.",
             schema_inbox_pull(),
-            Dom::Coordination, F, Ann::Write,
+            Dom::Coordination, F, E, Ann::Write,
         ),
         tool(
             "daruma_subscribe_project",
             "Snapshot project events",
             "One-shot snapshot of events for a project (the streaming form lives on /v1/ws).",
             schema_subscribe_project(),
-            Dom::Events, F, Ann::Read,
+            Dom::Events, F, E, Ann::Read,
         ),
         tool(
             "daruma_events_since",
             "Load events since seq",
             "Load events with `seq > since`, capped at `limit` (default 100).",
             schema_events_since(),
-            Dom::Events, F, Ann::Read,
+            Dom::Events, F, E, Ann::Read,
         ),
         tool(
             "daruma_healthz",
             "Server health check",
             "Server health check — no auth required.",
             empty_schema(),
-            Dom::Admin, D, Ann::Read,
+            Dom::Admin, D, X, Ann::Read,
         ),
         // ── Plans ─────────────────────────────────────────────────────────
         tool(
@@ -542,105 +568,105 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Create plan",
             "Create a new execution plan for a project.",
             schema_plan_create(),
-            Dom::Plans, D, Ann::Write,
+            Dom::Plans, D, C, Ann::Write,
         ),
         tool(
             "daruma_plan_update",
             "Update plan",
             "Update a plan's title, description, goal, success criteria, or parent. Pass null for parent_plan_id to unparent (move to root); omit the field to leave the parent unchanged.",
             schema_plan_update(),
-            Dom::Plans, F, Ann::WriteIdem,
+            Dom::Plans, F, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_plan_get",
             "Get plan",
             "Fetch a plan by id, including progress metrics — the cheap way to summarize one plan's status (prefer this over enumerating completed plans or tasks).",
             schema_with_id("id"),
-            Dom::Plans, D, Ann::Read,
+            Dom::Plans, D, C, Ann::Read,
         ),
         tool(
             "daruma_plan_list",
             "List plans",
             "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans carry their full goal + success criteria and are token-heavy — summarize a single plan with `daruma_plan_get` instead of enumerating. `project_id` uses the resolved repo project when unambiguous; pass `all` to query across projects.",
             schema_plan_list(),
-            Dom::Plans, D, Ann::Read,
+            Dom::Plans, D, C, Ann::Read,
         ),
         tool(
             "daruma_plan_add_task",
             "Attach task to plan",
             "Attach a task to a plan at an optional position with optional dependencies.",
             schema_plan_add_task(),
-            Dom::Plans, D, Ann::Write,
+            Dom::Plans, D, C, Ann::Write,
         ),
         tool(
             "daruma_plan_remove_task",
             "Detach task from plan",
             "Detach a task from a plan. Aborts any in-progress step atomically.",
             schema_plan_task_ref(),
-            Dom::Plans, F, Ann::Write,
+            Dom::Plans, F, C, Ann::Write,
         ),
         tool(
             "daruma_plan_reorder",
             "Reorder plan tasks",
             "Replace the full task order within a plan.",
             schema_plan_reorder(),
-            Dom::Plans, F, Ann::WriteIdem,
+            Dom::Plans, F, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_plan_archive",
             "Archive plan",
             "Archive a plan and atomically abort all active runs.",
             schema_with_id("id"),
-            Dom::Plans, F, Ann::Destructive,
+            Dom::Plans, F, E, Ann::Destructive,
         ),
         tool(
             "daruma_plan_set_status",
             "Set plan status",
             "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
             schema_plan_set_status(),
-            Dom::Plans, D, Ann::WriteIdem,
+            Dom::Plans, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_plan_next_task",
             "Peek next eligible plan task",
             "Return the first eligible task in a plan for a given run, respecting dependencies. May acquire a claim when `claim_ttl_secs` is set — prefer `daruma_plan_drain_next` for parallel agents.",
             schema_plan_next_task(),
-            Dom::Plans, F, Ann::Write,
+            Dom::Plans, F, E, Ann::Write,
         ),
         tool(
             "daruma_plan_progress",
             "Plan progress snapshot",
             "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
             schema_with_id("plan_id"),
-            Dom::Plans, D, Ann::Read,
+            Dom::Plans, D, E, Ann::Read,
         ),
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
             "Atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Concurrent callers each get a distinct task; returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
             schema_plan_drain_next(),
-            Dom::Plans, D, Ann::Write,
+            Dom::Plans, D, E, Ann::Write,
         ),
         tool(
             "daruma_plan_graph",
             "Read plan DAG",
             "Read a plan's execution DAG: task nodes plus depends_on and blocks edges.",
             schema_with_plan_id(),
-            Dom::Plans, F, Ann::Read,
+            Dom::Plans, F, X, Ann::Read,
         ),
         tool(
             "daruma_plan_fanout",
             "Plan execution waves",
             "Return parallel execution waves for a plan, respecting depends_on and active Blocks relations.",
             schema_with_plan_id(),
-            Dom::Plans, F, Ann::Read,
+            Dom::Plans, F, X, Ann::Read,
         ),
         tool(
             "daruma_bulk_attach_to_plan",
             "Bulk attach tasks to plan",
             "Atomically attach up to 50 tasks to a single plan. Already-attached tasks are skipped (idempotent); fail-fast if any task or the plan is missing.",
             schema_bulk_attach_to_plan(),
-            Dom::Plans, F, Ann::WriteIdem,
+            Dom::Plans, F, E, Ann::WriteIdem,
         ),
         // ── Artifact Registry (P4) ───────────────────────────────────────
         tool(
@@ -650,7 +676,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
              `uri` must use a supported scheme: `artifact://`, `file://`, `contract://`, or `env://`. \
              Optional `task_id` links the artifact to the task that produces it.",
             schema_artifact_register(),
-            Dom::WorkspaceGraph, F, Ann::Write,
+            Dom::WorkspaceGraph, F, X, Ann::Write,
         ),
         tool(
             "daruma_artifact_list",
@@ -658,7 +684,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
              owner, version. Use to answer \"who owns this\" before writing.",
             schema_artifact_list(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_artifact_impact",
@@ -667,7 +693,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
              ArtTests, ArtDocuments, ArtSupersedes, ArtConflictsWith, and Produces edges. \
              Answers \"what breaks if I change this artifact\".",
             schema_artifact_impact(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         // ── WorkspaceGraph ────────────────────────────────────────────────
         tool(
@@ -675,35 +701,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "WorkspaceGraph index health",
             "WorkspaceGraph index health: schema version, node/edge counts, event lag, and last error.",
             empty_schema(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_context",
             "Graph node neighborhood",
             "Immediate neighborhood of a graph node (incoming/outgoing edges plus ranked neighbors).",
             schema_workspacegraph_context(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_related",
             "Graph related nodes",
             "Breadth-first related nodes around a graph node, capped by depth and limit.",
             schema_workspacegraph_related(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_search",
             "Search WorkspaceGraph nodes",
             "[Sensemaking layer / deprecated in core] Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Semantic search is a knowledge concern owned by the Sensemaking layer (`satori::semantic_search`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`. Not for listing open work (use `daruma_list status=active`).",
             schema_workspacegraph_search(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_impact",
             "Graph impact analysis",
             "[Sensemaking layer / deprecated in core] Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges. Behavioral impact analysis is a knowledge concern owned by the Sensemaking layer (`satori::impact`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`.",
             schema_workspacegraph_impact(),
-            Dom::WorkspaceGraph, F, Ann::Read,
+            Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         // ── Runs ──────────────────────────────────────────────────────────
         tool(
@@ -711,56 +737,56 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Start run",
             "Start a new agent run of a plan.",
             schema_run_start(),
-            Dom::Runs, D, Ann::Write,
+            Dom::Runs, D, E, Ann::Write,
         ),
         tool(
             "daruma_run_start_step",
             "Start run step",
             "Mark the beginning of a task step within a run.",
             schema_run_step(),
-            Dom::Runs, F, Ann::Write,
+            Dom::Runs, F, E, Ann::Write,
         ),
         tool(
             "daruma_run_finish_step",
             "Finish run step",
             "Mark the completion of a task step with an outcome.",
             schema_run_finish_step(),
-            Dom::Runs, F, Ann::Write,
+            Dom::Runs, F, E, Ann::Write,
         ),
         tool(
             "daruma_run_complete",
             "Complete run",
             "Terminate a run successfully.",
             schema_with_id("run_id"),
-            Dom::Runs, D, Ann::WriteIdem,
+            Dom::Runs, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_run_abort",
             "Abort run",
             "Abort a run with a reason (e.g. plan archived or explicit stop).",
             schema_run_abort(),
-            Dom::Runs, D, Ann::WriteIdem,
+            Dom::Runs, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_run_note_append",
             "Append run note",
             "Append a free-form journal note to an active run. The actor is taken from the MCP session token; body is required (≤ 4 KiB).",
             schema_run_note_append(),
-            Dom::Runs, D, Ann::Write,
+            Dom::Runs, D, E, Ann::Write,
         ),
         tool(
             "daruma_run_log",
             "Append run log entry",
             "Append a leveled progress log entry to an active run. Uses the run notes stream with body formatted as `[level] message`.",
             schema_run_log(),
-            Dom::Runs, F, Ann::Write,
+            Dom::Runs, F, E, Ann::Write,
         ),
         tool(
             "daruma_run_notes_list",
             "List run notes",
             "List journal notes for a run in chronological order. Optional `limit` (default 50, max 500) and `after` (cursor = id of last note from previous page).",
             schema_run_notes_list(),
-            Dom::Runs, F, Ann::Read,
+            Dom::Runs, F, E, Ann::Read,
         ),
         // ── Claims & leases (parallel-agent coordination) ─────────────────
         tool(
@@ -768,98 +794,98 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Claim task",
             "Acquire an optimistic claim on a task for a given TTL in seconds.",
             schema_claim(),
-            Dom::Coordination, D, Ann::Write,
+            Dom::Coordination, D, E, Ann::Write,
         ),
         tool(
             "daruma_release",
             "Release task claim",
             "Release a previously-acquired task claim.",
             schema_release(),
-            Dom::Coordination, D, Ann::WriteIdem,
+            Dom::Coordination, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_reserve_files",
             "Reserve file paths",
             "Reserve resources for a task so parallel agents don't collide. Pass repo-relative `paths` (globs) and/or `targets` URIs (file://, artifact://, contract://, env://) plus an optional `mode` (exclusive default; shared_read/review coexist; intent is advisory). Returns `reserved:true` with leases carrying `fencing_token`, or `reserved:false` with `conflict_path` + `holder` — then take a different task. Re-reserving extends the TTL; leases auto-release when the task closes or the TTL lapses.",
             schema_reserve_files(),
-            Dom::Coordination, F, Ann::Write,
+            Dom::Coordination, F, E, Ann::Write,
         ),
         tool(
             "daruma_release_files",
             "Release file leases",
             "Release all file/path leases held by an agent for a task. Usually automatic on task completion; call explicitly to free files early.",
             schema_release_files(),
-            Dom::Coordination, F, Ann::WriteIdem,
+            Dom::Coordination, F, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_active_work",
             "List active file leases",
             "List the active work backlog: live file/path leases (who is touching which files) for a project. Use before reserving to see contended areas. Pass `project_id` to scope; omit for all.",
             schema_active_work(),
-            Dom::Coordination, F, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_ready",
             "List project ready pool",
             "List the project-wide ready pool: tasks across ALL active plans whose dependencies are satisfied and that no other agent holds. The read-only view behind `daruma_ready_drain`.",
             schema_ready(),
-            Dom::Coordination, F, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_ready_drain",
             "Claim next ready task (project-wide)",
             "Atomically claim the next ready task across the project's active plans. Concurrent callers each get a distinct task; sets it in_progress. Returns null when nothing is ready — loop until null.",
             schema_ready_drain(),
-            Dom::Coordination, F, Ann::Write,
+            Dom::Coordination, F, E, Ann::Write,
         ),
         tool(
             "daruma_doctor",
             "Reconcile stuck parallel work",
             "Reconcile parallel-agent state for a project: reports tasks stuck `in_progress` with no live claim (an agent likely crashed and its claim TTL lapsed). These are reclaimable — reopen or re-drain them.",
             schema_doctor(),
-            Dom::Coordination, F, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_suggest_files",
             "Suggest paths to reserve",
             "Suggest path globs to reserve for a task by extracting path-like tokens from its title/description. Use to seed `daruma_reserve_files` at claim time. Heuristic only — review before reserving.",
             schema_suggest_files(),
-            Dom::Coordination, F, Ann::Read,
+            Dom::Coordination, F, X, Ann::Read,
         ),
         tool(
             "daruma_work_unit_create",
             "Create work unit",
             "Create a work unit under a task — the minimal dispatchable unit for multi-agent work on one task. Declare `artifact_refs` (file://, artifact://, contract://, env://) so the dispatcher can lease them on claim. Simple tasks don't need work units.",
             schema_work_unit_create(),
-            Dom::Coordination, F, Ann::Write,
+            Dom::Coordination, F, E, Ann::Write,
         ),
         tool(
             "daruma_work_unit_list",
             "List task work units",
             "List all work units under a task (full decomposition state, including done/cancelled).",
             schema_with_id("task_id"),
-            Dom::Coordination, F, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_work_unit_drain_next",
             "Claim next work unit",
             "Atomically claim the next dispatchable work unit under a task and acquire its declared exclusive resource leases. Concurrent callers each get a distinct unit. Returns a briefing {work_unit, leases (with fencing_token), acceptance}; null when nothing is dispatchable; lease_conflict (claim reverted) when the unit's resources are held elsewhere.",
             schema_work_unit_drain(),
-            Dom::Coordination, F, Ann::Write,
+            Dom::Coordination, F, E, Ann::Write,
         ),
         tool(
             "daruma_work_unit_complete",
             "Complete work unit",
             "Mark a work unit done with an outcome and the produced artifact URIs (mineable payload). Releases the holder claim.",
             schema_work_unit_complete(),
-            Dom::Coordination, F, Ann::WriteIdem,
+            Dom::Coordination, F, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_work_unit_release",
             "Release work unit claim",
             "Release a claimed work unit back to the dispatch pool (status returns to ready).",
             schema_with_id("id"),
-            Dom::Coordination, F, Ann::WriteIdem,
+            Dom::Coordination, F, E, Ann::WriteIdem,
         ),
         // ── Sessions ──────────────────────────────────────────────────────
         tool(
@@ -867,49 +893,49 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Start agent session",
             "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
             schema_session_start(),
-            Dom::Sessions, F, Ann::Write,
+            Dom::Sessions, F, X, Ann::Write,
         ),
         tool(
             "daruma_session_get",
             "Get agent session",
             "Fetch an agent session by id (includes metadata: client, model, chat_id, transcript_path).",
             schema_with_id("id"),
-            Dom::Sessions, F, Ann::Read,
+            Dom::Sessions, F, X, Ann::Read,
         ),
         tool(
             "daruma_session_list",
             "List agent sessions",
             "List agent sessions for an agent id (defaults to this MCP process).",
             schema_session_list(),
-            Dom::Sessions, F, Ann::Read,
+            Dom::Sessions, F, X, Ann::Read,
         ),
         tool(
             "daruma_session_end",
             "End agent session",
             "End an agent session.",
             schema_with_id("id"),
-            Dom::Sessions, F, Ann::WriteIdem,
+            Dom::Sessions, F, X, Ann::WriteIdem,
         ),
         tool(
             "daruma_session_set_plan",
             "Set session plan steps",
             "Replace the session's plan-steps list (max 100 steps).",
             schema_session_set_plan(),
-            Dom::Sessions, F, Ann::WriteIdem,
+            Dom::Sessions, F, X, Ann::WriteIdem,
         ),
         tool(
             "daruma_session_artifact",
             "Attach session artifact",
             "Attach a file/url/diff artifact reference to an agent session.",
             schema_session_artifact(),
-            Dom::Sessions, F, Ann::Write,
+            Dom::Sessions, F, X, Ann::Write,
         ),
         tool(
             "daruma_session_artifacts_list",
             "List session artifacts",
             "List artifact references attached to an agent session.",
             schema_with_id("id"),
-            Dom::Sessions, F, Ann::Read,
+            Dom::Sessions, F, X, Ann::Read,
         ),
         // ── Signals ───────────────────────────────────────────────────────
         tool(
@@ -917,14 +943,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Send run signal",
             "Send a typed signal to a run (stop / elicit / auth_required).",
             schema_signal_send(),
-            Dom::Signals, F, Ann::Write,
+            Dom::Signals, F, E, Ann::Write,
         ),
         tool(
             "daruma_signal_respond",
             "Respond to run signal",
             "Human responds to an elicitation request on a run.",
             schema_signal_respond(),
-            Dom::Signals, F, Ann::Write,
+            Dom::Signals, F, E, Ann::Write,
         ),
         // ── Relations ─────────────────────────────────────────────────────
         tool(
@@ -932,21 +958,21 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Link tasks",
             "Create a typed relation (blocks / relates_to / duplicates) between two tasks. Idempotent via `client_command_id`.",
             schema_link(),
-            Dom::Relations, D, Ann::WriteIdem,
+            Dom::Relations, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_unlink",
             "Delete task relation",
             "Delete a relation by its id.",
             schema_unlink(),
-            Dom::Relations, F, Ann::Destructive,
+            Dom::Relations, F, E, Ann::Destructive,
         ),
         tool(
             "daruma_relations",
             "Read task relations",
             "Read 5-group relations projection for a task (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
             schema_relations(),
-            Dom::Relations, D, Ann::Read,
+            Dom::Relations, D, E, Ann::Read,
         ),
         // ── Documents ─────────────────────────────────────────────────────
         tool(
@@ -954,49 +980,49 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Create document",
             "Create a markdown document for a project. `kind` is `interview` or `human_log`; multiple docs of the same kind are allowed.",
             schema_doc_create(),
-            Dom::Documents, F, Ann::Write,
+            Dom::Documents, F, X, Ann::Write,
         ),
         tool(
             "daruma_doc_get",
             "Get document",
             "Fetch a document by id, including its full markdown body.",
             schema_with_id("document_id"),
-            Dom::Documents, F, Ann::Read,
+            Dom::Documents, F, X, Ann::Read,
         ),
         tool(
             "daruma_doc_append",
             "Append to document",
             "Append markdown to a document. A blank-line separator is inserted by the server when the existing body is non-empty.",
             schema_doc_append(),
-            Dom::Documents, F, Ann::Write,
+            Dom::Documents, F, X, Ann::Write,
         ),
         tool(
             "daruma_doc_replace",
             "Replace document body",
             "Replace a document's entire markdown body.",
             schema_doc_replace(),
-            Dom::Documents, F, Ann::WriteIdem,
+            Dom::Documents, F, X, Ann::WriteIdem,
         ),
         tool(
             "daruma_doc_rename",
             "Rename document",
             "Rename a document (title only; body is unchanged).",
             schema_doc_rename(),
-            Dom::Documents, F, Ann::WriteIdem,
+            Dom::Documents, F, X, Ann::WriteIdem,
         ),
         tool(
             "daruma_doc_archive",
             "Archive document",
             "Soft-archive a document. It remains queryable via `daruma_doc_list` when `include_archived=true`.",
             schema_with_id("document_id"),
-            Dom::Documents, F, Ann::Destructive,
+            Dom::Documents, F, X, Ann::Destructive,
         ),
         tool(
             "daruma_doc_list",
             "List documents",
             "List documents for a project. `project_id` uses the resolved repo project when unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `kind` filter; archived docs are hidden unless `include_archived=true`.",
             schema_doc_list(),
-            Dom::Documents, F, Ann::Read,
+            Dom::Documents, F, X, Ann::Read,
         ),
         // ── Version history ───────────────────────────────────────────────
         tool(
@@ -1004,42 +1030,42 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List version history",
             "List immutable version records for one task or document, newest first.",
             schema_history_entity(),
-            Dom::History, F, Ann::Read,
+            Dom::History, F, X, Ann::Read,
         ),
         tool(
             "daruma_history_get",
             "Get version record",
             "Fetch one immutable version record by version id.",
             schema_with_id("version_id"),
-            Dom::History, F, Ann::Read,
+            Dom::History, F, X, Ann::Read,
         ),
         tool(
             "daruma_history_compare",
             "Compare versions",
             "Compare two version numbers for the same task or document.",
             schema_history_compare(),
-            Dom::History, F, Ann::Read,
+            Dom::History, F, X, Ann::Read,
         ),
         tool(
             "daruma_history_latest",
             "List latest versions",
             "List latest task/document version records visible to this token.",
             schema_history_latest(),
-            Dom::History, F, Ann::Read,
+            Dom::History, F, X, Ann::Read,
         ),
         tool(
             "daruma_history_summary",
             "Version summary timeline",
             "Return a compact agent-readable summary timeline for one task or document.",
             schema_history_entity(),
-            Dom::History, F, Ann::Read,
+            Dom::History, F, X, Ann::Read,
         ),
         tool(
             "daruma_history_rollback",
             "Rollback to version",
             "Restore a task or document to a selected immutable version by creating a new rollback version.",
             schema_with_id("version_id"),
-            Dom::History, F, Ann::Destructive,
+            Dom::History, F, X, Ann::Destructive,
         ),
     ]
 }
