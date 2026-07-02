@@ -466,23 +466,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Load a stable UUID from `<data_dir>/host_id`, generating and persisting
-/// one on first call. Used by callers that need a stable installation ID.
-#[allow(dead_code)]
-async fn load_or_create_host_id(data_dir: &std::path::Path) -> anyhow::Result<String> {
-    let path = data_dir.join("host_id");
-    if path.exists() {
-        let raw = tokio::fs::read_to_string(&path).await?;
-        let id = raw.trim().to_string();
-        if !id.is_empty() {
-            return Ok(id);
-        }
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    tokio::fs::write(&path, &id).await?;
-    Ok(id)
-}
-
 /// On the very first run (no active tokens in the DB), generate a
 /// long-lived `svc` admin token, persist it, and write the plaintext to
 /// `<data_dir>/bootstrap.token` + log it once to stderr.

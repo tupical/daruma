@@ -13,6 +13,7 @@
 //!   still-open finding of a `check_key` in a project that was *not* seen this
 //!   run (auto-resolve). The caller passes the ids it upserted.
 
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{
     ActorRef, AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus,
@@ -314,12 +315,6 @@ fn parse_opt_id<T: std::str::FromStr>(
 
 fn map_err(e: sqlx::Error) -> CoreError {
     CoreError::storage(e.to_string())
-}
-
-fn parse_ts(s: &str) -> Result<Timestamp> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map_err(|e| CoreError::storage(e.to_string()))
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 //! Validates fencing tokens on `ArtifactWriteCommitted` so a stale holder
 //! cannot commit writes after losing its lease.
 
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
 use daruma_events::{Event, EventEnvelope};
@@ -291,7 +292,7 @@ fn select_sql(filter: &str) -> String {
 }
 
 fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
-    use chrono::DateTime;
+    
 
     fn col<T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>>(
         r: &sqlx::sqlite::SqliteRow,
@@ -299,12 +300,6 @@ fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
     ) -> Result<T> {
         r.try_get(name)
             .map_err(|e| CoreError::storage(e.to_string()))
-    }
-
-    fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>> {
-        DateTime::parse_from_rfc3339(s)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .map_err(|e| CoreError::serde(e.to_string()))
     }
 
     let id: String = col(r, "id")?;
@@ -344,13 +339,7 @@ fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
 }
 
 fn row_to_relation(r: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRelation> {
-    use chrono::DateTime;
-
-    fn parse_ts(s: &str) -> Result<chrono::DateTime<chrono::Utc>> {
-        DateTime::parse_from_rfc3339(s)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .map_err(|e| CoreError::serde(e.to_string()))
-    }
+    
 
     let id: String = r
         .try_get("id")

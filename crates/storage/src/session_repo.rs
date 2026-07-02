@@ -1,7 +1,7 @@
 //! AgentSession projection repository — materialises session-related events
 //! into the `agent_sessions` SQLite table. Linear B.1: stores plan_steps_json.
 
-use chrono::{DateTime, Utc};
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind};
 use daruma_events::{Event, EventEnvelope};
@@ -215,12 +215,6 @@ fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> Result<AgentSession> {
         metadata: serde_json::from_str(&metadata_json)
             .map_err(|e| CoreError::serde(e.to_string()))?,
     })
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 fn artifact_kind_str(kind: &SessionArtifactKind) -> &'static str {

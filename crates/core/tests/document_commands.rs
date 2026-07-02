@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use daruma_core::{Command, CommandHandler};
 use daruma_domain::{
-    Actor, Document, DocumentKind, NewDocument, NewPlan, NewTask, PlanStatus, Priority, Status,
+    Actor, Document, DocumentKind, NewDocument,
 };
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::{CoreError, DocumentId, ProjectId};
@@ -19,10 +19,6 @@ use daruma_storage::{
     ActivityRepo, AgentClaimRepo, CommentRepo, Db, DocumentRepo, ExternalRefRepo, PlanRepo,
     ProjectRepo, RelationRepo, RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskRepo,
 };
-
-// Silence unused-import warnings for items only used in some tests.
-#[allow(unused_imports)]
-use daruma_shared::TaskId;
 
 async fn build_stack() -> (CommandHandler, Arc<DocumentRepo>) {
     let db = Db::memory().await.unwrap();
@@ -55,10 +51,6 @@ async fn build_stack() -> (CommandHandler, Arc<DocumentRepo>) {
 
     (handler, documents)
 }
-
-// Suppress unused-warnings for imports only some tests use.
-#[allow(dead_code)]
-fn _silence(_: NewTask, _: NewPlan, _: PlanStatus, _: Priority, _: Status) {}
 
 /// Create a project and return its id, asserting `CreateProject` emits only
 /// `ProjectCreated` (no auto-seeded documents).

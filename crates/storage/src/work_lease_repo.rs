@@ -8,7 +8,8 @@
 //!
 //! [`try_reserve`]: WorkLeaseRepo::try_reserve
 
-use chrono::{DateTime, Duration, Utc};
+use crate::parse_ts;
+use chrono::{Duration, Utc};
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
 use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, WorkLeaseId};
@@ -482,12 +483,6 @@ fn row_to_lease(r: &sqlx::sqlite::SqliteRow) -> Result<WorkLease> {
         acquired_at: parse_ts(&acquired_at)?,
         expires_at: parse_ts(&expires_at)?,
     })
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 #[cfg(test)]

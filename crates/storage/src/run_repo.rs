@@ -1,7 +1,7 @@
 //! Run projection repository — materialises run-related events into the
 //! `runs` SQLite table.
 
-use chrono::{DateTime, Utc};
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{Run, RunStatus};
 use daruma_events::{Event, EventEnvelope};
@@ -406,12 +406,6 @@ fn parse_run_status(s: &str) -> Result<RunStatus> {
         "aborted" => Ok(RunStatus::Aborted),
         other => Err(CoreError::serde(format!("unknown run status: {other}"))),
     }
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

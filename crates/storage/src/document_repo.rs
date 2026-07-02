@@ -1,6 +1,7 @@
 //! Document projection repository — materialises `Document*` events
 //! into the `documents` SQLite table (PR1 §3-4).
 
+use crate::parse_ts;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -446,12 +447,6 @@ fn parse_kind(s: &str) -> Result<DocumentKind> {
             "unknown document kind: {other:?}"
         ))),
     }
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

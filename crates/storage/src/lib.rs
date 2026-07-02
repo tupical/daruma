@@ -81,3 +81,11 @@ pub use workspace_graph_repo::{
     DuplicateTaskPair, GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode,
     GraphSearchHit, GraphStatus, WorkspaceGraphRepo,
 };
+
+/// RFC3339 → UTC timestamp for sqlite row mappers.
+/// Shared helper — was copy-pasted into every repo module.
+pub(crate) fn parse_ts(s: &str) -> daruma_shared::Result<daruma_shared::Timestamp> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| daruma_shared::CoreError::serde(e.to_string()))
+}

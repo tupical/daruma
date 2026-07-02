@@ -6,6 +6,7 @@
 //! which asks for the *effective* enabled rules of a scope chain + trigger.
 //! `off`/`enabled=false` rules are not returned to the gate (invariant 2).
 
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
 use daruma_events::{Event, EventEnvelope};
@@ -256,12 +257,6 @@ fn row_to_rule(row: &sqlx::sqlite::SqliteRow) -> Result<Rule> {
 
 fn map_row_err(e: sqlx::Error) -> CoreError {
     CoreError::storage(e.to_string())
-}
-
-fn parse_ts(s: &str) -> Result<daruma_shared::Timestamp> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map_err(|e| CoreError::storage(e.to_string()))
 }
 
 fn parse_scope(kind: &str, id: Option<&str>) -> Result<RuleScope> {

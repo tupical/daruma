@@ -1,6 +1,7 @@
 //! Task projection repository — materialises task-related events into the
 //! `tasks` SQLite table.
 
+use crate::parse_ts;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
@@ -818,12 +819,6 @@ fn parse_priority(s: &str) -> Result<Priority> {
         "p3" => Ok(Priority::P3),
         other => Err(CoreError::serde(format!("unknown priority: {other}"))),
     }
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

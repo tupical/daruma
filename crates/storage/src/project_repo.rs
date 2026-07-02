@@ -1,6 +1,7 @@
 //! Project projection repository — materialises project-related events into the
 //! `projects` SQLite table.
 
+use crate::parse_ts;
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{slugify_title, Project, DEFAULT_TENANT_ID};
@@ -250,12 +251,6 @@ fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> Result<Project> {
         created_at: parse_ts(&created_at_s)?,
         updated_at: parse_ts(&updated_at_s)?,
     })
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

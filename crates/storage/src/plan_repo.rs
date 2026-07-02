@@ -1,7 +1,7 @@
 //! Plan projection repository — materialises plan/plan-task events into the
 //! `plans` and `plan_tasks` SQLite tables.
 
-use chrono::{DateTime, Utc};
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
 use daruma_events::{Event, EventEnvelope};
@@ -565,12 +565,6 @@ fn parse_plan_status(s: &str) -> Result<PlanStatus> {
         "abandoned" => Ok(PlanStatus::Abandoned),
         other => Err(CoreError::serde(format!("unknown plan status: {other}"))),
     }
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@
 //! Immutability: rows are inserted and (on supersede) marked, never updated in
 //! place except to set `superseded_by`.
 
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{ActorRef, Evidence, EvidenceKind, RuleScope};
 use daruma_events::{Event, EventEnvelope};
@@ -263,12 +264,6 @@ fn parse_opt_id<T: std::str::FromStr>(
 
 fn map_row_err(e: sqlx::Error) -> CoreError {
     CoreError::storage(e.to_string())
-}
-
-fn parse_ts(s: &str) -> Result<daruma_shared::Timestamp> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map_err(|e| CoreError::storage(e.to_string()))
 }
 
 fn parse_scope(kind: &str, id: Option<&str>) -> Result<RuleScope> {

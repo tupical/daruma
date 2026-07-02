@@ -16,7 +16,7 @@
 //! startup to seed it from existing rows.  Tests can skip `warm` — the filter
 //! fills naturally as commands are processed.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use fastbloom::BloomFilter;
 use sqlx::{Row, SqlitePool};
 use std::sync::RwLock;
@@ -216,15 +216,6 @@ impl IdempotencyRepo {
 
         Ok(result.rows_affected())
     }
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

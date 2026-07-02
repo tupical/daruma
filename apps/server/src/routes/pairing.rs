@@ -21,11 +21,9 @@
 //! - No secret material is logged.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-#[allow(unused_imports)]
-use chrono;
 use serde::{Deserialize, Serialize};
 use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
-use daruma_shared::AgentId; // for Duration::days in token expiry
+use daruma_shared::AgentId;
 
 use crate::{error::ApiError, state::AppState};
 

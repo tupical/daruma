@@ -4,8 +4,8 @@
 //! `scope` is encoded as JSON in `scope_json`; `kind` is stored as the
 //! kebab-case `TokenKind::slug()` so SQL filtering by kind is readable.
 
+use crate::parse_ts;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use daruma_auth::{ApiToken, TokenKind, TokenScope, TokenStore};
 use daruma_shared::{time, AgentId, CoreError, Result, TokenId};
@@ -206,12 +206,6 @@ fn parse_kind(s: &str) -> Result<TokenKind> {
 
 fn kind_slug(k: TokenKind) -> &'static str {
     k.slug()
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

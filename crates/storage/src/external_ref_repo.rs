@@ -1,7 +1,6 @@
 //! ExternalRef repository — cross-system identity mapping with composite-PK
 //! idempotency guard.
 
-use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use daruma_domain::ExternalRef;
 use daruma_shared::{CoreError, Result};
@@ -68,15 +67,6 @@ impl ExternalRefRepo {
 
         Ok(())
     }
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
 //! WorkUnit repository — projection over `work_units` (migration 0035)
 //! plus the atomic claim CAS behind `work_unit_drain_next`.
 
-use chrono::{DateTime, Duration, Utc};
+use crate::parse_ts;
+use chrono::{Duration, Utc};
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{WorkUnit, WorkUnitStatus};
 use daruma_events::{Event, EventEnvelope};
@@ -224,11 +225,6 @@ fn select_sql(filter: &str) -> String {
 fn row_to_unit(r: &sqlx::sqlite::SqliteRow) -> Result<WorkUnit> {
     fn col<T>(v: std::result::Result<T, sqlx::Error>) -> Result<T> {
         v.map_err(|e| CoreError::storage(e.to_string()))
-    }
-    fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-        DateTime::parse_from_rfc3339(s)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| CoreError::serde(e.to_string()))
     }
     fn parse_vec(s: &str) -> Result<Vec<String>> {
         serde_json::from_str(s).map_err(|e| CoreError::serde(e.to_string()))

@@ -1,7 +1,7 @@
 //! SQLite-backed implementation of [`daruma_webhooks::WebhookStore`].
 
+use crate::parse_ts;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use daruma_auth::ProjectFilter;
 use daruma_shared::{time, CoreError, EventId, Result, WebhookDeliveryId, WebhookId};
@@ -240,12 +240,6 @@ fn row_to_webhook(row: &sqlx::sqlite::SqliteRow) -> Result<Webhook> {
         created_at: parse_ts(&created_s)?,
         updated_at: parse_ts(&updated_s)?,
     })
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

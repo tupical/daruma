@@ -1,7 +1,7 @@
 //! Run-note projection repository — materialises `RunNoteAppended` events
 //! into the `run_notes` SQLite table (§3.8.2).
 
-use chrono::{DateTime, Utc};
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::{Actor, RunNote};
 use daruma_events::{Event, EventEnvelope};
@@ -181,12 +181,6 @@ fn row_to_note(row: &sqlx::sqlite::SqliteRow) -> Result<RunNote> {
         author,
         created_at: parse_ts(&created_at_s)?,
     })
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

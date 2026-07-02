@@ -7,7 +7,7 @@
 //! per `task_id` (latest wins); `batch_id` lets callers correlate every
 //! row produced by the same run.
 
-use chrono::{DateTime, Utc};
+use crate::parse_ts;
 use sqlx::{Row, SqlitePool};
 use daruma_domain::ComplexityHint;
 use daruma_shared::{CoreError, PlanId, Result, TaskId};
@@ -158,12 +158,6 @@ fn row_to_hint(row: &sqlx::sqlite::SqliteRow) -> Result<ComplexityHint> {
         generated_at: parse_ts(&generated_at_s)?,
         batch_id,
     })
-}
-
-fn parse_ts(s: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| CoreError::serde(e.to_string()))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
