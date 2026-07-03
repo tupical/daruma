@@ -1,16 +1,16 @@
-use serde::{Deserialize, Serialize};
 use daruma_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
     ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, CompletionNote, Document,
     DocumentStatus, Evidence, HandoffContract, NewTask, Plan, PlanPatch, PlanStatus, Priority,
-    Project, RelationKind, Rule, Run,
-    RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
+    Project, RelationKind, Rule, Run, RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease,
+    WorkUnit,
 };
 use daruma_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
     EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId,
     TaskId, Timestamp, WorkUnitId,
 };
+use serde::{Deserialize, Serialize};
 
 /// The reason a run was made obsolete by a plan edit (used by
 /// [`Event::RunObsolescedByPlanEdit`]).
@@ -25,6 +25,40 @@ pub enum ObsolescenceKind {
     GoalChanged,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationalEventType {
+    Step,
+    Transition,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationalOutcome {
+    Ok,
+    Retry,
+    Blocked,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperationalMetric {
+    pub ts: Timestamp,
+    pub event_type: OperationalEventType,
+    pub run_id: String,
+    pub node_id: Option<String>,
+    pub layer: String,
+    pub name: String,
+    pub outcome: OperationalOutcome,
+    pub latency_ms: u64,
+    pub tokens: Option<serde_json::Value>,
+    pub retry_count: u32,
+    pub error_class: Option<String>,
+    pub stuck_reason: Option<String>,
+    pub attrs: serde_json::Value,
+}
+
 /// All mutations to the system are represented as events. Events are
 /// append-only; projections are derived in [`daruma-storage`].
 ///
@@ -33,6 +67,9 @@ pub enum ObsolescenceKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    OperationalMetricRecorded {
+        metric: OperationalMetric,
+    },
     TaskCreated {
         task: NewTask,
     },
@@ -735,6 +772,7 @@ impl Event {
     /// Stable kind string for indexing and logging.
     pub fn kind(&self) -> &'static str {
         match self {
+            Event::OperationalMetricRecorded { .. } => "operational_metric_recorded",
             Event::TaskCreated { .. } => "task_created",
             Event::TaskUpdated { .. } => "task_updated",
             Event::TaskStatusChanged { .. } => "task_status_changed",
@@ -954,7 +992,8 @@ impl Event {
 
             // ── Runs channel ──────────────────────────────────────────────────
             // Mechanical run events.
-            Event::RunStarted { .. }
+            Event::OperationalMetricRecorded { .. }
+            | Event::RunStarted { .. }
             | Event::RunStepStarted { .. }
             | Event::RunStepFinished { .. }
             | Event::RunCompleted { .. }
