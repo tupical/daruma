@@ -81,11 +81,11 @@
 
 | tool | tier | profile | title | hints |
 |---|---|---|---|---|
-| `daruma_audit_findings` | Enhancing / усиливающие | `default` | List audit findings | read |
+| `daruma_audit_findings` | Enhancing / усиливающие | `full` | List audit findings | read |
 | `daruma_audit_finding_ack` | Enhancing / усиливающие | `full` | Acknowledge/mute/resolve a finding | write |
-| `daruma_audit_stuck_tasks` | Enhancing / усиливающие | `default` | Tasks stuck in a status | read |
-| `daruma_audit_duplicate_tasks` | Enhancing / усиливающие | `default` | Duplicate-task candidates | read |
-| `daruma_audit_unread_documents` | Enhancing / усиливающие | `default` | Documents not read recently | read |
+| `daruma_audit_stuck_tasks` | Enhancing / усиливающие | `full` | Tasks stuck in a status | read |
+| `daruma_audit_duplicate_tasks` | Enhancing / усиливающие | `full` | Duplicate-task candidates | read |
+| `daruma_audit_unread_documents` | Enhancing / усиливающие | `full` | Documents not read recently | read |
 | `daruma_inbox_pull` | Enhancing / усиливающие | `full` | Pull agent inbox | write |
 | `daruma_claim` | Enhancing / усиливающие | `default` | Claim task | write |
 | `daruma_release` | Enhancing / усиливающие | `default` | Release task claim | write |

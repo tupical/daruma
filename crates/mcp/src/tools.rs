@@ -495,7 +495,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List audit findings",
             "List audit findings for a project (problems a server-side check raised: stale docs, stuck tasks, missing owners, …). Filter by `severity` (error|warn|info), `category`, or `status` (open|acknowledged|muted|resolved). Newest activity first.",
             schema_audit_findings(),
-            Dom::Coordination, D, E, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_audit_finding_ack",
@@ -509,27 +509,27 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Tasks stuck in a status",
             "Tasks stuck in a status longer than a threshold (heuristic, no LLM). `status` defaults to `in_progress`; `threshold_hours` defaults to 72. Complements daruma_doctor — this catches tasks wedged in *any* status, not just claim-less in_progress.",
             schema_audit_stuck_tasks(),
-            Dom::Coordination, D, E, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_audit_duplicate_tasks",
             "Duplicate-task candidates",
             "Lexical duplicate-task candidates within a project (heuristic, no LLM): title-similar task pairs to review. Not semantic duplicates — a cheap pre-filter for a human pass.",
             schema_audit_duplicate_tasks(),
-            Dom::Coordination, D, E, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         tool(
             "daruma_audit_unread_documents",
             "Documents not read recently",
             "Documents in a project not read in the last N `days` (default 30); documents never read always qualify. Built on passive read-tracking, distinct from the explicit evidence document_read_ack.",
             schema_audit_unread_documents(),
-            Dom::Coordination, D, E, Ann::Read,
+            Dom::Coordination, F, E, Ann::Read,
         ),
         // ── AI tools ──────────────────────────────────────────────────────
         tool(
             "daruma_ai_analyze_complexity",
             "AI: analyze plan complexity",
-            "Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). Feed `expansion_hint` into `daruma_ai_decompose { hint }` to chain analyze → decompose.",
+            "[Planning layer / deprecated in core] Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). The analysis itself is planning-layer logic (`yatagarasu::analyze_complexity_batch`); this tool remains a delegation-shim until the cloud cutover. Decomposition also lives in the planning layer — there is no core decompose tool to chain into.",
             schema_ai_analyze_complexity(),
             Dom::Ai, F, X, Ann::AiWrite,
         ),
@@ -4300,8 +4300,10 @@ mod profile_tests {
         // Compact: meaningfully smaller than the full catalogue, but still a
         // complete capture→plan→execute→close workflow.
         assert!(
-            default.len() <= 40,
-            "default profile grew to {} tools — keep it compact",
+            default.len() <= 32,
+            "default profile grew to {} tools — keep it compact (PROFILES.md \
+             documents a 31-tool default; adding here needs a deliberate \
+             budget decision, not a guard bump)",
             default.len()
         );
         for required in [
