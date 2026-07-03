@@ -44,9 +44,9 @@ use daruma_core::{
     Command, CommandEnvelope,
 };
 use daruma_domain::{
-    slugify_title, Actor, AgentSessionPlanStep, CommentKind, CommentPatch, Document, DocumentKind,
-    NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind,
-    SignalKind, Status, Task, TaskPatch, TriageState, Verb,
+    slugify_title, Actor, AgentSessionPlanStep, CommentKind, CommentPatch, ComplexityHint,
+    Document, DocumentKind, NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus,
+    RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState, Verb,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -276,6 +276,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/ai/analyze-complexity/{plan_id}",
             post(ai_analyze_complexity),
         )
+        .route("/complexity-hints", post(upsert_complexity_hints))
         .route("/tasks/{task_id}/activity", get(list_task_activity))
         .route(
             "/tasks/{task_id}/comments",
@@ -2835,7 +2836,9 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
 /// retained unchanged until the cloud cutover wires the call to the
 /// planning layer (separate plan); only the **write-back** half — building
 /// `TaskBrief`s and upserting `task_complexity_hints` — is structural
-/// execution work that stays in core regardless.
+/// execution work that stays in core regardless. The standalone write-back
+/// contract already exists as `POST /v1/complexity-hints`
+/// ([`upsert_complexity_hints`]): planning analyses, core persists.
 /// Optional body for `POST /v1/ai/analyze-complexity/{plan_id}`.
 ///
 /// Pre-§3.8.13 callers send no body (or `{}`); the new
@@ -2967,6 +2970,111 @@ async fn ai_analyze_complexity(
     let batch_id = hints.first().map(|h| h.batch_id.clone());
     Ok(Json(serde_json::json!({
         "plan_id": plan_id.to_string(),
+        "batch_id": batch_id,
+        "hints": hints,
+    })))
+}
+
+/// One complexity hint draft as posted by the planning layer. Mirrors
+/// `yatagarasu::ComplexityHintDraft`: deliberately free of `batch_id` /
+/// `generated_at` — persistence identity is assigned here, by core.
+#[derive(Deserialize)]
+struct ComplexityHintDraftBody {
+    task_id: TaskId,
+    score: u8,
+    #[serde(default)]
+    recommended_subtasks: u8,
+    #[serde(default)]
+    expansion_hint: String,
+    #[serde(default)]
+    reasoning: String,
+}
+
+#[derive(Deserialize)]
+struct UpsertComplexityHintsBody {
+    hints: Vec<ComplexityHintDraftBody>,
+}
+
+/// `POST /v1/complexity-hints` — the projection write-back contract of the
+/// execution/planning layer boundary.
+///
+/// The planning layer (`yatagarasu::analyze_complexity_batch`) returns pure
+/// [`ComplexityHintDraftBody`]-shaped drafts and **never writes to storage**;
+/// its caller posts them here, and core assigns `batch_id` + `generated_at`
+/// and upserts the `task_complexity_hints` projection. This is the same
+/// write-back half the deprecated `/ai/analyze-complexity/{plan_id}` shim
+/// performs internally today; at the cloud cutover callers switch to
+/// planning-layer analysis + this endpoint and the shim is removed.
+async fn upsert_complexity_hints(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<UpsertComplexityHintsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::AgentDispatch)
+        .map_err(ApiError::from_missing_cap)?;
+
+    if body.hints.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "hints must not be empty",
+        )));
+    }
+    // Mirrors the planning layer's per-analysis cap: one batch analysis
+    // yields at most MAX_BATCH_TASKS drafts, so a larger write-back is a
+    // caller bug, not a bigger workload.
+    if body.hints.len() > daruma_ai::MAX_BATCH_TASKS {
+        return Err(ApiError::from(CoreError::validation(format!(
+            "too many hints: {} (max {})",
+            body.hints.len(),
+            daruma_ai::MAX_BATCH_TASKS
+        ))));
+    }
+
+    // Trust boundary: reject unknown task ids instead of silently writing
+    // orphan projection rows.
+    let mut unknown = Vec::new();
+    for draft in &body.hints {
+        if state
+            .tasks
+            .get(draft.task_id)
+            .await
+            .map_err(ApiError::from)?
+            .is_none()
+        {
+            unknown.push(draft.task_id.to_string());
+        }
+    }
+    if !unknown.is_empty() {
+        return Err(ApiError::from(CoreError::validation(format!(
+            "unknown task ids: {}",
+            unknown.join(", ")
+        ))));
+    }
+
+    let batch_id = uuid::Uuid::now_v7().to_string();
+    let generated_at = daruma_shared::time::now();
+    let hints: Vec<ComplexityHint> = body
+        .hints
+        .into_iter()
+        .map(|draft| ComplexityHint {
+            task_id: draft.task_id,
+            // Same clamps the analysis applies at parse time — re-applied at
+            // the trust boundary so a buggy caller cannot skew the projection.
+            score: draft.score.clamp(1, 10),
+            recommended_subtasks: draft.recommended_subtasks.min(20),
+            expansion_hint: draft.expansion_hint,
+            reasoning: draft.reasoning,
+            generated_at,
+            batch_id: batch_id.clone(),
+        })
+        .collect();
+
+    state
+        .complexity_hints
+        .upsert_batch(&hints)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(json!({
         "batch_id": batch_id,
         "hints": hints,
     })))
