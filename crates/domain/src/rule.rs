@@ -31,6 +31,20 @@ pub enum RuleMode {
     Required,
 }
 
+impl RuleMode {
+    /// Strictness ordering for the spec §2 weakening policy:
+    /// `Off < Recommendation < Required`. A child-scope rule that *lowers*
+    /// strictness is a weakening override and requires the parent rule's
+    /// `override_allowed`; raising strictness is always allowed.
+    pub fn strictness(self) -> u8 {
+        match self {
+            RuleMode::Off => 0,
+            RuleMode::Recommendation => 1,
+            RuleMode::Required => 2,
+        }
+    }
+}
+
 /// Where a rule is *defined* (spec §1, `RuleScope`). Run-level rules do not
 /// exist: a run inherits the effective rules of its task (or plan).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

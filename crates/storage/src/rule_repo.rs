@@ -64,9 +64,12 @@ impl RuleRepo {
     /// the caller assembles it from the entity being gated. Returns only
     /// `enabled=true`, `mode != off` rules. Inheritance/override (spec §2) is
     /// resolved by `rule_key`: a rule defined at a *later* (inner) scope in
-    /// `chain` wins over the same key at an outer scope. This is the hot path
-    /// for the gate; when no scope in the chain has rows it is a single empty
-    /// query.
+    /// `chain` wins over the same key at an outer scope — unless it *weakens*
+    /// the rule (lowers `RuleMode::strictness`, including weakening to `off`)
+    /// while the parent rule has `override_allowed = false`; a denied
+    /// weakening leaves the parent effective (spec §2.3). Strengthening is
+    /// always allowed. This is the hot path for the gate; when no scope in
+    /// the chain has rows it is a single empty query.
     pub async fn effective_rules(
         &self,
         chain: &[RuleScope],
@@ -77,7 +80,11 @@ impl RuleRepo {
         }
         let trigger_str = trigger_to_str(trigger);
 
-        // Index of each scope in the chain so inner scopes override outer.
+        // Index of each scope in the chain so inner scopes override outer —
+        // subject to the spec §2 weakening policy. `mode = 'off'` rows DO
+        // participate here (an inner `off` is how a child disables an
+        // inherited rule); `off` winners are dropped at the end so the gate
+        // never evaluates them (spec invariant 2).
         let mut chosen: std::collections::HashMap<String, (usize, Rule)> =
             std::collections::HashMap::new();
 
@@ -86,7 +93,7 @@ impl RuleRepo {
                 Some(id) => {
                     sqlx::query(&select_sql(
                         "WHERE scope_kind = ? AND scope_id = ? AND trigger = ? \
-                         AND enabled = 1 AND mode != 'off'",
+                         AND enabled = 1",
                     ))
                     .bind(scope.kind())
                     .bind(id)
@@ -97,7 +104,7 @@ impl RuleRepo {
                 None => {
                     sqlx::query(&select_sql(
                         "WHERE scope_kind = ? AND scope_id IS NULL AND trigger = ? \
-                         AND enabled = 1 AND mode != 'off'",
+                         AND enabled = 1",
                     ))
                     .bind(scope.kind())
                     .bind(trigger_str)
@@ -109,17 +116,37 @@ impl RuleRepo {
 
             for row in &rows {
                 let rule = row_to_rule(row)?;
-                // Inner scope (higher depth) overrides the same rule_key.
                 match chosen.get(&rule.rule_key) {
+                    // Same key at a same-or-deeper level already chosen —
+                    // cannot happen for one (scope, key) thanks to the unique
+                    // index; kept as a guard for malformed chains.
                     Some((d, _)) if *d >= depth => {}
-                    _ => {
+                    // Inner scope overrides the same rule_key — unless it
+                    // *weakens* (lowers strictness, incl. weakening to `off`)
+                    // and the parent rule forbids override (spec §2.3): then
+                    // the parent stays effective.
+                    Some((_, incumbent)) => {
+                        let weakens =
+                            rule.mode.strictness() < incumbent.mode.strictness();
+                        if weakens && !incumbent.override_allowed {
+                            continue;
+                        }
+                        chosen.insert(rule.rule_key.clone(), (depth, rule));
+                    }
+                    None => {
                         chosen.insert(rule.rule_key.clone(), (depth, rule));
                     }
                 }
             }
         }
 
-        let mut out: Vec<Rule> = chosen.into_values().map(|(_, r)| r).collect();
+        // Spec invariant 2: `off` is never evaluated — an effective `off`
+        // winner means "no rule" (the child disabled the inherited one).
+        let mut out: Vec<Rule> = chosen
+            .into_values()
+            .map(|(_, r)| r)
+            .filter(|r| r.mode != RuleMode::Off)
+            .collect();
         out.sort_by(|a, b| a.rule_key.cmp(&b.rule_key));
         Ok(out)
     }
@@ -440,5 +467,182 @@ mod tests {
         assert_eq!(eff.len(), 1, "same rule_key collapses to one");
         assert_eq!(eff[0].mode, RuleMode::Recommendation, "inner scope wins");
         assert_eq!(eff[0].message, "project override");
+    }
+
+    // ── Weakening policy (spec §2.3; OSS task 019eb65a-e5cd) ──────────────────
+
+    /// tenant `required` with `override_allowed = false` cannot be weakened
+    /// by a project-level `recommendation`: the parent stays effective.
+    #[tokio::test]
+    async fn weakening_denied_without_parent_override_allowed() {
+        let repo = repo().await;
+        let project = ProjectId::new();
+
+        let mut parent = sample(RuleScope::Tenant, "completion-note", RuleMode::Required);
+        parent.override_allowed = false;
+        apply(&repo, Event::RuleCreated { rule: parent }).await;
+        apply(
+            &repo,
+            Event::RuleCreated {
+                rule: sample(
+                    RuleScope::Project { id: project },
+                    "completion-note",
+                    RuleMode::Recommendation,
+                ),
+            },
+        )
+        .await;
+
+        let chain = [RuleScope::Tenant, RuleScope::Project { id: project }];
+        let eff = repo
+            .effective_rules(&chain, RuleTrigger::TaskBeforeComplete)
+            .await
+            .unwrap();
+        assert_eq!(eff.len(), 1);
+        assert_eq!(eff[0].mode, RuleMode::Required, "weakening denied");
+        assert_eq!(eff[0].scope, RuleScope::Tenant, "parent rule stays");
+    }
+
+    /// A child-level `off` disables an inherited rule — but only when the
+    /// parent allows override; otherwise the parent survives.
+    #[tokio::test]
+    async fn child_off_follows_the_same_weakening_policy() {
+        let repo = repo().await;
+        let allowed_project = ProjectId::new();
+        let denied_project = ProjectId::new();
+
+        // Parent that allows weakening: child `off` removes the rule.
+        let mut parent = sample(RuleScope::Tenant, "with-override", RuleMode::Required);
+        parent.override_allowed = true;
+        apply(&repo, Event::RuleCreated { rule: parent }).await;
+        apply(
+            &repo,
+            Event::RuleCreated {
+                rule: sample(
+                    RuleScope::Project { id: allowed_project },
+                    "with-override",
+                    RuleMode::Off,
+                ),
+            },
+        )
+        .await;
+        let eff = repo
+            .effective_rules(
+                &[RuleScope::Tenant, RuleScope::Project { id: allowed_project }],
+                RuleTrigger::TaskBeforeComplete,
+            )
+            .await
+            .unwrap();
+        assert!(eff.is_empty(), "child off disables the inherited rule");
+
+        // Parent that forbids weakening: child `off` is ignored.
+        let mut strict = sample(RuleScope::Tenant, "no-override", RuleMode::Required);
+        strict.override_allowed = false;
+        apply(&repo, Event::RuleCreated { rule: strict }).await;
+        apply(
+            &repo,
+            Event::RuleCreated {
+                rule: sample(
+                    RuleScope::Project { id: denied_project },
+                    "no-override",
+                    RuleMode::Off,
+                ),
+            },
+        )
+        .await;
+        let eff = repo
+            .effective_rules(
+                &[RuleScope::Tenant, RuleScope::Project { id: denied_project }],
+                RuleTrigger::TaskBeforeComplete,
+            )
+            .await
+            .unwrap();
+        let strict_eff: Vec<_> = eff.iter().filter(|r| r.rule_key == "no-override").collect();
+        assert_eq!(strict_eff.len(), 1, "parent survives the denied off");
+        assert_eq!(strict_eff[0].mode, RuleMode::Required);
+    }
+
+    /// Raising strictness is always allowed, regardless of the parent's
+    /// `override_allowed` — and works across the full 4-level chain.
+    #[tokio::test]
+    async fn strengthening_always_allowed_across_chain() {
+        let repo = repo().await;
+        let project = ProjectId::new();
+        let plan = daruma_shared::PlanId::new();
+        let task = daruma_shared::TaskId::new();
+
+        let mut parent = sample(RuleScope::Tenant, "completion-note", RuleMode::Recommendation);
+        parent.override_allowed = false;
+        apply(&repo, Event::RuleCreated { rule: parent }).await;
+        apply(
+            &repo,
+            Event::RuleCreated {
+                rule: sample(
+                    RuleScope::Task { id: task },
+                    "completion-note",
+                    RuleMode::Required,
+                ),
+            },
+        )
+        .await;
+
+        let chain = [
+            RuleScope::Tenant,
+            RuleScope::Project { id: project },
+            RuleScope::Plan { id: plan },
+            RuleScope::Task { id: task },
+        ];
+        let eff = repo
+            .effective_rules(&chain, RuleTrigger::TaskBeforeComplete)
+            .await
+            .unwrap();
+        assert_eq!(eff.len(), 1);
+        assert_eq!(eff[0].mode, RuleMode::Required, "strengthening wins");
+        assert_eq!(eff[0].scope, RuleScope::Task { id: task });
+    }
+
+    /// Denied weakening at one level does not stop a deeper level from
+    /// legitimately strengthening again: tenant required (no override) →
+    /// plan recommendation (denied) → task required (equal strictness, wins).
+    #[tokio::test]
+    async fn denied_weakening_then_deeper_equal_strictness_wins() {
+        let repo = repo().await;
+        let plan = daruma_shared::PlanId::new();
+        let task = daruma_shared::TaskId::new();
+
+        let mut parent = sample(RuleScope::Tenant, "completion-note", RuleMode::Required);
+        parent.override_allowed = false;
+        apply(&repo, Event::RuleCreated { rule: parent }).await;
+        apply(
+            &repo,
+            Event::RuleCreated {
+                rule: sample(
+                    RuleScope::Plan { id: plan },
+                    "completion-note",
+                    RuleMode::Recommendation,
+                ),
+            },
+        )
+        .await;
+        let mut task_rule = sample(
+            RuleScope::Task { id: task },
+            "completion-note",
+            RuleMode::Required,
+        );
+        task_rule.message = "task-level".into();
+        apply(&repo, Event::RuleCreated { rule: task_rule }).await;
+
+        let chain = [
+            RuleScope::Tenant,
+            RuleScope::Plan { id: plan },
+            RuleScope::Task { id: task },
+        ];
+        let eff = repo
+            .effective_rules(&chain, RuleTrigger::TaskBeforeComplete)
+            .await
+            .unwrap();
+        assert_eq!(eff.len(), 1);
+        assert_eq!(eff[0].mode, RuleMode::Required);
+        assert_eq!(eff[0].message, "task-level", "deeper equal-strictness rule wins");
     }
 }
