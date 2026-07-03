@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use daruma_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
     ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, CompletionNote, Document,
-    Evidence, NewTask, Plan, PlanPatch, PlanStatus, Priority, Project, RelationKind, Rule, Run,
+    DocumentStatus, Evidence, NewTask, Plan, PlanPatch, PlanStatus, Priority, Project,
+    RelationKind, Rule, Run,
     RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
 };
 use daruma_shared::{
@@ -520,10 +521,29 @@ pub enum Event {
         at: Timestamp,
     },
 
-    /// The document was soft-archived. Projector sets `archived_at`; the row
-    /// remains queryable via `include_archived=true`.
+    /// The document was soft-archived. Projector sets `archived_at` (and
+    /// `status = archived`); the row remains queryable via
+    /// `include_archived=true`.
     DocumentArchived {
         document_id: DocumentId,
+        at: Timestamp,
+    },
+
+    /// The document's lifecycle status changed (OSS task 019eb65b). The
+    /// projector keeps `archived_at` coherent: entering `archived` stamps it,
+    /// leaving `archived` clears it.
+    DocumentStatusChanged {
+        document_id: DocumentId,
+        from: DocumentStatus,
+        to: DocumentStatus,
+        at: Timestamp,
+    },
+
+    /// The document's task binding changed. `task_id = None` unlinks the
+    /// document back to a project-level artifact.
+    DocumentTaskLinkChanged {
+        document_id: DocumentId,
+        task_id: Option<TaskId>,
         at: Timestamp,
     },
 
@@ -762,6 +782,8 @@ impl Event {
             Event::DocumentContentAppended { .. } => "document_content_appended",
             Event::DocumentRenamed { .. } => "document_renamed",
             Event::DocumentArchived { .. } => "document_archived",
+            Event::DocumentStatusChanged { .. } => "document_status_changed",
+            Event::DocumentTaskLinkChanged { .. } => "document_task_link_changed",
             // Artifact Registry (P4)
             Event::ArtifactRegistered { .. } => "artifact_registered",
             Event::ArtifactOwnerAssigned { .. } => "artifact_owner_assigned",
@@ -947,7 +969,9 @@ impl Event {
             | Event::DocumentContentReplaced { .. }
             | Event::DocumentContentAppended { .. }
             | Event::DocumentRenamed { .. }
-            | Event::DocumentArchived { .. } => Channel::Documents,
+            | Event::DocumentArchived { .. }
+            | Event::DocumentStatusChanged { .. }
+            | Event::DocumentTaskLinkChanged { .. } => Channel::Documents,
 
             // ── Artifacts channel (P4) ────────────────────────────────────────
             Event::ArtifactRegistered { .. }
@@ -1843,6 +1867,10 @@ mod tests {
             kind: DocumentKind::Interview,
             title: "Interview".into(),
             content: String::new(),
+            status: DocumentStatus::Active,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
             created_at: now,
             updated_at: now,
             archived_at: None,
@@ -1850,6 +1878,31 @@ mod tests {
             last_read_by: None,
             read_count: 0,
         }
+    }
+
+    #[test]
+    fn document_status_changed_round_trip() {
+        assert_round_trip(
+            Event::DocumentStatusChanged {
+                document_id: daruma_shared::DocumentId::new(),
+                from: DocumentStatus::Active,
+                to: DocumentStatus::Outdated,
+                at: time::now(),
+            },
+            "document_status_changed",
+        );
+    }
+
+    #[test]
+    fn document_task_link_changed_round_trip() {
+        assert_round_trip(
+            Event::DocumentTaskLinkChanged {
+                document_id: daruma_shared::DocumentId::new(),
+                task_id: Some(TaskId::new()),
+                at: time::now(),
+            },
+            "document_task_link_changed",
+        );
     }
 
     #[test]

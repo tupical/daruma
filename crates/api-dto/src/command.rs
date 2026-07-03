@@ -347,6 +347,22 @@ pub enum Command {
         document_id: DocumentId,
     },
 
+    /// Change a document's lifecycle status (OSS task 019eb65b). Setting
+    /// `archived` behaves like `ArchiveDocument`; leaving `archived`
+    /// un-archives (the projector clears `archived_at`).
+    SetDocumentStatus {
+        document_id: DocumentId,
+        status: daruma_domain::DocumentStatus,
+    },
+
+    /// Bind a document to a task (`task_id = None` unlinks it back to a
+    /// project-level artifact). The task must exist.
+    LinkDocumentToTask {
+        document_id: DocumentId,
+        #[serde(default)]
+        task_id: Option<TaskId>,
+    },
+
     // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ─────────────────────
     /// Create a lifecycle rule. Rejected if a rule with the same `rule_key`
     /// already exists at the same scope level.
@@ -439,6 +455,8 @@ impl Command {
             Command::AppendDocumentContent { .. } => "append_document_content",
             Command::RenameDocument { .. } => "rename_document",
             Command::ArchiveDocument { .. } => "archive_document",
+            Command::SetDocumentStatus { .. } => "set_document_status",
+            Command::LinkDocumentToTask { .. } => "link_document_to_task",
             // Lifecycle rules
             Command::CreateRule { .. } => "create_rule",
             Command::UpdateRule { .. } => "update_rule",

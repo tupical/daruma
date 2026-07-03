@@ -5,7 +5,7 @@ use crate::parse_ts;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
-use daruma_domain::{Document, DocumentKind};
+use daruma_domain::{Document, DocumentKind, DocumentStatus};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, DocumentId, ProjectId, Result};
 
@@ -32,7 +32,7 @@ impl DocumentRepo {
     pub async fn get(&self, id: DocumentId) -> Result<Option<Document>> {
         let row = sqlx::query(
             "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-             last_read_at, last_read_by, read_count \
+             last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
              FROM documents WHERE id = ?",
         )
         .bind(id.to_string())
@@ -60,7 +60,7 @@ impl DocumentRepo {
         let rows = match (kind_filter, include_archived) {
             (Some(kind), true) => sqlx::query(
                 "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-                     last_read_at, last_read_by, read_count \
+                     last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
                      FROM documents \
                      WHERE project_id = ? AND kind = ? \
                      ORDER BY created_at ASC, id ASC",
@@ -71,7 +71,7 @@ impl DocumentRepo {
             .await,
             (Some(kind), false) => sqlx::query(
                 "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-                     last_read_at, last_read_by, read_count \
+                     last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
                      FROM documents \
                      WHERE project_id = ? AND kind = ? AND archived_at IS NULL \
                      ORDER BY created_at ASC, id ASC",
@@ -82,7 +82,7 @@ impl DocumentRepo {
             .await,
             (None, true) => sqlx::query(
                 "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-                     last_read_at, last_read_by, read_count \
+                     last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
                      FROM documents \
                      WHERE project_id = ? \
                      ORDER BY created_at ASC, id ASC",
@@ -92,7 +92,7 @@ impl DocumentRepo {
             .await,
             (None, false) => sqlx::query(
                 "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-                     last_read_at, last_read_by, read_count \
+                     last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
                      FROM documents \
                      WHERE project_id = ? AND archived_at IS NULL \
                      ORDER BY created_at ASC, id ASC",
@@ -209,6 +209,62 @@ impl DocumentRepo {
                 if let Some(mut doc) = get_document_tx(&mut tx, *document_id).await? {
                     let before = document_value(&doc)?;
                     doc.archived_at = Some(*at);
+                    doc.status = DocumentStatus::Archived;
+                    doc.updated_at = *at;
+                    let after = document_value(&doc)?;
+                    self.upsert_document_tx(&mut tx, &doc).await?;
+                    insert_document_version(
+                        &mut tx,
+                        envelope,
+                        *document_id,
+                        Some(before),
+                        Some(after),
+                    )
+                    .await?;
+                }
+                tx.commit()
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+            Event::DocumentStatusChanged {
+                document_id, to, at, ..
+            } => {
+                let mut tx = self.begin_tx().await?;
+                if let Some(mut doc) = get_document_tx(&mut tx, *document_id).await? {
+                    let before = document_value(&doc)?;
+                    doc.status = *to;
+                    // Keep `archived_at` coherent with the lifecycle status:
+                    // entering `archived` stamps it, leaving it clears it.
+                    match (*to == DocumentStatus::Archived, doc.archived_at) {
+                        (true, None) => doc.archived_at = Some(*at),
+                        (false, Some(_)) => doc.archived_at = None,
+                        _ => {}
+                    }
+                    doc.updated_at = *at;
+                    let after = document_value(&doc)?;
+                    self.upsert_document_tx(&mut tx, &doc).await?;
+                    insert_document_version(
+                        &mut tx,
+                        envelope,
+                        *document_id,
+                        Some(before),
+                        Some(after),
+                    )
+                    .await?;
+                }
+                tx.commit()
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+            Event::DocumentTaskLinkChanged {
+                document_id,
+                task_id,
+                at,
+            } => {
+                let mut tx = self.begin_tx().await?;
+                if let Some(mut doc) = get_document_tx(&mut tx, *document_id).await? {
+                    let before = document_value(&doc)?;
+                    doc.task_id = *task_id;
                     doc.updated_at = *at;
                     let after = document_value(&doc)?;
                     self.upsert_document_tx(&mut tx, &doc).await?;
@@ -250,8 +306,8 @@ impl DocumentRepo {
         sqlx::query(
             "INSERT OR REPLACE INTO documents \
              (id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-              last_read_at, last_read_by, read_count) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(doc.id.to_string())
         .bind(doc.project_id.to_string())
@@ -264,6 +320,10 @@ impl DocumentRepo {
         .bind(doc.last_read_at.as_ref().map(|t| t.to_rfc3339()))
         .bind(doc.last_read_by.as_deref())
         .bind(doc.read_count as i64)
+        .bind(doc.status.as_str())
+        .bind(doc.task_id.as_ref().map(|t| t.to_string()))
+        .bind(doc.trigger_kind.as_deref())
+        .bind(doc.consumer.as_deref())
         .execute(&mut **tx)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -321,7 +381,7 @@ impl DocumentRepo {
     ) -> Result<Vec<Document>> {
         let rows = sqlx::query(
             "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-             last_read_at, last_read_by, read_count \
+             last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
              FROM documents \
              WHERE project_id = ? AND archived_at IS NULL \
                AND (last_read_at IS NULL OR last_read_at < ?) \
@@ -342,7 +402,7 @@ async fn get_document_tx(
 ) -> Result<Option<Document>> {
     let row = sqlx::query(
         "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
-         last_read_at, last_read_by, read_count \
+         last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
          FROM documents WHERE id = ?",
     )
     .bind(id.to_string())
@@ -413,6 +473,18 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
     let read_count: i64 = row
         .try_get("read_count")
         .map_err(|e| CoreError::storage(e.to_string()))?;
+    let status_s: String = row
+        .try_get("status")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let task_id_s: Option<String> = row
+        .try_get("task_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let trigger_kind: Option<String> = row
+        .try_get("trigger_kind")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let consumer: Option<String> = row
+        .try_get("consumer")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
 
     let id = id_s
         .parse::<DocumentId>()
@@ -421,6 +493,12 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
         .parse::<ProjectId>()
         .map_err(|e| CoreError::serde(e.to_string()))?;
     let kind = parse_kind(&kind_s)?;
+    let status = parse_status(&status_s)?;
+    let task_id = task_id_s
+        .as_deref()
+        .map(|t| t.parse::<daruma_shared::TaskId>())
+        .transpose()
+        .map_err(|e| CoreError::serde(e.to_string()))?;
     let archived_at = archived_at_s.as_deref().map(parse_ts).transpose()?;
     let last_read_at = last_read_at_s.as_deref().map(parse_ts).transpose()?;
 
@@ -430,6 +508,10 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
         kind,
         title,
         content,
+        status,
+        task_id,
+        trigger_kind,
+        consumer,
         created_at: parse_ts(&created_at_s)?,
         updated_at: parse_ts(&updated_at_s)?,
         archived_at,
@@ -437,6 +519,18 @@ fn row_to_document(row: &sqlx::sqlite::SqliteRow) -> Result<Document> {
         last_read_by,
         read_count: read_count.max(0) as u64,
     })
+}
+
+fn parse_status(s: &str) -> Result<DocumentStatus> {
+    match s {
+        "draft" => Ok(DocumentStatus::Draft),
+        "active" => Ok(DocumentStatus::Active),
+        "outdated" => Ok(DocumentStatus::Outdated),
+        "archived" => Ok(DocumentStatus::Archived),
+        other => Err(CoreError::serde(format!(
+            "unknown document status: {other:?}"
+        ))),
+    }
 }
 
 fn parse_kind(s: &str) -> Result<DocumentKind> {
@@ -473,6 +567,10 @@ mod tests {
             kind,
             title: title.to_string(),
             content: None,
+            status: None,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
         }
         .into_document(DocumentId::new(), time::now())
     }

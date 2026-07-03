@@ -88,6 +88,10 @@ async fn create_doc(
                     kind,
                     title: title.into(),
                     content: None,
+                    status: None,
+                    task_id: None,
+                    trigger_kind: None,
+                    consumer: None,
                 },
             },
             Actor::user(),
@@ -155,6 +159,10 @@ async fn create_document_emits_event_and_allows_duplicate_kind() {
                     kind: DocumentKind::Interview,
                     title: "Second Interview".into(),
                     content: Some("notes".into()),
+                    status: None,
+                    task_id: None,
+                    trigger_kind: None,
+                    consumer: None,
                 },
             },
             Actor::user(),
@@ -190,6 +198,10 @@ async fn create_document_rejects_empty_title() {
                     kind: DocumentKind::Interview,
                     title: "   ".into(),
                     content: None,
+                    status: None,
+                    task_id: None,
+                    trigger_kind: None,
+                    consumer: None,
                 },
             },
             Actor::user(),
@@ -313,4 +325,237 @@ async fn archive_is_idempotent_on_already_archived() {
         .await
         .unwrap();
     assert!(second.is_empty(), "re-archive is a no-op");
+}
+
+// ── Lifecycle + task binding (OSS task 019eb65b) ──────────────────────────────
+
+#[tokio::test]
+async fn set_status_emits_event_and_updates_projection() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let doc_id = create_doc(&handler, project_id, DocumentKind::Interview, "Doc").await;
+
+    // Fresh documents default to `active`.
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.status, daruma_domain::DocumentStatus::Active);
+
+    let envs = handler
+        .handle(
+            Command::SetDocumentStatus {
+                document_id: doc_id,
+                status: daruma_domain::DocumentStatus::Outdated,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1);
+    match &envs[0].payload {
+        Event::DocumentStatusChanged { from, to, .. } => {
+            assert_eq!(*from, daruma_domain::DocumentStatus::Active);
+            assert_eq!(*to, daruma_domain::DocumentStatus::Outdated);
+        }
+        other => panic!("expected DocumentStatusChanged, got {other:?}"),
+    }
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.status, daruma_domain::DocumentStatus::Outdated);
+
+    // Same status again is a no-op.
+    let envs = handler
+        .handle(
+            Command::SetDocumentStatus {
+                document_id: doc_id,
+                status: daruma_domain::DocumentStatus::Outdated,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert!(envs.is_empty(), "same-status set is a no-op");
+}
+
+#[tokio::test]
+async fn status_archived_is_coherent_with_archived_at() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let doc_id = create_doc(&handler, project_id, DocumentKind::HumanLog, "Log").await;
+
+    // Entering `archived` via status stamps archived_at.
+    handler
+        .handle(
+            Command::SetDocumentStatus {
+                document_id: doc_id,
+                status: daruma_domain::DocumentStatus::Archived,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.status, daruma_domain::DocumentStatus::Archived);
+    assert!(doc.archived_at.is_some(), "archived status stamps archived_at");
+
+    // Leaving `archived` clears the stamp (un-archive).
+    handler
+        .handle(
+            Command::SetDocumentStatus {
+                document_id: doc_id,
+                status: daruma_domain::DocumentStatus::Active,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.status, daruma_domain::DocumentStatus::Active);
+    assert!(doc.archived_at.is_none(), "leaving archived clears archived_at");
+
+    // The legacy ArchiveDocument command also lands the status on `archived`.
+    handler
+        .handle(
+            Command::ArchiveDocument {
+                document_id: doc_id,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.status, daruma_domain::DocumentStatus::Archived);
+    assert!(doc.archived_at.is_some());
+}
+
+#[tokio::test]
+async fn link_document_to_task_validates_and_roundtrips() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let doc_id = create_doc(&handler, project_id, DocumentKind::Interview, "Doc").await;
+
+    // Unknown task → NotFound, nothing emitted.
+    let ghost = daruma_shared::TaskId::new();
+    let err = handler
+        .handle(
+            Command::LinkDocumentToTask {
+                document_id: doc_id,
+                task_id: Some(ghost),
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::NotFound { .. }), "got: {err:?}");
+
+    // Create a real task and link.
+    let envs = handler
+        .handle(
+            Command::CreateTask {
+                task: daruma_domain::NewTask::new("target"),
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let task_id = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::TaskCreated { task } => task.id,
+            _ => None,
+        })
+        .expect("TaskCreated");
+
+    handler
+        .handle(
+            Command::LinkDocumentToTask {
+                document_id: doc_id,
+                task_id: Some(task_id),
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.task_id, Some(task_id));
+
+    // Same link again is a no-op.
+    let envs = handler
+        .handle(
+            Command::LinkDocumentToTask {
+                document_id: doc_id,
+                task_id: Some(task_id),
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert!(envs.is_empty(), "same-link set is a no-op");
+
+    // Unlink back to project level.
+    handler
+        .handle(
+            Command::LinkDocumentToTask {
+                document_id: doc_id,
+                task_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.task_id, None);
+}
+
+#[tokio::test]
+async fn create_document_with_lifecycle_metadata() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+
+    // task_id on create is validated the same way as on link.
+    let err = handler
+        .handle(
+            Command::CreateDocument {
+                new_doc: NewDocument {
+                    id: None,
+                    project_id,
+                    kind: DocumentKind::Interview,
+                    title: "Doc".into(),
+                    content: None,
+                    status: None,
+                    task_id: Some(daruma_shared::TaskId::new()),
+                    trigger_kind: None,
+                    consumer: None,
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::NotFound { .. }), "got: {err:?}");
+
+    let envs = handler
+        .handle(
+            Command::CreateDocument {
+                new_doc: NewDocument {
+                    id: None,
+                    project_id,
+                    kind: DocumentKind::Interview,
+                    title: "Doc".into(),
+                    content: None,
+                    status: Some(daruma_domain::DocumentStatus::Draft),
+                    task_id: None,
+                    trigger_kind: Some("before_start_rule".into()),
+                    consumer: Some("reviewer".into()),
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc_id = match &envs[0].payload {
+        Event::DocumentCreated { document } => document.id,
+        other => panic!("expected DocumentCreated, got {other:?}"),
+    };
+    let doc = documents.get(doc_id).await.unwrap().unwrap();
+    assert_eq!(doc.status, daruma_domain::DocumentStatus::Draft);
+    assert_eq!(doc.trigger_kind.as_deref(), Some("before_start_rule"));
+    assert_eq!(doc.consumer.as_deref(), Some("reviewer"));
 }

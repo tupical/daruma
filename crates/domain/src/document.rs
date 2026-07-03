@@ -11,7 +11,7 @@
 //! seeding them is product behaviour, not an execution-core default.
 
 use serde::{Deserialize, Serialize};
-use daruma_shared::{DocumentId, ProjectId, Timestamp};
+use daruma_shared::{DocumentId, ProjectId, TaskId, Timestamp};
 
 /// Discriminator for document kinds.
 ///
@@ -37,6 +37,39 @@ impl DocumentKind {
     }
 }
 
+/// Lifecycle status of a document (OSS task 019eb65b; vision.md rule 9).
+///
+/// The minimum viable slice of the target taxonomy
+/// (`draft/active/used/needs_review/accepted/outdated/replaced/archived`);
+/// stored as TEXT so extending the set later is additive. `Archived` is kept
+/// coherent with `Document::archived_at` by the projector: entering
+/// `Archived` stamps `archived_at`, leaving it clears the stamp.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentStatus {
+    Draft,
+    /// The pre-lifecycle implicit state — existing documents and new
+    /// documents created without an explicit status land here, so the
+    /// old "document = live markdown blob" behaviour is unchanged.
+    #[default]
+    Active,
+    Outdated,
+    Archived,
+}
+
+impl DocumentStatus {
+    /// Stable string form matching the `serde` snake_case representation.
+    /// Used for SQL persistence and stable comparison in tests / logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DocumentStatus::Draft => "draft",
+            DocumentStatus::Active => "active",
+            DocumentStatus::Outdated => "outdated",
+            DocumentStatus::Archived => "archived",
+        }
+    }
+}
+
 /// A markdown artefact owned by a project.
 ///
 /// `archived_at` follows the same convention as `Plan::archived_at`: `None`
@@ -49,6 +82,23 @@ pub struct Document {
     pub title: String,
     /// Raw markdown body.
     pub content: String,
+    /// Lifecycle status (migration 0042). Defaults to [`DocumentStatus::Active`]
+    /// so documents from before the lifecycle existed keep their semantics.
+    #[serde(default)]
+    pub status: DocumentStatus,
+    /// The task this document is an artifact of (vision.md: "не документы, а
+    /// артефакты задачи"). `None` = project-level document, the pre-lifecycle
+    /// shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    /// What triggered the document's creation (free-form, e.g.
+    /// `"before_start_rule"`, `"handoff"`). Metadata for Cloud rules 6–9.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_kind: Option<String>,
+    /// Who/what is expected to consume the document (free-form, e.g.
+    /// `"executor_agent"`, `"reviewer"`). Metadata for Cloud rules 6–9.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +132,17 @@ pub struct NewDocument {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Initial lifecycle status; `None` = [`DocumentStatus::Active`] (the
+    /// pre-lifecycle behaviour, kept as the default for compatibility).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<DocumentStatus>,
+    /// Task the document is created as an artifact of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer: Option<String>,
 }
 
 impl NewDocument {
@@ -95,6 +156,10 @@ impl NewDocument {
             kind: self.kind,
             title: self.title,
             content: self.content.unwrap_or_default(),
+            status: self.status.unwrap_or_default(),
+            task_id: self.task_id,
+            trigger_kind: self.trigger_kind,
+            consumer: self.consumer,
             created_at: now,
             updated_at: now,
             archived_at: None,
@@ -120,6 +185,10 @@ mod tests {
             kind,
             title: "Interview".to_string(),
             content: "# Hello\n\nWorld".to_string(),
+            status: DocumentStatus::Active,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
             created_at: now,
             updated_at: now,
             archived_at: None,
@@ -199,6 +268,10 @@ mod tests {
             kind: DocumentKind::Interview,
             title: "Interview".to_string(),
             content: Some("body".to_string()),
+            status: Some(DocumentStatus::Draft),
+            task_id: None,
+            trigger_kind: Some("before_start_rule".to_string()),
+            consumer: Some("reviewer".to_string()),
         };
         let json = serde_json::to_string(&new_doc).unwrap();
         let back: NewDocument = serde_json::from_str(&json).unwrap();
@@ -213,6 +286,10 @@ mod tests {
             kind: DocumentKind::HumanLog,
             title: "Human Log".to_string(),
             content: None,
+            status: None,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
         };
         let json = serde_json::to_string(&new_doc).unwrap();
         assert!(!json.contains("\"id\""));
@@ -231,6 +308,10 @@ mod tests {
             kind: DocumentKind::Interview,
             title: "Interview".to_string(),
             content: None,
+            status: None,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
         };
         let id = DocumentId::new();
         let doc = new_doc.into_document(id, now);
@@ -252,6 +333,10 @@ mod tests {
             kind: DocumentKind::HumanLog,
             title: "Human Log".to_string(),
             content: Some("# Header\n\nbody".to_string()),
+            status: None,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
         };
         let doc = new_doc.into_document(DocumentId::new(), time::now());
         assert_eq!(doc.content, "# Header\n\nbody");

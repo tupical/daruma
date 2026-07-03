@@ -255,3 +255,64 @@ async fn dispatch_request(
 ) -> Option<daruma_mcp::JsonRpcResponse> {
     dispatch_request_with_profile(client, ToolProfile::Full, req).await
 }
+
+/// Lifecycle + task binding (OSS task 019eb65b) through the MCP surface:
+/// `daruma_doc_set_status` and `daruma_doc_link_task` round-trip via the
+/// PATCH route into the projection, visible through `daruma_doc_get`.
+#[tokio::test]
+async fn doc_lifecycle_and_task_link_roundtrip() {
+    let (addr, token) = spawn_daruma_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+    let doc_id = create_doc_via_mcp(&client, &pid, "interview", "Doc").await;
+
+    // Fresh doc: default lifecycle status is `active`, no task link.
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(doc["document"]["status"], "active", "got: {doc}");
+    assert!(doc["document"].get("task_id").is_none(), "got: {doc}");
+
+    // Status change.
+    let resp = call_tool(
+        &client,
+        "daruma_doc_set_status",
+        json!({ "document_id": doc_id, "status": "outdated" }),
+    )
+    .await;
+    assert_eq!(resp["success"], true, "set_status must succeed: {resp}");
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(doc["document"]["status"], "outdated", "got: {doc}");
+
+    // Create a task and link the document to it.
+    let task = call_tool(
+        &client,
+        "daruma_create",
+        json!({ "task": { "title": "target", "project_id": pid } }),
+    )
+    .await;
+    let task_id = task["data"][0]["payload"]["task"]["id"]
+        .as_str()
+        .expect("task id in create response")
+        .to_owned();
+
+    let resp = call_tool(
+        &client,
+        "daruma_doc_link_task",
+        json!({ "document_id": doc_id, "task_id": task_id }),
+    )
+    .await;
+    assert_eq!(resp["success"], true, "link_task must succeed: {resp}");
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(doc["document"]["task_id"], task_id.as_str(), "got: {doc}");
+
+    // Explicit null unlinks.
+    let resp = call_tool(
+        &client,
+        "daruma_doc_link_task",
+        json!({ "document_id": doc_id, "task_id": null }),
+    )
+    .await;
+    assert_eq!(resp["success"], true, "unlink must succeed: {resp}");
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert!(doc["document"].get("task_id").is_none(), "got: {doc}");
+}

@@ -22,9 +22,9 @@
 | Sessions | 0 | 0 | 7 |
 | Signals | 0 | 2 | 0 |
 | Relations | 0 | 3 | 0 |
-| Documents | 0 | 0 | 7 |
+| Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 18 | 56 | 41 |
+| ИТОГО | 18 | 56 | 43 |
 
 ## Tasks
 
@@ -198,6 +198,8 @@
 | `daruma_doc_replace` | Extending / расширяющие | `full` | Replace document body | write |
 | `daruma_doc_rename` | Extending / расширяющие | `full` | Rename document | write |
 | `daruma_doc_archive` | Extending / расширяющие | `full` | Archive document | write,destructive |
+| `daruma_doc_set_status` | Extending / расширяющие | `full` | Set document status | write |
+| `daruma_doc_link_task` | Extending / расширяющие | `full` | Link document to task | write |
 | `daruma_doc_list` | Extending / расширяющие | `full` | List documents | read |
 
 ## History

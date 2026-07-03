@@ -3717,7 +3717,9 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::ReplaceDocumentContent { .. }
         | Command::AppendDocumentContent { .. }
         | Command::RenameDocument { .. }
-        | Command::ArchiveDocument { .. } => Capability::DocumentWrite,
+        | Command::ArchiveDocument { .. }
+        | Command::SetDocumentStatus { .. }
+        | Command::LinkDocumentToTask { .. } => Capability::DocumentWrite,
     }
 }
 
@@ -5638,12 +5640,30 @@ struct PatchDocumentBody {
     title: Option<String>,
     #[serde(default)]
     content: Option<String>,
+    /// Lifecycle status (OSS task 019eb65b).
+    #[serde(default)]
+    status: Option<daruma_domain::DocumentStatus>,
+    /// Task binding. Present-vs-absent matters: absent = leave the link
+    /// alone, explicit `null` = unlink back to a project-level document.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    task_id: Option<Option<TaskId>>,
 }
 
-/// `PATCH /v1/documents/{id}` — rename and/or replace the body. The two
-/// commands dispatch sequentially; whichever is requested via the body is
-/// emitted (both can be requested in a single call). The body must specify
-/// at least one of `title` / `content`.
+/// Deserialize a field so an *absent* key stays `None` (via
+/// `#[serde(default)]`) while a present key — including explicit `null` —
+/// becomes `Some(inner)`. The standard double-`Option` PATCH trick.
+fn deserialize_present<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
+/// `PATCH /v1/documents/{id}` — rename, replace the body, change lifecycle
+/// status, and/or re-bind to a task. The commands dispatch sequentially;
+/// whichever is requested via the body is emitted (several can be requested
+/// in a single call). The body must specify at least one field.
 async fn patch_document(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -5657,9 +5677,13 @@ async fn patch_document(
             "invalid document id: {id_str}"
         )))
     })?;
-    if body.title.is_none() && body.content.is_none() {
+    if body.title.is_none()
+        && body.content.is_none()
+        && body.status.is_none()
+        && body.task_id.is_none()
+    {
         return Err(ApiError::from(CoreError::validation(
-            "patch must set at least one of `title` or `content`",
+            "patch must set at least one of `title`, `content`, `status`, `task_id`",
         )));
     }
 
@@ -5686,6 +5710,34 @@ async fn patch_document(
                 Command::ReplaceDocumentContent {
                     document_id: id,
                     content,
+                },
+                actor_from(&auth, None),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        last_env = envs.into_iter().last().or(last_env);
+    }
+    if let Some(status) = body.status {
+        let envs = state
+            .commands
+            .dispatch(
+                Command::SetDocumentStatus {
+                    document_id: id,
+                    status,
+                },
+                actor_from(&auth, None),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        last_env = envs.into_iter().last().or(last_env);
+    }
+    if let Some(task_id) = body.task_id {
+        let envs = state
+            .commands
+            .dispatch(
+                Command::LinkDocumentToTask {
+                    document_id: id,
+                    task_id,
                 },
                 actor_from(&auth, None),
             )

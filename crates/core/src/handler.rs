@@ -2111,12 +2111,21 @@ impl CommandHandler {
                 }
                 let id = new_doc.id.unwrap_or_else(DocumentId::new);
                 let now = time::now();
+                if let Some(task_id) = new_doc.task_id {
+                    if self.tasks.get(task_id).await?.is_none() {
+                        return Err(CoreError::not_found(format!("task {task_id}")));
+                    }
+                }
                 let document = daruma_domain::NewDocument {
                     id: Some(id),
                     project_id: new_doc.project_id,
                     kind: new_doc.kind,
                     title,
                     content: new_doc.content,
+                    status: new_doc.status,
+                    task_id: new_doc.task_id,
+                    trigger_kind: new_doc.trigger_kind,
+                    consumer: new_doc.consumer,
                 }
                 .into_document(id, now);
                 Ok(vec![Event::DocumentCreated { document }])
@@ -2171,6 +2180,42 @@ impl CommandHandler {
                 }
                 Ok(vec![Event::DocumentArchived {
                     document_id,
+                    at: time::now(),
+                }])
+            }
+
+            Command::SetDocumentStatus {
+                document_id,
+                status,
+            } => {
+                let doc = require_document(&self.documents, document_id).await?;
+                if doc.status == status {
+                    return Ok(vec![]); // no-op — same status
+                }
+                Ok(vec![Event::DocumentStatusChanged {
+                    document_id,
+                    from: doc.status,
+                    to: status,
+                    at: time::now(),
+                }])
+            }
+
+            Command::LinkDocumentToTask {
+                document_id,
+                task_id,
+            } => {
+                let doc = require_document(&self.documents, document_id).await?;
+                if let Some(task_id) = task_id {
+                    if self.tasks.get(task_id).await?.is_none() {
+                        return Err(CoreError::not_found(format!("task {task_id}")));
+                    }
+                }
+                if doc.task_id == task_id {
+                    return Ok(vec![]); // no-op — link unchanged
+                }
+                Ok(vec![Event::DocumentTaskLinkChanged {
+                    document_id,
+                    task_id,
                     at: time::now(),
                 }])
             }

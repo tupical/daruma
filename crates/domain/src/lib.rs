@@ -31,7 +31,7 @@ pub use audit_finding::{
 pub use comment::{Comment, CommentKind, CommentPatch, NewComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;
-pub use document::{Document, DocumentKind, NewDocument};
+pub use document::{Document, DocumentKind, DocumentStatus, NewDocument};
 pub use evidence::{ActorRef, Evidence, EvidenceKind, NewEvidence};
 pub use external_ref::ExternalRef;
 pub use plan::{

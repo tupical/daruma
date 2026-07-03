@@ -1018,6 +1018,20 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::Documents, F, X, Ann::Destructive,
         ),
         tool(
+            "daruma_doc_set_status",
+            "Set document status",
+            "Change a document's lifecycle status (draft/active/outdated/archived). Setting `archived` behaves like archive; leaving `archived` un-archives.",
+            schema_doc_set_status(),
+            Dom::Documents, F, X, Ann::WriteIdem,
+        ),
+        tool(
+            "daruma_doc_link_task",
+            "Link document to task",
+            "Bind a document to a task as its artifact (vision: documents are task artifacts, not free-floating notes). Pass `task_id: null` (or omit it) to unlink back to a project-level document.",
+            schema_doc_link_task(),
+            Dom::Documents, F, X, Ann::WriteIdem,
+        ),
+        tool(
             "daruma_doc_list",
             "List documents",
             "List documents for a project. `project_id` uses the resolved repo project when unambiguous; multi-repo parent folders require `project_id`, `project_scope`, or `scope_path`. Optional `kind` filter; archived docs are hidden unless `include_archived=true`.",
@@ -2391,6 +2405,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
                 new_doc["content"] = json!(content);
             }
+            for key in ["status", "task_id", "trigger_kind", "consumer"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    new_doc[key] = json!(v);
+                }
+            }
             client
                 .post_json("/v1/documents", json!({ "new_doc": new_doc }))
                 .await
@@ -2430,6 +2449,22 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let id = required_string(&args, "document_id")?;
             client
                 .post_json(&format!("/v1/documents/{id}/archive"), json!({}))
+                .await
+        }
+        "daruma_doc_set_status" => {
+            let id = required_string(&args, "document_id")?;
+            let status = required_string(&args, "status")?;
+            client
+                .patch_json(&format!("/v1/documents/{id}"), json!({ "status": status }))
+                .await
+        }
+        "daruma_doc_link_task" => {
+            let id = required_string(&args, "document_id")?;
+            // Explicit `task_id: null` (or absent) unlinks — the PATCH body
+            // distinguishes present-null from absent, so always send the key.
+            let task_id = args.get("task_id").cloned().unwrap_or(Value::Null);
+            client
+                .patch_json(&format!("/v1/documents/{id}"), json!({ "task_id": task_id }))
                 .await
         }
         "daruma_doc_list" => {
@@ -3865,9 +3900,35 @@ fn schema_doc_create() -> Value {
             "project_id": {"type":"string"},
             "kind":       {"type":"string","enum":["interview","human_log"]},
             "title":      {"type":"string"},
-            "content":    {"type":"string","description":"Initial markdown body. Defaults to empty when omitted."}
+            "content":    {"type":"string","description":"Initial markdown body. Defaults to empty when omitted."},
+            "status":     {"type":"string","enum":["draft","active","outdated","archived"],"description":"Initial lifecycle status. Defaults to `active`."},
+            "task_id":    {"type":"string","description":"Task this document is an artifact of."},
+            "trigger_kind": {"type":"string","description":"What triggered the document's creation (free-form, e.g. `before_start_rule`)."},
+            "consumer":   {"type":"string","description":"Who/what is expected to consume the document (free-form, e.g. `reviewer`)."}
         },
         "required":["project_id","kind","title"]
+    })
+}
+
+fn schema_doc_set_status() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "document_id": {"type":"string"},
+            "status":      {"type":"string","enum":["draft","active","outdated","archived"]}
+        },
+        "required":["document_id","status"]
+    })
+}
+
+fn schema_doc_link_task() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "document_id": {"type":"string"},
+            "task_id":     {"type":["string","null"],"description":"Task to bind the document to; omit or pass null to unlink."}
+        },
+        "required":["document_id"]
     })
 }
 
