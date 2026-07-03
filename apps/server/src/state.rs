@@ -15,7 +15,9 @@ use daruma_storage::{
 };
 use daruma_sync::Hub;
 use daruma_webhooks::WebhookStore;
+use sqlx::SqlitePool;
 
+use crate::mcp_downloads::McpDownloads;
 use crate::middleware::rate_limit::RateLimiter;
 
 /// Application-wide state injected into every Axum handler via [`axum::extract::State`].
@@ -108,4 +110,89 @@ pub struct AppState {
     /// Hex SHA-256 fingerprint of the server's self-signed TLS certificate
     /// (without the `sha256:` prefix — callers prepend it as needed).
     pub tls_fingerprint: String,
+}
+
+impl AppState {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        pool: SqlitePool,
+        store: Arc<dyn EventStore>,
+        tasks: Arc<TaskRepo>,
+        projects: Arc<ProjectRepo>,
+        comments: Arc<CommentRepo>,
+        activity: Arc<ActivityRepo>,
+        tokens: Arc<TokenRepo>,
+        auth_store: Arc<dyn TokenStore>,
+        inbox: Arc<AgentInboxRepo>,
+        webhooks: Arc<WebhookRepo>,
+        webhook_store: Arc<dyn WebhookStore>,
+        commands: CommandBus,
+        hub: Arc<Hub>,
+        ai: Option<OpenAiClient>,
+        plans: Arc<PlanRepo>,
+        runs: Arc<RunRepo>,
+        run_notes: Arc<RunNoteRepo>,
+        sessions: Arc<SessionRepo>,
+        claims: Arc<AgentClaimRepo>,
+        work_leases: Arc<WorkLeaseRepo>,
+        external_refs: Arc<ExternalRefRepo>,
+        tenant_quotas: Arc<TenantQuotaRepo>,
+        idempotency: Arc<IdempotencyRepo>,
+        relations: Arc<RelationRepo>,
+        documents: Arc<DocumentRepo>,
+        entity_versions: Arc<EntityVersionRepo>,
+        complexity_hints: Arc<TaskComplexityRepo>,
+        project_settings: Arc<daruma_storage::ProjectSettingsRepo>,
+        work_units: Arc<daruma_storage::WorkUnitRepo>,
+        handoffs: Arc<daruma_storage::HandoffRepo>,
+        capability_profiles: Arc<daruma_storage::CapabilityProfileRepo>,
+        rules: Arc<RuleRepo>,
+        workspace_graph: Arc<WorkspaceGraphRepo>,
+        mcp_downloads: McpDownloads,
+        pairing: PairingStore,
+        tls_host: String,
+        tls_fingerprint: String,
+    ) -> Self {
+        Self {
+            store,
+            tasks,
+            projects,
+            comments,
+            activity,
+            tokens,
+            auth_store,
+            inbox,
+            webhooks,
+            webhook_store,
+            commands,
+            hub,
+            ai,
+            plans,
+            runs,
+            run_notes,
+            sessions,
+            claims,
+            work_leases,
+            external_refs,
+            tenant_quotas,
+            idempotency,
+            relations,
+            documents,
+            project_settings,
+            work_units,
+            handoffs,
+            capability_profiles,
+            rules,
+            evidence: Arc::new(EvidenceRepo::new(pool.clone())),
+            audit_findings: Arc::new(AuditFindingRepo::new(pool)),
+            entity_versions,
+            complexity_hints,
+            workspace_graph,
+            mcp_downloads,
+            rate_limiter: RateLimiter::default(),
+            pairing,
+            tls_host,
+            tls_fingerprint,
+        }
+    }
 }
