@@ -60,6 +60,14 @@ impl WorkUnitRepo {
         // not ready — the consumer hasn't received what it needs yet. The
         // predicate matches `HandoffStatus::blocks_dispatch` (everything
         // except `accepted` blocks).
+        //
+        // Capability preference (P6): among dispatchable units, the ones
+        // whose tags match the claiming agent's capability profiles come
+        // first (best score wins, creation order breaks ties). Strictly a
+        // preference — a zero-fit unit is still claimable. Profiles older
+        // than 2 × their half-life stop contributing unless user-set
+        // (ponytail: hard staleness cutoff instead of exponential decay;
+        // upgrade if ordering quality warrants it).
         let updated = sqlx::query(
             "UPDATE work_units SET \
                 owner_agent_id = ?, claim_expires_at = ?, status = 'in_progress', updated_at = ? \
@@ -72,7 +80,14 @@ impl WorkUnitRepo {
                        SELECT 1 FROM handoff_contracts h \
                        WHERE h.to_work_unit_id = w.id AND h.status != 'accepted'\
                    ) \
-                 ORDER BY created_at LIMIT 1\
+                 ORDER BY COALESCE((\
+                     SELECT MAX(p.score) FROM json_each(w.capability_tags_json) t \
+                     JOIN agent_capability_profiles p \
+                       ON p.agent_id = ? AND p.capability = t.value \
+                     WHERE p.source = 'user_set' \
+                        OR julianday(?) - julianday(p.last_observed_at) \
+                           <= 2 * p.decay_half_life_days\
+                 ), 0) DESC, created_at LIMIT 1\
              ) \
              AND status IN ('todo','ready') \
              AND (owner_agent_id IS NULL OR owner_agent_id = ? \
@@ -83,6 +98,8 @@ impl WorkUnitRepo {
         .bind(&expires)
         .bind(&now_s)
         .bind(task_id.to_string())
+        .bind(agent_id.to_string())
+        .bind(&now_s)
         .bind(agent_id.to_string())
         .bind(&now_s)
         .bind(agent_id.to_string())
@@ -484,5 +501,73 @@ mod tests {
             .unwrap()
             .expect("consumer dispatchable after acceptance");
         assert_eq!(next.id, consumer.id);
+    }
+
+    /// P6 capability preference: among dispatchable units the claiming
+    /// agent's profile reorders the pool (preference), but a zero-fit
+    /// agent still gets a unit (never a hard binding).
+    #[tokio::test]
+    async fn capability_profile_prefers_matching_unit_without_binding() {
+        let (db, r) = repo().await;
+        let profiles = crate::CapabilityProfileRepo::new(db.pool().clone());
+        let task = TaskId::new();
+
+        // Older unit: backend. Newer unit: frontend. FIFO would pick backend.
+        let backend = {
+            let mut wu = WorkUnit::sample(task);
+            wu.title = "backend".into();
+            wu.capability_tags = vec!["backend".into()];
+            let env = EventEnvelope::new(
+                Actor::user(),
+                Event::WorkUnitCreated {
+                    work_unit: wu.clone(),
+                },
+            );
+            r.apply_event(&env).await.unwrap();
+            wu
+        };
+        let frontend = {
+            let mut wu = WorkUnit::sample(task);
+            wu.title = "frontend".into();
+            wu.capability_tags = vec!["frontend".into()];
+            let env = EventEnvelope::new(
+                Actor::user(),
+                Event::WorkUnitCreated {
+                    work_unit: wu.clone(),
+                },
+            );
+            r.apply_event(&env).await.unwrap();
+            wu
+        };
+
+        let ttl = chrono::Duration::seconds(300);
+        let specialist = AgentId::new();
+        profiles
+            .upsert_user_set(
+                specialist,
+                "frontend",
+                0.9,
+                &daruma_shared::time::now().to_rfc3339(),
+            )
+            .await
+            .unwrap();
+
+        // The frontend specialist jumps the FIFO order.
+        let got = r
+            .try_claim_next(task, specialist, ttl)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.id, frontend.id, "profile fit beats creation order");
+
+        // A profile-less agent still gets the remaining unit — preference,
+        // not a binding.
+        let generalist = AgentId::new();
+        let got = r
+            .try_claim_next(task, generalist, ttl)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.id, backend.id);
     }
 }

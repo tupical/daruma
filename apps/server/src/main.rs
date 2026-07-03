@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let project_settings = Arc::new(daruma_storage::ProjectSettingsRepo::new(pool.clone()));
     let work_units = Arc::new(daruma_storage::WorkUnitRepo::new(pool.clone()));
     let handoffs = Arc::new(daruma_storage::HandoffRepo::new(pool.clone()));
+    let capability_profiles = Arc::new(daruma_storage::CapabilityProfileRepo::new(pool.clone()));
     let rules = Arc::new(daruma_storage::RuleRepo::new(pool.clone()));
     let evidence = Arc::new(daruma_storage::EvidenceRepo::new(pool.clone()));
     let audit_findings = Arc::new(AuditFindingRepo::new(pool.clone()));
@@ -149,6 +150,7 @@ async fn main() -> anyhow::Result<()> {
         .with_project_settings(project_settings.clone())
         .with_work_units(work_units.clone())
         .with_handoffs(handoffs.clone())
+        .with_capability_profiles(capability_profiles.clone())
         .with_rules(rules.clone())
         .with_evidence(evidence.clone())
         // Rule engine reads through the same projections (zero-cost when empty).
@@ -288,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
         project_settings,
         work_units,
         handoffs,
+        capability_profiles,
         rules,
         evidence,
         audit_findings,

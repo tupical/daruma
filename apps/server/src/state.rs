@@ -80,6 +80,7 @@ pub struct AppState {
     /// WorkUnit projection (P3 multi-agent coordination).
     pub work_units: Arc<daruma_storage::WorkUnitRepo>,
     pub handoffs: Arc<daruma_storage::HandoffRepo>,
+    pub capability_profiles: Arc<daruma_storage::CapabilityProfileRepo>,
     /// Lifecycle-rule projection (docs/LIFECYCLE_RULES_SPEC.md §4).
     pub rules: Arc<RuleRepo>,
     /// Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3).

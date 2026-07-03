@@ -62,6 +62,7 @@ pub struct CommandHandler {
     /// WorkUnit projection (P3). `None` until wired by the server.
     pub work_units: Option<Arc<WorkUnitRepo>>,
     pub handoffs: Option<Arc<daruma_storage::HandoffRepo>>,
+    pub capability_profiles: Option<Arc<daruma_storage::CapabilityProfileRepo>>,
     pub external_refs: Option<Arc<dyn ExternalRefRepository>>,
     pub tenant_quotas: Option<Arc<TenantQuotaRepo>>,
 
@@ -120,6 +121,7 @@ impl CommandHandler {
             project_settings: None,
             work_units: None,
             handoffs: None,
+            capability_profiles: None,
             search_provider: None,
             lifecycle_gate: None,
             rules: None,
@@ -178,6 +180,14 @@ impl CommandHandler {
     /// Wire the WorkUnit projection (P3).
     pub fn with_handoffs(mut self, repo: Arc<daruma_storage::HandoffRepo>) -> Self {
         self.handoffs = Some(repo);
+        self
+    }
+
+    pub fn with_capability_profiles(
+        mut self,
+        repo: Arc<daruma_storage::CapabilityProfileRepo>,
+    ) -> Self {
+        self.capability_profiles = Some(repo);
         self
     }
 
@@ -350,6 +360,12 @@ impl CommandHandler {
             }
             if let Some(settings) = &self.project_settings {
                 settings.apply_event(env).await?;
+            }
+            // Capability profiles read the unit's owner, which the work-unit
+            // projector clears on completion/release — so profiles fold their
+            // signal first (P6).
+            if let Some(profiles) = &self.capability_profiles {
+                profiles.apply_event(env).await?;
             }
             if let Some(work_units) = &self.work_units {
                 work_units.apply_event(env).await?;
@@ -799,6 +815,12 @@ impl CommandHandler {
             }
             if let Some(settings) = &self.project_settings {
                 settings.apply_event(env).await?;
+            }
+            // Capability profiles read the unit's owner, which the work-unit
+            // projector clears on completion/release — so profiles fold their
+            // signal first (P6).
+            if let Some(profiles) = &self.capability_profiles {
+                profiles.apply_event(env).await?;
             }
             if let Some(work_units) = &self.work_units {
                 work_units.apply_event(env).await?;

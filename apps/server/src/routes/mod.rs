@@ -349,6 +349,14 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/work-units/{id}/release", post(release_work_unit))
         .route("/work-units/{id}/handoffs", get(list_work_unit_handoffs))
         .route("/tasks/{id}/work-units", get(list_task_work_units))
+        .route(
+            "/agents/{agent_id}/capabilities",
+            get(list_agent_capabilities).put(put_agent_capability),
+        )
+        .route(
+            "/agents/{agent_id}/capabilities/{capability}",
+            delete(delete_agent_capability),
+        )
         .route("/handoffs", post(request_handoff))
         .route("/handoffs/{id}/accept", post(accept_handoff))
         .route("/handoffs/{id}/reject", post(reject_handoff))
@@ -1255,6 +1263,97 @@ async fn work_unit_drain_next(
         "leases": leases,
         "acceptance": unit.acceptance,
     })))
+}
+
+/// `GET /v1/agents/{agent_id}/capabilities` — the derived capability
+/// profiles for an agent (P6). Advisory scheduling input, visible so the
+/// preference is auditable.
+async fn list_agent_capabilities(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(agent_id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid agent id: {agent_id_str}"
+        )))
+    })?;
+    let profiles = state
+        .capability_profiles
+        .list_for_agent(agent_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(profiles))
+}
+
+#[derive(Deserialize)]
+struct PutCapabilityBody {
+    capability: String,
+    score: f64,
+}
+
+/// `PUT /v1/agents/{agent_id}/capabilities` — explicit human override
+/// (`source = user_set`): mining never overwrites it, the staleness cutoff
+/// does not apply. User override always wins (P6 invariant).
+async fn put_agent_capability(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(agent_id_str): Path<String>,
+    Json(body): Json<PutCapabilityBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid agent id: {agent_id_str}"
+        )))
+    })?;
+    if body.capability.trim().is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "capability must not be empty",
+        )));
+    }
+    if !(0.0..=1.0).contains(&body.score) {
+        return Err(ApiError::from(CoreError::validation(
+            "score must be within 0.0..=1.0",
+        )));
+    }
+    state
+        .capability_profiles
+        .upsert_user_set(
+            agent_id,
+            body.capability.trim(),
+            body.score,
+            &daruma_shared::time::now().to_rfc3339(),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// `DELETE /v1/agents/{agent_id}/capabilities/{capability}` — retract a
+/// profile row (typically a user override; mining re-derives from future
+/// evidence).
+async fn delete_agent_capability(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path((agent_id_str, capability)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid agent id: {agent_id_str}"
+        )))
+    })?;
+    let removed = state
+        .capability_profiles
+        .delete(agent_id, &capability)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "success": true, "removed": removed })))
 }
 
 #[derive(Deserialize)]
