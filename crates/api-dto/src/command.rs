@@ -11,8 +11,8 @@ use daruma_domain::{
     SessionArtifactKind, SignalKind, Status, TaskPatch, WorkLease,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, CommentId, DocumentId, PlanId, ProjectId, RelationId, RuleId, RunId,
-    TaskId, WorkUnitId,
+    AgentId, AgentSessionId, CommentId, DocumentId, HandoffId, PlanId, ProjectId, RelationId,
+    RuleId, RunId, TaskId, WorkUnitId,
 };
 
 /// All mutations are commands. Tagged-union JSON for stable wire format.
@@ -86,6 +86,10 @@ pub enum Command {
         outcome: Option<String>,
         #[serde(default)]
         produced_artifacts: Vec<String>,
+        /// Follow-up units the completer suggests dispatching next
+        /// (advisory; P5/P6 mining payload).
+        #[serde(default)]
+        next_suggested_units: Vec<WorkUnitId>,
     },
     ReleaseWorkUnit {
         id: WorkUnitId,
@@ -318,6 +322,31 @@ pub enum Command {
         task_id: TaskId,
     },
 
+    // ── Handoff contracts (P5) ────────────────────────────────────────────────
+    /// Request a handoff between two work units. If a contract for the same
+    /// `(from, to)` pair already exists in a non-accepted state it is
+    /// reopened (same id, new payload); an already-accepted contract is a
+    /// conflict.
+    RequestHandoff {
+        handoff: daruma_domain::NewHandoffContract,
+    },
+
+    /// Accept an open handoff — the consuming unit becomes dispatchable.
+    AcceptHandoff {
+        handoff_id: HandoffId,
+        #[serde(default)]
+        notes: Option<String>,
+    },
+
+    /// Reject an open handoff with a reason and the changes required before
+    /// a re-request.
+    RejectHandoff {
+        handoff_id: HandoffId,
+        reason: String,
+        #[serde(default)]
+        required_changes: Vec<String>,
+    },
+
     // ── Document commands (PR1 §5) ────────────────────────────────────────────
     /// Create a new markdown document attached to a project.
     CreateDocument {
@@ -450,6 +479,9 @@ impl Command {
             Command::ReserveFiles { .. } => "reserve_files",
             Command::ReleaseFiles { .. } => "release_files",
             // Documents (PR1)
+            Command::RequestHandoff { .. } => "request_handoff",
+            Command::AcceptHandoff { .. } => "accept_handoff",
+            Command::RejectHandoff { .. } => "reject_handoff",
             Command::CreateDocument { .. } => "create_document",
             Command::ReplaceDocumentContent { .. } => "replace_document_content",
             Command::AppendDocumentContent { .. } => "append_document_content",

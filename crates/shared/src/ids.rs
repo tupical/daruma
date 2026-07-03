@@ -84,6 +84,7 @@ newtype_id!(ArtifactRelationId, "artrel");
 newtype_id!(RuleId, "rule");
 newtype_id!(EvidenceId, "ev");
 newtype_id!(AuditFindingId, "find");
+newtype_id!(HandoffId, "hof");
 
 #[cfg(test)]
 mod tests {

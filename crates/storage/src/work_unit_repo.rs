@@ -55,14 +55,23 @@ impl WorkUnitRepo {
         // The inner SELECT picks the oldest dispatchable unit; the UPDATE
         // re-checks the dispatchability predicate so a concurrent winner
         // makes this a 0-row no-op and the loop in the route retries.
+        //
+        // Handoff gate (P5): a unit with a non-accepted inbound handoff is
+        // not ready — the consumer hasn't received what it needs yet. The
+        // predicate matches `HandoffStatus::blocks_dispatch` (everything
+        // except `accepted` blocks).
         let updated = sqlx::query(
             "UPDATE work_units SET \
                 owner_agent_id = ?, claim_expires_at = ?, status = 'in_progress', updated_at = ? \
              WHERE id = (\
-                 SELECT id FROM work_units \
+                 SELECT id FROM work_units w \
                  WHERE task_id = ? AND status IN ('todo','ready') \
                    AND (owner_agent_id IS NULL OR owner_agent_id = ? \
                         OR claim_expires_at IS NULL OR claim_expires_at < ?) \
+                   AND NOT EXISTS (\
+                       SELECT 1 FROM handoff_contracts h \
+                       WHERE h.to_work_unit_id = w.id AND h.status != 'accepted'\
+                   ) \
                  ORDER BY created_at LIMIT 1\
              ) \
              AND status IN ('todo','ready') \
@@ -381,6 +390,7 @@ mod tests {
                 work_unit_id: wu.id,
                 outcome: "ok".into(),
                 produced_artifacts: vec!["artifact://api/users".into()],
+                next_suggested_units: vec![],
                 at: Utc::now(),
             },
         );
@@ -393,5 +403,86 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// P5 handoff gate: a unit with a non-accepted inbound handoff is not
+    /// dispatchable; accepting the handoff returns it to the pool.
+    #[tokio::test]
+    async fn non_accepted_inbound_handoff_blocks_drain() {
+        let (db, r) = repo().await;
+        let handoffs = crate::HandoffRepo::new(db.pool().clone());
+        let task = TaskId::new();
+        let producer = seed(&r, task, "producer").await;
+        let consumer = seed(&r, task, "consumer").await;
+
+        // Open handoff into `consumer`: only `producer` is dispatchable.
+        let contract = daruma_domain::NewHandoffContract {
+            from_work_unit_id: producer.id,
+            to_work_unit_id: consumer.id,
+            required_artifact_ids: vec![],
+            required_state: None,
+            checklist: vec![],
+            owner_agent_id: None,
+        }
+        .into_contract(daruma_shared::HandoffId::new(), daruma_shared::time::now());
+        let handoff_id = contract.id;
+        handoffs
+            .apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::HandoffRequested { handoff: contract },
+            ))
+            .await
+            .unwrap();
+
+        let agent = AgentId::new();
+        let ttl = chrono::Duration::seconds(300);
+        let first = r.try_claim_next(task, agent, ttl).await.unwrap().unwrap();
+        assert_eq!(first.id, producer.id, "consumer is gated, producer drains first");
+        assert!(
+            r.try_claim_next(task, AgentId::new(), ttl)
+                .await
+                .unwrap()
+                .is_none(),
+            "gated consumer must not be dispatched"
+        );
+
+        // Rejection still blocks (DoD: not dispatched until accepted).
+        handoffs
+            .apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::HandoffRejected {
+                    handoff_id,
+                    reason: "not ready".into(),
+                    required_changes: vec![],
+                    at: daruma_shared::time::now(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(r
+            .try_claim_next(task, AgentId::new(), ttl)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Acceptance unblocks the consumer.
+        handoffs
+            .apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::HandoffAccepted {
+                    handoff_id,
+                    by: None,
+                    notes: None,
+                    at: daruma_shared::time::now(),
+                },
+            ))
+            .await
+            .unwrap();
+        let next = r
+            .try_claim_next(task, AgentId::new(), ttl)
+            .await
+            .unwrap()
+            .expect("consumer dispatchable after acceptance");
+        assert_eq!(next.id, consumer.id);
     }
 }

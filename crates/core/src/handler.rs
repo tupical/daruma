@@ -61,6 +61,7 @@ pub struct CommandHandler {
     pub project_settings: Option<Arc<ProjectSettingsRepo>>,
     /// WorkUnit projection (P3). `None` until wired by the server.
     pub work_units: Option<Arc<WorkUnitRepo>>,
+    pub handoffs: Option<Arc<daruma_storage::HandoffRepo>>,
     pub external_refs: Option<Arc<dyn ExternalRefRepository>>,
     pub tenant_quotas: Option<Arc<TenantQuotaRepo>>,
 
@@ -118,6 +119,7 @@ impl CommandHandler {
             documents: None,
             project_settings: None,
             work_units: None,
+            handoffs: None,
             search_provider: None,
             lifecycle_gate: None,
             rules: None,
@@ -174,6 +176,11 @@ impl CommandHandler {
     }
 
     /// Wire the WorkUnit projection (P3).
+    pub fn with_handoffs(mut self, repo: Arc<daruma_storage::HandoffRepo>) -> Self {
+        self.handoffs = Some(repo);
+        self
+    }
+
     pub fn with_work_units(mut self, repo: Arc<WorkUnitRepo>) -> Self {
         self.work_units = Some(repo);
         self
@@ -346,6 +353,9 @@ impl CommandHandler {
             }
             if let Some(work_units) = &self.work_units {
                 work_units.apply_event(env).await?;
+            }
+            if let Some(handoffs) = &self.handoffs {
+                handoffs.apply_event(env).await?;
             }
             if let Some(rules) = &self.rules {
                 rules.apply_event(env).await?;
@@ -792,6 +802,9 @@ impl CommandHandler {
             }
             if let Some(work_units) = &self.work_units {
                 work_units.apply_event(env).await?;
+            }
+            if let Some(handoffs) = &self.handoffs {
+                handoffs.apply_event(env).await?;
             }
             if let Some(rules) = &self.rules {
                 rules.apply_event(env).await?;
@@ -1268,6 +1281,7 @@ impl CommandHandler {
                 id,
                 outcome,
                 produced_artifacts,
+                next_suggested_units,
             } => {
                 let unit = self.work_unit(id).await?;
                 if unit.status.is_terminal() {
@@ -1279,6 +1293,7 @@ impl CommandHandler {
                     work_unit_id: id,
                     outcome: outcome.unwrap_or_else(|| "ok".into()),
                     produced_artifacts,
+                    next_suggested_units,
                     at: time::now(),
                 }])
             }
@@ -1314,6 +1329,7 @@ impl CommandHandler {
                         work_unit_id: id,
                         outcome: "ok".into(),
                         produced_artifacts: vec![],
+                        next_suggested_units: vec![],
                         at: now,
                     }]),
                     WUS::Ready | WUS::Todo => Ok(vec![Event::WorkUnitReleased {
@@ -2096,6 +2112,106 @@ impl CommandHandler {
 
             Command::ReleaseFiles { agent_id, task_id } => {
                 Ok(vec![Event::FilesReleased { agent_id, task_id }])
+            }
+
+            // ── Handoff contracts (P5) ─────────────────────────────────────────
+            Command::RequestHandoff { handoff } => {
+                let repo = self
+                    .handoffs
+                    .as_ref()
+                    .ok_or_else(|| CoreError::validation("handoff repository not configured"))?;
+                if handoff.from_work_unit_id == handoff.to_work_unit_id {
+                    return Err(CoreError::validation(
+                        "handoff must connect two distinct work units",
+                    ));
+                }
+                // Both endpoints must exist (same NotFound the drain uses).
+                self.work_unit(handoff.from_work_unit_id).await?;
+                self.work_unit(handoff.to_work_unit_id).await?;
+
+                // One live contract per (from, to): re-requesting reuses the
+                // existing id (reopens it); an accepted contract is settled
+                // history and cannot be silently reopened.
+                let id = match repo
+                    .get_by_pair(handoff.from_work_unit_id, handoff.to_work_unit_id)
+                    .await?
+                {
+                    Some(existing)
+                        if existing.status == daruma_domain::HandoffStatus::Accepted =>
+                    {
+                        return Err(CoreError::conflict(format!(
+                            "handoff {} for this pair is already accepted",
+                            existing.id
+                        )));
+                    }
+                    Some(existing) => existing.id,
+                    None => daruma_shared::HandoffId::new(),
+                };
+                Ok(vec![Event::HandoffRequested {
+                    handoff: handoff.into_contract(id, time::now()),
+                }])
+            }
+
+            Command::AcceptHandoff { handoff_id, notes } => {
+                let repo = self
+                    .handoffs
+                    .as_ref()
+                    .ok_or_else(|| CoreError::validation("handoff repository not configured"))?;
+                let contract = repo
+                    .get(handoff_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("handoff {handoff_id}")))?;
+                match contract.status {
+                    daruma_domain::HandoffStatus::Accepted => Ok(vec![]), // no-op
+                    daruma_domain::HandoffStatus::Open => {
+                        let by = match actor {
+                            Actor::Agent { id, .. } => Some(*id),
+                            _ => None,
+                        };
+                        Ok(vec![Event::HandoffAccepted {
+                            handoff_id,
+                            by,
+                            notes,
+                            at: time::now(),
+                        }])
+                    }
+                    other => Err(CoreError::conflict(format!(
+                        "handoff {handoff_id} is {}; only an open handoff can be accepted \
+                         (re-request after rejection)",
+                        other.as_str()
+                    ))),
+                }
+            }
+
+            Command::RejectHandoff {
+                handoff_id,
+                reason,
+                required_changes,
+            } => {
+                let repo = self
+                    .handoffs
+                    .as_ref()
+                    .ok_or_else(|| CoreError::validation("handoff repository not configured"))?;
+                if reason.trim().is_empty() {
+                    return Err(CoreError::validation("rejection reason must not be empty"));
+                }
+                let contract = repo
+                    .get(handoff_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("handoff {handoff_id}")))?;
+                match contract.status {
+                    daruma_domain::HandoffStatus::Rejected => Ok(vec![]), // no-op
+                    daruma_domain::HandoffStatus::Open => Ok(vec![Event::HandoffRejected {
+                        handoff_id,
+                        reason,
+                        required_changes,
+                        at: time::now(),
+                    }]),
+                    other => Err(CoreError::conflict(format!(
+                        "handoff {handoff_id} is {}; only an open handoff can be rejected",
+                        other.as_str()
+                    ))),
+                }
             }
 
             // ── Document commands (PR1 §6.2) ──────────────────────────────────

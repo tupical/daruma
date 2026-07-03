@@ -45,6 +45,7 @@ pub mod token_repo;
 pub mod webhook_enrichment;
 pub mod webhook_repo;
 pub mod work_lease_repo;
+pub mod handoff_repo;
 pub mod work_unit_repo;
 pub mod workspace_graph_repo;
 
@@ -76,6 +77,7 @@ pub use token_repo::TokenRepo;
 pub use webhook_enrichment::WebhookEnrichment;
 pub use webhook_repo::WebhookRepo;
 pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
+pub use handoff_repo::HandoffRepo;
 pub use work_unit_repo::WorkUnitRepo;
 pub use workspace_graph_repo::{
     DuplicateTaskPair, GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode,

@@ -347,7 +347,11 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/work-units/drain-next", post(work_unit_drain_next))
         .route("/work-units/{id}/complete", post(complete_work_unit))
         .route("/work-units/{id}/release", post(release_work_unit))
+        .route("/work-units/{id}/handoffs", get(list_work_unit_handoffs))
         .route("/tasks/{id}/work-units", get(list_task_work_units))
+        .route("/handoffs", post(request_handoff))
+        .route("/handoffs/{id}/accept", post(accept_handoff))
+        .route("/handoffs/{id}/reject", post(reject_handoff))
         .route("/leases/{agent_id}/{task_id}", delete(release_files))
         .route("/leases/suggest", get(suggest_files))
         // ── Project-wide ready pool (drain across all active plans) ──────────
@@ -1253,10 +1257,160 @@ async fn work_unit_drain_next(
     })))
 }
 
+#[derive(Deserialize)]
+struct RequestHandoffBody {
+    handoff: daruma_domain::NewHandoffContract,
+}
+
+/// `POST /v1/handoffs` — request a handoff between two work units (P5).
+/// Re-requesting an existing non-accepted pair reopens the same contract.
+async fn request_handoff(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<RequestHandoffBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::RequestHandoff {
+                handoff: body.handoff,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let contract = envs.iter().find_map(|e| match &e.payload {
+        daruma_events::Event::HandoffRequested { handoff } => Some(handoff.clone()),
+        _ => None,
+    });
+    let last = envs.last();
+    Ok((
+        StatusCode::CREATED,
+        Json(MutationResponse {
+            success: true,
+            event_id: last.map(|e| e.id),
+            event_seq: last.map(|e| e.seq),
+            data: serde_json::json!({ "handoff": contract }),
+            warnings: vec![],
+            client_command_id: None,
+        }),
+    ))
+}
+
+#[derive(Deserialize, Default)]
+struct AcceptHandoffBody {
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+/// `POST /v1/handoffs/{id}/accept` — accept an open handoff; the consuming
+/// unit becomes dispatchable again.
+async fn accept_handoff(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    body: Option<Json<AcceptHandoffBody>>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!("invalid handoff id: {id_str}")))
+    })?;
+    let notes = body.and_then(|Json(b)| b.notes);
+    let envs = state
+        .commands
+        .dispatch(
+            Command::AcceptHandoff { handoff_id, notes },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "handoff_id": handoff_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct RejectHandoffBody {
+    reason: String,
+    #[serde(default)]
+    required_changes: Vec<String>,
+}
+
+/// `POST /v1/handoffs/{id}/reject` — reject an open handoff with a reason
+/// and the changes required before a re-request.
+async fn reject_handoff(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<RejectHandoffBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!("invalid handoff id: {id_str}")))
+    })?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::RejectHandoff {
+                handoff_id,
+                reason: body.reason,
+                required_changes: body.required_changes,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "handoff_id": handoff_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `GET /v1/work-units/{id}/handoffs` — every handoff contract touching a
+/// work unit (either side), newest first. The "handoff state visible"
+/// surface: gate reasons stop being buried in comments.
+async fn list_work_unit_handoffs(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let id = id_str.parse::<daruma_shared::WorkUnitId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid work unit id: {id_str}"
+        )))
+    })?;
+    let contracts = state
+        .handoffs
+        .list_for_work_unit(id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(contracts))
+}
+
 #[derive(Deserialize, Default)]
 struct CompleteWorkUnitBody {
     #[serde(default)]
     outcome: Option<String>,
+    /// Follow-up units the completer suggests dispatching next (advisory).
+    #[serde(default)]
+    next_suggested_units: Vec<daruma_shared::WorkUnitId>,
     #[serde(default)]
     produced_artifacts: Vec<String>,
 }
@@ -1279,6 +1433,7 @@ async fn complete_work_unit(
                 id,
                 outcome: body.outcome,
                 produced_artifacts: body.produced_artifacts,
+                next_suggested_units: body.next_suggested_units,
             },
             actor_from(&auth, None),
         )
@@ -3703,7 +3858,12 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::ReleaseFiles { .. }
         | Command::CompleteWorkUnit { .. }
         | Command::ReleaseWorkUnit { .. }
-        | Command::SetWorkUnitStatus { .. } => Capability::RunWrite,
+        | Command::SetWorkUnitStatus { .. }
+        // Handoff contracts are agent-plane coordination, same as the other
+        // work-unit lifecycle commands.
+        | Command::RequestHandoff { .. }
+        | Command::AcceptHandoff { .. }
+        | Command::RejectHandoff { .. } => Capability::RunWrite,
         Command::CreateWorkUnit { .. } => Capability::TaskWrite,
         // Agent session commands
         Command::StartAgentSession { .. }

@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 use daruma_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
     ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, CompletionNote, Document,
-    DocumentStatus, Evidence, NewTask, Plan, PlanPatch, PlanStatus, Priority, Project,
-    RelationKind, Rule, Run,
+    DocumentStatus, Evidence, HandoffContract, NewTask, Plan, PlanPatch, PlanStatus, Priority,
+    Project, RelationKind, Rule, Run,
     RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease, WorkUnit,
 };
 use daruma_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
-    EventId, EvidenceId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId, TaskId,
-    Timestamp, WorkUnitId,
+    EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId,
+    TaskId, Timestamp, WorkUnitId,
 };
 
 /// The reason a run was made obsolete by a plan edit (used by
@@ -477,17 +477,47 @@ pub enum Event {
         at: Timestamp,
     },
     /// The unit finished. Payload is mineable (P6): outcome + produced
-    /// artifact URIs.
+    /// artifact URIs + units the completer suggests dispatching next.
     WorkUnitCompleted {
         work_unit_id: WorkUnitId,
         outcome: String,
         #[serde(default)]
         produced_artifacts: Vec<String>,
+        /// Follow-up units the completing agent suggests (advisory — the
+        /// scheduler is free to ignore them).
+        #[serde(default)]
+        next_suggested_units: Vec<WorkUnitId>,
         at: Timestamp,
     },
     /// The holder's claim was released (explicit or TTL expiry).
     WorkUnitReleased {
         work_unit_id: WorkUnitId,
+        at: Timestamp,
+    },
+
+    // ── Handoff contracts (P5) ────────────────────────────────────────────────
+    /// A handoff was requested between two work units. Re-requesting after a
+    /// rejection reuses the same contract id (payload replaces the old one,
+    /// status returns to `open`).
+    HandoffRequested {
+        handoff: HandoffContract,
+    },
+    /// The consuming side accepted the handoff; the consumer unit becomes
+    /// dispatchable again.
+    HandoffAccepted {
+        handoff_id: HandoffId,
+        by: Option<AgentId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes: Option<String>,
+        at: Timestamp,
+    },
+    /// The consuming side rejected the handoff; the producer revises and
+    /// re-requests.
+    HandoffRejected {
+        handoff_id: HandoffId,
+        reason: String,
+        #[serde(default)]
+        required_changes: Vec<String>,
         at: Timestamp,
     },
 
@@ -724,6 +754,9 @@ impl Event {
             Event::WorkUnitStarted { .. } => "work_unit_started",
             Event::WorkUnitBlocked { .. } => "work_unit_blocked",
             Event::WorkUnitCompleted { .. } => "work_unit_completed",
+            Event::HandoffRequested { .. } => "handoff_requested",
+            Event::HandoffAccepted { .. } => "handoff_accepted",
+            Event::HandoffRejected { .. } => "handoff_rejected",
             Event::WorkUnitReleased { .. } => "work_unit_released",
             Event::ProjectDeleted { .. } => "project_deleted",
             Event::AgentActionRecorded { .. } => "agent_action_recorded",
@@ -956,7 +989,10 @@ impl Event {
             | Event::WorkUnitStarted { .. }
             | Event::WorkUnitBlocked { .. }
             | Event::WorkUnitCompleted { .. }
-            | Event::WorkUnitReleased { .. } => Channel::WorkUnits,
+            | Event::WorkUnitReleased { .. }
+            | Event::HandoffRequested { .. }
+            | Event::HandoffAccepted { .. }
+            | Event::HandoffRejected { .. } => Channel::WorkUnits,
 
             // ── AiOps channel ─────────────────────────────────────────────────
             Event::AiOperationStarted { .. }

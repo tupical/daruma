@@ -887,6 +887,27 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_with_id("id"),
             Dom::Coordination, F, E, Ann::WriteIdem,
         ),
+        tool(
+            "daruma_handoff_request",
+            "Request work-unit handoff",
+            "Request a handoff between two work units (P5): name the artifacts and checklist the consuming unit needs. The consumer is NOT dispatchable until the handoff is accepted. Re-requesting the same (from, to) pair after a rejection reopens the contract.",
+            schema_handoff_request(),
+            Dom::Coordination, F, E, Ann::Write,
+        ),
+        tool(
+            "daruma_handoff_respond",
+            "Accept or reject handoff",
+            "Respond to an open handoff contract: `decision: accept` (optional notes) unblocks the consuming unit; `decision: reject` (reason + required_changes) sends it back for a re-request.",
+            schema_handoff_respond(),
+            Dom::Coordination, F, E, Ann::Write,
+        ),
+        tool(
+            "daruma_handoff_list",
+            "List work-unit handoffs",
+            "Every handoff contract touching a work unit (either side), newest first — why a unit is (not) dispatchable, without digging through comments.",
+            schema_with_id("work_unit_id"),
+            Dom::Coordination, F, E, Ann::Read,
+        ),
         // ── Sessions ──────────────────────────────────────────────────────
         tool(
             "daruma_session_start",
@@ -1997,8 +2018,60 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(a) = args.get("produced_artifacts").and_then(|v| v.as_array()) {
                 body["produced_artifacts"] = json!(a);
             }
+            if let Some(n) = args.get("next_suggested_units").and_then(|v| v.as_array()) {
+                body["next_suggested_units"] = json!(n);
+            }
             client
                 .post_json(&format!("/v1/work-units/{id}/complete"), body)
+                .await
+        }
+        "daruma_handoff_request" => {
+            let mut handoff = json!({
+                "from_work_unit_id": required_string(&args, "from_work_unit_id")?,
+                "to_work_unit_id": required_string(&args, "to_work_unit_id")?,
+            });
+            for key in ["required_artifact_ids", "checklist"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_array()) {
+                    handoff[key] = json!(v);
+                }
+            }
+            if let Some(v) = args.get("required_state").and_then(|v| v.as_str()) {
+                handoff["required_state"] = json!(v);
+            }
+            client
+                .post_json("/v1/handoffs", json!({ "handoff": handoff }))
+                .await
+        }
+        "daruma_handoff_respond" => {
+            let id = required_string(&args, "handoff_id")?;
+            let decision = required_string(&args, "decision")?;
+            match decision.as_str() {
+                "accept" => {
+                    let mut body = json!({});
+                    if let Some(n) = args.get("notes").and_then(|v| v.as_str()) {
+                        body["notes"] = json!(n);
+                    }
+                    client
+                        .post_json(&format!("/v1/handoffs/{id}/accept"), body)
+                        .await
+                }
+                "reject" => {
+                    let reason = required_string(&args, "reason")?;
+                    let mut body = json!({ "reason": reason });
+                    if let Some(c) = args.get("required_changes").and_then(|v| v.as_array()) {
+                        body["required_changes"] = json!(c);
+                    }
+                    client
+                        .post_json(&format!("/v1/handoffs/{id}/reject"), body)
+                        .await
+                }
+                other => anyhow::bail!("decision must be `accept` or `reject`, got {other:?}"),
+            }
+        }
+        "daruma_handoff_list" => {
+            let id = required_string(&args, "work_unit_id")?;
+            client
+                .get_json(&format!("/v1/work-units/{id}/handoffs"))
                 .await
         }
         "daruma_work_unit_release" => {
@@ -3573,9 +3646,38 @@ fn schema_work_unit_complete() -> Value {
         "properties": {
             "id": {"type":"string"},
             "outcome": {"type":"string"},
-            "produced_artifacts": {"type":"array","items":{"type":"string"}}
+            "produced_artifacts": {"type":"array","items":{"type":"string"}},
+            "next_suggested_units": {"type":"array","items":{"type":"string"},"description":"Follow-up unit ids the completer suggests dispatching next (advisory)."}
         },
         "required":["id"]
+    })
+}
+
+fn schema_handoff_request() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "from_work_unit_id": {"type":"string","description":"The producing unit handing work over."},
+            "to_work_unit_id":   {"type":"string","description":"The consuming unit gated on this handoff."},
+            "required_artifact_ids": {"type":"array","items":{"type":"string"},"description":"Artifact URIs the consumer needs."},
+            "required_state": {"type":"string","enum":["draft","reviewed","approved","implemented","verified"],"description":"State the artifacts must reach (advisory until the artifact-registry integration)."},
+            "checklist": {"type":"array","items":{"type":"string"},"description":"Acceptance checklist shown to the accepting side."}
+        },
+        "required":["from_work_unit_id","to_work_unit_id"]
+    })
+}
+
+fn schema_handoff_respond() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "handoff_id": {"type":"string"},
+            "decision":   {"type":"string","enum":["accept","reject"]},
+            "notes":      {"type":"string","description":"Optional acceptance notes."},
+            "reason":     {"type":"string","description":"Required when rejecting."},
+            "required_changes": {"type":"array","items":{"type":"string"},"description":"Changes required before a re-request (reject only)."}
+        },
+        "required":["handoff_id","decision"]
     })
 }
 

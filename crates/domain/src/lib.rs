@@ -20,6 +20,7 @@ pub mod session;
 pub mod signal;
 pub mod task;
 pub mod work_lease;
+pub mod handoff;
 pub mod work_unit;
 
 pub use activity::{Activity, Verb};
@@ -51,4 +52,5 @@ pub use session::{
 pub use signal::SignalKind;
 pub use task::{CompletionNote, NewTask, Priority, Status, Task, TaskPatch, TriageState};
 pub use work_lease::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
+pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};
 pub use work_unit::{NewWorkUnit, WorkUnit, WorkUnitStatus};

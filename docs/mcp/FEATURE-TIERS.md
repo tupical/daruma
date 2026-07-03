@@ -13,7 +13,7 @@
 | Tasks | 8 | 5 | 5 |
 | Projects | 3 | 4 | 2 |
 | Admin | 0 | 7 | 2 |
-| Coordination | 0 | 19 | 1 |
+| Coordination | 0 | 22 | 1 |
 | Ai | 0 | 0 | 1 |
 | Events | 0 | 2 | 0 |
 | Plans | 7 | 6 | 2 |
@@ -24,7 +24,7 @@
 | Relations | 0 | 3 | 0 |
 | Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 18 | 56 | 43 |
+| ИТОГО | 18 | 59 | 43 |
 
 ## Tasks
 
@@ -101,6 +101,9 @@
 | `daruma_work_unit_drain_next` | Enhancing / усиливающие | `full` | Claim next work unit | write |
 | `daruma_work_unit_complete` | Enhancing / усиливающие | `full` | Complete work unit | write |
 | `daruma_work_unit_release` | Enhancing / усиливающие | `full` | Release work unit claim | write |
+| `daruma_handoff_request` | Enhancing / усиливающие | `full` | Request work-unit handoff | write |
+| `daruma_handoff_respond` | Enhancing / усиливающие | `full` | Accept or reject handoff | write |
+| `daruma_handoff_list` | Enhancing / усиливающие | `full` | List work-unit handoffs | read |
 
 ## Ai
 
