@@ -106,6 +106,36 @@ async fn search_posts_to_search_endpoint() {
 }
 
 #[tokio::test]
+async fn list_forwards_limit_to_tasks_endpoint() {
+    let captured = call_via_mock(
+        "daruma_list",
+        json!({"project_id": "all", "status": "active", "limit": 10}),
+    )
+    .await;
+    assert_eq!(captured.path, "/v1/tasks");
+    let query = captured.query.expect("query string must be present");
+    assert!(
+        query.contains("limit=10"),
+        "daruma_list must forward limit: {query}"
+    );
+}
+
+#[tokio::test]
+async fn plan_list_forwards_limit_to_plans_endpoint() {
+    let captured = call_via_mock(
+        "daruma_plan_list",
+        json!({"project_id": "pln_project", "status": "active", "limit": 10}),
+    )
+    .await;
+    assert_eq!(captured.path, "/v1/plans");
+    let query = captured.query.expect("query string must be present");
+    assert!(
+        query.contains("limit=10"),
+        "daruma_plan_list must forward limit: {query}"
+    );
+}
+
+#[tokio::test]
 async fn lesson_recall_searches_lesson_comment_prefix() {
     let captured = call_via_mock(
         "daruma_lesson_recall",

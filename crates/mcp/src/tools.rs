@@ -1240,6 +1240,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_list" => {
             let status = required_string(&args, "status")?;
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
+            let limit = args.get("limit").and_then(|v| v.as_u64());
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All => {}
@@ -1247,6 +1248,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                     return project_selection_response(client, status.trim()).await;
                 }
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
+            }
+            if let Some(limit) = limit {
+                params.push(("limit", limit.to_string()));
             }
             let qs = params
                 .iter()
@@ -1719,12 +1723,16 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_plan_list" => {
             let status = required_string(&args, "status")?;
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
+            let limit = args.get("limit").and_then(|v| v.as_u64());
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
                     params.push(("project_id", urlencode(&pid)));
                 }
+            }
+            if let Some(limit) = limit {
+                params.push(("limit", limit.to_string()));
             }
             let qs = params
                 .iter()
@@ -3192,6 +3200,12 @@ fn schema_list() -> Value {
                 "type":"string",
                 "description": "Required. Single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list (e.g. `todo,in_progress`), shortcut `active` (non-terminal), or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
             },
+            "limit": {
+                "type":"integer",
+                "minimum":1,
+                "maximum":100,
+                "default":10
+            },
             "view": {
                 "type":"string",
                 "enum":["summary","detail"],
@@ -3228,7 +3242,7 @@ fn schema_search() -> Value {
                 "type":"integer",
                 "minimum":1,
                 "maximum":100,
-                "default":20
+                "default":10
             },
             "view": {
                 "type":"string",
@@ -3435,6 +3449,12 @@ fn schema_plan_list() -> Value {
             "status": {
                 "type":"string",
                 "description": "Required. `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
+            },
+            "limit": {
+                "type":"integer",
+                "minimum":1,
+                "maximum":100,
+                "default":10
             },
             "view": {
                 "type":"string",
@@ -4544,6 +4564,10 @@ mod tests {
                 schema["properties"][field]["default"], default,
                 "{field} default"
             );
+        }
+        for schema in [schema_list(), schema_search(), schema_plan_list()] {
+            assert_eq!(schema["properties"]["limit"]["default"], 10);
+            assert_eq!(schema["properties"]["limit"]["maximum"], 100);
         }
     }
 

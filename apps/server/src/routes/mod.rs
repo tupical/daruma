@@ -406,6 +406,8 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
 
 /// Public REST API version advertised to clients. Bumped only on a /v2 cut.
 pub const API_VERSION: &str = "v1";
+const DEFAULT_COLLECTION_LIMIT: usize = 10;
+const MAX_COLLECTION_LIMIT: usize = 100;
 
 async fn healthz() -> impl IntoResponse {
     Json(json!({
@@ -426,6 +428,8 @@ struct ListTasksQuery {
     /// **Required.** Comma-separated statuses (`todo,in_progress`), the
     /// shortcut `active` (all non-terminal), or `all` (every status).
     status: Option<String>,
+    /// Max rows to return. Defaults to 10, capped at 100.
+    limit: Option<usize>,
 }
 
 async fn list_tasks(
@@ -439,7 +443,8 @@ async fn list_tasks(
     let status_filter = parse_status_filter(q.status.as_deref())?;
     let filter = status_filter.as_deref().unwrap_or(&[]);
 
-    let tasks = match q.project_id.as_deref() {
+    let limit = bounded_collection_limit(q.limit);
+    let mut tasks = match q.project_id.as_deref() {
         None => state.tasks.list_all_filtered(filter).await,
         Some("inbox") => state.tasks.list_by_project_filtered(None, filter).await,
         Some(raw) => {
@@ -453,6 +458,7 @@ async fn list_tasks(
         }
     }
     .map_err(ApiError::from)?;
+    tasks.truncate(limit);
     Ok(Json(tasks))
 }
 
@@ -487,7 +493,7 @@ async fn search(
             .map_err(ApiError::from_missing_cap)?;
     }
 
-    let limit = q.limit.unwrap_or(20).clamp(1, 100);
+    let limit = bounded_collection_limit(q.limit);
     let project_id = parse_search_project(q.project_id.as_deref())?;
     let provider = FtsSearchProvider::new(
         state.tasks.clone(),
@@ -505,6 +511,12 @@ async fn search(
         .map_err(ApiError::from)?;
 
     Ok(Json(hits))
+}
+
+fn bounded_collection_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_COLLECTION_LIMIT)
+        .clamp(1, MAX_COLLECTION_LIMIT)
 }
 
 fn parse_search_scopes(raw: Option<&str>) -> Result<Vec<SearchScope>, ApiError> {
@@ -4231,6 +4243,8 @@ struct ListPlansQuery {
     project_id: Option<String>,
     /// **Required.** Single status, comma-separated list, or `all`.
     status: Option<String>,
+    /// Max rows to return. Defaults to 10, capped at 100.
+    limit: Option<usize>,
 }
 
 /// Parse the required plan `status` query parameter.
@@ -4292,7 +4306,8 @@ async fn list_plans(
 
     let status_filter = parse_plan_status_filter(q.status.as_deref())?;
 
-    let plans = match q.project_id.as_deref() {
+    let limit = bounded_collection_limit(q.limit);
+    let mut plans = match q.project_id.as_deref() {
         Some(pid) => {
             let project_id = pid.parse::<ProjectId>().map_err(|_| {
                 ApiError::from(CoreError::validation(format!("invalid project id: {pid}")))
@@ -4309,6 +4324,7 @@ async fn list_plans(
             )))
         }
     };
+    plans.truncate(limit);
     Ok(Json(plans))
 }
 
