@@ -39,6 +39,22 @@ callable in `default` — the error names the fix. Composition, migration
 notes, and the new-tool checklist live in
 [../mcp/PROFILES.md](../mcp/PROFILES.md).
 
+## Token-safe recipes
+
+Use one scoped inventory call first. Do not fan out into archive/history/graph
+tools unless the user explicitly asks for that wider context.
+
+| Question | Recipe | Max calls | Forbidden default |
+|----------|--------|-----------|-------------------|
+| What is open? | `daruma_list` with `status="active"` and `project_id`, `project_scope`, or `scope_path`. Keep the first page small (`limit=10` where supported). | 1 | `status="all"`, completed/archive scans, workspacegraph discovery |
+| What is my active work? | `daruma_list` scoped to the project with `status="in_progress"`; filter by owner/client only when the tool/request supports it. | 1-2 | unscoped all-project inventory, session/history scans |
+| What is the active plan? | `daruma_plan_list` with active statuses scoped to the project; if one plan must be inspected, call `daruma_plan_get` for that id. | 2 | `plan_list status="completed"`, enumerating completed plans |
+| What tasks belong to this branch? | `daruma_search` for `branch:<name>` with `scope="comments"` and project scope. | 1 | using search as general inventory, workspacegraph search first |
+| Close completed work. | `daruma_list status="active"` scoped to the project, then mutate only tasks whose completed state is confirmed by local evidence. | 1+N | bulk-closing unverified tasks, `status="all"` cleanup sweeps |
+
+When a response reports more pages or a broader archive, show that fact to the
+user and wait for an explicit request before fetching more.
+
 ## Remote HTTP MCP
 
 `apps/server` exposes MCP over HTTP at `/v1/mcp`. Cursor can use a remote
