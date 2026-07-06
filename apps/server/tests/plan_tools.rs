@@ -148,7 +148,26 @@ async fn plan_create_via_mcp_accepts_optional_fields() {
     assert_eq!(resp["success"], true, "plan_create must succeed: {resp}");
 
     let plan_id = first_plan_id(&client, &pid).await;
-    let plan = call_tool(&client, "daruma_plan_get", json!({ "id": plan_id })).await;
+    let summary = call_tool(&client, "daruma_plan_get", json!({ "id": plan_id })).await;
+    assert_eq!(summary["plan"]["id"], plan_id, "compact plan id: {summary}");
+    assert_eq!(summary["plan"]["title"], "Q1 Plan", "compact title: {summary}");
+    assert_eq!(summary["plan"]["status"], "draft", "compact status: {summary}");
+    assert_eq!(summary["plan"]["project_id"], pid, "compact project: {summary}");
+    assert!(
+        summary["progress"].is_object(),
+        "progress view must include counts: {summary}"
+    );
+    assert!(
+        summary["plan"].get("goal").is_none(),
+        "progress view must not include heavy plan fields: {summary}"
+    );
+
+    let plan = call_tool(
+        &client,
+        "daruma_plan_get",
+        json!({ "id": plan_id, "view": "detail" }),
+    )
+    .await;
     assert_eq!(
         plan["plan"]["title"], "Q1 Plan",
         "title round-trips: {plan}"
@@ -193,7 +212,12 @@ async fn plan_update_via_mcp_patches_fields() {
     .await;
     assert_eq!(resp["success"], true, "plan_update must succeed: {resp}");
 
-    let plan = call_tool(&client, "daruma_plan_get", json!({ "id": plan_id })).await;
+    let plan = call_tool(
+        &client,
+        "daruma_plan_get",
+        json!({ "id": plan_id, "view": "detail" }),
+    )
+    .await;
     assert_eq!(
         plan["plan"]["title"], "Plan A (renamed)",
         "title must be patched: {plan}"

@@ -581,7 +581,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_plan_get",
             "Get plan",
             "Fetch a plan by id, including progress metrics — the cheap way to summarize one plan's status (prefer this over enumerating completed plans or tasks).",
-            schema_with_id("id"),
+            schema_plan_get(),
             Dom::Plans, D, C, Ann::Read,
         ),
         tool(
@@ -1239,6 +1239,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_list" => {
             let status = required_string(&args, "status")?;
+            let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All => {}
@@ -1252,12 +1253,28 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            client.get_json(&format!("/v1/tasks?{qs}")).await
+            let resp = client.get_json(&format!("/v1/tasks?{qs}")).await?;
+            Ok(if view == "detail" {
+                resp
+            } else {
+                summarize_rows(
+                    resp,
+                    &[
+                        "id",
+                        "title",
+                        "status",
+                        "priority",
+                        "project_id",
+                        "updated_at",
+                    ],
+                )
+            })
         }
         "daruma_search" => {
             let query = required_string(&args, "query")?;
             let scope = args.get("scope").and_then(|v| v.as_str());
             let limit = args.get("limit").and_then(|v| v.as_u64());
+            let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
             if let Some(s) = scope {
                 let s = s.trim();
@@ -1278,7 +1295,23 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            client.get_json(&format!("/v1/search?{qs}")).await
+            let resp = client.get_json(&format!("/v1/search?{qs}")).await?;
+            Ok(if view == "detail" {
+                resp
+            } else {
+                summarize_rows(
+                    resp,
+                    &[
+                        "kind",
+                        "id",
+                        "title",
+                        "snippet",
+                        "task_id",
+                        "plan_id",
+                        "project_id",
+                    ],
+                )
+            })
         }
         "daruma_lesson_recall" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
@@ -1674,10 +1707,18 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_plan_get" => {
             let id = required_string(&args, "id")?;
-            client.get_json(&format!("/v1/plans/{id}")).await
+            let view = view_arg(&args, "progress", &["progress", "detail"])?;
+            let resp = client.get_json(&format!("/v1/plans/{id}")).await?;
+            if view == "detail" {
+                Ok(resp)
+            } else {
+                let graph = client.get_json(&format!("/v1/plans/{id}/graph")).await?;
+                Ok(plan_progress_view(resp, graph))
+            }
         }
         "daruma_plan_list" => {
             let status = required_string(&args, "status")?;
+            let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
@@ -1690,7 +1731,22 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            client.get_json(&format!("/v1/plans?{qs}")).await
+            let resp = client.get_json(&format!("/v1/plans?{qs}")).await?;
+            Ok(if view == "detail" {
+                resp
+            } else {
+                summarize_rows(
+                    resp,
+                    &[
+                        "id",
+                        "title",
+                        "status",
+                        "project_id",
+                        "parent_plan_id",
+                        "updated_at",
+                    ],
+                )
+            })
         }
         "daruma_plan_add_task" => {
             let plan_id = required_string(&args, "plan_id")?;
@@ -3135,6 +3191,12 @@ fn schema_list() -> Value {
             "status": {
                 "type":"string",
                 "description": "Required. Single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list (e.g. `todo,in_progress`), shortcut `active` (non-terminal), or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
+            },
+            "view": {
+                "type":"string",
+                "enum":["summary","detail"],
+                "default":"summary",
+                "description":"summary returns id/title/status/priority/project only; detail returns the legacy full task rows."
             }
         },
         "required": ["status"]
@@ -3167,6 +3229,12 @@ fn schema_search() -> Value {
                 "minimum":1,
                 "maximum":100,
                 "default":20
+            },
+            "view": {
+                "type":"string",
+                "enum":["summary","detail"],
+                "default":"summary",
+                "description":"summary returns compact hit rows; detail returns the legacy full search hits."
             }
         },
         "required":["query"]
@@ -3328,6 +3396,22 @@ fn schema_plan_set_status() -> Value {
     })
 }
 
+fn schema_plan_get() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "id": {"type":"string"},
+            "view": {
+                "type":"string",
+                "enum":["progress","detail"],
+                "default":"progress",
+                "description":"progress returns compact plan identity, counts, and active/blocked/next task titles; detail returns the legacy full {plan, progress} response."
+            }
+        },
+        "required":["id"]
+    })
+}
+
 fn schema_plan_list() -> Value {
     json!({
         "type":"object",
@@ -3351,6 +3435,12 @@ fn schema_plan_list() -> Value {
             "status": {
                 "type":"string",
                 "description": "Required. `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
+            },
+            "view": {
+                "type":"string",
+                "enum":["summary","detail"],
+                "default":"summary",
+                "description":"summary returns id/title/status/project only; detail returns the legacy full plan rows."
             }
         },
         "required": ["status"]
@@ -4231,6 +4321,132 @@ async fn create_captured_task(
         .await
 }
 
+fn view_arg(args: &Map<String, Value>, default: &str, allowed: &[&str]) -> anyhow::Result<String> {
+    let view = args
+        .get("view")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default)
+        .trim();
+    if allowed.contains(&view) {
+        Ok(view.to_string())
+    } else {
+        anyhow::bail!(
+            "unknown view: {view:?} (expected one of: {})",
+            allowed.join(", ")
+        )
+    }
+}
+
+fn summarize_rows(value: Value, keys: &[&str]) -> Value {
+    match value {
+        Value::Array(rows) => {
+            Value::Array(rows.into_iter().map(|row| keep_keys(&row, keys)).collect())
+        }
+        other => keep_keys(&other, keys),
+    }
+}
+
+fn keep_keys(value: &Value, keys: &[&str]) -> Value {
+    let Some(obj) = value.as_object() else {
+        return value.clone();
+    };
+    let mut out = Map::new();
+    for key in keys {
+        if let Some(v) = obj.get(*key) {
+            out.insert((*key).to_string(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+fn plan_progress_view(plan_resp: Value, graph: Value) -> Value {
+    let plan = keep_keys(
+        plan_resp.get("plan").unwrap_or(&Value::Null),
+        &[
+            "id",
+            "title",
+            "status",
+            "project_id",
+            "parent_plan_id",
+            "updated_at",
+        ],
+    );
+    let progress = plan_resp.get("progress").cloned().unwrap_or(Value::Null);
+    let nodes = graph
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let status_by_id: HashMap<String, String> = nodes
+        .iter()
+        .filter_map(|node| {
+            Some((
+                node.get("task_id")?.as_str()?.to_string(),
+                node.get("status")?.as_str()?.to_string(),
+            ))
+        })
+        .collect();
+
+    let mut active = Vec::new();
+    let mut blocked = Vec::new();
+    let mut next = Vec::new();
+    for node in &nodes {
+        let status = node.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(status, "done" | "cancelled") {
+            continue;
+        }
+        let summary = keep_keys(node, &["task_id", "title", "status", "position"]);
+        if matches!(status, "in_progress" | "in_review") {
+            active.push(summary.clone());
+        }
+        if node_is_blocked(node, graph.get("edges"), &status_by_id) {
+            blocked.push(summary.clone());
+        } else if matches!(status, "inbox" | "todo") {
+            next.push(summary);
+        }
+    }
+
+    json!({
+        "plan": plan,
+        "progress": progress,
+        "active": active.into_iter().take(5).collect::<Vec<_>>(),
+        "blocked": blocked.into_iter().take(5).collect::<Vec<_>>(),
+        "next": next.into_iter().take(5).collect::<Vec<_>>(),
+    })
+}
+
+fn node_is_blocked(
+    node: &Value,
+    edges: Option<&Value>,
+    status_by_id: &HashMap<String, String>,
+) -> bool {
+    let Some(task_id) = node.get("task_id").and_then(Value::as_str) else {
+        return false;
+    };
+    let deps_block = node
+        .get("depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|dep| status_by_id.get(dep).map(|s| s != "done").unwrap_or(true));
+    let relations_block = edges
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|edge| {
+            edge.get("kind").and_then(Value::as_str) == Some("blocks")
+                && edge.get("to").and_then(Value::as_str) == Some(task_id)
+                && edge
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .and_then(|from| status_by_id.get(from))
+                    .map(|s| s != "done")
+                    .unwrap_or(true)
+        });
+    deps_block || relations_block
+}
+
 fn required_string(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::Result<String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -4314,6 +4530,72 @@ mod tests {
             !required.iter().any(|v| v.as_str() == Some("kind")),
             "`kind` must remain optional"
         );
+    }
+
+    #[test]
+    fn token_safe_schemas_advertise_view_defaults() {
+        for (schema, field, default) in [
+            (schema_list(), "view", "summary"),
+            (schema_search(), "view", "summary"),
+            (schema_plan_list(), "view", "summary"),
+            (schema_plan_get(), "view", "progress"),
+        ] {
+            assert_eq!(
+                schema["properties"][field]["default"], default,
+                "{field} default"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_rows_keep_only_whitelisted_fields() {
+        let rows = json!([{
+            "id": "tsk_1",
+            "title": "Ship it",
+            "status": "todo",
+            "priority": "p1",
+            "description": "large body"
+        }]);
+        let summary = summarize_rows(rows, &["id", "title", "status", "priority"]);
+        assert_eq!(
+            summary,
+            json!([{"id":"tsk_1","title":"Ship it","status":"todo","priority":"p1"}])
+        );
+    }
+
+    #[test]
+    fn plan_progress_view_keeps_counts_and_task_titles() {
+        let plan = json!({
+            "plan": {
+                "id": "pln_1",
+                "title": "Plan",
+                "status": "active",
+                "goal": "large goal",
+                "success_criteria": ["large criteria"]
+            },
+            "progress": {"tasks_total": 3, "tasks_done": 1, "completion_pct": 33.3}
+        });
+        let graph = json!({
+            "nodes": [
+                {"task_id":"done","position":0,"title":"Done","status":"done","depends_on":[]},
+                {"task_id":"active","position":1,"title":"Active","status":"in_progress","depends_on":[]},
+                {"task_id":"blocked","position":2,"title":"Blocked","status":"todo","depends_on":["active"]},
+                {"task_id":"next","position":3,"title":"Next","status":"todo","depends_on":["done"]}
+            ],
+            "edges": []
+        });
+        let view = plan_progress_view(plan, graph);
+
+        assert_eq!(
+            view["plan"],
+            json!({"id":"pln_1","title":"Plan","status":"active"})
+        );
+        assert_eq!(view["progress"]["tasks_total"], 3);
+        assert_eq!(view["active"][0]["title"], "Active");
+        assert_eq!(view["blocked"][0]["title"], "Blocked");
+        assert_eq!(view["next"][0]["title"], "Next");
+        assert!(view["plan"].get("goal").is_none());
+        assert!(view["plan"].get("success_criteria").is_none());
     }
 
     #[test]
