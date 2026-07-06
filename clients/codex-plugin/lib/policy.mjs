@@ -94,6 +94,22 @@ Codex plugin manages this block; do not hand-edit between the markers.
   across the archive (tasks/comments/plans), always with a \`limit\`. It is
   a content query, not a task list.
 
+## Daruma token policy
+
+- Use the \`default\` MCP profile for normal user sessions. \`full\` is only
+  for explicit admin/orchestrator/debug work.
+- Pass \`project_id\`, \`project_scope\`, or \`scope_path\` on the first tracker
+  call.
+- Inventory/progress means one scoped call with \`limit=10\` and
+  \`view=summary\` (or \`view=progress\` for plan status), then stop.
+- Never auto-fetch \`next_cursor\`; show \`has_more\` and wait for the user to
+  ask for the next page.
+- \`status=all\`, completed plans, workspacegraph, history, docs, sessions,
+  and the full MCP profile require an explicit user request.
+- Search only for a concrete key/id/branch with \`limit<=10\`.
+- After archive, graph, full-plan, or full-profile work, offer \`/compact\`
+  before starting unrelated work.
+
 ## Go straight to the goal (token economy)
 
 Every MCP response lands in the model context. Fetch the minimum that
