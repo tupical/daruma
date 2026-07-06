@@ -19,7 +19,10 @@ pub mod relations;
 pub mod shell;
 pub mod workspacegraph;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     extract::{Path, Query, Request, State},
@@ -2923,6 +2926,7 @@ async fn mcp_http(
     Query(query): Query<McpHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let started = Instant::now();
     let profile = match query.profile.as_deref() {
         Some(raw) => daruma_mcp::ToolProfile::parse(raw).ok_or_else(|| {
             ApiError::from(CoreError::validation(format!(
@@ -2932,6 +2936,7 @@ async fn mcp_http(
         None => daruma_mcp::ToolProfile::from_env(),
     };
     let token = bearer_token(&headers)?;
+    let telemetry = mcp_call_telemetry(&request, profile.as_str(), &token);
     let http = reqwest::Client::builder()
         .user_agent(format!(
             "daruma-server-mcp/{}",
@@ -2945,9 +2950,142 @@ async fn mcp_http(
     }
 
     match dispatch_mcp_request(&client, profile, request).await {
-        Some(response) => Ok(Json(response).into_response()),
-        None => Ok(StatusCode::ACCEPTED.into_response()),
+        Some(response) => {
+            let response_meta = mcp_response_telemetry(&response);
+            log_mcp_call_telemetry(&telemetry, &response_meta, started);
+            Ok(Json(response).into_response())
+        }
+        None => {
+            log_mcp_call_telemetry(&telemetry, &McpResponseTelemetry::default(), started);
+            Ok(StatusCode::ACCEPTED.into_response())
+        }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct McpCallTelemetry {
+    method: String,
+    tool_name: String,
+    profile: String,
+    status_filter: Option<String>,
+    scope_present: bool,
+    limit: Option<u64>,
+    view: Option<String>,
+    sort: Option<String>,
+    session_id_hash: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct McpResponseTelemetry {
+    has_more: bool,
+    result_bytes: u64,
+    result_items: Option<u64>,
+    error: bool,
+}
+
+fn mcp_call_telemetry(request: &JsonRpcRequest, profile: &str, token: &str) -> McpCallTelemetry {
+    let args = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("arguments"));
+    McpCallTelemetry {
+        method: request.method.clone(),
+        tool_name: request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str)
+            .filter(|_| request.method == "tools/call")
+            .unwrap_or(&request.method)
+            .to_string(),
+        profile: profile.to_string(),
+        status_filter: args
+            .and_then(|args| args.get("status"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        scope_present: args.is_some_and(mcp_args_have_scope),
+        limit: args
+            .and_then(|args| args.get("limit"))
+            .and_then(Value::as_u64),
+        view: args
+            .and_then(|args| args.get("view"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        sort: args
+            .and_then(|args| args.get("sort"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        session_id_hash: stable_hash(token),
+    }
+}
+
+fn mcp_args_have_scope(args: &Value) -> bool {
+    let Some(obj) = args.as_object() else {
+        return false;
+    };
+    ["project_id", "project_scope", "scope", "scope_path"]
+        .iter()
+        .any(|key| obj.get(*key).is_some_and(|value| !value.is_null()))
+}
+
+fn mcp_response_telemetry(response: &daruma_mcp::JsonRpcResponse) -> McpResponseTelemetry {
+    let result_bytes = serde_json::to_vec(response)
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or(0);
+    let inner = response
+        .result
+        .as_ref()
+        .and_then(|result| result.pointer("/content/0/text"))
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let result_items = inner
+        .as_ref()
+        .and_then(|value| value.get("items"))
+        .and_then(Value::as_array)
+        .map(|items| items.len() as u64);
+    let has_more = inner
+        .as_ref()
+        .and_then(|value| value.get("has_more"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    McpResponseTelemetry {
+        has_more,
+        result_bytes,
+        result_items,
+        error: response.error.is_some(),
+    }
+}
+
+fn log_mcp_call_telemetry(
+    call: &McpCallTelemetry,
+    response: &McpResponseTelemetry,
+    started: Instant,
+) {
+    let duration_ms = started.elapsed().as_millis() as u64;
+    tracing::info!(
+        target: "daruma_mcp_telemetry",
+        tool_name = %call.tool_name,
+        method = %call.method,
+        profile = %call.profile,
+        status_filter = ?call.status_filter,
+        scope_present = call.scope_present,
+        limit = ?call.limit,
+        view = ?call.view,
+        sort = ?call.sort,
+        has_more = response.has_more,
+        result_bytes = response.result_bytes,
+        result_items = ?response.result_items,
+        duration_ms,
+        session_id_hash = call.session_id_hash,
+        error = response.error,
+        "mcp_call"
+    );
+}
+
+fn stable_hash(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -6234,4 +6372,55 @@ async fn list_project_documents(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(docs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mcp_call_telemetry, mcp_response_telemetry};
+    use daruma_mcp::{JsonRpcRequest, JsonRpcResponse};
+    use serde_json::json;
+
+    #[test]
+    fn mcp_call_telemetry_extracts_metadata_only() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: Some(json!({
+                "name": "daruma_list",
+                "arguments": {
+                    "status": "active",
+                    "project_id": "p1",
+                    "limit": 10,
+                    "view": "summary",
+                    "sort": "created_at"
+                }
+            })),
+        };
+        let got = mcp_call_telemetry(&request, "default", "secret-token");
+        assert_eq!(got.tool_name, "daruma_list");
+        assert_eq!(got.status_filter.as_deref(), Some("active"));
+        assert_eq!(got.limit, Some(10));
+        assert_eq!(got.view.as_deref(), Some("summary"));
+        assert_eq!(got.sort.as_deref(), Some("created_at"));
+        assert!(got.scope_present);
+    }
+
+    #[test]
+    fn mcp_response_telemetry_counts_wrapped_items() {
+        let response = JsonRpcResponse::ok(
+            json!(1),
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": "{\"items\":[{},{}],\"has_more\":true}"
+                }]
+            }),
+        );
+        let got = mcp_response_telemetry(&response);
+        assert!(got.result_bytes > 0);
+        assert_eq!(got.result_items, Some(2));
+        assert!(got.has_more);
+        assert!(!got.error);
+    }
 }
