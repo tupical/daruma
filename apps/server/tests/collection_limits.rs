@@ -72,6 +72,25 @@ async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
     assert_eq!(status, StatusCode::OK, "tasks response: {tasks}");
     assert_eq!(tasks.as_array().unwrap().len(), 2);
 
+    let (status, task_page1) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks?project_id={project_id}&status=all&limit=2&page=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tasks response: {task_page1}");
+    assert_eq!(task_page1["items"].as_array().unwrap().len(), 2);
+    assert_eq!(task_page1["has_more"], true);
+    let task_cursor = task_page1["next_cursor"].as_str().unwrap();
+    let (status, task_page2) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks?project_id={project_id}&status=all&limit=2&cursor={task_cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tasks response: {task_page2}");
+    assert_eq!(task_page2["items"].as_array().unwrap().len(), 2);
+
     let (status, plans) = json_get(
         app.router.clone(),
         &app.admin_token,
@@ -90,12 +109,34 @@ async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
     assert_eq!(status, StatusCode::OK, "plans response: {plans}");
     assert_eq!(plans.as_array().unwrap().len(), 1);
 
+    let (status, plan_page1) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/plans?project_id={project_id}&status=all&limit=2&page=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plans response: {plan_page1}");
+    assert_eq!(plan_page1["items"].as_array().unwrap().len(), 2);
+    assert_eq!(plan_page1["has_more"], true);
+    assert!(plan_page1["next_cursor"].is_string());
+
     let (status, hits) = json_get(
-        app.router,
+        app.router.clone(),
         &app.admin_token,
         &format!("/v1/search?query=needle&scope=tasks,plans&project_id={project_id}"),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "search response: {hits}");
     assert_eq!(hits.as_array().unwrap().len(), 10);
+
+    let (status, hit_page1) = json_get(
+        app.router,
+        &app.admin_token,
+        &format!("/v1/search?query=needle&scope=tasks,plans&project_id={project_id}&limit=3&page=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "search response: {hit_page1}");
+    assert_eq!(hit_page1["items"].as_array().unwrap().len(), 3);
+    assert_eq!(hit_page1["has_more"], true);
+    assert!(hit_page1["next_cursor"].is_string());
 }

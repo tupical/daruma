@@ -1241,7 +1241,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let status = required_string(&args, "status")?;
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let limit = args.get("limit").and_then(|v| v.as_u64());
-            let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
+            let cursor = args.get("cursor").and_then(|v| v.as_str());
+            let mut params: Vec<(&str, String)> =
+                vec![("status", urlencode(status.trim())), ("page", "true".to_string())];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All => {}
                 ProjectFilter::None => {
@@ -1251,6 +1253,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(limit) = limit {
                 params.push(("limit", limit.to_string()));
+            }
+            if let Some(cursor) = cursor {
+                params.push(("cursor", urlencode(cursor)));
             }
             let qs = params
                 .iter()
@@ -1279,7 +1284,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let scope = args.get("scope").and_then(|v| v.as_str());
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
-            let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
+            let cursor = args.get("cursor").and_then(|v| v.as_str());
+            let mut params: Vec<(&str, String)> =
+                vec![("query", urlencode(&query)), ("page", "true".to_string())];
             if let Some(s) = scope {
                 let s = s.trim();
                 if !s.is_empty() {
@@ -1293,6 +1300,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(limit) = limit {
                 params.push(("limit", limit.to_string()));
+            }
+            if let Some(cursor) = cursor {
+                params.push(("cursor", urlencode(cursor)));
             }
             let qs = params
                 .iter()
@@ -1724,7 +1734,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let status = required_string(&args, "status")?;
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let limit = args.get("limit").and_then(|v| v.as_u64());
-            let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
+            let cursor = args.get("cursor").and_then(|v| v.as_str());
+            let mut params: Vec<(&str, String)> =
+                vec![("status", urlencode(status.trim())), ("page", "true".to_string())];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
@@ -1733,6 +1745,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(limit) = limit {
                 params.push(("limit", limit.to_string()));
+            }
+            if let Some(cursor) = cursor {
+                params.push(("cursor", urlencode(cursor)));
             }
             let qs = params
                 .iter()
@@ -3206,6 +3221,10 @@ fn schema_list() -> Value {
                 "maximum":100,
                 "default":10
             },
+            "cursor": {
+                "type":"string",
+                "description":"Opaque next_cursor from the previous response. Never auto-fetch it without user intent."
+            },
             "view": {
                 "type":"string",
                 "enum":["summary","detail"],
@@ -3243,6 +3262,10 @@ fn schema_search() -> Value {
                 "minimum":1,
                 "maximum":100,
                 "default":10
+            },
+            "cursor": {
+                "type":"string",
+                "description":"Opaque next_cursor from the previous response. Never auto-fetch it without user intent."
             },
             "view": {
                 "type":"string",
@@ -3455,6 +3478,10 @@ fn schema_plan_list() -> Value {
                 "minimum":1,
                 "maximum":100,
                 "default":10
+            },
+            "cursor": {
+                "type":"string",
+                "description":"Opaque next_cursor from the previous response. Never auto-fetch it without user intent."
             },
             "view": {
                 "type":"string",
@@ -4362,6 +4389,17 @@ fn summarize_rows(value: Value, keys: &[&str]) -> Value {
         Value::Array(rows) => {
             Value::Array(rows.into_iter().map(|row| keep_keys(&row, keys)).collect())
         }
+        Value::Object(mut obj) if obj.get("items").and_then(Value::as_array).is_some() => {
+            let items = obj
+                .remove("items")
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default();
+            obj.insert(
+                "items".to_string(),
+                Value::Array(items.into_iter().map(|row| keep_keys(&row, keys)).collect()),
+            );
+            Value::Object(obj)
+        }
         other => keep_keys(&other, keys),
     }
 }
@@ -4584,6 +4622,29 @@ mod tests {
         assert_eq!(
             summary,
             json!([{"id":"tsk_1","title":"Ship it","status":"todo","priority":"p1"}])
+        );
+    }
+
+    #[test]
+    fn summary_rows_preserve_pagination_envelope() {
+        let page = json!({
+            "items": [{
+                "id": "tsk_1",
+                "title": "Ship it",
+                "status": "todo",
+                "description": "large body"
+            }],
+            "next_cursor": "tsk_1",
+            "has_more": true
+        });
+        let summary = summarize_rows(page, &["id", "title", "status"]);
+        assert_eq!(
+            summary,
+            json!({
+                "items": [{"id":"tsk_1","title":"Ship it","status":"todo"}],
+                "next_cursor": "tsk_1",
+                "has_more": true
+            })
         );
     }
 

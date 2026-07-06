@@ -118,6 +118,10 @@ async fn list_forwards_limit_to_tasks_endpoint() {
         query.contains("limit=10"),
         "daruma_list must forward limit: {query}"
     );
+    assert!(
+        query.contains("page=true"),
+        "daruma_list must request paged responses: {query}"
+    );
 }
 
 #[tokio::test]
@@ -132,6 +136,10 @@ async fn plan_list_forwards_limit_to_plans_endpoint() {
     assert!(
         query.contains("limit=10"),
         "daruma_plan_list must forward limit: {query}"
+    );
+    assert!(
+        query.contains("page=true"),
+        "daruma_plan_list must request paged responses: {query}"
     );
 }
 

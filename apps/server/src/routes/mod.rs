@@ -430,6 +430,10 @@ struct ListTasksQuery {
     status: Option<String>,
     /// Max rows to return. Defaults to 10, capped at 100.
     limit: Option<usize>,
+    /// Opaque cursor from a previous paged response.
+    cursor: Option<String>,
+    /// Return `{items,next_cursor,has_more}` instead of the legacy array.
+    page: Option<bool>,
 }
 
 async fn list_tasks(
@@ -458,8 +462,19 @@ async fn list_tasks(
         }
     }
     .map_err(ApiError::from)?;
-    tasks.truncate(limit);
-    Ok(Json(tasks))
+    tasks.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
+    });
+    if wants_page(q.page, q.cursor.as_deref()) {
+        Ok(Json(page_by_id(tasks, q.cursor.as_deref(), limit, |task| {
+            task.id.to_string()
+        })))
+    } else {
+        tasks.truncate(limit);
+        Ok(Json(json!(tasks)))
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -469,6 +484,10 @@ struct SearchHttpQuery {
     scope: Option<String>,
     project_id: Option<String>,
     limit: Option<usize>,
+    /// Numeric offset cursor from a previous paged search response.
+    cursor: Option<String>,
+    /// Return `{items,next_cursor,has_more}` instead of the legacy array.
+    page: Option<bool>,
 }
 
 async fn search(
@@ -494,6 +513,17 @@ async fn search(
     }
 
     let limit = bounded_collection_limit(q.limit);
+    let page = wants_page(q.page, q.cursor.as_deref());
+    let offset = q
+        .cursor
+        .as_deref()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let fetch_limit = if page {
+        (offset + limit + 1).min(MAX_COLLECTION_LIMIT + 1)
+    } else {
+        limit
+    };
     let project_id = parse_search_project(q.project_id.as_deref())?;
     let provider = FtsSearchProvider::new(
         state.tasks.clone(),
@@ -505,18 +535,73 @@ async fn search(
             query: query.to_string(),
             scopes,
             project_id,
-            limit,
+            limit: fetch_limit,
         })
         .await
         .map_err(ApiError::from)?;
 
-    Ok(Json(hits))
+    if page {
+        Ok(Json(page_by_offset(hits, offset, limit)))
+    } else {
+        Ok(Json(json!(hits)))
+    }
 }
 
 fn bounded_collection_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(DEFAULT_COLLECTION_LIMIT)
         .clamp(1, MAX_COLLECTION_LIMIT)
+}
+
+fn wants_page(page: Option<bool>, cursor: Option<&str>) -> bool {
+    page.unwrap_or(false) || cursor.is_some()
+}
+
+fn page_by_id<T, F>(items: Vec<T>, cursor: Option<&str>, limit: usize, id_of: F) -> Value
+where
+    T: Serialize,
+    F: Fn(&T) -> String,
+{
+    let start = match cursor {
+        Some(cursor) => items
+            .iter()
+            .position(|item| id_of(item) == cursor)
+            .map(|idx| idx + 1)
+            .unwrap_or(items.len()),
+        None => 0,
+    };
+    let mut page = items.into_iter().skip(start).take(limit + 1).collect::<Vec<_>>();
+    let has_more = page.len() > limit;
+    if has_more {
+        page.truncate(limit);
+    }
+    let next_cursor = if has_more {
+        page.last().map(id_of)
+    } else {
+        None
+    };
+    json!({ "items": page, "next_cursor": next_cursor, "has_more": has_more })
+}
+
+fn page_by_offset<T>(items: Vec<T>, offset: usize, limit: usize) -> Value
+where
+    T: Serialize,
+{
+    let mut page = items
+        .into_iter()
+        .skip(offset)
+        .take(limit + 1)
+        .collect::<Vec<_>>();
+    let has_more = page.len() > limit;
+    if has_more {
+        page.truncate(limit);
+    }
+    let next_cursor = if has_more {
+        Some((offset + page.len()).to_string())
+    } else {
+        None
+    };
+    json!({ "items": page, "next_cursor": next_cursor, "has_more": has_more })
 }
 
 fn parse_search_scopes(raw: Option<&str>) -> Result<Vec<SearchScope>, ApiError> {
@@ -4245,6 +4330,10 @@ struct ListPlansQuery {
     status: Option<String>,
     /// Max rows to return. Defaults to 10, capped at 100.
     limit: Option<usize>,
+    /// Opaque cursor from a previous paged response.
+    cursor: Option<String>,
+    /// Return `{items,next_cursor,has_more}` instead of the legacy array.
+    page: Option<bool>,
 }
 
 /// Parse the required plan `status` query parameter.
@@ -4324,8 +4413,19 @@ async fn list_plans(
             )))
         }
     };
-    plans.truncate(limit);
-    Ok(Json(plans))
+    plans.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
+    });
+    if wants_page(q.page, q.cursor.as_deref()) {
+        Ok(Json(page_by_id(plans, q.cursor.as_deref(), limit, |plan| {
+            plan.id.to_string()
+        })))
+    } else {
+        plans.truncate(limit);
+        Ok(Json(json!(plans)))
+    }
 }
 
 #[derive(Deserialize)]

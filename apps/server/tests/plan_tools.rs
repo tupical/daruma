@@ -81,7 +81,8 @@ async fn first_plan_id(client: &ApiClient, project_id: &str) -> String {
         json!({ "project_id": project_id, "status": "all" }),
     )
     .await;
-    list.as_array()
+    list["items"]
+        .as_array()
         .expect("plan list must be array")
         .first()
         .and_then(|p| p["id"].as_str())
