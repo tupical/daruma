@@ -99,9 +99,9 @@ impl Workspace {
         match matches.as_slice() {
             [] => Ok(None),
             [(_, project_id)] => Ok(Some((*project_id).clone())),
-            _ => anyhow::bail!(
-                "ambiguous daruma scope `{scope}`; use `scope_path` or `project_id`"
-            ),
+            _ => {
+                anyhow::bail!("ambiguous daruma scope `{scope}`; use `scope_path` or `project_id`")
+            }
         }
     }
 
@@ -292,9 +292,7 @@ mod tests {
         );
 
         assert_eq!(
-            ws.project_for_path(
-                "/tmp/daruma-public-test/projects/daruma-secondary/crates/api"
-            ),
+            ws.project_for_path("/tmp/daruma-public-test/projects/daruma-secondary/crates/api"),
             Some("secondary".to_string())
         );
     }
@@ -371,10 +369,7 @@ mod tests {
         let scope = ws
             .set_default_project("secondary-new", Some("daruma-secondary"))
             .unwrap();
-        assert_eq!(
-            scope,
-            "/tmp/daruma-public-test/projects/daruma-secondary"
-        );
+        assert_eq!(scope, "/tmp/daruma-public-test/projects/daruma-secondary");
         assert_eq!(
             ws.project_for_scope("daruma-secondary").unwrap(),
             Some("secondary-new".to_string())

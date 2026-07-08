@@ -140,8 +140,8 @@ mod tests {
     use crate::scope::TokenScope;
     use crate::token::{generate, NewTokenSpec, TokenKind};
     use async_trait::async_trait;
-    use std::sync::Mutex;
     use daruma_shared::{AgentId, Result, TokenId};
+    use std::sync::Mutex;
 
     // ── in-memory store for verifier tests ────────────────────────────────────
 

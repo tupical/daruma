@@ -17,9 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ActorRef;
-use daruma_shared::{
-    ArtifactId, AuditFindingId, DocumentId, PlanId, ProjectId, TaskId, Timestamp,
-};
+use daruma_shared::{ArtifactId, AuditFindingId, DocumentId, PlanId, ProjectId, TaskId, Timestamp};
 
 /// How serious a finding is. Stable wire strings stored in the `severity` column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -5,8 +5,8 @@
 //! accountability and is set independently of which agent currently holds a
 //! work-lease on the underlying resource.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{AgentId, ArtifactId, ArtifactRelationId, ProjectId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 /// Lifecycle status of an artifact.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

@@ -1,11 +1,11 @@
 //! E2E coverage for MCP Roadmap M1/M2 read-only endpoints.
 
 use axum::http::StatusCode;
-use serde_json::json;
 use daruma_core::{Command, CommandBus};
 use daruma_domain::{Actor, NewPlan, NewTask, RelationKind, Status};
 use daruma_events::Event;
 use daruma_shared::{PlanId, ProjectId, TaskId};
+use serde_json::json;
 
 mod common;
 use common::{json_get, json_post, test_app};

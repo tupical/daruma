@@ -10,9 +10,7 @@
 use std::sync::Arc;
 
 use daruma_core::{Command, CommandHandler};
-use daruma_domain::{
-    Actor, Document, DocumentKind, NewDocument,
-};
+use daruma_domain::{Actor, Document, DocumentKind, NewDocument};
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::{CoreError, DocumentId, ProjectId};
 use daruma_storage::{
@@ -147,7 +145,13 @@ async fn create_document_emits_event_and_allows_duplicate_kind() {
     let project_id = create_bare_project(&handler).await;
 
     // First Interview document (created explicitly — nothing is auto-seeded).
-    create_doc(&handler, project_id, DocumentKind::Interview, "First Interview").await;
+    create_doc(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "First Interview",
+    )
+    .await;
 
     // Second Interview document — kind is not unique per project.
     let envs = handler
@@ -241,8 +245,7 @@ async fn rename_document_updates_projection() {
     let (handler, documents) = build_stack().await;
 
     let project_id = create_bare_project(&handler).await;
-    let interview_id =
-        create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
+    let interview_id = create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
 
     handler
         .handle(
@@ -264,8 +267,7 @@ async fn replace_then_append_compose() {
     let (handler, documents) = build_stack().await;
 
     let project_id = create_bare_project(&handler).await;
-    let interview_id =
-        create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
+    let interview_id = create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
 
     handler
         .handle(
@@ -301,8 +303,7 @@ async fn archive_is_idempotent_on_already_archived() {
     let (handler, _documents) = build_stack().await;
 
     let project_id = create_bare_project(&handler).await;
-    let interview_id =
-        create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
+    let interview_id = create_doc(&handler, project_id, DocumentKind::Interview, "Interview").await;
 
     let first = handler
         .handle(
@@ -393,7 +394,10 @@ async fn status_archived_is_coherent_with_archived_at() {
         .unwrap();
     let doc = documents.get(doc_id).await.unwrap().unwrap();
     assert_eq!(doc.status, daruma_domain::DocumentStatus::Archived);
-    assert!(doc.archived_at.is_some(), "archived status stamps archived_at");
+    assert!(
+        doc.archived_at.is_some(),
+        "archived status stamps archived_at"
+    );
 
     // Leaving `archived` clears the stamp (un-archive).
     handler
@@ -408,7 +412,10 @@ async fn status_archived_is_coherent_with_archived_at() {
         .unwrap();
     let doc = documents.get(doc_id).await.unwrap().unwrap();
     assert_eq!(doc.status, daruma_domain::DocumentStatus::Active);
-    assert!(doc.archived_at.is_none(), "leaving archived clears archived_at");
+    assert!(
+        doc.archived_at.is_none(),
+        "leaving archived clears archived_at"
+    );
 
     // The legacy ArchiveDocument command also lands the status on `archived`.
     handler

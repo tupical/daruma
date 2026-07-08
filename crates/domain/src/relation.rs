@@ -1,7 +1,7 @@
 //! Typed relations between tasks: Blocks, RelatesTo, Duplicates.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{RelationId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::agent::Actor;
 

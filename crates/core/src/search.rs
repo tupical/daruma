@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Serialize;
 use daruma_domain::{Comment, Plan, Task};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, PlanId, ProjectId, Result, TaskId};
 use daruma_storage::{CommentRepo, PlanRepo, TaskRepo};
+use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchScope {

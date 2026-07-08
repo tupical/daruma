@@ -1,7 +1,7 @@
 //! Run entity — a single agent execution pass through a Plan.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{AgentId, PlanId, RunId, RunNoteId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::agent::Actor;
 

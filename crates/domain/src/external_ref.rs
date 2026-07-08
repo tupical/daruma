@@ -1,8 +1,8 @@
 //! ExternalRef — maps an external system's identifier to an internal entity ID.
 //! Enables idempotent creation via `(tenant, kind, external_id)` uniqueness.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::Timestamp;
+use serde::{Deserialize, Serialize};
 
 /// A cross-system identity mapping.
 ///

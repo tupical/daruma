@@ -10,6 +10,7 @@ pub mod device;
 pub mod document;
 pub mod evidence;
 pub mod external_ref;
+pub mod handoff;
 pub mod plan;
 pub mod project;
 pub mod project_settings;
@@ -20,7 +21,6 @@ pub mod session;
 pub mod signal;
 pub mod task;
 pub mod work_lease;
-pub mod handoff;
 pub mod work_unit;
 
 pub use activity::{Activity, Verb};
@@ -35,6 +35,7 @@ pub use device::Device;
 pub use document::{Document, DocumentKind, DocumentStatus, NewDocument};
 pub use evidence::{ActorRef, Evidence, EvidenceKind, NewEvidence};
 pub use external_ref::ExternalRef;
+pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};
 pub use plan::{
     CanStart, CanStartBlocker, NewPlan, Plan, PlanFanoutWave, PlanGraph, PlanGraphEdge,
     PlanGraphNode, PlanPatch, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask,
@@ -52,5 +53,4 @@ pub use session::{
 pub use signal::SignalKind;
 pub use task::{CompletionNote, NewTask, Priority, Status, Task, TaskPatch, TriageState};
 pub use work_lease::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
-pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};
 pub use work_unit::{NewWorkUnit, WorkUnit, WorkUnitStatus};

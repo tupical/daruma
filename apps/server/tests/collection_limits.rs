@@ -132,7 +132,9 @@ async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
     let (status, hit_page1) = json_get(
         app.router,
         &app.admin_token,
-        &format!("/v1/search?query=needle&scope=tasks,plans&project_id={project_id}&limit=3&page=true"),
+        &format!(
+            "/v1/search?query=needle&scope=tasks,plans&project_id={project_id}&limit=3&page=true"
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "search response: {hit_page1}");

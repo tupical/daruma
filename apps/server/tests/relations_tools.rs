@@ -5,10 +5,10 @@
 //!   link_unlink_roundtrip             — daruma_link → relation_id; daruma_unlink → ok
 //!   relations_read_returns_five_groups — daruma_relations returns 5-group projection
 
-use serde_json::json;
 use daruma_mcp::{
     dispatch_request_with_profile, tool_definitions, ApiClient, JsonRpcRequest, ToolProfile,
 };
+use serde_json::json;
 
 mod common;
 use common::{spawn_server, test_app};

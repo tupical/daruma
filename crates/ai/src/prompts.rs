@@ -9,10 +9,10 @@
 //! All known prompts are baked into the binary via `include_str!`; the
 //! first [`PromptRegistry::load`] call parses them.
 
-use once_cell::sync::Lazy;
-use serde::Serialize;
 use daruma_ai_infra::prompts::PromptRegistry as SharedRegistry;
 use daruma_shared::CoreError;
+use once_cell::sync::Lazy;
+use serde::Serialize;
 
 static PROMPTS: Lazy<SharedRegistry> = Lazy::new(|| {
     SharedRegistry::new(&[(

@@ -3,8 +3,8 @@
 //! resource URIs with modes and fencing tokens (ADR
 //! docs/adr/work-units-and-artifacts.md, P1).
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{normalize_lease_path, AgentId, ProjectId, TaskId, Timestamp, WorkLeaseId};
+use serde::{Deserialize, Serialize};
 
 /// How a lease holder intends to use the resource. Only `Exclusive`
 /// conflicts: it blocks (and is blocked by) every non-`Intent` lease.

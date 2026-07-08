@@ -20,10 +20,10 @@
 //! planning primitive returns hints, core assigns `batch_id` +
 //! `generated_at` and upserts via `state.complexity_hints.upsert_batch`.
 
-use serde_json::{json, Value};
-use std::collections::HashMap;
 use daruma_domain::{ComplexityHint, TaskBrief};
 use daruma_shared::{time, CoreError, TaskId};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use daruma_ai_infra::client::{OpenAiClient, ResponseOutput, ResponseRequest};
 use daruma_ai_infra::untrusted::wrap_untrusted;

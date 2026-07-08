@@ -2,10 +2,10 @@
 //! into the `run_notes` SQLite table (§3.8.2).
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Actor, RunNote};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, Result, RunId, RunNoteId};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `run_notes` projection table.
 pub struct RunNoteRepo {

@@ -6,9 +6,9 @@
 
 use crate::parse_ts;
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
 use daruma_auth::{ApiToken, TokenKind, TokenScope, TokenStore};
 use daruma_shared::{time, AgentId, CoreError, Result, TokenId};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `tokens` table.
 #[derive(Clone)]

@@ -4,10 +4,10 @@
 //! frontend can import them without pulling in `daruma-sync`'s tokio
 //! runtime dependency.
 
-use serde::{Deserialize, Serialize};
 use daruma_domain::Actor;
 use daruma_events::{Channel, EventEnvelope};
 use daruma_shared::{EventId, ProjectId};
+use serde::{Deserialize, Serialize};
 
 use crate::command::Command;
 

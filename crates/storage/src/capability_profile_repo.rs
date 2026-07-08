@@ -13,9 +13,9 @@
 //! `1 / min(evidence_count, 20)`, so early evidence moves the score fast and
 //! a long history is stable. `confidence = n / (n + 5)`.
 
-use sqlx::{Row, SqlitePool};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, CoreError, Result, WorkUnitId};
+use sqlx::{Row, SqlitePool};
 
 /// One `(agent, capability)` row of the projection.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -117,17 +117,13 @@ impl CapabilityProfileRepo {
         Ok(())
     }
 
-    async fn unit_owner_and_tags(
-        &self,
-        id: WorkUnitId,
-    ) -> Result<Option<(String, Vec<String>)>> {
-        let row = sqlx::query(
-            "SELECT owner_agent_id, capability_tags_json FROM work_units WHERE id = ?",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
+    async fn unit_owner_and_tags(&self, id: WorkUnitId) -> Result<Option<(String, Vec<String>)>> {
+        let row =
+            sqlx::query("SELECT owner_agent_id, capability_tags_json FROM work_units WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
         let Some(row) = row else { return Ok(None) };
         let owner: Option<String> = row
             .try_get("owner_agent_id")
@@ -216,11 +212,7 @@ mod tests {
         (db, wu, prof)
     }
 
-    async fn seed_claimed_unit(
-        wu: &WorkUnitRepo,
-        agent: AgentId,
-        tags: &[&str],
-    ) -> WorkUnitId {
+    async fn seed_claimed_unit(wu: &WorkUnitRepo, agent: AgentId, tags: &[&str]) -> WorkUnitId {
         let mut unit = WorkUnit::sample(daruma_shared::TaskId::new());
         unit.capability_tags = tags.iter().map(|s| s.to_string()).collect();
         unit.owner_agent_id = Some(agent);
@@ -277,7 +269,11 @@ mod tests {
         prof.apply_event(&env).await.unwrap();
         let rows = prof.list_for_agent(agent).await.unwrap();
         let frontend = rows.iter().find(|r| r.capability == "frontend").unwrap();
-        assert!((frontend.score - 0.65).abs() < 1e-9, "got {}", frontend.score);
+        assert!(
+            (frontend.score - 0.65).abs() < 1e-9,
+            "got {}",
+            frontend.score
+        );
         assert_eq!(frontend.evidence_count, 2);
     }
 

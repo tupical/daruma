@@ -19,7 +19,6 @@ use axum::{
     http::{Method, Request, StatusCode},
     Router,
 };
-use serde_json::Value;
 use daruma_auth::{
     generate, Capabilities, NewTokenSpec, ProjectFilter, TokenKind, TokenScope, TokenStore,
 };
@@ -35,6 +34,7 @@ use daruma_storage::{
 };
 use daruma_sync::Hub;
 use daruma_webhooks::WebhookStore;
+use serde_json::Value;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 

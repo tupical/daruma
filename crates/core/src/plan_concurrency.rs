@@ -196,10 +196,10 @@ mod tests {
     use super::*;
     use crate::repos::PlanRepository;
     use async_trait::async_trait;
-    use std::{collections::HashMap, sync::Mutex};
     use daruma_domain::{Plan, PlanStatus as PS, PlanTask};
     use daruma_events::EventEnvelope;
     use daruma_shared::{time, ProjectId};
+    use std::{collections::HashMap, sync::Mutex};
 
     // ── Minimal stub ──────────────────────────────────────────────────────────
 

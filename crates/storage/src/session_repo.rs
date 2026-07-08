@@ -2,10 +2,10 @@
 //! into the `agent_sessions` SQLite table. Linear B.1: stores plan_steps_json.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, AgentSessionId, CoreError, Result, SessionArtifactId, Timestamp};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `agent_sessions` projection table.
 pub struct SessionRepo {

@@ -1,9 +1,9 @@
 //! Version-history read API and MCP tool coverage.
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
 use daruma_auth::{Capabilities, Capability, TokenKind};
 use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
+use serde_json::{json, Value};
 
 mod common;
 use common::{json_get, json_post, mint_with_caps, spawn_server, test_app};

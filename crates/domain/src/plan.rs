@@ -1,7 +1,7 @@
 //! Plan entity — a goal with an ordered list of tasks an agent works through.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{time, PlanId, ProjectId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::task::Status;
 

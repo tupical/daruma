@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use daruma_domain::Actor;
 use daruma_shared::{time, DeviceId, EventId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::event::Event;
 

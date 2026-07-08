@@ -2,8 +2,8 @@
 
 use crate::parse_ts;
 use chrono::{Duration, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_shared::{AgentId, CoreError, Result, TaskId, Timestamp};
+use sqlx::{Row, SqlitePool};
 
 /// Outcome of an atomic [`AgentClaimRepo::try_acquire`] attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]

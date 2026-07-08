@@ -7,10 +7,10 @@
 //! `off`/`enabled=false` rules are not returned to the gate (invariant 2).
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, Result, RuleId};
+use sqlx::{Row, SqlitePool};
 
 pub struct RuleRepo {
     pool: SqlitePool,
@@ -126,8 +126,7 @@ impl RuleRepo {
                     // and the parent rule forbids override (spec §2.3): then
                     // the parent stays effective.
                     Some((_, incumbent)) => {
-                        let weakens =
-                            rule.mode.strictness() < incumbent.mode.strictness();
+                        let weakens = rule.mode.strictness() < incumbent.mode.strictness();
                         if weakens && !incumbent.override_allowed {
                             continue;
                         }
@@ -519,7 +518,9 @@ mod tests {
             &repo,
             Event::RuleCreated {
                 rule: sample(
-                    RuleScope::Project { id: allowed_project },
+                    RuleScope::Project {
+                        id: allowed_project,
+                    },
                     "with-override",
                     RuleMode::Off,
                 ),
@@ -528,7 +529,12 @@ mod tests {
         .await;
         let eff = repo
             .effective_rules(
-                &[RuleScope::Tenant, RuleScope::Project { id: allowed_project }],
+                &[
+                    RuleScope::Tenant,
+                    RuleScope::Project {
+                        id: allowed_project,
+                    },
+                ],
                 RuleTrigger::TaskBeforeComplete,
             )
             .await
@@ -571,7 +577,11 @@ mod tests {
         let plan = daruma_shared::PlanId::new();
         let task = daruma_shared::TaskId::new();
 
-        let mut parent = sample(RuleScope::Tenant, "completion-note", RuleMode::Recommendation);
+        let mut parent = sample(
+            RuleScope::Tenant,
+            "completion-note",
+            RuleMode::Recommendation,
+        );
         parent.override_allowed = false;
         apply(&repo, Event::RuleCreated { rule: parent }).await;
         apply(
@@ -643,6 +653,9 @@ mod tests {
             .unwrap();
         assert_eq!(eff.len(), 1);
         assert_eq!(eff[0].mode, RuleMode::Required);
-        assert_eq!(eff[0].message, "task-level", "deeper equal-strictness rule wins");
+        assert_eq!(
+            eff[0].message, "task-level",
+            "deeper equal-strictness rule wins"
+        );
     }
 }

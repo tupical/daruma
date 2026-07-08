@@ -1,10 +1,10 @@
 //! Activity projection repository — materialises events into the `activity` table.
 
 use chrono::{DateTime, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Activity, Actor, Verb};
 use daruma_events::{Event, EventEnvelope, EventStore};
 use daruma_shared::{ActivityId, CoreError, EventId, PlanId, ProjectId, Result, RunId, TaskId};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `activity` projection table.
 pub struct ActivityRepo {

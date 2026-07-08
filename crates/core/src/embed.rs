@@ -14,6 +14,4 @@
 
 pub use crate::{Command, CommandBus, CommandEnvelope, CommandHandler};
 pub use daruma_events::{Event, EventBus, EventEnvelope, EventStore};
-pub use daruma_storage::{
-    ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo,
-};
+pub use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};

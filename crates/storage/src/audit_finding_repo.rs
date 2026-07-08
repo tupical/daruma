@@ -14,12 +14,12 @@
 //!   run (auto-resolve). The caller passes the ids it upserted.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{
     ActorRef, AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus,
     NewFinding,
 };
 use daruma_shared::{time, AuditFindingId, CoreError, Result, Timestamp};
+use sqlx::{Row, SqlitePool};
 
 /// Filters for [`AuditFindingRepo::list`]. All `None` = every finding in the
 /// project; combine to narrow.

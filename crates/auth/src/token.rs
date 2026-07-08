@@ -7,9 +7,9 @@ use argon2::{
     Argon2,
 };
 use base64::Engine as _;
+use daruma_shared::{time, AgentId, Result, Timestamp, TokenId};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use daruma_shared::{time, AgentId, Result, Timestamp, TokenId};
 
 use crate::scope::TokenScope;
 

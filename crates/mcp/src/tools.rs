@@ -1242,8 +1242,10 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let cursor = args.get("cursor").and_then(|v| v.as_str());
-            let mut params: Vec<(&str, String)> =
-                vec![("status", urlencode(status.trim())), ("page", "true".to_string())];
+            let mut params: Vec<(&str, String)> = vec![
+                ("status", urlencode(status.trim())),
+                ("page", "true".to_string()),
+            ];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All => {}
                 ProjectFilter::None => {
@@ -1735,8 +1737,10 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let cursor = args.get("cursor").and_then(|v| v.as_str());
-            let mut params: Vec<(&str, String)> =
-                vec![("status", urlencode(status.trim())), ("page", "true".to_string())];
+            let mut params: Vec<(&str, String)> = vec![
+                ("status", urlencode(status.trim())),
+                ("page", "true".to_string()),
+            ];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
@@ -2616,7 +2620,10 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             // distinguishes present-null from absent, so always send the key.
             let task_id = args.get("task_id").cloned().unwrap_or(Value::Null);
             client
-                .patch_json(&format!("/v1/documents/{id}"), json!({ "task_id": task_id }))
+                .patch_json(
+                    &format!("/v1/documents/{id}"),
+                    json!({ "task_id": task_id }),
+                )
                 .await
         }
         "daruma_doc_list" => {
@@ -4293,9 +4300,7 @@ fn resolve_project_filter(
         return ws
             .project_for_path(scope_path)
             .map(ProjectFilter::Project)
-            .ok_or_else(|| {
-                anyhow::anyhow!("no daruma scope configured for path `{scope_path}`")
-            });
+            .ok_or_else(|| anyhow::anyhow!("no daruma scope configured for path `{scope_path}`"));
     }
 
     ws.inferred_project().map(|p| match p {
@@ -4953,14 +4958,8 @@ mod profile_tests {
             "daruma_delete",
             ToolProfile::Default
         ));
-        assert!(!tool_hidden_in_profile(
-            "daruma_list",
-            ToolProfile::Default
-        ));
-        assert!(!tool_hidden_in_profile(
-            "daruma_delete",
-            ToolProfile::Full
-        ));
+        assert!(!tool_hidden_in_profile("daruma_list", ToolProfile::Default));
+        assert!(!tool_hidden_in_profile("daruma_delete", ToolProfile::Full));
         // Unknown names fall through to the normal unknown-tool error.
         assert!(!tool_hidden_in_profile("frobnicate", ToolProfile::Default));
     }

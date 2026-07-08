@@ -23,10 +23,10 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
 use daruma_domain::{Actor, NewTask};
 use daruma_events::{Event, EventBus, EventEnvelope};
+use futures::{SinkExt, StreamExt};
+use serde_json::{json, Value};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;

@@ -14,12 +14,12 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use serde_json::Value;
 use daruma_auth::{
     generate, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope,
     TokenStore,
 };
 use daruma_events::EventStore;
+use serde_json::Value;
 use tower::ServiceExt;
 
 mod common;
@@ -480,8 +480,8 @@ async fn webhook_emits_task_unblocked() {
     use axum::{
         extract::State as AxState, http::HeaderMap, routing::post as axpost, Router as AxRouter,
     };
-    use std::sync::Mutex;
     use daruma_webhooks::{sign_body_hex, spawn_dispatcher, NoopEnrichment};
+    use std::sync::Mutex;
 
     // ── Mock receiver ────────────────────────────────────────────────────────
     #[derive(Debug, Clone)]
@@ -680,8 +680,8 @@ async fn webhook_emits_task_linked() {
     use axum::{
         extract::State as AxState, http::HeaderMap, routing::post as axpost, Router as AxRouter,
     };
-    use std::sync::Mutex;
     use daruma_webhooks::{spawn_dispatcher, NoopEnrichment};
+    use std::sync::Mutex;
 
     #[derive(Debug, Clone)]
     struct MockHit {

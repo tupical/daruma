@@ -32,9 +32,6 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use sqlx::Row;
 use daruma_auth::{
     generate, AuthContext, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind,
     TokenScope, TokenStore,
@@ -61,6 +58,9 @@ use daruma_shared::{
 };
 use daruma_storage::{ClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::Row;
 
 use daruma_api_dto::{MutationResponse, MutationWarning};
 
@@ -471,9 +471,12 @@ async fn list_tasks(
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
     if wants_page(q.page, q.cursor.as_deref()) {
-        Ok(Json(page_by_id(tasks, q.cursor.as_deref(), limit, |task| {
-            task.id.to_string()
-        })))
+        Ok(Json(page_by_id(
+            tasks,
+            q.cursor.as_deref(),
+            limit,
+            |task| task.id.to_string(),
+        )))
     } else {
         tasks.truncate(limit);
         Ok(Json(json!(tasks)))
@@ -573,7 +576,11 @@ where
             .unwrap_or(items.len()),
         None => 0,
     };
-    let mut page = items.into_iter().skip(start).take(limit + 1).collect::<Vec<_>>();
+    let mut page = items
+        .into_iter()
+        .skip(start)
+        .take(limit + 1)
+        .collect::<Vec<_>>();
     let has_more = page.len() > limit;
     if has_more {
         page.truncate(limit);
@@ -647,9 +654,7 @@ fn parse_search_project(raw: Option<&str>) -> Result<Option<ProjectId>, ApiError
 /// Returns `Ok(None)` for `all` (no SQL status predicate), `Ok(Some(vec))`
 /// for explicit filters, and `Err` (400) when absent, empty, or unknown.
 /// The shortcut `active` expands to all non-terminal statuses.
-fn parse_status_filter(
-    raw: Option<&str>,
-) -> Result<Option<Vec<daruma_domain::Status>>, ApiError> {
+fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<daruma_domain::Status>>, ApiError> {
     use daruma_domain::Status;
     let Some(raw) = raw else {
         return Err(ApiError::from(CoreError::validation(
@@ -1453,7 +1458,9 @@ async fn delete_agent_capability(
         .delete(agent_id, &capability)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(serde_json::json!({ "success": true, "removed": removed })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "removed": removed }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1515,7 +1522,9 @@ async fn accept_handoff(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid handoff id: {id_str}")))
+        ApiError::from(CoreError::validation(format!(
+            "invalid handoff id: {id_str}"
+        )))
     })?;
     let notes = body.and_then(|Json(b)| b.notes);
     let envs = state
@@ -1555,7 +1564,9 @@ async fn reject_handoff(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid handoff id: {id_str}")))
+        ApiError::from(CoreError::validation(format!(
+            "invalid handoff id: {id_str}"
+        )))
     })?;
     let envs = state
         .commands
@@ -2938,10 +2949,7 @@ async fn mcp_http(
     let token = bearer_token(&headers)?;
     let telemetry = mcp_call_telemetry(&request, profile.as_str(), &token);
     let http = reqwest::Client::builder()
-        .user_agent(format!(
-            "daruma-server-mcp/{}",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(format!("daruma-server-mcp/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| ApiError::from(CoreError::validation(e.to_string())))?;
     let mut client = ApiClient::with_http(mcp_base_url(&headers)?, token, http);
@@ -4557,9 +4565,12 @@ async fn list_plans(
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
     if wants_page(q.page, q.cursor.as_deref()) {
-        Ok(Json(page_by_id(plans, q.cursor.as_deref(), limit, |plan| {
-            plan.id.to_string()
-        })))
+        Ok(Json(page_by_id(
+            plans,
+            q.cursor.as_deref(),
+            limit,
+            |plan| plan.id.to_string(),
+        )))
     } else {
         plans.truncate(limit);
         Ok(Json(json!(plans)))

@@ -2,8 +2,8 @@
 //! endpoint and the `inbox/ack` cursor update.
 
 use chrono::{DateTime, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_shared::{time, AgentId, CoreError, Result};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `agent_acks` table.
 #[derive(Clone)]

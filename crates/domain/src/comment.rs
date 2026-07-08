@@ -3,8 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{CommentId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::agent::Actor;
 

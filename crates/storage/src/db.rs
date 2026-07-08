@@ -1,12 +1,12 @@
 //! Database connection pool and migration runner.
 
+use daruma_shared::{CoreError, Result};
 use sqlx::{
     pool::PoolOptions,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
     SqlitePool,
 };
 use std::str::FromStr;
-use daruma_shared::{CoreError, Result};
 
 // ── Performance notes ─────────────────────────────────────────────────────────
 //

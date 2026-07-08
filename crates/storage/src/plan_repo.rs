@@ -2,10 +2,10 @@
 //! `plans` and `plan_tasks` SQLite tables.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, PlanId, ProjectId, Result, TaskId, Timestamp};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `plans` and `plan_tasks` projection tables.
 pub struct PlanRepo {

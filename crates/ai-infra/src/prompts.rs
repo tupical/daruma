@@ -23,8 +23,8 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::CoreError;
+use serde::{Deserialize, Serialize};
 use tinytemplate::{format_unescaped, TinyTemplate};
 
 /// Parsed TOML shape of a single `prompts/<name>.toml` file.

@@ -27,11 +27,11 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use daruma_core::{Command, CommandBus};
 use daruma_domain::Actor;
 use daruma_events::{EventBus, EventEnvelope, EventReceiver};
 use daruma_shared::Result;
+use dashmap::DashMap;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;

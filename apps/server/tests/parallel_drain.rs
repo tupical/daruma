@@ -6,9 +6,9 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
 use serde_json::Value;
 use std::collections::HashSet;
-use daruma_auth::{Capabilities, Capability, ProjectFilter};
 use tower::ServiceExt;
 
 mod common;

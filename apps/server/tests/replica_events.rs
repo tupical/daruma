@@ -4,10 +4,10 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use serde_json::{json, Value};
 use daruma_domain::{Actor, NewTask};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::DeviceId;
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 mod common;

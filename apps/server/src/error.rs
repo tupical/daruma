@@ -5,9 +5,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde_json::json;
 use daruma_auth::MissingCapability;
 use daruma_shared::CoreError;
+use serde_json::json;
 
 /// HTTP error response produced by route handlers.
 pub struct ApiError(pub CoreError);

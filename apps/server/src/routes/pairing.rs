@@ -21,9 +21,9 @@
 //! - No secret material is logged.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use serde::{Deserialize, Serialize};
 use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
 use daruma_shared::AgentId;
+use serde::{Deserialize, Serialize};
 
 use crate::{error::ApiError, state::AppState};
 

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use daruma_shared::{time, ProjectId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TENANT_ID: &str = "self-hosted";
 

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use daruma_shared::{time, AgentId, ProjectId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::task::Priority;
 

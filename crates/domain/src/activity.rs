@@ -1,7 +1,7 @@
 //! Activity projection entity — denormalised user-facing history of a task.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{ActivityId, EventId, ProjectId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 use crate::agent::Actor;
 

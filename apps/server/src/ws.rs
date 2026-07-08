@@ -24,8 +24,6 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
 use daruma_auth::{
     verify_bearer, AuthContext, Capabilities, Capability, ProjectFilter, TokenStore,
 };
@@ -33,6 +31,8 @@ use daruma_events::{Channel, Event, EventEnvelope};
 use daruma_shared::{AgentId, EventId, PlanId, ProjectId, TaskId};
 use daruma_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
 use daruma_sync::{WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
+use futures::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -505,8 +505,9 @@ async fn handle_dispatch(
         | daruma_core::Command::SetStatus { .. }
         | daruma_core::Command::SetPriority { .. }
         | daruma_core::Command::SplitTask { .. } => Capability::TaskWrite,
-        daruma_core::Command::CreateProject { .. }
-        | daruma_core::Command::UpdateProject { .. } => Capability::ProjectWrite,
+        daruma_core::Command::CreateProject { .. } | daruma_core::Command::UpdateProject { .. } => {
+            Capability::ProjectWrite
+        }
         daruma_core::Command::RecordAgentAction { .. } => Capability::AgentDispatch,
         daruma_core::Command::AddComment { .. }
         | daruma_core::Command::EditComment { .. }

@@ -3,11 +3,11 @@
 
 use crate::parse_ts;
 use chrono::{DateTime, Utc};
-use serde_json::Value;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use daruma_domain::{Priority, Status, Task, TriageState};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, EventId, ProjectId, Result, TaskId};
+use serde_json::Value;
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::entity_version::{insert_entity_version, update_summary};
 

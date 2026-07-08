@@ -11,10 +11,10 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use serde_json::json;
 use daruma_mcp::{
     dispatch_request_with_profile, tool_definitions, ApiClient, JsonRpcRequest, ToolProfile,
 };
+use serde_json::json;
 use tower::ServiceExt;
 
 mod common;

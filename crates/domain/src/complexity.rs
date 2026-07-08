@@ -8,8 +8,8 @@
 //! Complexity is *not* a `Task` field — see ROADMAP §3.8 ("complexity
 //! score как Task field" is in the "what we don't take from CTM" list).
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 /// Minimal task context handed to the analyser (title + optional description).
 ///

@@ -8,10 +8,10 @@
 //! [`HandoffRepo`]-owned rows via the SQL predicate in `work_unit_repo` —
 //! both projections live in the same SQLite file.
 
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{HandoffContract, HandoffStatus};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, HandoffId, Result, WorkUnitId};
+use sqlx::{Row, SqlitePool};
 
 pub struct HandoffRepo {
     pool: SqlitePool,

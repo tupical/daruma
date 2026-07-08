@@ -30,9 +30,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use daruma_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use daruma_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
 
 /// How long a successfully verified bearer stays in the in-memory cache.
 const CACHE_TTL: Duration = Duration::from_secs(30);

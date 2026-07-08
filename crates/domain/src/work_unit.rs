@@ -3,8 +3,8 @@
 //! materialize when the lazy-activation rule fires; simple tasks keep the
 //! plain `task claim` path untouched.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{time, AgentId, PlanId, TaskId, Timestamp, WorkUnitId};
+use serde::{Deserialize, Serialize};
 
 use crate::task::Priority;
 

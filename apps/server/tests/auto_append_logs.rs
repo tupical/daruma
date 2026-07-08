@@ -6,10 +6,10 @@
 //! project creation, so the test harness creates them explicitly (mirroring
 //! what a product layer would do) before exercising the auto-append routing.
 
-use serde_json::json;
 use daruma_core::Command;
 use daruma_domain::{Actor, AutoAppendPatch, DocumentKind, NewDocument, NewTask};
 use daruma_shared::{AgentId, ProjectId};
+use serde_json::json;
 
 mod common;
 use common::test_app;

@@ -9,8 +9,8 @@
 //!   5. `daruma_doc_archive` hides the doc from `daruma_doc_list`
 //!      until `include_archived=true`.
 
-use serde_json::{json, Value};
 use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
+use serde_json::{json, Value};
 
 mod common;
 use common::{spawn_server, test_app};
@@ -49,12 +49,7 @@ async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> Value {
 }
 
 async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
-    let resp = call_tool(
-        client,
-        "daruma_project_create",
-        json!({ "title": title }),
-    )
-    .await;
+    let resp = call_tool(client, "daruma_project_create", json!({ "title": title })).await;
     resp["project_id"]
         .as_str()
         .expect("project_id must be a string in response")
@@ -90,7 +85,10 @@ async fn project_create_does_not_seed_documents() {
 
     let docs = call_tool(&client, "daruma_doc_list", json!({ "project_id": pid })).await;
     let arr = docs.as_array().expect("doc list must be array");
-    assert!(arr.is_empty(), "fresh project has no auto-seeded docs: {arr:?}");
+    assert!(
+        arr.is_empty(),
+        "fresh project has no auto-seeded docs: {arr:?}"
+    );
 }
 
 /// Appending a chunk via `daruma_doc_append` must show up in

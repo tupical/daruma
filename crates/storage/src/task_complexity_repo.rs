@@ -8,9 +8,9 @@
 //! row produced by the same run.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::ComplexityHint;
 use daruma_shared::{CoreError, PlanId, Result, TaskId};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `task_complexity_hints` projection table.
 pub struct TaskComplexityRepo {
