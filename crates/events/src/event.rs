@@ -6,9 +6,9 @@ use daruma_domain::{
     WorkUnit,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DocumentId,
-    EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId, RunNoteId,
-    TaskId, Timestamp, WorkUnitId,
+    AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DeviceId,
+    DocumentId, EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId,
+    RunNoteId, TaskId, Timestamp, WorkUnitId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -747,6 +747,14 @@ pub enum Event {
         message: String,
         at: Timestamp,
     },
+    DeviceConnected {
+        device_id: DeviceId,
+        connected_at: Timestamp,
+    },
+    DeviceDisconnected {
+        device_id: DeviceId,
+        disconnected_at: Timestamp,
+    },
 }
 
 /// The decision a lifecycle rule reached for a gate check. `allowed` is never
@@ -872,6 +880,8 @@ impl Event {
             Event::EvidenceRecorded { .. } => "evidence_recorded",
             Event::EvidenceSuperseded { .. } => "evidence_superseded",
             Event::RuleFired { .. } => "rule_fired",
+            Event::DeviceConnected { .. } => "device_connected",
+            Event::DeviceDisconnected { .. } => "device_disconnected",
         }
     }
 
@@ -1065,6 +1075,11 @@ impl Event {
             | Event::EvidenceRecorded { .. }
             | Event::EvidenceSuperseded { .. }
             | Event::RuleFired { .. } => Channel::Rules,
+
+            // ── Presence channel ─────────────────────────────────────────────
+            Event::DeviceConnected { .. } | Event::DeviceDisconnected { .. } => {
+                Channel::Presence
+            }
         }
     }
 }

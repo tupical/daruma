@@ -57,7 +57,10 @@ pub async fn cmd_discover(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    println!("\n{:<30} {:<25} {}", "Instance", "Host:Port", "TLS fingerprint (sha256:)");
+    println!(
+        "\n{:<30} {:<25} {}",
+        "Instance", "Host:Port", "TLS fingerprint (sha256:)"
+    );
     println!("{}", "-".repeat(100));
     for h in &discovered {
         println!(
@@ -159,9 +162,9 @@ fn parse_timeout(args: &[String]) -> Option<u64> {
 /// whose leaf-certificate fingerprint is pinned to the value in the URL, and
 /// persist the returned credentials.
 pub async fn cmd_pair(args: &[String]) -> Result<()> {
-    let url_str = args
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: daruma pair <daruma://pair?host=…&token=…&fpr=sha256:…>"))?;
+    let url_str = args.first().ok_or_else(|| {
+        anyhow::anyhow!("usage: daruma pair <daruma://pair?host=…&token=…&fpr=sha256:…>")
+    })?;
 
     // Camera pairing stub — off by default; can be unlocked with feature flag.
     #[cfg(feature = "camera-pairing")]
@@ -169,8 +172,8 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
         eprintln!("Note: camera-pairing feature is enabled but not yet implemented.");
     }
 
-    let params = parse_pairing_url(url_str)
-        .with_context(|| format!("invalid pairing URL: {url_str}"))?;
+    let params =
+        parse_pairing_url(url_str).with_context(|| format!("invalid pairing URL: {url_str}"))?;
 
     println!("Pairing with {}…", params.host);
     println!("  Expected TLS fingerprint: {}", params.fpr);
@@ -195,6 +198,9 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
     println!("Paired successfully!");
     println!("  Server URL  : https://{}", params.host);
     println!("  Token prefix: {}", pair_resp.token_prefix);
+    if let Some(device_id) = pair_resp.device_id {
+        println!("  Device ID   : {device_id}");
+    }
     println!();
     println!("Credentials written to the local config.");
     println!("Run `daruma sync` to pull tasks from the server.");
@@ -330,7 +336,10 @@ impl FingerprintVerifier {
         let expected = hex::decode(expected_hex)
             .with_context(|| format!("invalid fingerprint hex: {expected_hex}"))?;
         if expected.len() != 32 {
-            bail!("SHA-256 fingerprint must be 32 bytes (64 hex chars), got {}", expected.len());
+            bail!(
+                "SHA-256 fingerprint must be 32 bytes (64 hex chars), got {}",
+                expected.len()
+            );
         }
         Ok(Self { expected })
     }
@@ -463,6 +472,8 @@ fn percent_decode(s: &str) -> String {
 struct PairResponse {
     access_token: String,
     token_prefix: String,
+    #[allow(dead_code)]
+    device_id: Option<daruma_shared::DeviceId>,
     #[allow(dead_code)] // included in JSON for forward-compat; not used locally
     server_url: String,
 }
@@ -480,7 +491,10 @@ fn hostname_label() -> String {
 /// checks this file for credentials when `DARUMA_API_URL` / `DARUMA_TOKEN`
 /// are not set.
 async fn persist_credentials(host: &str, token: &str) -> Result<()> {
-    let data_dir = crate::context::data_path();
+    let path = paired_credentials_path();
+    let data_dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("paired credentials path has no parent"))?;
     tokio::fs::create_dir_all(&data_dir)
         .await
         .context("create data dir")?;
@@ -490,7 +504,6 @@ async fn persist_credentials(host: &str, token: &str) -> Result<()> {
         "token": token,
     });
 
-    let path = data_dir.join("paired.json");
     tokio::fs::write(&path, serde_json::to_vec_pretty(&config)?)
         .await
         .context("write paired.json")?;
@@ -507,6 +520,13 @@ async fn persist_credentials(host: &str, token: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn paired_credentials_path() -> std::path::PathBuf {
+    crate::context::data_path()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("paired.json")
 }
 
 #[cfg(test)]

@@ -24,15 +24,16 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
 use daruma_auth::{
     verify_bearer, AuthContext, Capabilities, Capability, ProjectFilter, TokenStore,
 };
+use daruma_domain::Actor;
 use daruma_events::{Channel, Event, EventEnvelope};
-use daruma_shared::{AgentId, EventId, PlanId, ProjectId, TaskId};
+use daruma_shared::{time, AgentId, EventId, PlanId, ProjectId, TaskId};
 use daruma_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
 use daruma_sync::{WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
+use futures::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -82,6 +83,18 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: Option<String>
             return;
         }
     };
+    let device_id = auth_ctx.device_id;
+    if let Some(device_id) = device_id {
+        state.hub.device_connected(device_id);
+        emit_presence(
+            &state,
+            Event::DeviceConnected {
+                device_id,
+                connected_at: time::now(),
+            },
+        )
+        .await;
+    }
 
     // 2. Outgoing serialiser — bounded mpsc that funnels all server frames.
     //
@@ -131,10 +144,18 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: Option<String>
     hb.tick().await;
 
     let mut awaiting_pong = false;
+    let mut revocations = state.hub.subscribe_device_revocations();
 
     // 7. Main read loop.
     loop {
         tokio::select! {
+            revoked = revocations.recv(), if device_id.is_some() => {
+                if matches!(revoked, Ok(revoked_id) if Some(revoked_id) == device_id) {
+                    send_unauthorized_close(&out_tx);
+                    break;
+                }
+            }
+
             // ── heartbeat tick ───────────────────────────────────────────────
             _ = hb.tick() => {
                 if awaiting_pong {
@@ -234,7 +255,47 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: Option<String>
     if let Some(h) = live_task.take() {
         h.abort();
     }
-    write_task.abort();
+    if let Some(device_id) = device_id {
+        state.hub.device_disconnected(device_id);
+        emit_presence(
+            &state,
+            Event::DeviceDisconnected {
+                device_id,
+                disconnected_at: time::now(),
+            },
+        )
+        .await;
+    }
+    drop(out_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(1), write_task).await;
+}
+
+async fn emit_presence(state: &AppState, payload: Event) {
+    let env = EventEnvelope::new(Actor::user(), payload);
+    match state.store.append(env).await {
+        Ok(env) => {
+            state.hub.bus.publish(env);
+        }
+        Err(e) => tracing::warn!(err = %e, "presence event append failed"),
+    }
+}
+
+fn send_unauthorized_close(out_tx: &mpsc::Sender<Message>) {
+    send_json(
+        out_tx,
+        &WsServerMessage::Error {
+            code: "unauthorized".to_string(),
+            message: "device revoked".to_string(),
+            request_id: None,
+        },
+    );
+    let _ = try_send_message(
+        out_tx,
+        Message::Close(Some(CloseFrame {
+            code: 1008,
+            reason: "device revoked".into(),
+        })),
+    );
 }
 
 // ── authentication ────────────────────────────────────────────────────────────
@@ -505,8 +566,9 @@ async fn handle_dispatch(
         | daruma_core::Command::SetStatus { .. }
         | daruma_core::Command::SetPriority { .. }
         | daruma_core::Command::SplitTask { .. } => Capability::TaskWrite,
-        daruma_core::Command::CreateProject { .. }
-        | daruma_core::Command::UpdateProject { .. } => Capability::ProjectWrite,
+        daruma_core::Command::CreateProject { .. } | daruma_core::Command::UpdateProject { .. } => {
+            Capability::ProjectWrite
+        }
         daruma_core::Command::RecordAgentAction { .. } => Capability::AgentDispatch,
         daruma_core::Command::AddComment { .. }
         | daruma_core::Command::EditComment { .. }

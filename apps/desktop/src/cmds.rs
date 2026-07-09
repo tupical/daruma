@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use daruma_core::embed::Command;
 use daruma_domain::{Actor, NewTask, Priority, Status};
-use daruma_shared::TaskId;
+use daruma_shared::{DeviceId, TaskId};
 
 use crate::{context::Context, remote::HttpReplicaSink, render};
 
@@ -110,6 +110,28 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         "flushed {}/{} pending event(s), applied {}/{} remote event(s), server_seq={}",
         stats.flushed, stats.attempted, catch_up.applied, catch_up.fetched, catch_up.server_seq
     );
+    Ok(())
+}
+
+pub async fn devices(args: &[String]) -> anyhow::Result<()> {
+    let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    match args {
+        [] => {
+            let response = sink
+                .list_devices()
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            render::print_devices(response.current_device_id, &response.devices);
+        }
+        [cmd, raw_id] if cmd == "revoke" => {
+            let id = DeviceId::from_str(raw_id)?;
+            sink.revoke_device(id)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            println!("✓ revoked {id}");
+        }
+        _ => anyhow::bail!("usage: daruma devices [revoke <device_id>]"),
+    }
     Ok(())
 }
 

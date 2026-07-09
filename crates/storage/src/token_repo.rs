@@ -6,9 +6,9 @@
 
 use crate::parse_ts;
 use async_trait::async_trait;
-use sqlx::{Row, SqlitePool};
 use daruma_auth::{ApiToken, TokenKind, TokenScope, TokenStore};
-use daruma_shared::{time, AgentId, CoreError, Result, TokenId};
+use daruma_shared::{time, AgentId, CoreError, DeviceId, Result, TokenId};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `tokens` table.
 #[derive(Clone)]
@@ -31,8 +31,8 @@ impl TokenStore for TokenRepo {
         sqlx::query(
             "INSERT INTO tokens \
              (id, prefix, hash, kind, agent_id, scope_json, rate_limit_per_min, \
-              created_at, expired_at, last_used_at, revoked_at, tenant_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              created_at, expired_at, last_used_at, revoked_at, tenant_id, device_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(token.id.to_string())
         .bind(&token.prefix)
@@ -46,6 +46,7 @@ impl TokenStore for TokenRepo {
         .bind(token.last_used_at.map(|t| t.to_rfc3339()))
         .bind(token.revoked_at.map(|t| t.to_rfc3339()))
         .bind(token.tenant_id)
+        .bind(token.device_id.map(|id| id.to_string()))
         .execute(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -65,7 +66,8 @@ impl TokenStore for TokenRepo {
     async fn get(&self, id: TokenId) -> Result<Option<ApiToken>> {
         let row = sqlx::query(
             "SELECT id, prefix, hash, kind, agent_id, scope_json, rate_limit_per_min, \
-             tenant_id, created_at, expired_at, last_used_at, revoked_at \
+             tenant_id, created_at, expired_at, last_used_at, revoked_at, \
+             device_id, NULL AS device_revoked_at \
              FROM tokens WHERE id = ?",
         )
         .bind(id.to_string())
@@ -79,7 +81,8 @@ impl TokenStore for TokenRepo {
     async fn list_for_agent(&self, agent_id: AgentId) -> Result<Vec<ApiToken>> {
         let rows = sqlx::query(
             "SELECT id, prefix, hash, kind, agent_id, scope_json, rate_limit_per_min, \
-             tenant_id, created_at, expired_at, last_used_at, revoked_at \
+             tenant_id, created_at, expired_at, last_used_at, revoked_at, \
+             device_id, NULL AS device_revoked_at \
              FROM tokens WHERE agent_id = ? ORDER BY created_at DESC",
         )
         .bind(agent_id.to_string())
@@ -112,6 +115,13 @@ impl TokenStore for TokenRepo {
         Ok(())
     }
 
+    async fn touch_device_last_seen(&self, id: DeviceId) -> Result<()> {
+        crate::DeviceRepo::new(self.pool.clone())
+            .touch_last_seen_throttled(id)
+            .await
+            .map(|_| ())
+    }
+
     async fn count_active(&self) -> Result<u64> {
         let row = sqlx::query("SELECT COUNT(*) AS n FROM tokens WHERE revoked_at IS NULL")
             .fetch_one(&self.pool)
@@ -126,9 +136,10 @@ impl TokenStore for TokenRepo {
 
 // ── row mapping ───────────────────────────────────────────────────────────────
 
-const SELECT_COLS_FROM_TOKENS: &str = "SELECT id, prefix, hash, kind, agent_id, scope_json, \
-     rate_limit_per_min, tenant_id, created_at, expired_at, last_used_at, revoked_at \
-     FROM tokens WHERE prefix = ?";
+const SELECT_COLS_FROM_TOKENS: &str = "SELECT t.id, t.prefix, t.hash, t.kind, t.agent_id, \
+     t.scope_json, t.rate_limit_per_min, t.tenant_id, t.created_at, t.expired_at, \
+     t.last_used_at, t.revoked_at, t.device_id, d.revoked_at AS device_revoked_at \
+     FROM tokens t LEFT JOIN devices d ON d.id = t.device_id WHERE t.prefix = ?";
 
 fn row_to_token(row: &sqlx::sqlite::SqliteRow) -> Result<ApiToken> {
     let id_s: String = row
@@ -167,6 +178,12 @@ fn row_to_token(row: &sqlx::sqlite::SqliteRow) -> Result<ApiToken> {
     let revoked_at_s: Option<String> = row
         .try_get("revoked_at")
         .map_err(|e| CoreError::storage(e.to_string()))?;
+    let device_id_s: Option<String> = row
+        .try_get("device_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let device_revoked_at_s: Option<String> = row
+        .try_get("device_revoked_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
 
     let id = id_s
         .parse::<TokenId>()
@@ -190,6 +207,11 @@ fn row_to_token(row: &sqlx::sqlite::SqliteRow) -> Result<ApiToken> {
         expired_at: expired_at_s.map(|s| parse_ts(&s)).transpose()?,
         last_used_at: last_used_at_s.map(|s| parse_ts(&s)).transpose()?,
         revoked_at: revoked_at_s.map(|s| parse_ts(&s)).transpose()?,
+        device_id: device_id_s
+            .map(|id| id.parse::<DeviceId>())
+            .transpose()
+            .map_err(|e| CoreError::serde(e.to_string()))?,
+        device_revoked_at: device_revoked_at_s.map(|s| parse_ts(&s)).transpose()?,
     })
 }
 

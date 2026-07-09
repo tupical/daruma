@@ -8,10 +8,10 @@ use daruma_core::CommandBus;
 use daruma_discovery::PairingStore;
 use daruma_events::EventStore;
 use daruma_storage::{
-    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, DocumentRepo,
-    EntityVersionRepo, EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo,
-    RelationRepo, RuleRepo, RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo, TaskRepo,
-    TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, DeviceRepo,
+    DocumentRepo, EntityVersionRepo, EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo,
+    ProjectRepo, RelationRepo, RuleRepo, RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo,
+    TaskRepo, TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use daruma_sync::Hub;
 use daruma_webhooks::WebhookStore;
@@ -36,6 +36,8 @@ pub struct AppState {
     /// Token storage (concrete) — used by the admin endpoints. The auth
     /// middleware uses the `TokenStore` trait object alongside this.
     pub tokens: Arc<TokenRepo>,
+    /// Paired device identity/read model.
+    pub devices: Arc<DeviceRepo>,
     /// Trait object handle for the auth middleware. Points at the same
     /// underlying repo as `tokens`.
     pub auth_store: Arc<dyn TokenStore>,
@@ -122,6 +124,7 @@ impl AppState {
         comments: Arc<CommentRepo>,
         activity: Arc<ActivityRepo>,
         tokens: Arc<TokenRepo>,
+        devices: Arc<DeviceRepo>,
         auth_store: Arc<dyn TokenStore>,
         inbox: Arc<AgentInboxRepo>,
         webhooks: Arc<WebhookRepo>,
@@ -160,6 +163,7 @@ impl AppState {
             comments,
             activity,
             tokens,
+            devices,
             auth_store,
             inbox,
             webhooks,

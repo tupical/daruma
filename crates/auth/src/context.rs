@@ -1,8 +1,8 @@
 //! Per-request authentication context inserted by middleware.
 
-use serde::{Deserialize, Serialize};
 use daruma_domain::Actor;
-use daruma_shared::{AgentId, TokenId};
+use daruma_shared::{AgentId, DeviceId, TokenId};
+use serde::{Deserialize, Serialize};
 
 use crate::capability::Capability;
 use crate::scope::TokenScope;
@@ -15,6 +15,8 @@ use crate::token::TokenKind;
 pub struct AuthContext {
     pub agent_id: AgentId,
     pub token_id: TokenId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<DeviceId>,
     pub tenant_id: Option<String>,
     pub rate_limit_per_min: u32,
     pub scope: TokenScope,

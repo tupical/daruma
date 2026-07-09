@@ -32,9 +32,6 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use sqlx::Row;
 use daruma_auth::{
     generate, AuthContext, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind,
     TokenScope, TokenStore,
@@ -56,11 +53,14 @@ use daruma_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, CommentId, CoreError, DocumentId, EvidenceId, PlanId, ProjectId,
-    RuleId, RunId, TaskId, TokenId, WebhookId,
+    AgentId, AgentSessionId, CommentId, CoreError, DeviceId, DocumentId, EvidenceId, PlanId,
+    ProjectId, RuleId, RunId, TaskId, TokenId, WebhookId,
 };
 use daruma_storage::{ClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::Row;
 
 use daruma_api_dto::{MutationResponse, MutationWarning};
 
@@ -290,6 +290,8 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/tasks/{id}/triage", patch(patch_task_triage))
         .route("/tokens", post(create_token).get(list_tokens))
         .route("/tokens/{id}", delete(revoke_token))
+        .route("/devices", get(list_devices))
+        .route("/devices/{id}/revoke", post(revoke_device))
         // Pairing: issue a QR ticket (requires TokenWrite capability).
         .route("/devices/pair/ticket", get(pairing::issue_pairing_ticket))
         .route(
@@ -421,6 +423,53 @@ async fn healthz() -> impl IntoResponse {
     }))
 }
 
+#[derive(Serialize)]
+struct DevicesResponse {
+    current_device_id: Option<DeviceId>,
+    devices: Vec<daruma_storage::Device>,
+}
+
+async fn list_devices(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+
+    let connected = state.hub.connected_devices();
+    let mut devices = state.devices.list().await.map_err(ApiError::from)?;
+    for device in &mut devices {
+        device.connected = connected.contains(&device.id);
+    }
+    Ok(Json(DevicesResponse {
+        current_device_id: auth.device_id,
+        devices,
+    }))
+}
+
+async fn revoke_device(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TokenWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let device_id = id
+        .parse::<DeviceId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid device id: {id}"))))?;
+
+    if !state
+        .devices
+        .revoke(device_id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::status(StatusCode::NOT_FOUND, "device not found"));
+    }
+    state.hub.notify_device_revoked(device_id);
+    Ok(Json(json!({ "ok": true, "device_id": device_id })))
+}
+
 // ── Task / project / event handlers ───────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
@@ -471,9 +520,12 @@ async fn list_tasks(
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
     if wants_page(q.page, q.cursor.as_deref()) {
-        Ok(Json(page_by_id(tasks, q.cursor.as_deref(), limit, |task| {
-            task.id.to_string()
-        })))
+        Ok(Json(page_by_id(
+            tasks,
+            q.cursor.as_deref(),
+            limit,
+            |task| task.id.to_string(),
+        )))
     } else {
         tasks.truncate(limit);
         Ok(Json(json!(tasks)))
@@ -573,7 +625,11 @@ where
             .unwrap_or(items.len()),
         None => 0,
     };
-    let mut page = items.into_iter().skip(start).take(limit + 1).collect::<Vec<_>>();
+    let mut page = items
+        .into_iter()
+        .skip(start)
+        .take(limit + 1)
+        .collect::<Vec<_>>();
     let has_more = page.len() > limit;
     if has_more {
         page.truncate(limit);
@@ -647,9 +703,7 @@ fn parse_search_project(raw: Option<&str>) -> Result<Option<ProjectId>, ApiError
 /// Returns `Ok(None)` for `all` (no SQL status predicate), `Ok(Some(vec))`
 /// for explicit filters, and `Err` (400) when absent, empty, or unknown.
 /// The shortcut `active` expands to all non-terminal statuses.
-fn parse_status_filter(
-    raw: Option<&str>,
-) -> Result<Option<Vec<daruma_domain::Status>>, ApiError> {
+fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<daruma_domain::Status>>, ApiError> {
     use daruma_domain::Status;
     let Some(raw) = raw else {
         return Err(ApiError::from(CoreError::validation(
@@ -1453,7 +1507,9 @@ async fn delete_agent_capability(
         .delete(agent_id, &capability)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(serde_json::json!({ "success": true, "removed": removed })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "removed": removed }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1515,7 +1571,9 @@ async fn accept_handoff(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid handoff id: {id_str}")))
+        ApiError::from(CoreError::validation(format!(
+            "invalid handoff id: {id_str}"
+        )))
     })?;
     let notes = body.and_then(|Json(b)| b.notes);
     let envs = state
@@ -1555,7 +1613,9 @@ async fn reject_handoff(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid handoff id: {id_str}")))
+        ApiError::from(CoreError::validation(format!(
+            "invalid handoff id: {id_str}"
+        )))
     })?;
     let envs = state
         .commands
@@ -2938,10 +2998,7 @@ async fn mcp_http(
     let token = bearer_token(&headers)?;
     let telemetry = mcp_call_telemetry(&request, profile.as_str(), &token);
     let http = reqwest::Client::builder()
-        .user_agent(format!(
-            "daruma-server-mcp/{}",
-            env!("CARGO_PKG_VERSION")
-        ))
+        .user_agent(format!("daruma-server-mcp/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| ApiError::from(CoreError::validation(e.to_string())))?;
     let mut client = ApiClient::with_http(mcp_base_url(&headers)?, token, http);
@@ -4557,9 +4614,12 @@ async fn list_plans(
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
     if wants_page(q.page, q.cursor.as_deref()) {
-        Ok(Json(page_by_id(plans, q.cursor.as_deref(), limit, |plan| {
-            plan.id.to_string()
-        })))
+        Ok(Json(page_by_id(
+            plans,
+            q.cursor.as_deref(),
+            limit,
+            |plan| plan.id.to_string(),
+        )))
     } else {
         plans.truncate(limit);
         Ok(Json(json!(plans)))

@@ -24,6 +24,8 @@ pub enum VerifyError {
     Mismatch,
     /// Token row was found but is revoked.
     Revoked,
+    /// Token's bound device was revoked.
+    DeviceRevoked,
     /// Token row was found but has expired.
     Expired,
     /// Storage layer error during verification.
@@ -39,6 +41,7 @@ impl VerifyError {
             VerifyError::Unknown => "auth_invalid",
             VerifyError::Mismatch => "auth_invalid",
             VerifyError::Revoked => "auth_revoked",
+            VerifyError::DeviceRevoked => "unauthorized",
             VerifyError::Expired => "auth_expired",
             VerifyError::Storage(_) => "auth_storage",
         }
@@ -52,6 +55,7 @@ impl VerifyError {
             VerifyError::Unknown => "bearer token is not recognised",
             VerifyError::Mismatch => "bearer token did not verify",
             VerifyError::Revoked => "bearer token has been revoked",
+            VerifyError::DeviceRevoked => "device has been revoked",
             VerifyError::Expired => "bearer token has expired",
             VerifyError::Storage(s) => s,
         }
@@ -111,6 +115,10 @@ pub async fn verify_bearer(
             last_state_err = VerifyError::Revoked;
             continue;
         }
+        if candidate.device_revoked_at.is_some() {
+            last_state_err = VerifyError::DeviceRevoked;
+            continue;
+        }
         if let Some(exp) = candidate.expired_at {
             if exp <= now {
                 last_state_err = VerifyError::Expired;
@@ -120,10 +128,14 @@ pub async fn verify_bearer(
 
         // Best-effort touch — ignore errors.
         let _ = store.touch_last_used(candidate.id).await;
+        if let Some(device_id) = candidate.device_id {
+            let _ = store.touch_device_last_seen(device_id).await;
+        }
 
         return Ok(AuthContext {
             agent_id: candidate.agent_id,
             token_id: candidate.id,
+            device_id: candidate.device_id,
             tenant_id: candidate.tenant_id,
             rate_limit_per_min: candidate.rate_limit_per_min,
             scope: candidate.scope,
@@ -140,8 +152,8 @@ mod tests {
     use crate::scope::TokenScope;
     use crate::token::{generate, NewTokenSpec, TokenKind};
     use async_trait::async_trait;
-    use std::sync::Mutex;
     use daruma_shared::{AgentId, Result, TokenId};
+    use std::sync::Mutex;
 
     // ── in-memory store for verifier tests ────────────────────────────────────
 
@@ -209,6 +221,10 @@ mod tests {
             Ok(())
         }
 
+        async fn touch_device_last_seen(&self, _id: daruma_shared::DeviceId) -> Result<()> {
+            Ok(())
+        }
+
         async fn count_active(&self) -> Result<u64> {
             Ok(self
                 .rows
@@ -273,6 +289,18 @@ mod tests {
 
         let err = verify_bearer(&store, &secret.plaintext).await.unwrap_err();
         assert_eq!(err, VerifyError::Revoked);
+    }
+
+    #[tokio::test]
+    async fn verify_rejects_revoked_device() {
+        let store = InMemoryStore::arc();
+        let mut secret = generate(admin_spec()).unwrap();
+        secret.record.device_id = Some(daruma_shared::DeviceId::new());
+        secret.record.device_revoked_at = Some(time::now());
+        store.insert(secret.record.clone()).await.unwrap();
+
+        let err = verify_bearer(&store, &secret.plaintext).await.unwrap_err();
+        assert_eq!(err, VerifyError::DeviceRevoked);
     }
 
     #[tokio::test]

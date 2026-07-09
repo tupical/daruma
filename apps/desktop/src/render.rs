@@ -2,6 +2,8 @@
 
 use daruma_domain::{Status, Task};
 
+use crate::remote::Device;
+
 const COL_ID: usize = 8;
 const COL_STATUS: usize = 12;
 const COL_PRIORITY: usize = 4;
@@ -73,6 +75,40 @@ pub fn status_summary(tasks: &[Task]) {
     );
 }
 
+pub fn print_devices(current: Option<daruma_shared::DeviceId>, devices: &[Device]) {
+    if devices.is_empty() {
+        println!("(no paired devices)");
+        return;
+    }
+    println!(
+        "{:<12}  {:<20}  {:<10}  {:<19}  LABEL",
+        "ID", "STATE", "CURRENT", "LAST SEEN"
+    );
+    println!("{}", "-".repeat(78));
+    for device in devices {
+        let state = if device.revoked_at.is_some() {
+            "revoked"
+        } else if device.connected {
+            "connected"
+        } else {
+            "disconnected"
+        };
+        let current_marker = if Some(device.id) == current {
+            "yes"
+        } else {
+            ""
+        };
+        println!(
+            "{:<12}  {:<20}  {:<10}  {:<19}  {}",
+            short_id(&device.id.to_string()),
+            state,
+            current_marker,
+            human_time(device.last_seen_at.as_deref()),
+            device.label,
+        );
+    }
+}
+
 /// Render an ID short enough to be readable in the table.
 fn short_id(full: &str) -> String {
     // `tsk_<uuid>` — keep the prefix + first 4 hex chars.
@@ -82,4 +118,16 @@ fn short_id(full: &str) -> String {
     } else {
         full.chars().take(COL_ID).collect()
     }
+}
+
+fn human_time(ts: Option<&str>) -> String {
+    let Some(ts) = ts else {
+        return "never".to_string();
+    };
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else {
+        return ts.chars().take(19).collect();
+    };
+    dt.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }

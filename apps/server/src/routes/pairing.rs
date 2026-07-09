@@ -21,9 +21,9 @@
 //! - No secret material is logged.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use serde::{Deserialize, Serialize};
 use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope};
-use daruma_shared::AgentId;
+use daruma_shared::{AgentId, DeviceId};
+use serde::{Deserialize, Serialize};
 
 use crate::{error::ApiError, state::AppState};
 
@@ -47,6 +47,8 @@ pub struct PairResponse {
     pub access_token: String,
     /// Stable API prefix of the issued token (safe to log / display).
     pub token_prefix: String,
+    /// Stable id of the paired device.
+    pub device_id: DeviceId,
     /// The server's canonical base URL for future requests.
     pub server_url: String,
 }
@@ -115,7 +117,7 @@ pub async fn pair_device(
     // Paired-device tokens expire in 90 days — bounded lifetime limits blast
     // radius if a token is ever compromised.
     let expires = daruma_shared::time::now() + chrono::Duration::days(90);
-    let secret = generate(NewTokenSpec {
+    let mut secret = generate(NewTokenSpec {
         kind: TokenKind::Pat,
         agent_id: AgentId::new(),
         scope: TokenScope::default_user(),
@@ -123,6 +125,12 @@ pub async fn pair_device(
         expired_at: Some(expires),
     })
     .map_err(|e| ApiError::from(daruma_shared::CoreError::storage(e.to_string())))?;
+    let device = state
+        .devices
+        .insert(DeviceId::new(), &label)
+        .await
+        .map_err(ApiError::from)?;
+    secret.record.device_id = Some(device.id);
 
     state
         .auth_store
@@ -139,6 +147,7 @@ pub async fn pair_device(
     Ok(Json(PairResponse {
         access_token: secret.plaintext,
         token_prefix: secret.record.prefix,
+        device_id: device.id,
         server_url: format!("https://{}", ticket.host),
     }))
 }

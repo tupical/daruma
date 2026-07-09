@@ -27,11 +27,12 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use daruma_core::{Command, CommandBus};
 use daruma_domain::Actor;
 use daruma_events::{EventBus, EventEnvelope, EventReceiver};
-use daruma_shared::Result;
+use daruma_shared::{DeviceId, Result};
+use dashmap::DashMap;
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -71,6 +72,8 @@ pub struct Hub {
 
 struct HubInner {
     subscribers: Arc<SubscriberMap>,
+    connected_devices: Arc<DashMap<DeviceId, usize>>,
+    device_revocations: broadcast::Sender<DeviceId>,
     fanout_task: AbortHandle,
 }
 
@@ -87,6 +90,8 @@ impl Drop for HubInner {
 impl Hub {
     pub fn new(bus: EventBus, commands: Arc<CommandBus>) -> Self {
         let subscribers: Arc<SubscriberMap> = Arc::new(DashMap::new());
+        let connected_devices = Arc::new(DashMap::new());
+        let (device_revocations, _rx) = broadcast::channel(128);
         let bus_rx = bus.subscribe();
         let fanout_handle = spawn_fanout(bus_rx, Arc::clone(&subscribers));
 
@@ -95,6 +100,8 @@ impl Hub {
             commands,
             inner: Arc::new(HubInner {
                 subscribers,
+                connected_devices,
+                device_revocations,
                 fanout_task: fanout_handle.abort_handle(),
             }),
         }
@@ -133,6 +140,40 @@ impl Hub {
     /// persisted envelopes.
     pub async fn handle_command(&self, cmd: Command, actor: Actor) -> Result<Vec<EventEnvelope>> {
         self.commands.dispatch(cmd, actor).await
+    }
+
+    pub fn device_connected(&self, id: DeviceId) {
+        self.inner
+            .connected_devices
+            .entry(id)
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+    }
+
+    pub fn device_disconnected(&self, id: DeviceId) {
+        if let Some(mut count) = self.inner.connected_devices.get_mut(&id) {
+            if *count > 1 {
+                *count -= 1;
+                return;
+            }
+        }
+        self.inner.connected_devices.remove(&id);
+    }
+
+    pub fn connected_devices(&self) -> Vec<DeviceId> {
+        self.inner
+            .connected_devices
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn notify_device_revoked(&self, id: DeviceId) {
+        let _ = self.inner.device_revocations.send(id);
+    }
+
+    pub fn subscribe_device_revocations(&self) -> broadcast::Receiver<DeviceId> {
+        self.inner.device_revocations.subscribe()
     }
 
     /// Current number of registered WS subscribers. Test helper.
