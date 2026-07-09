@@ -13,7 +13,8 @@ The user invoked `/daruma-claude:close [<task_id> ...] [--cancel] [--comment "<t
 
 ### With explicit task IDs
 
-1. For each `<task_id>` (short suffixes resolved via `daruma_search`):
+1. For each `<task_id>` (short suffixes resolved via
+   `daruma_search query=<id> scope="tasks" limit=5`):
    a. `daruma_get task_id=<id>` — confirm it exists and is not already closed.
    b. If `--comment` was given: `daruma_comment task_id=<id> body="<text>"`.
    c. `daruma_complete task_id=<id>` (or `daruma_set_status … status=cancelled`
@@ -45,6 +46,6 @@ The user invoked `/daruma-claude:close [<task_id> ...] [--cancel] [--comment "<t
 - Never close a task that is already `done` or `cancelled` — print a notice
   and skip it.
 - Never close a task that has unresolved blockers unless the user confirms.
-- Never use `status=all` for listing — keep to `in_progress` / `in_review`.
+- Never use archive-wide all-status listing — keep to `in_progress` / `in_review`.
 - After closing, suggest `/daruma-claude:next` if there are remaining
   open tasks in the plan.

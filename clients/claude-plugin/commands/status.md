@@ -11,7 +11,7 @@ The user invoked `/daruma-claude:status [<task_id_or_short>]`.
 Show full details for that specific task.
 
 1. `daruma_get task_id = <arg>` — if `<arg>` is a short suffix (≤8
-   hex chars), use `daruma_search query=<arg> limit=5` to resolve
+   hex chars), use `daruma_search query=<arg> scope="tasks" limit=5` to resolve
    to a full id first.
 2. Render:
 

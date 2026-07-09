@@ -9,11 +9,11 @@ The user invoked `/daruma-claude:mine`. Read-only.
 1. Resolve project (`daruma_workspace_info` → `default_project`,
    capture the agent/session id from the response).
 2. `daruma_list` with `project_id = <resolved>`,
-   `status = ["in_progress"]`, `owner = "self"`. If the server rejects
+   `status = ["in_progress"]`, `owner = "self"`, limit 20. If the server rejects
    `owner = "self"`, list everything in `in_progress` and filter
    client-side by `owner == <agent_id from workspace_info>`.
-   **Never** use `status=all` unless the user explicitly asked for the
-   full archive — `all` is token-heavy.
+   **Never** use the archive-wide all-status listing unless the user
+   explicitly asked for the full archive; it is token-heavy.
 3. Render:
 
    ```

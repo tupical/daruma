@@ -22,7 +22,8 @@ would save time in a future session. Skip for:
    - Check `DARUMA_ACTIVE_TASK` environment variable first (set by
      the agent when it claims a task via `daruma_plan_next_task`).
    - If absent: `daruma_workspace_info` → `daruma_list` with
-     `status = ["in_progress"]`, pick the most-recently updated task.
+     `project_id = <resolved>`, `status = ["in_progress"]`, limit 5;
+     pick the most-recently updated task.
    - If still none: ask the user which task to attach the lesson to.
 
 2. **Draft the lesson text.**
