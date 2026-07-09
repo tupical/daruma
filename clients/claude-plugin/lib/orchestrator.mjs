@@ -339,11 +339,16 @@ async function executeOnce({
 
 async function executeTaskWithRetries({
   mcp, task, maxRetries, workers, agentType, cwd, stderrLog, stdout, write, branch = null,
+  manageStatus = true,
+  completeOnSuccess = true,
+  completeArgs = null,
 }) {
   let lastResult = null;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     write(`\n=== task ${task.id}: attempt ${attempt}/${maxRetries + 1} — ${task.title} ===`);
-    await callOrThrow(mcp, "daruma_set_status", { id: task.id, status: "in_progress" });
+    if (manageStatus) {
+      await callOrThrow(mcp, "daruma_set_status", { id: task.id, status: "in_progress" });
+    }
     if (attempt === 1) {
       await commentBranch({ mcp, taskId: task.id, branch, write });
     }
@@ -365,15 +370,114 @@ async function executeTaskWithRetries({
     }, { allowError: true });
 
     if (result.ok) {
-      await callOrThrow(mcp, "daruma_complete", { id: task.id });
+      if (completeOnSuccess) {
+        await callOrThrow(mcp, "daruma_complete", { id: task.id, ...(completeArgs?.(result, attempt) ?? {}) });
+      }
       return { ok: true, attempts: attempt, result };
     }
 
     if (attempt > maxRetries) break;
     write(`[task ${task.id}] failed; retrying (${attempt}/${maxRetries})`);
-    await callOrThrow(mcp, "daruma_set_status", { id: task.id, status: "todo" });
+    if (manageStatus) {
+      await callOrThrow(mcp, "daruma_set_status", { id: task.id, status: "todo" });
+    }
   }
   return { ok: false, attempts: maxRetries + 1, result: lastResult };
+}
+
+function resultSummary(result, attempts) {
+  const c = result?.counts ?? {};
+  const team = result?.teamName ? `omc team ${result.teamName}` : "omc team";
+  return `${team}: completed=${c.completed ?? 0} failed=${c.failed ?? 0} total=${c.total ?? 0}; attempts=${attempts}`;
+}
+
+function normalizeTaskId(value) {
+  return value?.task_id ?? value?.id ?? value;
+}
+
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function executeClaimedPlanTask({
+  mcp, planId, runId, expectedTaskId, maxRetries, workers, agentType, cwd,
+  stderrLog, stdout, write, branch, agentId, executeTask = executeTaskWithRetries,
+}) {
+  const drainResp = await callOrThrow(mcp, "daruma_plan_drain_next", {
+    plan_id: planId,
+    run_id: runId,
+  });
+  const claim = payload(drainResp);
+  if (!claim) {
+    write(`[plan ${planId}] no ready task claimed for fanout slot ${expectedTaskId}`);
+    return { ok: true, skipped: true, taskId: expectedTaskId };
+  }
+
+  const taskId = normalizeTaskId(claim);
+  if (!taskId) throw new Error(`daruma_plan_drain_next returned no task_id; raw: ${drainResp.text}`);
+  if (expectedTaskId && taskId !== expectedTaskId) {
+    write(`[plan ${planId}] drain claimed ${taskId}; fanout slot was ${expectedTaskId}`);
+  }
+
+  const taskResp = await callOrThrow(mcp, "daruma_get", { id: taskId });
+  const task = payload(taskResp) ?? { id: taskId, title: taskId };
+  const outcome = await executeTask({
+    mcp, task, maxRetries, workers, agentType, cwd, stderrLog, stdout, write, branch,
+    manageStatus: false,
+    completeOnSuccess: false,
+  });
+
+  if (outcome.ok) {
+    await callOrThrow(mcp, "daruma_complete", {
+      id: taskId,
+      result_summary: resultSummary(outcome.result, outcome.attempts),
+    });
+    return { taskId, ...outcome };
+  }
+
+  await callOrThrow(mcp, "daruma_release", { agent_id: agentId, task_id: taskId });
+  await callOrThrow(mcp, "daruma_comment", {
+    task_id: taskId,
+    kind: "blocker",
+    body: `daruma-claude team-from-plan failed after ${outcome.attempts} attempts.\n\n${resultSummary(outcome.result, outcome.attempts)}`,
+  }, { allowError: true });
+  return { taskId, ...outcome };
+}
+
+async function runTeamFromPlanWaves({
+  mcp, planId, waves, maxRetries, workers, agentType, cwd, stderrLog, stdout,
+  write, branch = null, agentId, executeTask = executeTaskWithRetries,
+}) {
+  const runId = `daruma-claude-team-from-plan-${Date.now()}`;
+  const summaries = [];
+  const orderedWaves = [...waves].sort((a, b) => (a.wave ?? 0) - (b.wave ?? 0));
+
+  for (const wave of orderedWaves) {
+    const taskIds = Array.isArray(wave.tasks) ? wave.tasks.map(normalizeTaskId).filter(Boolean) : [];
+    write(`\n=== wave ${wave.wave}: ${taskIds.length} task(s) ===`);
+    const outcomes = await mapLimit(taskIds, workers, (expectedTaskId) => executeClaimedPlanTask({
+      mcp, planId, runId, expectedTaskId, maxRetries, workers, agentType, cwd,
+      stderrLog, stdout, write, branch, agentId, executeTask,
+    }));
+    summaries.push(...outcomes);
+    const failed = outcomes.filter((o) => !o.ok);
+    if (failed.length > 0) {
+      write(`[plan ${planId}] stopping before next wave; failed: ${failed.map((f) => f.taskId).join(", ")}`);
+      break;
+    }
+  }
+
+  const planResp = await mcp.callTool("daruma_plan_get", { id: planId });
+  return { runId, summaries, planState: payload(planResp) };
 }
 
 async function runPlanLoop({
@@ -537,6 +641,101 @@ export async function runDarumaStart({
   }
 }
 
+export async function runDarumaTeamFromPlan({
+  planId,
+  cwd = process.cwd(),
+  maxRetries = DEFAULT_MAX_RETRIES,
+  workers = DEFAULT_WORKERS,
+  agentType = DEFAULT_AGENT_TYPE,
+  autoYes = false,
+  stdin = process.stdin,
+  stdout = process.stdout,
+} = {}) {
+  if (!planId || !planId.trim()) throw new Error("runDarumaTeamFromPlan: plan_id is required");
+  if (!autoYes && !stdin.isTTY) autoYes = true;
+
+  const logDir = await ensureLogDir(cwd);
+  const mcpStderrLog = join(logDir, "daruma-mcp.stderr.log");
+  const teamStderrLog = join(logDir, "omc-team.stderr.log");
+  const write = (s) => { stdout.write(`${s}\n`); };
+  const userPrompt = makePrompt(stdin, stdout);
+  const mcp = new MCPClient();
+  let sigintHandler = null;
+
+  try {
+    write(`[daruma-claude] starting daruma-mcp (logs: ${mcpStderrLog})`);
+    const { darumaMcpChildEnv } = await import("./detect.mjs");
+    const childEnv = await darumaMcpChildEnv();
+    await mcp.start(DARUMA_MCP_BIN, [], {
+      cwd,
+      stderrLog: mcpStderrLog,
+      env: childEnv,
+    });
+    await mcp.initialize();
+    write(`[daruma-claude] mcp server ready: ${mcp._serverInfo?.name}@${mcp._serverInfo?.version}`);
+    const branch = await currentGitBranch(cwd);
+    if (branch) write(`[branch] ${branch}`);
+
+    sigintHandler = async () => {
+      write("\n[daruma-claude] SIGINT — shutting down");
+      try { await mcp.stop(); } catch { /* best-effort */ }
+      process.exit(130);
+    };
+    process.on("SIGINT", sigintHandler);
+
+    write(`\n=== Phase 1: Plan ===`);
+    const plan = payload(await callOrThrow(mcp, "daruma_plan_get", { id: planId })) ?? {};
+    if (!["active", "draft"].includes(plan.status)) {
+      throw new Error(`plan ${planId} must be active or draft, got ${plan.status ?? "unknown"}`);
+    }
+    const waves = payload(await callOrThrow(mcp, "daruma_plan_fanout", { plan_id: planId })) ?? [];
+    if (!Array.isArray(waves)) throw new Error(`daruma_plan_fanout returned non-array; raw plan ${planId}`);
+    const taskCount = waves.reduce((n, w) => n + (Array.isArray(w.tasks) ? w.tasks.length : 0), 0);
+    const goal = plan.goal ?? plan.title ?? plan.description ?? planId;
+    write(`Goal:       ${String(goal).slice(0, 280)}`);
+    write(`Plan:       ${planId} (${plan.status})`);
+    write(`Tasks:      ${taskCount}`);
+    write(`Waves:      ${waves.length}`);
+    if (!(await confirm({ ask: userPrompt.ask, write, message: "Execute this plan wave-by-wave?", autoYes }))) {
+      write("Cancelled by user.");
+      return { cancelled: true, planId };
+    }
+    if (plan.status === "draft") {
+      await callOrThrow(mcp, "daruma_plan_set_status", { plan_id: planId, status: "active" });
+      write(`[plan ${planId}] activated draft plan`);
+    }
+
+    write(`\n=== Phase 2: Execute ===`);
+    const ws = payload(await callOrThrow(mcp, "daruma_workspace_info", {})) ?? {};
+    const agentId = ws.mcp_agent_id;
+    if (!agentId) throw new Error("daruma_workspace_info returned no mcp_agent_id; cannot release failed claims");
+    const outcome = await runTeamFromPlanWaves({
+      mcp, planId, waves, maxRetries, workers, agentType, cwd,
+      stderrLog: teamStderrLog, stdout, write, branch, agentId,
+    });
+
+    write(`\n=== Final ===`);
+    const succeeded = outcome.summaries.filter((s) => s.ok && !s.skipped).length;
+    const skipped = outcome.summaries.filter((s) => s.skipped).length;
+    const failed = outcome.summaries.filter((s) => !s.ok).length;
+    write(`Tasks: ${succeeded} succeeded, ${failed} failed, ${skipped} skipped (of ${outcome.summaries.length})`);
+    if (outcome.planState) {
+      const p = outcome.planState;
+      write(`Plan ${p.id ?? planId}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
+    }
+    return {
+      ok: failed === 0,
+      planId,
+      summaries: outcome.summaries,
+      planState: outcome.planState,
+    };
+  } finally {
+    if (sigintHandler) process.off("SIGINT", sigintHandler);
+    userPrompt.close();
+    try { await mcp.stop(); } catch { /* server already gone */ }
+  }
+}
+
 // Backwards-compat re-export. bin/omo.mjs used `runDarumaStartLegacy`; new bin will use
 // runDarumaStart but we keep both names live during the transition.
 export const runDarumaStartLegacy = runDarumaStart;
@@ -547,4 +746,5 @@ export const _internal = {
   executePromptFor,
   currentGitBranch,
   payload,
+  runTeamFromPlanWaves,
 };

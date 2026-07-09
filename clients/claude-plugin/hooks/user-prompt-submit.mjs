@@ -8,7 +8,7 @@
 //
 // Reads the prompt text from CLAUDE_USER_PROMPT env var (set by Claude Code).
 
-const prompt = (process.env.CLAUDE_USER_PROMPT ?? "").toLowerCase().trim();
+import { pathToFileURL } from "node:url";
 
 // Intent patterns.  Order matters — first match wins.
 // Note: \b word boundaries only work for ASCII. For Cyrillic keywords we use
@@ -37,12 +37,19 @@ const PATTERNS = [
   },
 ];
 
-for (const { re, hint } of PATTERNS) {
-  if (re.test(prompt)) {
-    process.stdout.write(hint + "\n");
-    process.exit(0);
+export function promptSubmitHint(promptText = "") {
+  const prompt = promptText.toLowerCase().trim();
+  for (const { re, hint } of PATTERNS) {
+    if (re.test(prompt)) return hint;
   }
+  return "";
 }
 
-// No match — exit cleanly with no output.
-process.exit(0);
+function main() {
+  const hint = promptSubmitHint(process.env.CLAUDE_USER_PROMPT ?? "");
+  if (hint) process.stdout.write(hint + "\n");
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
