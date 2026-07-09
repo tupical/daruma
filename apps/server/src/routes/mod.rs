@@ -411,8 +411,6 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
 
 /// Public REST API version advertised to clients. Bumped only on a /v2 cut.
 pub const API_VERSION: &str = "v1";
-const DEFAULT_COLLECTION_LIMIT: usize = 10;
-const MAX_COLLECTION_LIMIT: usize = 100;
 
 async fn healthz() -> impl IntoResponse {
     Json(json!({
@@ -480,7 +478,7 @@ struct ListTasksQuery {
     /// **Required.** Comma-separated statuses (`todo,in_progress`), the
     /// shortcut `active` (all non-terminal), or `all` (every status).
     status: Option<String>,
-    /// Max rows to return. Defaults to 10, capped at 100.
+    /// Max rows to return. Omitted returns every matching row.
     limit: Option<usize>,
     /// Opaque cursor from a previous paged response.
     cursor: Option<String>,
@@ -499,7 +497,6 @@ async fn list_tasks(
     let status_filter = parse_status_filter(q.status.as_deref())?;
     let filter = status_filter.as_deref().unwrap_or(&[]);
 
-    let limit = bounded_collection_limit(q.limit);
     let mut tasks = match q.project_id.as_deref() {
         None => state.tasks.list_all_filtered(filter).await,
         Some("inbox") => state.tasks.list_by_project_filtered(None, filter).await,
@@ -520,6 +517,7 @@ async fn list_tasks(
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
     if wants_page(q.page, q.cursor.as_deref()) {
+        let limit = page_collection_limit(q.limit, tasks.len());
         Ok(Json(page_by_id(
             tasks,
             q.cursor.as_deref(),
@@ -527,7 +525,9 @@ async fn list_tasks(
             |task| task.id.to_string(),
         )))
     } else {
-        tasks.truncate(limit);
+        if let Some(limit) = collection_limit(q.limit) {
+            tasks.truncate(limit);
+        }
         Ok(Json(json!(tasks)))
     }
 }
@@ -567,17 +567,19 @@ async fn search(
             .map_err(ApiError::from_missing_cap)?;
     }
 
-    let limit = bounded_collection_limit(q.limit);
     let page = wants_page(q.page, q.cursor.as_deref());
     let offset = q
         .cursor
         .as_deref()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
+    let requested_limit = collection_limit(q.limit);
     let fetch_limit = if page {
-        (offset + limit + 1).min(MAX_COLLECTION_LIMIT + 1)
+        requested_limit
+            .map(|limit| offset.saturating_add(limit).saturating_add(1))
+            .unwrap_or(usize::MAX)
     } else {
-        limit
+        requested_limit.unwrap_or(usize::MAX)
     };
     let project_id = parse_search_project(q.project_id.as_deref())?;
     let provider = FtsSearchProvider::new(
@@ -596,16 +598,19 @@ async fn search(
         .map_err(ApiError::from)?;
 
     if page {
+        let limit = requested_limit.unwrap_or_else(|| hits.len().saturating_sub(offset).max(1));
         Ok(Json(page_by_offset(hits, offset, limit)))
     } else {
         Ok(Json(json!(hits)))
     }
 }
 
-fn bounded_collection_limit(limit: Option<usize>) -> usize {
-    limit
-        .unwrap_or(DEFAULT_COLLECTION_LIMIT)
-        .clamp(1, MAX_COLLECTION_LIMIT)
+fn collection_limit(limit: Option<usize>) -> Option<usize> {
+    limit.map(|limit| limit.max(1))
+}
+
+fn page_collection_limit(limit: Option<usize>, total: usize) -> usize {
+    collection_limit(limit).unwrap_or_else(|| total.max(1))
 }
 
 fn wants_page(page: Option<bool>, cursor: Option<&str>) -> bool {
@@ -4523,7 +4528,7 @@ struct ListPlansQuery {
     project_id: Option<String>,
     /// **Required.** Single status, comma-separated list, or `all`.
     status: Option<String>,
-    /// Max rows to return. Defaults to 10, capped at 100.
+    /// Max rows to return. Omitted returns every matching row.
     limit: Option<usize>,
     /// Opaque cursor from a previous paged response.
     cursor: Option<String>,
@@ -4590,7 +4595,6 @@ async fn list_plans(
 
     let status_filter = parse_plan_status_filter(q.status.as_deref())?;
 
-    let limit = bounded_collection_limit(q.limit);
     let mut plans = match q.project_id.as_deref() {
         Some(pid) => {
             let project_id = pid.parse::<ProjectId>().map_err(|_| {
@@ -4614,6 +4618,7 @@ async fn list_plans(
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
     if wants_page(q.page, q.cursor.as_deref()) {
+        let limit = page_collection_limit(q.limit, plans.len());
         Ok(Json(page_by_id(
             plans,
             q.cursor.as_deref(),
@@ -4621,7 +4626,9 @@ async fn list_plans(
             |plan| plan.id.to_string(),
         )))
     } else {
-        plans.truncate(limit);
+        if let Some(limit) = collection_limit(q.limit) {
+            plans.truncate(limit);
+        }
         Ok(Json(json!(plans)))
     }
 }

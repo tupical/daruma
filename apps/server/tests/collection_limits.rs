@@ -26,7 +26,7 @@ async fn seed_project(app: &common::TestApp) -> daruma_shared::ProjectId {
 }
 
 #[tokio::test]
-async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
+async fn task_plan_and_search_lists_are_unlimited_unless_limit_is_explicit() {
     let app = test_app().await;
     let actor = Actor::user();
     let project_id = seed_project(&app).await;
@@ -57,11 +57,11 @@ async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
     let (status, tasks) = json_get(
         app.router.clone(),
         &app.admin_token,
-        &format!("/v1/tasks?project_id={project_id}&status=all"),
+        &format!("/v1/tasks?project_id={project_id}&status=active"),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "tasks response: {tasks}");
-    assert_eq!(tasks.as_array().unwrap().len(), 10);
+    assert_eq!(tasks.as_array().unwrap().len(), 12);
 
     let (status, tasks) = json_get(
         app.router.clone(),
@@ -98,7 +98,7 @@ async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "plans response: {plans}");
-    assert_eq!(plans.as_array().unwrap().len(), 10);
+    assert_eq!(plans.as_array().unwrap().len(), 12);
 
     let (status, plans) = json_get(
         app.router.clone(),
@@ -127,7 +127,7 @@ async fn task_plan_and_search_lists_default_to_ten_and_cap_limit() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "search response: {hits}");
-    assert_eq!(hits.as_array().unwrap().len(), 10);
+    assert_eq!(hits.as_array().unwrap().len(), 24);
 
     let (status, hit_page1) = json_get(
         app.router,

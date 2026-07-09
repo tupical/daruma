@@ -46,6 +46,7 @@ impl CommentRepo {
         project_id: Option<ProjectId>,
         limit: usize,
     ) -> Result<Vec<Comment>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = match project_id {
             Some(project_id) => {
                 sqlx::query(

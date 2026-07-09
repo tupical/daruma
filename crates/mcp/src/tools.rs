@@ -25,6 +25,8 @@ fn confirm_store() -> &'static Mutex<HashMap<String, (String, Instant)>> {
 }
 
 const CONFIRM_TTL: Duration = Duration::from_secs(300);
+const MCP_DEFAULT_COLLECTION_LIMIT: usize = 10;
+const MCP_MAX_COLLECTION_LIMIT: usize = 500;
 
 enum ProjectFilter {
     All,
@@ -286,7 +288,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_search",
             "Search tasks and comments",
-            "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `daruma_list status=active` instead. Always pass `limit`.",
+            "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `daruma_list status=active` instead. Defaults to a small MCP page and marks truncation.",
             schema_search(),
             Dom::Tasks, D, X, Ann::Read,
         ),
@@ -1240,12 +1242,9 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_list" => {
             let status = required_string(&args, "status")?;
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
-            let limit = args.get("limit").and_then(|v| v.as_u64());
             let cursor = args.get("cursor").and_then(|v| v.as_str());
-            let mut params: Vec<(&str, String)> = vec![
-                ("status", urlencode(status.trim())),
-                ("page", "true".to_string()),
-            ];
+            let limit = mcp_collection_limit(&args);
+            let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All => {}
                 ProjectFilter::None => {
@@ -1253,18 +1252,16 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
             }
-            if let Some(limit) = limit {
-                params.push(("limit", limit.to_string()));
-            }
-            if let Some(cursor) = cursor {
-                params.push(("cursor", urlencode(cursor)));
-            }
             let qs = params
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            let resp = client.get_json(&format!("/v1/tasks?{qs}")).await?;
+            let resp = mcp_page_by_id(
+                client.get_json(&format!("/v1/tasks?{qs}")).await?,
+                cursor,
+                limit,
+            );
             Ok(if view == "detail" {
                 resp
             } else {
@@ -1284,11 +1281,10 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_search" => {
             let query = required_string(&args, "query")?;
             let scope = args.get("scope").and_then(|v| v.as_str());
-            let limit = args.get("limit").and_then(|v| v.as_u64());
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let cursor = args.get("cursor").and_then(|v| v.as_str());
-            let mut params: Vec<(&str, String)> =
-                vec![("query", urlencode(&query)), ("page", "true".to_string())];
+            let limit = mcp_collection_limit(&args);
+            let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
             if let Some(s) = scope {
                 let s = s.trim();
                 if !s.is_empty() {
@@ -1300,18 +1296,16 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
                 ProjectFilter::None => {}
             }
-            if let Some(limit) = limit {
-                params.push(("limit", limit.to_string()));
-            }
-            if let Some(cursor) = cursor {
-                params.push(("cursor", urlencode(cursor)));
-            }
             let qs = params
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            let resp = client.get_json(&format!("/v1/search?{qs}")).await?;
+            let resp = mcp_page_by_offset(
+                client.get_json(&format!("/v1/search?{qs}")).await?,
+                cursor,
+                limit,
+            );
             Ok(if view == "detail" {
                 resp
             } else {
@@ -1735,30 +1729,25 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_plan_list" => {
             let status = required_string(&args, "status")?;
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
-            let limit = args.get("limit").and_then(|v| v.as_u64());
             let cursor = args.get("cursor").and_then(|v| v.as_str());
-            let mut params: Vec<(&str, String)> = vec![
-                ("status", urlencode(status.trim())),
-                ("page", "true".to_string()),
-            ];
+            let limit = mcp_collection_limit(&args);
+            let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
             match resolve_project_filter(&args, true, false, true)? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
                     params.push(("project_id", urlencode(&pid)));
                 }
             }
-            if let Some(limit) = limit {
-                params.push(("limit", limit.to_string()));
-            }
-            if let Some(cursor) = cursor {
-                params.push(("cursor", urlencode(cursor)));
-            }
             let qs = params
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            let resp = client.get_json(&format!("/v1/plans?{qs}")).await?;
+            let resp = mcp_page_by_id(
+                client.get_json(&format!("/v1/plans?{qs}")).await?,
+                cursor,
+                limit,
+            );
             Ok(if view == "detail" {
                 resp
             } else {
@@ -3225,7 +3214,7 @@ fn schema_list() -> Value {
             "limit": {
                 "type":"integer",
                 "minimum":1,
-                "maximum":100,
+                "maximum":500,
                 "default":10
             },
             "cursor": {
@@ -3267,7 +3256,7 @@ fn schema_search() -> Value {
             "limit": {
                 "type":"integer",
                 "minimum":1,
-                "maximum":100,
+                "maximum":500,
                 "default":10
             },
             "cursor": {
@@ -3483,7 +3472,7 @@ fn schema_plan_list() -> Value {
             "limit": {
                 "type":"integer",
                 "minimum":1,
-                "maximum":100,
+                "maximum":500,
                 "default":10
             },
             "cursor": {
@@ -4389,6 +4378,95 @@ fn view_arg(args: &Map<String, Value>, default: &str, allowed: &[&str]) -> anyho
     }
 }
 
+fn mcp_collection_limit(args: &Map<String, Value>) -> usize {
+    match args.get("limit").and_then(Value::as_u64) {
+        Some(raw) => usize::try_from(raw)
+            .unwrap_or(MCP_MAX_COLLECTION_LIMIT)
+            .clamp(1, MCP_MAX_COLLECTION_LIMIT),
+        None => MCP_DEFAULT_COLLECTION_LIMIT,
+    }
+}
+
+fn mcp_page_by_id(value: Value, cursor: Option<&str>, limit: usize) -> Value {
+    let Value::Array(rows) = value else {
+        return value;
+    };
+    let total = rows.len();
+    let start = match cursor {
+        Some(cursor) => rows
+            .iter()
+            .position(|row| row.get("id").and_then(Value::as_str) == Some(cursor))
+            .map(|idx| idx + 1)
+            .unwrap_or(total),
+        None => 0,
+    };
+    mcp_page_rows(
+        rows,
+        start,
+        limit,
+        |offset, page| {
+            page.last()
+                .and_then(|row| row.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| Some((offset + page.len()).to_string()))
+        },
+        total,
+    )
+}
+
+fn mcp_page_by_offset(value: Value, cursor: Option<&str>, limit: usize) -> Value {
+    let Value::Array(rows) = value else {
+        return value;
+    };
+    let total = rows.len();
+    let start = cursor
+        .and_then(|cursor| cursor.parse::<usize>().ok())
+        .unwrap_or(0);
+    mcp_page_rows(
+        rows,
+        start,
+        limit,
+        |offset, page| Some((offset + page.len()).to_string()),
+        total,
+    )
+}
+
+fn mcp_page_rows<F>(
+    rows: Vec<Value>,
+    start: usize,
+    limit: usize,
+    next_cursor: F,
+    total: usize,
+) -> Value
+where
+    F: Fn(usize, &[Value]) -> Option<String>,
+{
+    let mut page = rows
+        .into_iter()
+        .skip(start)
+        .take(limit.saturating_add(1))
+        .collect::<Vec<_>>();
+    let truncated = page.len() > limit;
+    if truncated {
+        page.truncate(limit);
+    }
+    let next_cursor = if truncated {
+        next_cursor(start, &page)
+    } else {
+        None
+    };
+    let returned = page.len();
+    json!({
+        "items": page,
+        "next_cursor": next_cursor,
+        "has_more": truncated,
+        "truncated": truncated,
+        "returned": returned,
+        "total": total,
+    })
+}
+
 fn summarize_rows(value: Value, keys: &[&str]) -> Value {
     match value {
         Value::Array(rows) => {
@@ -4610,7 +4688,7 @@ mod tests {
         }
         for schema in [schema_list(), schema_search(), schema_plan_list()] {
             assert_eq!(schema["properties"]["limit"]["default"], 10);
-            assert_eq!(schema["properties"]["limit"]["maximum"], 100);
+            assert_eq!(schema["properties"]["limit"]["maximum"], 500);
         }
     }
 

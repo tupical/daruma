@@ -125,7 +125,7 @@ impl SearchProvider for FtsSearchProvider {
             return Err(CoreError::validation("query must not be empty"));
         }
 
-        let limit = query.limit.clamp(1, 100);
+        let limit = query.limit.max(1);
         let branch = parse_branch_search(raw_query);
         let lesson = parse_lesson_search(raw_query);
         let prefix_search = branch.is_some() || lesson.is_some();
