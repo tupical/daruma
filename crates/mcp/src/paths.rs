@@ -57,11 +57,7 @@ pub fn legacy_workspaces_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(&home);
-        paths.push(
-            home.join(".config")
-                .join("daruma")
-                .join("workspaces.json"),
-        );
+        paths.push(home.join(".config").join("daruma").join("workspaces.json"));
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         paths.push(PathBuf::from(xdg).join("daruma").join("workspaces.json"));

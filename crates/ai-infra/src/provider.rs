@@ -19,8 +19,8 @@
 //! [`use_research_provider`]: crate::PromptRegistry
 
 use async_trait::async_trait;
-use serde_json::Value;
 use daruma_shared::CoreError;
+use serde_json::Value;
 
 use crate::client::{OpenAiClient, ResponseOutput, ResponseRequest};
 

@@ -66,8 +66,7 @@ mod tests {
     #[test]
     fn resolves_active_remote_profile() {
         let _guard = env_lock();
-        let dir =
-            std::env::temp_dir().join(format!("daruma-mcp-cred-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("daruma-mcp-cred-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var(ENV_AGENT_DIR, &dir);

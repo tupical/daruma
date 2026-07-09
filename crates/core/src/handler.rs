@@ -735,10 +735,7 @@ impl CommandHandler {
         }
     }
 
-    async fn work_unit(
-        &self,
-        id: daruma_shared::WorkUnitId,
-    ) -> Result<daruma_domain::WorkUnit> {
+    async fn work_unit(&self, id: daruma_shared::WorkUnitId) -> Result<daruma_domain::WorkUnit> {
         let repo = self
             .work_units
             .as_ref()
@@ -2158,9 +2155,7 @@ impl CommandHandler {
                     .get_by_pair(handoff.from_work_unit_id, handoff.to_work_unit_id)
                     .await?
                 {
-                    Some(existing)
-                        if existing.status == daruma_domain::HandoffStatus::Accepted =>
-                    {
+                    Some(existing) if existing.status == daruma_domain::HandoffStatus::Accepted => {
                         return Err(CoreError::conflict(format!(
                             "handoff {} for this pair is already accepted",
                             existing.id
@@ -2580,15 +2575,13 @@ fn dedupe_ids(ids: &[TaskId]) -> Vec<TaskId> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::{collections::HashMap, sync::Mutex};
     use daruma_domain::{
         Actor, AgentSession, NewTask, Plan, PlanStatus as PS, PlanTask, Run, SessionArtifactKind,
     };
     use daruma_events::{Event, EventStore};
     use daruma_shared::{ProjectId, RunId, TaskId};
-    use daruma_storage::{
-        ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo,
-    };
+    use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
+    use std::{collections::HashMap, sync::Mutex};
 
     use crate::{
         repos::{ExternalRefRepository, PlanRepository, RunRepository, SessionRepository},
@@ -2647,10 +2640,7 @@ mod tests {
             Ok(v)
         }
 
-        async fn list_plans_for_task(
-            &self,
-            task_id: TaskId,
-        ) -> daruma_shared::Result<Vec<PlanId>> {
+        async fn list_plans_for_task(&self, task_id: TaskId) -> daruma_shared::Result<Vec<PlanId>> {
             let guard = self.plan_tasks.lock().unwrap();
             let plan_ids = guard
                 .iter()
@@ -2722,10 +2712,7 @@ mod tests {
             Ok(self.runs.lock().unwrap().get(&id).cloned())
         }
 
-        async fn list_active_for_plan(
-            &self,
-            plan_id: PlanId,
-        ) -> daruma_shared::Result<Vec<Run>> {
+        async fn list_active_for_plan(&self, plan_id: PlanId) -> daruma_shared::Result<Vec<Run>> {
             Ok(self
                 .runs
                 .lock()
@@ -2736,10 +2723,7 @@ mod tests {
                 .collect())
         }
 
-        async fn current_step_task(
-            &self,
-            run_id: RunId,
-        ) -> daruma_shared::Result<Option<TaskId>> {
+        async fn current_step_task(&self, run_id: RunId) -> daruma_shared::Result<Option<TaskId>> {
             Ok(self.current_steps.lock().unwrap().get(&run_id).copied())
         }
 

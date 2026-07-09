@@ -3,10 +3,10 @@
 
 use crate::parse_ts;
 use chrono::{Duration, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{WorkUnit, WorkUnitStatus};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, CoreError, Result, TaskId, Timestamp, WorkUnitId};
+use sqlx::{Row, SqlitePool};
 
 pub struct WorkUnitRepo {
     pool: SqlitePool,
@@ -454,7 +454,10 @@ mod tests {
         let agent = AgentId::new();
         let ttl = chrono::Duration::seconds(300);
         let first = r.try_claim_next(task, agent, ttl).await.unwrap().unwrap();
-        assert_eq!(first.id, producer.id, "consumer is gated, producer drains first");
+        assert_eq!(
+            first.id, producer.id,
+            "consumer is gated, producer drains first"
+        );
         assert!(
             r.try_claim_next(task, AgentId::new(), ttl)
                 .await

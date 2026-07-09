@@ -12,8 +12,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
 use daruma_auth::{
     generate, Capabilities, Capability, NewTokenSpec, ProjectFilter, TokenKind, TokenScope,
     TokenStore,
@@ -21,6 +19,8 @@ use daruma_auth::{
 use daruma_domain::{Actor, NewTask, Plan, PlanPatch, PlanStatus, Run, RunStatus};
 use daruma_events::{Event, EventBus, EventEnvelope};
 use daruma_shared::{AgentId, PlanId, ProjectId, RunId};
+use futures::{SinkExt, StreamExt};
+use serde_json::{json, Value};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 mod common;

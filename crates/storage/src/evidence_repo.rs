@@ -10,10 +10,10 @@
 //! place except to set `superseded_by`.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{ActorRef, Evidence, EvidenceKind, RuleScope};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, EvidenceId, Result};
+use sqlx::{Row, SqlitePool};
 
 pub struct EvidenceRepo {
     pool: SqlitePool,

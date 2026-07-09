@@ -5,8 +5,8 @@
 //! `{patch: PlanPatch}` respectively; the shim previously sent flat bodies
 //! and got HTTP 422 "missing field `plan`/`patch`").
 
-use serde_json::json;
 use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
+use serde_json::json;
 
 mod common;
 use common::{spawn_server, test_app};
@@ -49,12 +49,7 @@ async fn call_tool(
 }
 
 async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
-    let resp = call_tool(
-        client,
-        "daruma_project_create",
-        json!({ "title": title }),
-    )
-    .await;
+    let resp = call_tool(client, "daruma_project_create", json!({ "title": title })).await;
     resp["project_id"]
         .as_str()
         .expect("project_id must be a string in response")
@@ -151,9 +146,18 @@ async fn plan_create_via_mcp_accepts_optional_fields() {
     let plan_id = first_plan_id(&client, &pid).await;
     let summary = call_tool(&client, "daruma_plan_get", json!({ "id": plan_id })).await;
     assert_eq!(summary["plan"]["id"], plan_id, "compact plan id: {summary}");
-    assert_eq!(summary["plan"]["title"], "Q1 Plan", "compact title: {summary}");
-    assert_eq!(summary["plan"]["status"], "draft", "compact status: {summary}");
-    assert_eq!(summary["plan"]["project_id"], pid, "compact project: {summary}");
+    assert_eq!(
+        summary["plan"]["title"], "Q1 Plan",
+        "compact title: {summary}"
+    );
+    assert_eq!(
+        summary["plan"]["status"], "draft",
+        "compact status: {summary}"
+    );
+    assert_eq!(
+        summary["plan"]["project_id"], pid,
+        "compact project: {summary}"
+    );
     assert!(
         summary["progress"].is_object(),
         "progress view must include counts: {summary}"

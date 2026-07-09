@@ -4,7 +4,6 @@
 //! the server and the WASM frontend can share the same types without pulling
 //! in tokio / sqlx.
 
-use serde::{Deserialize, Serialize};
 use daruma_domain::{
     AgentAction, AgentSessionPlanStep, CommentPatch, CompletionNote, NewComment, NewDocument,
     NewPlan, NewTask, PlanPatch, PlanStatus, Priority, RelationKind, RunOutcome,
@@ -14,6 +13,7 @@ use daruma_shared::{
     AgentId, AgentSessionId, CommentId, DocumentId, HandoffId, PlanId, ProjectId, RelationId,
     RuleId, RunId, TaskId, WorkUnitId,
 };
+use serde::{Deserialize, Serialize};
 
 /// All mutations are commands. Tagged-union JSON for stable wire format.
 #[derive(Clone, Debug, Serialize, Deserialize)]

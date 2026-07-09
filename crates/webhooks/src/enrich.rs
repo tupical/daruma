@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value;
 use daruma_events::EventEnvelope;
+use serde_json::Value;
 
 /// Reserved enrich keys recognised by the built-in
 /// [`EnrichmentSource`] implementation. Anything else is logged + skipped.
@@ -115,10 +115,10 @@ pub async fn build_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use daruma_domain::Actor;
     use daruma_events::Event;
     use daruma_shared::{ProjectId, TaskId};
+    use serde_json::json;
 
     #[derive(Default)]
     struct StubSource;

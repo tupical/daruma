@@ -115,7 +115,13 @@ async fn writeback_rejects_unknown_task_ids() {
 
     // Atomic: the valid row must not have been written either.
     let real_id: daruma_shared::TaskId = real.parse().unwrap();
-    assert!(h.state.complexity_hints.get(real_id).await.unwrap().is_none());
+    assert!(h
+        .state
+        .complexity_hints
+        .get(real_id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

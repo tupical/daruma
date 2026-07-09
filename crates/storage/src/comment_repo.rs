@@ -5,10 +5,10 @@ use crate::parse_ts;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Actor, Comment, CommentKind, CommentPatch};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CommentId, CoreError, ProjectId, Result, TaskId};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `comments` projection table.
 pub struct CommentRepo {

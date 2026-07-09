@@ -191,10 +191,7 @@ pub trait RuleRepository: Send + Sync {
 #[async_trait]
 pub trait EvidenceRepository: Send + Sync {
     /// Fetch evidence by id; `None` if not found.
-    async fn get(
-        &self,
-        id: daruma_shared::EvidenceId,
-    ) -> Result<Option<daruma_domain::Evidence>>;
+    async fn get(&self, id: daruma_shared::EvidenceId) -> Result<Option<daruma_domain::Evidence>>;
 
     /// Evidence recorded directly at a scope level (newest first).
     async fn list_for_scope(
@@ -231,10 +228,7 @@ use daruma_storage::{
 
 #[async_trait]
 impl EvidenceRepository for EvidenceRepo {
-    async fn get(
-        &self,
-        id: daruma_shared::EvidenceId,
-    ) -> Result<Option<daruma_domain::Evidence>> {
+    async fn get(&self, id: daruma_shared::EvidenceId) -> Result<Option<daruma_domain::Evidence>> {
         EvidenceRepo::get(self, id).await
     }
     async fn list_for_scope(

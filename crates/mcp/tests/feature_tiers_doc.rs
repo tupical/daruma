@@ -30,8 +30,12 @@ fn build_markdown() -> String {
 
     out.push_str("# MCP feature tiers\n\n");
     out.push_str("АВТО-СГЕНЕРИРОВАНО из `crates/mcp/src/tools.rs` — не редактировать вручную; regenerate: `UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test feature_tiers_doc`\n\n");
-    out.push_str("Рамка: [feature-tiers.md](../../../meisei-research/docs/canon/feature-tiers.md).\n\n");
-    out.push_str("Легенда: `Core` = основные; `Enhancing` = усиливающие; `Extending` = расширяющие.\n\n");
+    out.push_str(
+        "Рамка: [feature-tiers.md](../../../meisei-research/docs/canon/feature-tiers.md).\n\n",
+    );
+    out.push_str(
+        "Легенда: `Core` = основные; `Enhancing` = усиливающие; `Extending` = расширяющие.\n\n",
+    );
 
     out.push_str("## Сводная матрица\n\n");
     out.push_str("| domain | Core | Enhancing | Extending |\n");

@@ -3,8 +3,8 @@
 //! work through this client so the auth bearer is set in exactly one
 //! place.
 
-use serde_json::{json, Value};
 use daruma_shared::AgentId;
+use serde_json::{json, Value};
 
 /// HTTP-hop client used by every tool handler.
 #[derive(Clone)]

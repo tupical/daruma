@@ -22,10 +22,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
 use daruma_auth::ProjectFilter;
 use daruma_events::{EventEnvelope, EventReceiver};
 use daruma_shared::{ProjectId, WebhookId};
+use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 

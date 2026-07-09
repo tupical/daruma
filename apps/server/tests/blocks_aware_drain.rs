@@ -7,8 +7,8 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use serde_json::Value;
 use daruma_auth::{Capabilities, Capability, ProjectFilter};
+use serde_json::Value;
 use tower::ServiceExt;
 
 mod common;

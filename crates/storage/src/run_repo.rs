@@ -2,10 +2,10 @@
 //! `runs` SQLite table.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Run, RunStatus};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, CoreError, PlanId, Result, RunId, Timestamp};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `runs` projection table.
 pub struct RunRepo {
@@ -168,10 +168,7 @@ impl RunRepo {
     ///
     /// The `runs` table does not yet track the active step — returns `None`
     /// until a `current_task_id` column is added in a future migration.
-    pub async fn current_step_task(
-        &self,
-        _run_id: RunId,
-    ) -> Result<Option<daruma_shared::TaskId>> {
+    pub async fn current_step_task(&self, _run_id: RunId) -> Result<Option<daruma_shared::TaskId>> {
         Ok(None)
     }
 

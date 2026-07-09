@@ -10,9 +10,9 @@ pub use daruma_api_dto::command::{Command, CommandEnvelope};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use daruma_domain::NewTask;
     use daruma_shared::{AgentId, PlanId, ProjectId, RunId, TaskId};
+    use serde_json::json;
 
     #[test]
     fn serde_roundtrip() {

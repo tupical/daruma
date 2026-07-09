@@ -10,9 +10,9 @@
 
 use crate::parse_ts;
 use chrono::{Duration, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
 use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, WorkLeaseId};
+use sqlx::{Row, SqlitePool};
 
 /// Outcome of an atomic [`WorkLeaseRepo::try_reserve`] attempt.
 #[derive(Debug, Clone)]

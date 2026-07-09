@@ -3,10 +3,10 @@
 //! [`AutoAppendSettings`]. No stored row means defaults (both logs ON),
 //! which also covers projects created before the migration.
 
-use sqlx::{Row, SqlitePool};
 use daruma_domain::AutoAppendSettings;
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, ProjectId, Result};
+use sqlx::{Row, SqlitePool};
 
 const AUTO_APPEND_KEY: &str = "auto_append";
 

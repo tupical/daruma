@@ -1,7 +1,7 @@
 //! Token scope — what a token may read/write, in which projects.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::ProjectId;
+use serde::{Deserialize, Serialize};
 
 use crate::capability::Capabilities;
 

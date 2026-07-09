@@ -1,9 +1,9 @@
 //! End-to-end integration tests for WorkspaceGraph HTTP endpoints (P3).
 
 use axum::http::StatusCode;
-use serde_json::Value;
 use daruma_auth::{Capabilities, Capability};
 use daruma_shared::{ProjectId, TaskId};
+use serde_json::Value;
 
 mod common;
 use common::{json_get, json_post, mint_pat, test_app};

@@ -3,10 +3,10 @@
 
 use crate::parse_ts;
 use chrono::{DateTime, Utc};
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{slugify_title, Project, DEFAULT_TENANT_ID};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, ProjectId, Result};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `projects` projection table.
 pub struct ProjectRepo {

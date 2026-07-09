@@ -12,8 +12,8 @@
 //! re-requesting after a rejection reopens the same contract (same id, new
 //! payload) rather than accumulating rows.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{AgentId, HandoffId, Timestamp, WorkUnitId};
+use serde::{Deserialize, Serialize};
 
 /// Lifecycle of a handoff contract.
 ///

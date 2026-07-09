@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
-use serde_json::{json, Value};
 use daruma_mcp::tools::call_tool;
 use daruma_mcp::{tool_definitions, ApiClient};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
 struct Captured {
@@ -84,8 +84,7 @@ async fn session_artifact_posts_to_session_artifacts_endpoint() {
 
 #[tokio::test]
 async fn session_artifacts_list_gets_session_artifacts_endpoint() {
-    let captured =
-        call_via_mock("daruma_session_artifacts_list", json!({"id": "ags_123"})).await;
+    let captured = call_via_mock("daruma_session_artifacts_list", json!({"id": "ags_123"})).await;
 
     assert_eq!(captured.method, "GET");
     assert_eq!(captured.path, "/v1/sessions/ags_123/artifacts");

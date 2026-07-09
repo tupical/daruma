@@ -10,8 +10,8 @@
 //! exist for product layers (Intake / Sensemaking) that opt into them, but
 //! seeding them is product behaviour, not an execution-core default.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{DocumentId, ProjectId, TaskId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 /// Discriminator for document kinds.
 ///

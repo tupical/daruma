@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, routing::post as axpost, Router as AxRouter};
-use serde_json::{json, Value};
 use daruma_auth::ProjectFilter;
 use daruma_domain::Actor;
 use daruma_events::{Event, EventBus, EventEnvelope};
@@ -29,6 +28,7 @@ use daruma_webhooks::{
     enrich::keys, spawn_dispatcher, EnrichmentSource, NewWebhook, NoopEnrichment, Webhook,
     WebhookStore,
 };
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 // ── Mock HTTP receiver ───────────────────────────────────────────────────────

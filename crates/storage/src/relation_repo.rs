@@ -4,10 +4,10 @@
 //! migration `0009_task_relations.sql`.
 
 use chrono::DateTime;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Actor, Relation, RelationKind};
 use daruma_events::Event;
 use daruma_shared::{CoreError, RelationId, Result, TaskId, Timestamp};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `task_relations` table.
 pub struct RelationRepo {

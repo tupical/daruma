@@ -5,10 +5,10 @@
 //! cannot commit writes after losing its lease.
 
 use crate::parse_ts;
-use sqlx::{Row, SqlitePool};
 use daruma_domain::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{ArtifactId, CoreError, ProjectId, Result, TaskId};
+use sqlx::{Row, SqlitePool};
 
 pub struct ArtifactRepo {
     pool: SqlitePool,
@@ -292,8 +292,6 @@ fn select_sql(filter: &str) -> String {
 }
 
 fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
-    
-
     fn col<T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>>(
         r: &sqlx::sqlite::SqliteRow,
         name: &'static str,
@@ -339,8 +337,6 @@ fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
 }
 
 fn row_to_relation(r: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRelation> {
-    
-
     let id: String = r
         .try_get("id")
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -379,9 +375,7 @@ fn row_to_relation(r: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRelation> {
 mod tests {
     use super::*;
     use crate::Db;
-    use daruma_domain::{
-        Actor, Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus,
-    };
+    use daruma_domain::{Actor, Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
     use daruma_events::{Event, EventEnvelope};
     use daruma_shared::{AgentId, ArtifactId, ArtifactRelationId};
 

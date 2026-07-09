@@ -5,9 +5,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::Deserialize;
 use daruma_auth::{AuthContext, Capability};
 use daruma_shared::{CoreError, ProjectId};
+use serde::Deserialize;
 
 use crate::{error::ApiError, state::AppState};
 

@@ -2,10 +2,10 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{QueryBuilder, Row, SqlitePool};
 use daruma_domain::Actor;
 use daruma_events::{Event, EventEnvelope, EventStore};
 use daruma_shared::{CoreError, DeviceId, EventId, Result};
+use sqlx::{QueryBuilder, Row, SqlitePool};
 
 /// SQLite-backed event log.
 ///

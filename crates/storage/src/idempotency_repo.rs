@@ -17,10 +17,10 @@
 //! fills naturally as commands are processed.
 
 use chrono::{Duration, Utc};
+use daruma_shared::{CoreError, EventId, Result};
 use fastbloom::BloomFilter;
 use sqlx::{Row, SqlitePool};
 use std::sync::RwLock;
-use daruma_shared::{CoreError, EventId, Result};
 use uuid::Uuid;
 
 fn reserved_event_id() -> EventId {

@@ -13,10 +13,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{PlanId, ProjectId, TaskId};
 use daruma_webhooks::enrich::{keys, EnrichmentSource};
+use serde_json::{json, Value};
 
 use crate::{PlanRepo, ProjectRepo, TaskRepo};
 

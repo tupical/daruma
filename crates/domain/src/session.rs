@@ -1,8 +1,8 @@
 //! AgentSession entity — Linear B.1: tracks an agent's live execution context
 //! including its current plan steps.
 
-use serde::{Deserialize, Serialize};
 use daruma_shared::{AgentId, AgentSessionId, SessionArtifactId, Timestamp};
+use serde::{Deserialize, Serialize};
 
 /// Status of a single plan step within an agent session.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

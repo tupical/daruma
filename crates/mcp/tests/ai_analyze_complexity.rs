@@ -8,9 +8,9 @@
 use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::post, Router};
-use serde_json::{json, Value};
 use daruma_mcp::tools::call_tool;
 use daruma_mcp::{tool_definitions, ApiClient};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
 struct Captured {

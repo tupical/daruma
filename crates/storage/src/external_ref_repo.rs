@@ -1,9 +1,9 @@
 //! ExternalRef repository — cross-system identity mapping with composite-PK
 //! idempotency guard.
 
-use sqlx::{Row, SqlitePool};
 use daruma_domain::ExternalRef;
 use daruma_shared::{CoreError, Result};
+use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `external_refs` table.
 pub struct ExternalRefRepo {

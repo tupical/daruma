@@ -3,11 +3,11 @@
 
 use crate::parse_ts;
 use chrono::{DateTime, Utc};
-use serde_json::Value;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use daruma_domain::{Document, DocumentKind, DocumentStatus};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, DocumentId, ProjectId, Result};
+use serde_json::Value;
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::entity_version::{insert_entity_version, update_summary};
 
@@ -227,7 +227,10 @@ impl DocumentRepo {
                     .map_err(|e| CoreError::storage(e.to_string()))?;
             }
             Event::DocumentStatusChanged {
-                document_id, to, at, ..
+                document_id,
+                to,
+                at,
+                ..
             } => {
                 let mut tx = self.begin_tx().await?;
                 if let Some(mut doc) = get_document_tx(&mut tx, *document_id).await? {
