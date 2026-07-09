@@ -134,6 +134,7 @@ That's the whole workflow. Inside Claude Code, the equivalent slash commands are
 | Shell                                              | Effect                                                                |
 | -------------------------------------------------- | --------------------------------------------------------------------- |
 | `daruma-claude start "<task>"`                  | Full pipeline (parse → project → seed → [plan] → execute → report)    |
+| `daruma-claude team-from-plan <plan_id>`        | Execute an existing plan by dependency fanout waves through `omc team` |
 | `daruma-claude doctor`                          | Detect both deps + MCP tool / `omc team` readiness                    |
 | `daruma-claude setup`                           | Print install hints for missing dependencies                          |
 | `daruma-claude update`                          | Self-update + omc update; print upgrade hint for daruma            |
@@ -145,6 +146,7 @@ Inside a Claude Code REPL session:
 | Slash                                  | Effect                              |
 | -------------------------------------- | ----------------------------------- |
 | `/daruma-claude:start <task>`       | Same as `daruma-claude start`    |
+| `/daruma-claude:team-from-plan <plan_id>` | Same as `daruma-claude team-from-plan` |
 | `/daruma-claude:doctor`             | Same as `daruma-claude doctor`   |
 | `/daruma-claude:setup`              | Same as `daruma-claude setup`    |
 | `/daruma-claude:branch-tasks`       | Show tasks linked to the current git branch |
@@ -153,6 +155,7 @@ Bundled skills:
 
 | Skill | Effect |
 | ----- | ------ |
+| `team-from-plan` | Execute an existing daruma plan wave-by-wave through `omc team`. |
 | `branch-tasks` | Find tasks linked to the current git branch through `branch:` comments. |
 | `lesson-capture` | Save a durable reusable lesson as a `lesson:` task comment. |
 | `lesson-recall` | Search captured lessons through `daruma_lesson_recall`. |
@@ -205,9 +208,10 @@ OPENAI_API_KEY=sk-... ./target/release/daruma-server
 │   ├── mcp-client.mjs                  # stdio JSON-RPC client for daruma-mcp
 │   ├── omc-team-runner.mjs             # spawns `omc team` per task
 │   └── update.mjs                      # self-update via npm registry
-├── commands/                           # /daruma-claude:{start,doctor,setup}
+├── commands/                           # /daruma-claude:{start,team-from-plan,doctor,setup}
 └── skills/                             # the actual contracts
     ├── start/SKILL.md                  # parse → project → seed → [plan] → execute
+    ├── team-from-plan/SKILL.md         # execute an existing plan by fanout waves
     ├── doctor/SKILL.md                 # readiness contract
     ├── setup/SKILL.md                  # install-hint contract
     ├── branch-tasks/SKILL.md           # find tasks by git branch

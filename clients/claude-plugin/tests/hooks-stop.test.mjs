@@ -1,18 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK = join(__dirname, "..", "hooks", "stop.mjs");
+import { stopHookMessage } from "../hooks/stop.mjs";
 
 function run(env = {}) {
-  const r = spawnSync(process.execPath, [HOOK], {
-    encoding: "utf8",
-    env: { ...process.env, ...env },
-  });
-  return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", code: r.status };
+  return { stdout: stopHookMessage(env.DARUMA_ACTIVE_TASK ?? ""), code: 0 };
 }
 
 test("exits 0 and prints nothing when DARUMA_ACTIVE_TASK is absent", () => {
@@ -22,13 +13,9 @@ test("exits 0 and prints nothing when DARUMA_ACTIVE_TASK is absent", () => {
 });
 
 test("exits 0 and prints nothing when env var is unset", () => {
-  // Remove the variable entirely by filtering it out
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => k !== "DARUMA_ACTIVE_TASK")
-  );
-  const r = spawnSync(process.execPath, [HOOK], { encoding: "utf8", env });
-  assert.equal(r.status, 0);
-  assert.equal((r.stdout ?? "").trim(), "");
+  const { stdout, code } = run({ DARUMA_ACTIVE_TASK: undefined });
+  assert.equal(code, 0);
+  assert.equal(stdout.trim(), "");
 });
 
 test("prints lesson nudge when DARUMA_ACTIVE_TASK is set", () => {

@@ -7,6 +7,8 @@
 //   daruma-claude setup                       Print install instructions for missing deps.
 //   daruma-claude start "<task description>"  Drive daruma via MCP and run each
 //                                                eligible task as `omc team`.
+//   daruma-claude team-from-plan <plan_id>    Execute an existing plan by
+//                                                dependency fanout waves.
 //   daruma-claude update                      Check + update daruma-claude / omc;
 //                                                print manual hint for daruma.
 //   daruma-claude platform                    Print execution mode (omc-team | task-fallback)
@@ -27,7 +29,7 @@ import {
   formatReport,
   parseSemver,
 } from "../lib/detect.mjs";
-import { runDarumaStart } from "../lib/orchestrator.mjs";
+import { runDarumaStart, runDarumaTeamFromPlan } from "../lib/orchestrator.mjs";
 import { installPolicy, removePolicy } from "../lib/policy.mjs";
 import { installOmcGuard, removeOmcGuard } from "../lib/omc-guard.mjs";
 import {
@@ -64,6 +66,10 @@ Usage:
                                     Drive daruma (project → task [→ plan])
                                     via MCP and run each eligible task as
                                     \`omc team\`. No nested Claude Code session.
+  daruma-claude team-from-plan <plan_id> [--workers N] [--max-retries M]
+                                              [--agent T] [--yes]
+                                    Execute an existing daruma plan wave-by-wave
+                                    via \`daruma_plan_fanout\` + \`omc team\`.
   daruma-claude init [--dir DIR] [--no-policy] [--no-omc-guard]
                                     Drop project-scoped artifacts: a managed
                                     policy block in <DIR>/CLAUDE.md so this
@@ -94,6 +100,15 @@ daruma-claude start flags:
                       of subtasks, then execute each subtask via \`omc team\`.
   --project ID        Use this daruma project id instead of auto-resolving
                       from workspace info / cwd basename.
+  --yes               Skip y/n confirmation prompts (implied when stdin is
+                      not a TTY).
+
+daruma-claude team-from-plan flags:
+  --workers N         Number of concurrent plan tasks per wave. Integer 1-20.
+                      Default 3.
+  --max-retries M     Retries after the first attempt for each task. Default 2.
+  --agent T           Agent type for \`omc team\` workers (claude | codex | gemini).
+                      Default claude.
   --yes               Skip y/n confirmation prompts (implied when stdin is
                       not a TTY).
 
@@ -474,6 +489,46 @@ function parseStartArgs(argv) {
   return opts;
 }
 
+function parseTeamFromPlanArgs(argv) {
+  const opts = {
+    planId: "",
+    workers: undefined,
+    maxRetries: undefined,
+    agent: undefined,
+    yes: false,
+  };
+  const parts = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--workers") {
+      const v = argv[++i];
+      const n = parseInt(v, 10);
+      if (!Number.isInteger(n) || n < 1 || n > 20) throw new Error(`--workers must be an integer 1-20, got '${v}'`);
+      opts.workers = n;
+    } else if (a === "--max-retries") {
+      const v = argv[++i];
+      const n = parseInt(v, 10);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`--max-retries must be a non-negative integer, got '${v}'`);
+      opts.maxRetries = n;
+    } else if (a === "--agent") {
+      const v = argv[++i];
+      if (!/^(claude|codex|gemini)$/.test(v)) throw new Error(`--agent must be claude|codex|gemini, got '${v}'`);
+      opts.agent = v;
+    } else if (a === "--yes" || a === "-y") {
+      opts.yes = true;
+    } else if (a === "--") {
+      parts.push(...argv.slice(i + 1));
+      break;
+    } else if (a.startsWith("--")) {
+      throw new Error(`Unknown daruma-claude team-from-plan flag: ${a}`);
+    } else {
+      parts.push(a);
+    }
+  }
+  opts.planId = parts.join(" ").trim();
+  return opts;
+}
+
 async function cmdStart(rest) {
   let opts;
   try {
@@ -517,6 +572,47 @@ async function cmdStart(rest) {
   }
 }
 
+async function cmdTeamFromPlan(rest) {
+  let opts;
+  try {
+    opts = parseTeamFromPlanArgs(rest);
+  } catch (err) {
+    process.stderr.write(`daruma-claude team-from-plan: ${err.message}\n`);
+    process.exit(2);
+  }
+  if (!opts.planId) {
+    process.stderr.write("daruma-claude team-from-plan requires a plan id.\nExample: daruma-claude team-from-plan pln_123 --yes\n");
+    process.exit(2);
+  }
+  const report = await detectAll();
+  if (!report.ready) {
+    process.stderr.write("Cannot start — missing dependencies:\n\n");
+    process.stderr.write(formatReport(report) + "\n\n");
+    process.stderr.write("Run `daruma-claude setup` for install instructions.\n");
+    process.exit(1);
+  }
+  try {
+    const result = await runDarumaTeamFromPlan({
+      planId: opts.planId,
+      cwd: process.cwd(),
+      workers: opts.workers,
+      maxRetries: opts.maxRetries,
+      agentType: opts.agent,
+      autoYes: opts.yes,
+      stdin: process.stdin,
+      stdout: process.stdout,
+    });
+    if (result?.cancelled) process.exit(130);
+    if (result?.ok === false) process.exit(1);
+  } catch (err) {
+    process.stderr.write(`daruma-claude team-from-plan failed: ${err.message}\n`);
+    if (process.env.DARUMA_DEBUG || process.env.OMO_DEBUG) {
+      process.stderr.write(`${err.stack}\n`);
+    }
+    process.exit(1);
+  }
+}
+
 async function main(argv) {
   const [, , cmd, ...rest] = argv;
   switch (cmd) {
@@ -544,6 +640,8 @@ async function main(argv) {
       return cmdUninit(rest);
     case "start":
       return cmdStart(rest);
+    case "team-from-plan":
+      return cmdTeamFromPlan(rest);
     default:
       process.stderr.write(`Unknown command: ${cmd}\n\n${HELP}`);
       process.exit(2);

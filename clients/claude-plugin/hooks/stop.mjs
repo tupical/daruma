@@ -10,20 +10,24 @@
 // asyncRewake: true in hooks.json means Claude Code re-wakes Claude with the
 // rewakeMessage only when this script exits 0 AND prints non-empty output.
 
-const activeTask = process.env.DARUMA_ACTIVE_TASK ?? "";
+import { pathToFileURL } from "node:url";
 
-if (!activeTask) {
-  // No active task tracked in this session — skip quietly.
-  process.exit(0);
+export function stopHookMessage(activeTask = "") {
+  if (!activeTask) return "";
+  return (
+    `[daruma-claude/auto-record] Active task: ${activeTask}\n` +
+    `If this session produced a concrete reusable lesson (command, invariant, bug pattern, file path), ` +
+    `capture it now via /daruma-claude:capture or call daruma_comment directly:\n` +
+    `  daruma_comment task_id="${activeTask}" body="lesson: <short durable lesson>"\n` +
+    `Skip if there is nothing durable to record.\n`
+  );
 }
 
-// Emit the auto-record nudge. Claude Code will re-inject this as a
-// system-reminder via the rewakeMessage path.
-process.stdout.write(
-  `[daruma-claude/auto-record] Active task: ${activeTask}\n` +
-  `If this session produced a concrete reusable lesson (command, invariant, bug pattern, file path), ` +
-  `capture it now via /daruma-claude:capture or call daruma_comment directly:\n` +
-  `  daruma_comment task_id="${activeTask}" body="lesson: <short durable lesson>"\n` +
-  `Skip if there is nothing durable to record.\n`
-);
-process.exit(0);
+function main() {
+  const message = stopHookMessage(process.env.DARUMA_ACTIVE_TASK ?? "");
+  if (message) process.stdout.write(message);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
