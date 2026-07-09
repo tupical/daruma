@@ -7,9 +7,9 @@ use argon2::{
     Argon2,
 };
 use base64::Engine as _;
+use daruma_shared::{time, AgentId, DeviceId, Result, Timestamp, TokenId};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use daruma_shared::{time, AgentId, Result, Timestamp, TokenId};
 
 use crate::scope::TokenScope;
 
@@ -68,6 +68,10 @@ pub struct ApiToken {
     pub last_used_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<DeviceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_revoked_at: Option<Timestamp>,
 }
 
 impl ApiToken {
@@ -128,6 +132,8 @@ pub fn generate(spec: NewTokenSpec) -> Result<TokenSecret> {
         expired_at: spec.expired_at,
         last_used_at: None,
         revoked_at: None,
+        device_id: None,
+        device_revoked_at: None,
     };
 
     Ok(TokenSecret { record, plaintext })

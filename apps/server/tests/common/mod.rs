@@ -19,7 +19,6 @@ use axum::{
     http::{Method, Request, StatusCode},
     Router,
 };
-use serde_json::Value;
 use daruma_auth::{
     generate, Capabilities, NewTokenSpec, ProjectFilter, TokenKind, TokenScope, TokenStore,
 };
@@ -35,6 +34,7 @@ use daruma_storage::{
 };
 use daruma_sync::Hub;
 use daruma_webhooks::WebhookStore;
+use serde_json::Value;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 
@@ -109,6 +109,7 @@ impl TestAppBuilder {
         let projects = Arc::new(ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
         let tokens = Arc::new(TokenRepo::new(pool.clone()));
+        let devices = Arc::new(daruma_storage::DeviceRepo::new(pool.clone()));
         let inbox = Arc::new(AgentInboxRepo::new(pool.clone()));
         let webhooks = Arc::new(WebhookRepo::new(pool.clone()));
         let activity = Arc::new(ActivityRepo::new(pool.clone()));
@@ -203,6 +204,7 @@ impl TestAppBuilder {
             comments,
             activity,
             tokens,
+            devices,
             auth_store,
             inbox,
             webhooks,

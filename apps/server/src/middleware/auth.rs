@@ -30,9 +30,9 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use daruma_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use daruma_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
 
 /// How long a successfully verified bearer stays in the in-memory cache.
 const CACHE_TTL: Duration = Duration::from_secs(30);
@@ -131,7 +131,9 @@ pub async fn require_auth(
 
     match verify_bearer(&layer.store, header).await {
         Ok(ctx) => {
-            cache_store(&layer, key, ctx.clone());
+            if ctx.device_id.is_none() {
+                cache_store(&layer, key, ctx.clone());
+            }
             insert_auth_context(&mut req, ctx);
             next.run(req).await
         }

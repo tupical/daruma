@@ -1,9 +1,10 @@
 //! HTTP transport for flushing local replica events to a server.
 
 use async_trait::async_trait;
-use serde_json::json;
 use daruma_core::embed::EventEnvelope;
-use daruma_shared::{CoreError, Result};
+use daruma_shared::{CoreError, DeviceId, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::flush::RemoteEventSink;
 
@@ -23,10 +24,15 @@ impl HttpReplicaSink {
     }
 
     pub fn from_env() -> Result<Self> {
-        let base_url =
-            std::env::var("DARUMA_API_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+        let paired = load_paired_credentials();
+        let base_url = std::env::var("DARUMA_API_URL")
+            .ok()
+            .or_else(|| paired.as_ref().map(|p| p.server_url.clone()))
+            .unwrap_or_else(|| "http://localhost:8080".into());
         let token = std::env::var("DARUMA_TOKEN")
-            .map_err(|_| CoreError::validation("DARUMA_TOKEN is required for sync"))?;
+            .ok()
+            .or_else(|| paired.map(|p| p.token))
+            .ok_or_else(|| CoreError::validation("DARUMA_TOKEN is required for sync"))?;
         Ok(Self::new(base_url, token))
     }
 
@@ -37,6 +43,17 @@ impl HttpReplicaSink {
     fn events_url(&self, since: u64, limit: u32) -> String {
         format!(
             "{}/v1/events?since={since}&limit={limit}",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
+    fn devices_url(&self) -> String {
+        format!("{}/v1/devices", self.base_url.trim_end_matches('/'))
+    }
+
+    fn revoke_device_url(&self, id: DeviceId) -> String {
+        format!(
+            "{}/v1/devices/{id}/revoke",
             self.base_url.trim_end_matches('/')
         )
     }
@@ -61,6 +78,35 @@ impl HttpReplicaSink {
             .await
             .map_err(|e| CoreError::serde(e.to_string()))
     }
+
+    pub async fn list_devices(&self) -> Result<DevicesResponse> {
+        let response = self
+            .client
+            .get(self.devices_url())
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CoreError::sync(e.to_string()))?;
+        json_response(response, "device list").await
+    }
+
+    pub async fn revoke_device(&self, id: DeviceId) -> Result<()> {
+        let response = self
+            .client
+            .post(self.revoke_device_url(id))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CoreError::sync(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(CoreError::sync(format!(
+            "device revoke failed with {status}: {body}"
+        )))
+    }
 }
 
 #[async_trait]
@@ -83,6 +129,51 @@ impl RemoteEventSink for HttpReplicaSink {
             "replica flush failed with {status}: {body}"
         )))
     }
+}
+
+async fn json_response<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    action: &str,
+) -> Result<T> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(CoreError::sync(format!(
+            "{action} failed with {status}: {body}"
+        )));
+    }
+    response
+        .json::<T>()
+        .await
+        .map_err(|e| CoreError::serde(e.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+struct PairedCredentials {
+    server_url: String,
+    token: String,
+}
+
+fn load_paired_credentials() -> Option<PairedCredentials> {
+    let path = crate::onboarding::paired_credentials_path();
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Device {
+    pub id: DeviceId,
+    pub label: String,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub connected: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DevicesResponse {
+    pub current_device_id: Option<DeviceId>,
+    pub devices: Vec<Device>,
 }
 
 #[cfg(test)]

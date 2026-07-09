@@ -5,7 +5,7 @@
 //! without pulling sqlx in.
 
 use async_trait::async_trait;
-use daruma_shared::{AgentId, Result, TokenId};
+use daruma_shared::{AgentId, DeviceId, Result, TokenId};
 
 use crate::token::ApiToken;
 
@@ -39,6 +39,9 @@ pub trait TokenStore: Send + Sync + 'static {
     /// Update `last_used_at`. Best-effort; failure is logged but never
     /// fatal for the request being authenticated.
     async fn touch_last_used(&self, id: TokenId) -> Result<()>;
+
+    /// Update the owning device's `last_seen_at`, throttled by the store.
+    async fn touch_device_last_seen(&self, id: DeviceId) -> Result<()>;
 
     /// Count how many non-revoked tokens currently exist (used by bootstrap
     /// logic to decide whether to generate the initial admin token).

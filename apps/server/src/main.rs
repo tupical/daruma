@@ -8,10 +8,11 @@ use daruma_core::{search::FtsSearchProvider, CommandBus, CommandHandler};
 use daruma_events::{EventBus, EventStore};
 use daruma_shared::AgentId;
 use daruma_storage::{
-    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, Db, DocumentRepo,
-    EntityVersionRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo,
-    RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo,
-    TenantQuotaRepo, TokenRepo, WebhookEnrichment, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, Db, DeviceRepo,
+    DocumentRepo, EntityVersionRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo,
+    RelationRepo, RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskComplexityRepo,
+    TaskRepo, TenantQuotaRepo, TokenRepo, WebhookEnrichment, WebhookRepo, WorkLeaseRepo,
+    WorkspaceGraphRepo,
 };
 use daruma_sync::Hub;
 use daruma_webhooks::{spawn_dispatcher, EnrichmentSource, WebhookStore};
@@ -76,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let projects = Arc::new(ProjectRepo::new(pool.clone()));
     let comments = Arc::new(CommentRepo::new(pool.clone()));
     let tokens = Arc::new(TokenRepo::new(pool.clone()));
+    let devices = Arc::new(DeviceRepo::new(pool.clone()));
     let inbox = Arc::new(AgentInboxRepo::new(pool.clone()));
     let webhooks = Arc::new(WebhookRepo::new(pool.clone()));
     let activity = Arc::new(ActivityRepo::new(pool.clone()));
@@ -269,6 +271,7 @@ async fn main() -> anyhow::Result<()> {
         comments,
         activity,
         tokens,
+        devices,
         auth_store,
         inbox,
         webhooks,

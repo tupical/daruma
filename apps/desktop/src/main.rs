@@ -63,6 +63,9 @@ async fn main() -> anyhow::Result<()> {
             let ctx = context::Context::open().await?;
             cmds::sync(&ctx, &rest).await?;
         }
+        "devices" => {
+            cmds::devices(&rest).await?;
+        }
         "where" => {
             // Print the resolved DB path for debugging.
             let path = context::data_path();
@@ -106,6 +109,7 @@ fn print_help() {
          done <id|prefix>                     mark complete\n  \
          delete <id|prefix>                   delete a task\n  \
          sync [--limit N]                     flush offline events to server\n  \
+         devices [revoke <device_id>]         list or revoke paired devices\n  \
          discover [--timeout <secs>]          scan LAN for daruma servers (mDNS)\n  \
          pair <daruma://pair?…>            pair with a server via QR/paste URL\n  \
          where                                print the DB path\n  \
