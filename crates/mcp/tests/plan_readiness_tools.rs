@@ -14,14 +14,19 @@ struct Captured {
 }
 
 fn recording_router(capture: Arc<Mutex<Option<Captured>>>) -> Router {
+    recording_router_with_body(capture, json!({}))
+}
+
+fn recording_router_with_body(capture: Arc<Mutex<Option<Captured>>>, body: Value) -> Router {
     Router::new().fallback(any(move |req: Request<Body>| {
         let capture = capture.clone();
+        let body = body.clone();
         async move {
             *capture.lock().unwrap() = Some(Captured {
                 path: req.uri().path().to_string(),
                 query: req.uri().query().map(str::to_string),
             });
-            (StatusCode::OK, axum::Json(json!({})))
+            (StatusCode::OK, axum::Json(body))
         }
     }))
 }
@@ -48,6 +53,30 @@ async fn call_via_mock(tool: &str, args: Value) -> Captured {
         .clone()
         .expect("no request was captured");
     result
+}
+
+async fn call_via_mock_response(tool: &str, args: Value, body: Value) -> (Captured, Value) {
+    let captured: Arc<Mutex<Option<Captured>>> = Arc::new(Mutex::new(None));
+    let router = recording_router_with_body(captured.clone(), body);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = ApiClient::new(format!("http://{addr}"), "test-token");
+    let result = call_tool(&client, tool, args).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    server_handle.abort();
+
+    let captured = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("no request was captured");
+    (captured, result)
 }
 
 #[test]
@@ -106,41 +135,125 @@ async fn search_posts_to_search_endpoint() {
 }
 
 #[tokio::test]
-async fn list_forwards_limit_to_tasks_endpoint() {
+async fn list_does_not_forward_mcp_paging_to_tasks_endpoint() {
     let captured = call_via_mock(
         "daruma_list",
-        json!({"project_id": "all", "status": "active", "limit": 10}),
+        json!({"project_id": "all", "status": "active", "limit": 10, "cursor": "tsk_1"}),
     )
     .await;
     assert_eq!(captured.path, "/v1/tasks");
     let query = captured.query.expect("query string must be present");
     assert!(
-        query.contains("limit=10"),
-        "daruma_list must forward limit: {query}"
+        !query.contains("limit="),
+        "daruma_list must page locally, not forward limit: {query}"
     );
     assert!(
-        query.contains("page=true"),
-        "daruma_list must request paged responses: {query}"
+        !query.contains("page=true") && !query.contains("cursor="),
+        "daruma_list must not forward MCP paging params: {query}"
     );
 }
 
 #[tokio::test]
-async fn plan_list_forwards_limit_to_plans_endpoint() {
+async fn plan_list_does_not_forward_mcp_paging_to_plans_endpoint() {
     let captured = call_via_mock(
         "daruma_plan_list",
-        json!({"project_id": "pln_project", "status": "active", "limit": 10}),
+        json!({"project_id": "pln_project", "status": "active", "limit": 10, "cursor": "pln_1"}),
     )
     .await;
     assert_eq!(captured.path, "/v1/plans");
     let query = captured.query.expect("query string must be present");
     assert!(
-        query.contains("limit=10"),
-        "daruma_plan_list must forward limit: {query}"
+        !query.contains("limit="),
+        "daruma_plan_list must page locally, not forward limit: {query}"
     );
     assert!(
-        query.contains("page=true"),
-        "daruma_plan_list must request paged responses: {query}"
+        !query.contains("page=true") && !query.contains("cursor="),
+        "daruma_plan_list must not forward MCP paging params: {query}"
     );
+}
+
+#[tokio::test]
+async fn list_pages_locally_and_marks_truncation() {
+    let rows = Value::Array(
+        (0..12)
+            .map(|i| {
+                json!({
+                    "id": format!("tsk_{i:02}"),
+                    "title": format!("Task {i}"),
+                    "status": "todo",
+                    "priority": "p1",
+                    "description": "large body"
+                })
+            })
+            .collect(),
+    );
+
+    let (_captured, page1) = call_via_mock_response(
+        "daruma_list",
+        json!({"project_id": "all", "status": "active"}),
+        rows.clone(),
+    )
+    .await;
+    assert_eq!(page1["items"].as_array().unwrap().len(), 10);
+    assert_eq!(page1["truncated"], true);
+    assert_eq!(page1["next_cursor"], "tsk_09");
+    assert_eq!(page1["returned"], 10);
+    assert_eq!(page1["total"], 12);
+
+    let (_captured, limited) = call_via_mock_response(
+        "daruma_list",
+        json!({"project_id": "all", "status": "active", "limit": 3}),
+        rows.clone(),
+    )
+    .await;
+    assert_eq!(limited["items"].as_array().unwrap().len(), 3);
+    assert_eq!(limited["truncated"], true);
+    assert_eq!(limited["next_cursor"], "tsk_02");
+
+    let (_captured, page2) = call_via_mock_response(
+        "daruma_list",
+        json!({"project_id": "all", "status": "active", "cursor": "tsk_09"}),
+        rows,
+    )
+    .await;
+    assert_eq!(page2["items"].as_array().unwrap().len(), 2);
+    assert_eq!(page2["truncated"], false);
+    assert!(page2["next_cursor"].is_null());
+}
+
+#[tokio::test]
+async fn search_pages_locally_with_offset_cursor() {
+    let rows = Value::Array(
+        (0..12)
+            .map(|i| {
+                json!({
+                    "kind": "task",
+                    "id": format!("tsk_{i:02}"),
+                    "title": format!("Task {i}"),
+                    "snippet": "needle"
+                })
+            })
+            .collect(),
+    );
+
+    let (_captured, page1) = call_via_mock_response(
+        "daruma_search",
+        json!({"query": "needle", "project_id": "all", "limit": 5}),
+        rows.clone(),
+    )
+    .await;
+    assert_eq!(page1["items"].as_array().unwrap().len(), 5);
+    assert_eq!(page1["truncated"], true);
+    assert_eq!(page1["next_cursor"], "5");
+
+    let (_captured, page2) = call_via_mock_response(
+        "daruma_search",
+        json!({"query": "needle", "project_id": "all", "limit": 5, "cursor": "10"}),
+        rows,
+    )
+    .await;
+    assert_eq!(page2["items"].as_array().unwrap().len(), 2);
+    assert_eq!(page2["truncated"], false);
 }
 
 #[tokio::test]
