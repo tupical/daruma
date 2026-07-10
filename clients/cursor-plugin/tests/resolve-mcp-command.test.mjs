@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, mkdir, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -20,7 +20,7 @@ async function withTempDir(fn) {
 
 test("resolveMcpCommand keeps explicit absolute executable", async () => {
   await withTempDir(async (dir) => {
-    const bin = join(dir, "daruma-mcp");
+    const bin = join(dir, "daruma");
     await writeFile(bin, "#!/bin/sh\nexit 0\n", "utf8");
     await chmod(bin, 0o755);
     const resolved = await resolveMcpCommand({ command: bin, cwd: dir });
@@ -34,7 +34,7 @@ test("resolveMcpCommand discovers release binary near cwd", async () => {
   await withTempDir(async (dir) => {
     const releaseDir = join(dir, "target", "release");
     await mkdir(releaseDir, { recursive: true });
-    const bin = join(releaseDir, "daruma-mcp");
+    const bin = join(releaseDir, "daruma");
     await writeFile(bin, "#!/bin/sh\nexit 0\n", "utf8");
     await chmod(bin, 0o755);
     const resolved = await resolveMcpCommand({
@@ -67,7 +67,7 @@ test("resolveMcpCommand honours DARUMA_MCP_BIN", async () => {
 test("candidateMcpCommandPaths includes local bin and release dirs", async () => {
   await withTempDir(async (dir) => {
     const paths = candidateMcpCommandPaths({ cwd: dir, env: {} });
-    assert.ok(paths.includes("daruma-mcp"));
-    assert.ok(paths.some((p) => p.endsWith("/target/release/daruma-mcp")));
+    assert.ok(paths.includes("daruma"));
+    assert.ok(paths.some((p) => p.endsWith("/target/release/daruma")));
   });
 });

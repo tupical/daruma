@@ -168,7 +168,7 @@ export function resolveProfileForInstall(creds, overrides = {}) {
 }
 
 /**
- * Build MCP stdio `env` for daruma-mcp from stored credentials (after remote pair).
+ * Build MCP stdio `env` for `daruma mcp` from stored credentials (after login).
  * @param {{ apiUrl?: string, token?: string, workspaceId?: string, remote?: import("./api-urls.mjs").ApiPreset }} [overrides]
  */
 export async function resolveMcpEnvFromCredentials(overrides = {}) {

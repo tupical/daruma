@@ -1,7 +1,7 @@
 {
   "name": "daruma-cursor",
-  "version": "0.3.7",
-  "description": "Cursor plugin for tupical/daruma. Registers the daruma MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI, and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
+  "version": "0.5.0",
+  "description": "Cursor plugin for tupical/daruma. Registers the daruma MCP server in Cursor (~/.cursor/mcp.json) via one-click deeplink or CLI — install only adds it when absent, so a one-click OAuth registration is kept rather than overwritten — and ships Cursor Rules that teach the agent how to drive parse/decompose/plan/execute.",
   "keywords": [
     "cursor",
     "cursor-plugin",

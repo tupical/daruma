@@ -1,4 +1,5 @@
-// Locate the daruma-mcp stdio shim for Cursor's mcp.json `command` field.
+// Locate the `daruma` binary for Cursor's mcp.json `command` field (stdio MCP
+// runs as `daruma mcp`; the old standalone `daruma-mcp` binary is gone).
 //
 // Cursor spawns the command by name — ENOENT if the Rust binary is built but
 // not on PATH. We probe common locations before falling back to the bare name.
@@ -8,7 +9,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_COMMAND = "daruma-mcp";
+const DEFAULT_COMMAND = "daruma";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function isExecutable(path) {

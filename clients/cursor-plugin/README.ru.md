@@ -92,7 +92,7 @@ daruma-cursor doctor             # проверка
 
 | Команда                                                          | Эффект                                                                  |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `daruma-cursor install [--global\|--project DIR]`      | Прописать daruma MCP в выбранный `mcp.json`.                         |
+| `daruma-cursor install [--global\|--project DIR]`      | Прописать daruma MCP в `mcp.json` (только если записи нет) + `.cursor/rules/` + OMC-guard. Слэш-команды теперь идут с MCP-сервера как prompts; `--commands` — доложить локальные `.cursor/commands/`. |
 | `daruma-cursor uninstall [--global\|--project DIR]`    | Удалить запись.                                                         |
 | `daruma-cursor deeplink [--print-scheme]`              | Напечатать официальный Cursor Add-to-Cursor deeplink.                   |
 | `daruma-cursor rules [--project DIR] [--force]`        | Положить три `.cursor/rules/*.mdc` (policy + контракт + workspacegraph) в проект. |
@@ -107,9 +107,9 @@ daruma-cursor doctor             # проверка
 | ---------------------------- | -------------------------- | ----------------------------------------------------------- |
 | `--global` / `--project DIR` | `--global`                 | В какой `mcp.json` писать.                                  |
 | `--transport http\|stdio`    | `http`                     | Cursor по умолчанию использует hosted HTTP MCP.             |
-| `--command CMD`              | (нет)                      | Включает stdio fallback и задаёт путь к бинарю.             |
-| `--base-url URL`             | `http://localhost:8080`    | Origin HTTP MCP сервера.                                    |
-| `--token T`                  | (нет)                      | Добавляет Authorization header для self-host config.        |
+| `--command CMD`              | `daruma` (запуск `daruma mcp`) | Включает stdio fallback и задаёт путь к бинарю.         |
+| `--base-url URL`             | `https://daruma.mcpbox.ru` (облако) | Origin HTTP MCP сервера. Для self-host укажи свой (напр. `http://localhost:8080`). |
+| `--token T`                  | (нет)                      | Authorization header для self-host scoped-токена (облако — через OAuth). |
 | `--name NAME`                | `daruma`                | Переименовать запись (если запускаешь несколько инстансов). |
 
 ---
@@ -176,10 +176,12 @@ clients/cursor-plugin/
 
 - Cursor (любой свежий, с поддержкой MCP)
 - Node.js ≥ 20 (только для CLI; в рантайме не нужен)
-- Запущенный daruma HTTP server. Для локальной разработки собери его из
+- Доступный daruma HTTP server — по умолчанию облако (`https://daruma.mcpbox.ru`,
+  OAuth), либо self-host, собранный из
   [tupical/daruma](https://github.com/tupical/daruma):
   `cargo build --release -p daruma-server`.
-- `daruma-mcp` нужен только для явного fallback `--transport stdio`.
+- Бинарь `daruma` (`cargo build --release -p daruma-cli`) нужен только для
+  явного fallback `--transport stdio` — он запускается как `daruma mcp`.
 
 ---
 

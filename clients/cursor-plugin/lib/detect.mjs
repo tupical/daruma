@@ -1,5 +1,6 @@
 // Cursor-side detection for daruma-claude: probes the daruma HTTP server,
-// the daruma-mcp binary on PATH, and the presence of Cursor's mcp.json.
+// the `daruma` binary on PATH (stdio MCP = `daruma mcp`), and the presence of
+// Cursor's mcp.json.
 //
 // This is intentionally lighter than the claude-plugin detect.mjs — Cursor
 // doesn't expose a "cursor mcp list" CLI, so we infer registration from the
@@ -197,7 +198,7 @@ export async function detectDaruma({ projectDir, remote } = {}) {
   const profile = creds ? resolveActiveProfile(creds) : null;
 
   const [mcpCli, http, registration, projectRules, projectCommands] = await Promise.all([
-    tryExecAny(["daruma-mcp", "daruma"], ["--version"]),
+    tryExecAny(["daruma", "daruma-mcp"], ["--version"]),
     probeDarumaHttp(probeUrl),
     detectMcpRegistration({ projectDir }),
     detectProjectRules({ projectDir }),
@@ -213,7 +214,7 @@ export async function detectDaruma({ projectDir, remote } = {}) {
   const configuredCommand = activeEntry?.command ?? null;
   const resolvedCommand = isHttpEntry
     ? { command: null, resolved: true, source: "http" }
-    : await resolveMcpCommand({ command: configuredCommand ?? "daruma-mcp" });
+    : await resolveMcpCommand({ command: configuredCommand ?? "daruma" });
   const commandReady = isHttpEntry || resolvedCommand.resolved || mcpCli.ok;
   const mcpReady = registered && http.ok && commandReady;
 
@@ -251,9 +252,9 @@ export async function detectDaruma({ projectDir, remote } = {}) {
           ? `mcp transport: http (${activeEntry.url ?? "url configured"})`
           : `mcp command: ${resolvedCommand.command}${resolvedCommand.source === "discovered" ? " (auto-discovered)" : ""}`
         : [
-            `mcp command missing: ${configuredCommand ?? "daruma-mcp"} not executable`,
+            `mcp command missing: ${configuredCommand ?? "daruma"} not executable`,
             "  cargo build --release -p daruma-cli",
-            "  daruma-cursor install --transport stdio --global --command \"$PWD/target/release/daruma-mcp\"",
+            "  daruma-cursor install --transport stdio --global --command \"$PWD/target/release/daruma\"",
           ].join("\n         "),
       http.ok
         ? `HTTP server: ${http.status}${http.version ? ` (v${http.version})` : ""}`

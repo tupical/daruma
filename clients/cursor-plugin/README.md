@@ -93,7 +93,7 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 
 | Command                                                          | Effect                                                                  |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `daruma-cursor install [--global\|--project DIR]`      | Register the daruma MCP server in the chosen `mcp.json`.             |
+| `daruma-cursor install [--global\|--project DIR]`      | Register the daruma MCP server in the chosen `mcp.json` **only if absent** (a one-click OAuth install is kept, not overwritten — pass `--force` to replace it), plus `.cursor/rules/` and the OMC guard. Slash commands now ship from the MCP server as prompts; pass `--commands` to also drop local `.cursor/commands/`. |
 | `daruma-cursor uninstall [--global\|--project DIR]`    | Remove the entry.                                                       |
 | `daruma-cursor deeplink [--print-scheme]`              | Print the official Cursor Add-to-Cursor deeplink.                       |
 | `daruma-cursor rules [--project DIR] [--force]`        | Drop the three `.cursor/rules/*.mdc` (policy + contract + workspacegraph) into a project. |
@@ -108,10 +108,11 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 | ---------------------------- | -------------------------- | ----------------------------------------------------------- |
 | `--global` / `--project DIR` | `--global`                 | Picks which `mcp.json` to write.                            |
 | `--transport http\|stdio`    | `http`                     | Cursor defaults to hosted HTTP MCP.                         |
-| `--command CMD`              | (none)                     | Forces stdio fallback and overrides the binary path.        |
-| `--base-url URL`             | `http://localhost:8080`    | Sets the HTTP MCP server origin.                            |
-| `--token T`                  | (none)                     | Adds an Authorization header for explicit self-host config.  |
+| `--command CMD`              | `daruma` (runs `daruma mcp`) | Forces stdio fallback and overrides the binary path.       |
+| `--base-url URL`             | `https://daruma.mcpbox.ru` (cloud) | HTTP MCP origin. Pass a self-host origin (e.g. `http://localhost:8080`) to point elsewhere. |
+| `--token T`                  | (none)                     | Adds an Authorization header for self-host scoped tokens (cloud uses OAuth). |
 | `--name NAME`                | `daruma`                | Rename the server entry (if you run multiple instances).    |
+| `--force`                    | off                        | Overwrite an existing `mcp.json` entry (and rules/commands). Without it, a server already registered — e.g. by the one-click OAuth deeplink — is kept as-is. |
 
 ---
 
@@ -177,10 +178,12 @@ clients/cursor-plugin/
 
 - Cursor (any recent version that supports MCP)
 - Node.js ≥ 20 (only for the CLI; not needed at runtime once installed)
-- A running daruma HTTP server. For local development, build it from
+- A reachable daruma HTTP server — the hosted cloud (`https://daruma.mcpbox.ru`,
+  OAuth) by default, or a self-host server you build from
   [tupical/daruma](https://github.com/tupical/daruma) with
   `cargo build --release -p daruma-server`.
-- `daruma-mcp` is only needed for the explicit `--transport stdio` fallback.
+- The `daruma` binary (`cargo build --release -p daruma-cli`) is only needed
+  for the explicit `--transport stdio` fallback, which runs it as `daruma mcp`.
 
 ---
 
