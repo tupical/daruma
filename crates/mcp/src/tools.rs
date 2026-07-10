@@ -246,7 +246,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_create",
             "Create task",
-            "Create a new task. `title` is required; everything else is optional.",
+            "Create a new task. `title` is required; everything else is optional. daruma is the single source of truth for tasks/plans — do not also persist them in markdown, TODO files, or .omc/plans/.",
             schema_create(),
             Dom::Tasks, D, C, Ann::Write,
         ),
@@ -568,7 +568,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_create",
             "Create plan",
-            "Create a new execution plan for a project.",
+            "Create a new execution plan for a project. daruma is the single source of truth for tasks/plans — do not also persist them in markdown, TODO files, or .omc/plans/.",
             schema_plan_create(),
             Dom::Plans, D, C, Ann::Write,
         ),
