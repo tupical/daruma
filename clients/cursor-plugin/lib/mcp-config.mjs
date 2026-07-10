@@ -8,7 +8,7 @@
 // We touch only the requested server entry — other servers are preserved.
 
 import { promises as fs } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolvePath } from "./paths.mjs";
 
@@ -61,8 +61,10 @@ async function writeAtomic(path, payload) {
 }
 
 // Adds (or replaces) the named server entry. Returns
-//   { path, action: "added"|"replaced"|"unchanged", before, after }.
-export async function upsertServer(path, name, entry) {
+//   { path, action: "added"|"replaced"|"kept"|"unchanged", before, after }.
+// With overwrite=false, an already-present entry is left untouched (action
+// "kept") — so a one-click OAuth install isn't clobbered by a bare default.
+export async function upsertServer(path, name, entry, { overwrite = true } = {}) {
   if (!name || typeof name !== "string") throw new TypeError("name required");
   if (!entry || typeof entry !== "object") throw new TypeError("entry required");
   const doc = await readMcp(path);
@@ -70,6 +72,9 @@ export async function upsertServer(path, name, entry) {
   const same = before && stableJson(before) === stableJson(entry);
   if (same) {
     return { path, action: "unchanged", before, after: before };
+  }
+  if (before && !overwrite) {
+    return { path, action: "kept", before, after: before };
   }
   doc.mcpServers[name] = entry;
   await writeAtomic(path, JSON.stringify(doc, null, 2) + "\n");

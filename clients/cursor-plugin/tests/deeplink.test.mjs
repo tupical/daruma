@@ -53,12 +53,13 @@ test("defaultDarumaConfigSync produces hosted HTTP config by default", () => {
 test("defaultDarumaConfigSync supports explicit stdio fallback", () => {
   const cfg = defaultDarumaConfigSync({
     transport: "stdio",
-    command: "/usr/local/bin/daruma-mcp",
+    command: "/usr/local/bin/daruma",
     apiUrl: "https://daruma.example",
     token: "t0p",
     workspaceId: "ws-1",
   });
-  assert.equal(cfg.command, "/usr/local/bin/daruma-mcp");
+  assert.equal(cfg.command, "/usr/local/bin/daruma");
+  assert.deepEqual(cfg.args, ["mcp"]);
   assert.equal(cfg.env.DARUMA_API_URL, "https://daruma.example");
   assert.equal(cfg.env.DARUMA_TOKEN, "t0p");
   assert.equal(cfg.env.DARUMA_WORKSPACE_ID, "ws-1");

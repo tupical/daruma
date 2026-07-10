@@ -66,10 +66,14 @@ debugging where no plan needs to outlive the current chat.
 
    Optional env before MCP start: `DARUMA_CLIENT`, `DARUMA_MODEL`,
    `DARUMA_CHAT_ID`, `DARUMA_TRANSCRIPT_PATH` (merged into metadata).
-5. **(Optional) Decompose** — `daruma_ai_decompose` for non-trivial work,
-   then `daruma_plan_create` + `daruma_plan_add_task` to wire subtasks
-   into a plan. Requires `OPENAI_API_KEY` on the server side; if it returns
-   `502 ai_unavailable`, continue with the single root task.
+5. **(Optional) Decompose** — decomposition lives in the planning layer;
+   there is no AI "decompose" tool. Build the breakdown yourself:
+   `daruma_plan_create` then `daruma_plan_add_task` per subtask (or
+   `daruma_split` to fan a task into given subtasks). For guidance on
+   non-trivial work, call `daruma_ai_analyze_complexity` on the plan — it
+   returns a per-task complexity score plus `recommended_subtasks` /
+   `expansion_hint` (needs an AI provider on the server; if it returns
+   `502 ai_unavailable`, just proceed manually).
 6. **Execute loop** — for each pending task:
    - `daruma_plan_next_task` to claim the next ready item
    - do the work in Cursor (OMC executors are fine as long as they

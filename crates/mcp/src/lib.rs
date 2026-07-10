@@ -4,6 +4,8 @@
 //! stdio) for tool-call interop with Claude Desktop and the MCP Inspector:
 //!
 //!   * `initialize`     — capability handshake
+//!   * `prompts/list`   — discover built-in workflow prompts
+//!   * `prompts/get`    — fetch a built-in workflow prompt
 //!   * `tools/list`     — discover available tools
 //!   * `tools/call`     — invoke a tool by name with JSON arguments
 //!
@@ -19,6 +21,7 @@
 pub mod client;
 pub mod credentials;
 pub mod paths;
+pub mod prompts;
 pub mod protocol;
 pub mod server;
 pub mod session_metadata;

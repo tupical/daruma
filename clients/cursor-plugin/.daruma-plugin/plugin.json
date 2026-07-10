@@ -6,31 +6,50 @@
   "title": "Daruma for Cursor",
   "summary": "MCP-сервер для управления проектами, задачами и AI-декомпозицией прямо из Cursor. По умолчанию становится единственным трекером и перехватывает планы у oh-my-claudecode.",
   "description": "Подключает MCP-сервер tupical/daruma в Cursor и раскладывает alwaysApply-правила, делающие daruma дефолтным трекером задач и планов. Если в проекте есть oh-my-claudecode (.omc/), плагин дописывает managed-блок в .omc/AGENTS.md, чтобы OMC-скиллы (`/plan`, `/ralph`, `/ultrawork`, `/ultragoal`, `/autopilot`) не создавали файлы под .omc/plans/, а брали план из daruma.",
-  "version": "0.3.6",
+  "version": "0.5.0",
   "license": "MIT",
-  "author": { "name": "tupical", "url": "https://github.com/tupical" },
-  "vendor": { "name": "daruma", "url": "" },
+  "author": {
+    "name": "tupical",
+    "url": "https://github.com/tupical"
+  },
+  "vendor": {
+    "name": "daruma",
+    "url": ""
+  },
   "homepage": "https://github.com/tupical/daruma/tree/main/clients/cursor-plugin#readme",
   "repository": "https://github.com/tupical/daruma",
   "issues": "https://github.com/tupical/daruma/issues",
-  "tags": ["daruma", "tasks", "planning", "mcp", "http", "cursor"],
-  "categories": ["productivity", "agents", "task-management"],
-  "targets": ["cursor"],
+  "tags": [
+    "daruma",
+    "tasks",
+    "planning",
+    "mcp",
+    "http",
+    "cursor"
+  ],
+  "categories": [
+    "productivity",
+    "agents",
+    "task-management"
+  ],
+  "targets": [
+    "cursor"
+  ],
   "requirements": {
     "node": ">=20",
     "cursor": ">=0.40",
     "services": [
       {
-        "name": "daruma-server",
-        "url": "http://localhost:8080",
+        "name": "daruma",
+        "url": "https://daruma.mcpbox.ru",
         "healthcheck": "/v1/healthz"
       }
     ]
   },
   "install": {
     "primary": "cursor-deeplink",
-    "cursorDeeplink": "cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D",
-    "cursorHttpsUrl": "cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D",
+    "cursorDeeplink": "cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&slug=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHBzOi8vZGFydW1hLm1jcGJveC5ydS92MS9tY3AifQ%3D%3D",
+    "cursorHttpsUrl": "cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&slug=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHBzOi8vZGFydW1hLm1jcGJveC5ydS92MS9tY3AifQ%3D%3D",
     "npm": {
       "package": "daruma-cursor",
       "bin": "daruma-cursor",
@@ -47,18 +66,18 @@
     "transport": "http",
     "server": {
       "type": "http",
-      "url": "http://localhost:8080/v1/mcp"
+      "url": "https://daruma.mcpbox.ru/v1/mcp"
     },
     "envHints": [
       {
         "key": "url",
-        "default": "http://localhost:8080",
-        "description": "HTTP MCP endpoint. При локальном запуске сервер слушает http://localhost:8080/v1/mcp."
+        "default": "https://daruma.mcpbox.ru/v1/mcp",
+        "description": "HTTP MCP endpoint. Облако авторизуется через OAuth (без токена в конфиге). Self-host: http://localhost:8080/v1/mcp."
       },
       {
         "key": "Authorization",
         "default": null,
-        "description": "Опциональный bearer-токен в headers.Authorization для защищенного self-host endpoint."
+        "description": "Bearer-токен в headers.Authorization нужен только для self-host со scoped-токеном; в облаке авторизация идёт через OAuth."
       }
     ]
   },

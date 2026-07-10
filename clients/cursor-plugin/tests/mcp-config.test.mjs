@@ -56,6 +56,29 @@ test("upsertServer adds, replaces, and stays unchanged", async () => {
   });
 });
 
+test("upsertServer with overwrite:false keeps an existing entry", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, ".cursor", "mcp.json");
+    const oauth = { type: "http", url: "https://x/v1/mcp", headers: { Authorization: "Bearer tok" } };
+    await upsertServer(path, "daruma", oauth);
+
+    const kept = await upsertServer(path, "daruma", { type: "stdio", command: "daruma-mcp" }, { overwrite: false });
+    assert.equal(kept.action, "kept");
+    assert.deepEqual(kept.after, oauth);
+
+    const doc = JSON.parse(await fs.readFile(path, "utf8"));
+    assert.deepEqual(doc.mcpServers.daruma, oauth);
+  });
+});
+
+test("upsertServer with overwrite:false still adds when absent", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, ".cursor", "mcp.json");
+    const added = await upsertServer(path, "daruma", { type: "stdio", command: "daruma-mcp" }, { overwrite: false });
+    assert.equal(added.action, "added");
+  });
+});
+
 test("upsertServer preserves unrelated mcpServers entries", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, ".cursor", "mcp.json");

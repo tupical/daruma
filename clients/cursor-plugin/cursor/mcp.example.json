@@ -2,7 +2,7 @@
   "mcpServers": {
     "daruma": {
       "type": "http",
-      "url": "http://localhost:8080/v1/mcp"
+      "url": "https://daruma.mcpbox.ru/v1/mcp"
     }
   }
 }

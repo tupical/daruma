@@ -18,7 +18,7 @@
 //                                      into a project so Cursor's agent knows
 //                                      how to drive the daruma MCP tools.
 //   doctor [--json] [--quiet]
-//                                      Probe Cursor + daruma-mcp + HTTP server.
+//                                      Probe Cursor + daruma binary + HTTP server.
 //   setup                              Print install hints for missing pieces.
 //   marketplace                        Print the daruma marketplace manifest.
 //   --version | --help
@@ -29,8 +29,6 @@ import { dirname, join } from "node:path";
 
 import {
   detectAll,
-  detectCursor,
-  detectDaruma,
   formatReport,
 } from "../lib/detect.mjs";
 import {
@@ -60,23 +58,33 @@ Usage:
   daruma-cursor install [--global|--project DIR] [--transport http|stdio]
                                   [--command CMD]
                                   [--api-url URL] [--base-url URL] [--token T]
-                                  [--api prod|staging|self-host] [--name NAME]
-                                  [--no-rules] [--no-omc-guard]
+                                  [--api prod|self-host] [--name NAME]
+                                  [--no-rules] [--commands] [--no-omc-guard]
                                   [--rules-dir DIR] [--force]
         Register the daruma MCP server in Cursor's mcp.json AND drop the
-        bundled .cursor/rules/ + .cursor/commands/ into the selected scope so
-        Cursor's agent defaults to daruma for tasks/plans and OMC
-        skills do not author .omc/plans/.
+        bundled .cursor/rules/ into the selected scope so Cursor's agent
+        defaults to daruma for tasks/plans and OMC skills do not author
+        .omc/plans/.
 
-        --global  (default) → ~/.cursor/{mcp.json,rules,commands}
-        --project DIR       → <DIR>/.cursor/{mcp.json,rules,commands}
+        Slash commands (/daruma-tasks, /daruma-plan, ...) now ship FROM the
+        daruma MCP server as prompts, so install no longer copies
+        .cursor/commands/ by default. Pass --commands to also drop the local
+        copies (for MCP clients that don't surface server prompts).
+
+        The MCP entry is written ONLY if the server is not already registered.
+        A server already installed (e.g. via the one-click OAuth deeplink) is
+        kept untouched; pass --force to overwrite it.
+
+        --global  (default) → ~/.cursor/{mcp.json,rules}
+        --project DIR       → <DIR>/.cursor/{mcp.json,rules}
         --rules-dir DIR     → where to drop .cursor/rules + .omc/AGENTS.md
                               (relative paths resolve from home for --global,
                               cwd for --project).
         --no-rules          → skip .cursor/rules/ install.
-        --no-commands       → skip .cursor/commands/ install.
+        --commands          → also install local .cursor/commands/ copies.
         --no-omc-guard      → skip .omc/AGENTS.md guard.
-        --force             → overwrite existing rules and commands.
+        --force             → overwrite existing mcp.json entry, rules,
+                              and commands.
 
   daruma-cursor uninstall [--global|--project DIR] [--name NAME]
                                     [--rules-dir DIR] [--purge]
@@ -84,7 +92,7 @@ Usage:
         the bundled rules and the managed .omc/AGENTS.md block.
 
   daruma-cursor deeplink [--api-url URL] [--base-url URL] [--token T]
-                                   [--api prod|staging|self-host]
+                                   [--api prod|self-host]
                                    [--transport http|stdio] [--command CMD]
                                    [--name NAME] [--print-scheme]
         Print the official cursor:// URL that a browser or marketplace can
@@ -103,7 +111,7 @@ Usage:
         route plans through daruma and stay out of .omc/plans/.
 
   daruma-cursor doctor [--json] [--quiet]
-        Probe Cursor + daruma-mcp + HTTP server (exit 0 = READY).
+        Probe Cursor + daruma binary + HTTP server (exit 0 = READY).
 
   daruma-cursor setup
         Print install hints for missing dependencies.
@@ -132,7 +140,7 @@ function parseScopeFlags(rest) {
     json: false,
     quiet: false,
     noRules: false,
-    noCommands: false,
+    commands: false,
     noOmcGuard: false,
     purge: false,
     scopeExplicit: false,
@@ -178,8 +186,10 @@ function parseScopeFlags(rest) {
         opts.quiet = true; break;
       case "--no-rules":
         opts.noRules = true; break;
+      case "--commands":
+        opts.commands = true; break;
       case "--no-commands":
-        opts.noCommands = true; break;
+        break; // deprecated: commands are no longer installed by default
       case "--no-omc-guard":
         opts.noOmcGuard = true; break;
       case "--purge":
@@ -263,7 +273,7 @@ async function cmdInstall(rest) {
     "Registering Cursor MCP server...",
     async () => {
       const entry = await defaultDarumaConfig(installEnvOpts(opts));
-      const result = await upsertServer(path, opts.name, entry);
+      const result = await upsertServer(path, opts.name, entry, { overwrite: opts.force });
       return { entry, result };
     },
     "Cursor MCP server registered",
@@ -271,10 +281,13 @@ async function cmdInstall(rest) {
   const verb = {
     added: "Added",
     replaced: "Replaced",
+    kept: "Already installed — kept existing entry (use --force to overwrite)",
     unchanged: "Already present (unchanged)",
   }[result.action] ?? result.action;
   ui.detail(`  ${verb} ${opts.name} in ${result.path}`);
-  ui.detail(JSON.stringify(entry, null, 2).split("\n").map((ln) => `  ${ln}`).join("\n"));
+  // When we kept an existing entry (e.g. a one-click OAuth install), show what
+  // is actually on disk, not the default we would have written.
+  ui.detail(JSON.stringify(result.after ?? entry, null, 2).split("\n").map((ln) => `  ${ln}`).join("\n"));
 
   const rulesDir = resolveRulesDir(opts);
 
@@ -294,7 +307,7 @@ async function cmdInstall(rest) {
     }
   }
 
-  if (!opts.noCommands) {
+  if (opts.commands) {
     const cmdResults = await ui.task(
       "Installing Cursor slash commands...",
       () => installCommands({
@@ -308,6 +321,9 @@ async function cmdInstall(rest) {
       const v = COMMANDS_VERB[r.action] ?? r.action;
       ui.item(`${v}: ${r.path}`, { kind: actionKind(r.action) });
     }
+  } else {
+    ui.section("Cursor slash commands");
+    ui.detail("  Shipped by the daruma MCP server as prompts — run `daruma-cursor commands` to also drop local .cursor/commands/*.");
   }
 
   if (!opts.noOmcGuard) {

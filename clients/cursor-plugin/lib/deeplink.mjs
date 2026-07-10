@@ -13,8 +13,8 @@
 
 import { resolveMcpEnvFromCredentials } from "./agent-credentials.mjs";
 import {
+  CLOUD_API_URL,
   DEFAULT_API_URL,
-  ALT_API_URL,
   SELFHOST_URL_DEFAULT,
   urlForApiPreset,
 } from "./api-urls.mjs";
@@ -51,7 +51,8 @@ function assertName(name) {
 export function buildCursorDeeplink(name, config) {
   assertName(name);
   const b64 = encodeConfig(config);
-  const qs = new URLSearchParams({ name, config: b64 }).toString();
+  // slug mirrors name — matches what the cloud Connect "Add to Cursor" button emits.
+  const qs = new URLSearchParams({ name, slug: name, config: b64 }).toString();
   return `${SCHEME_DEEPLINK}?${qs}`;
 }
 
@@ -79,11 +80,12 @@ export function defaultDarumaHttpConfig({ apiUrl, remote, token = null, workspac
 
 /**
  * Canonical mcpServers entry for the daruma stdio shim.
- * Env uses `DARUMA_API_URL` (read by daruma-mcp). After remote pair,
- * `resolveMcpEnvFromCredentials` fills URL, token, and workspace id.
+ * The stdio MCP is served by the unified `daruma` binary as `daruma mcp`
+ * (the old standalone `daruma-mcp` binary is gone). Env uses `DARUMA_API_URL`;
+ * after login, `resolveMcpEnvFromCredentials` fills URL, token, workspace id.
  */
 export async function defaultDarumaStdioConfig({
-  command = "daruma-mcp",
+  command = "daruma",
   args = [],
   apiUrl,
   token = null,
@@ -103,8 +105,7 @@ export async function defaultDarumaStdioConfig({
       urlForApiPreset(remote) ?? SELFHOST_URL_DEFAULT;
   }
   const resolved = await resolveMcpCommand({ command });
-  const entry = { type: "stdio", command: resolved.command };
-  if (args.length > 0) entry.args = args;
+  const entry = { type: "stdio", command: resolved.command, args: ["mcp", ...args] };
   entry.env = env;
   return entry;
 }
@@ -133,12 +134,11 @@ export function defaultDarumaConfigSync({
   if (resolvedTransport === "http" || resolvedTransport === "remote" || resolvedTransport === "remote-oauth") {
     return defaultDarumaHttpConfig({ apiUrl, token, workspaceId });
   }
-  const resolvedCommand = command ?? "daruma-mcp";
+  const resolvedCommand = command ?? "daruma";
   const env = { DARUMA_API_URL: apiUrl };
   if (token) env.DARUMA_TOKEN = token;
   if (workspaceId) env.DARUMA_WORKSPACE_ID = workspaceId;
-  const entry = { type: "stdio", command: resolvedCommand };
-  if (args.length > 0) entry.args = args;
+  const entry = { type: "stdio", command: resolvedCommand, args: ["mcp", ...args] };
   entry.env = env;
   return entry;
 }
@@ -154,11 +154,10 @@ export async function buildDarumaInstallLinks(opts = {}) {
     deeplink: buildCursorDeeplink(name, config),
     httpsUrl: buildCursorDeeplink(name, config),
     apiUrls: {
-      prod: DEFAULT_API_URL,
-      staging: ALT_API_URL,
+      cloud: CLOUD_API_URL,
       selfHost: SELFHOST_URL_DEFAULT,
     },
   };
 }
 
-export { DEFAULT_API_URL, ALT_API_URL, SELFHOST_URL_DEFAULT };
+export { CLOUD_API_URL, DEFAULT_API_URL, SELFHOST_URL_DEFAULT };
