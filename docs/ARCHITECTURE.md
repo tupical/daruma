@@ -469,10 +469,10 @@ guard.
 - 44 MCP tools — original 20 from B.5/W2.x plus 21 new in W3.2 covering
   the full plan/run/session/claim/signal surface, plus 3 new in §3.2
   for typed task relations:
-  - **Tasks / projects / comments / agent / housekeeping** (20):
+  - **Tasks / projects / comments / agent / housekeeping** (19):
     `daruma_{create, get, list, project_list, project_create,
     project_use, workspace_info, set_status, set_priority, complete,
-    delete, split, ai_parse, ai_decompose, comment, reopen,
+    delete, split, ai_decompose, comment, reopen,
     inbox_pull, subscribe_project, events_since, healthz}`.
   - **Plans** (9): `daruma_plan_{create, update, get, list,
     add_task, remove_task, reorder, next_task, archive}`.

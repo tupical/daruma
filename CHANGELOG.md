@@ -6,6 +6,8 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+## 0.3.0 — 2026-07-10
+
 ### MCP tool-surface profiles
 
 `tools/list` is now profile-gated: the new `default` profile advertises a

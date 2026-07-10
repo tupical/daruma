@@ -16,7 +16,7 @@ if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then node "$CLAUDE_PLUGIN_ROOT/bin/daruma-claud
 ## Step 2 — What the detector checks
 
 - `omc` CLI / `oh-my-claude-sisyphus` npm package.
-- `daruma-mcp` (or `daruma`) CLI on PATH.
+- `daruma` CLI on PATH.
 - `claude mcp list` showing the `daruma:` shim as `Connected`.
 - `~/.agents/daruma/credentials.json` (or `DARUMA_AGENT_DIR`) — optional local/self-host profile with token.
 - HTTP `GET $DARUMA_API_URL/v1/healthz` (URL from credentials when present, else `http://localhost:8080`).

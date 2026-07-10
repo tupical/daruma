@@ -67,7 +67,7 @@ job — competing/overlapping alternatives stay in `full`:
 | Search/graph | — (plain `search` is in Tasks) | workspacegraph_* (5; competes with list/search for inventory questions) |
 | Documents | — | doc_* (7) |
 | History | — | history_* (6; incl. destructive rollback) |
-| AI | — | ai_parse, ai_decompose, ai_analyze_complexity, ai_scope, research (open-world, costed) |
+| AI | — | ai_decompose, ai_analyze_complexity (open-world, costed) |
 | Events/admin | healthz | subscribe_project, events_since, sessions (7), signals (2) |
 
 Why each excluded group is `full`-only:

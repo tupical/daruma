@@ -115,7 +115,8 @@ For authenticated self-host deployments, add a bearer token header:
   "mcpServers": {
     "daruma": {
       "type": "stdio",
-      "command": "daruma-mcp",
+      "command": "daruma",
+      "args": ["mcp"],
       "env": {
         "DARUMA_API_URL": "http://localhost:8080"
       }

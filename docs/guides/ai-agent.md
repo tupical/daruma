@@ -13,14 +13,14 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 | Surface | Role |
 |---------|------|
-| `crates/ai` | OpenAI Responses API, prompts (`prompts/*.toml`), parse/decompose/scope/research |
+| `crates/ai` | OpenAI Responses API, prompts (`prompts/*.toml`), decompose/analyze-complexity |
 | `apps/server` | `POST /v1/ai/*` HTTP endpoints |
-| `daruma-mcp` | `daruma_ai_*` tools for external agents |
+| MCP (`daruma mcp`) | `daruma_ai_analyze_complexity` for external agents |
 | MCP agents (Cursor, Claude) | Primary consumers — use MCP tools, not raw SQL |
 
 ## HTTP / MCP tools (high level)
 
-- `ai_parse`, `ai_decompose`, `ai_analyze_complexity`, `ai_scope`, `ai_research`
+- `ai_decompose`, `ai_analyze_complexity`
 - Task mutations: `daruma_create`, `daruma_capture`, `daruma_capture_batch`, `set_status`, `complete`, `split`, `comment`, plans/runs/claims
 - Plan executor: `daruma_plan_progress`, `daruma_plan_next_task`, `daruma_run_*`
 
@@ -36,9 +36,8 @@ Canonical schemas live in code; when the wire format changes, update `crates/ai`
 Task titles/descriptions, comments, documents, and event payloads are
 **untrusted data**: anyone (or any agent) who can write a task body could
 otherwise smuggle instructions into a later AI call that grounds on it
-(`daruma_research` with `context_task_ids`, `daruma_ai_decompose`,
-`daruma_ai_analyze_complexity`, `daruma_ai_scope`, parse/suggest/
-summarize).
+(for example `daruma_ai_decompose` and `daruma_ai_analyze_complexity`,
+and any tool that grounds on task bodies).
 
 Every place `crates/ai` interpolates external content into a prompt routes
 it through `daruma_ai::wrap_untrusted`, which:
