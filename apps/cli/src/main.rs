@@ -462,7 +462,10 @@ fn codex_policy_body() -> &'static str {
     CODEX_POLICY_BODY_RAW.trim_end_matches('\n')
 }
 
-/// Write the codex policy block into `<project>/AGENTS.md`.
+/// Write the codex policy block into `<project>/AGENTS.md` and, when an
+/// `.omc` directory is present, the OMC guard into `<project>/.omc/AGENTS.md`
+/// (same shared block as `--claude`, so re-runs from either client are
+/// idempotent).
 fn install_codex_policy(project_dir: &Path) -> anyhow::Result<()> {
     let agents_md = project_dir.join("AGENTS.md");
     write_managed_block(
@@ -472,6 +475,12 @@ fn install_codex_policy(project_dir: &Path) -> anyhow::Result<()> {
         codex_policy_body(),
     )?;
     println!("codex policy written: {}", agents_md.display());
+
+    if project_dir.join(".omc").is_dir() {
+        let omc_agents_md = project_dir.join(".omc/AGENTS.md");
+        write_managed_block(&omc_agents_md, OMC_GUARD_BEGIN, OMC_GUARD_END, OMC_GUARD_BODY)?;
+        println!("omc guard written:    {}", omc_agents_md.display());
+    }
     Ok(())
 }
 
@@ -964,6 +973,41 @@ mod tests {
         assert!(body.contains(CODEX_POLICY_BEGIN));
         assert!(body.contains(CODEX_POLICY_END));
         assert!(body.contains("daruma_plan_create"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_codex_policy_writes_omc_guard_when_omc_present() {
+        let dir = std::env::temp_dir()
+            .join(format!("daruma-codex-test-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".omc")).unwrap();
+
+        install_codex_policy(&dir).unwrap();
+
+        // policy lands in AGENTS.md
+        let policy = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        assert!(policy.contains(CODEX_POLICY_BEGIN));
+        // OMC guard lands in .omc/AGENTS.md — same shared block/markers as --claude
+        let guard = std::fs::read_to_string(dir.join(".omc/AGENTS.md")).unwrap();
+        assert!(guard.contains(OMC_GUARD_BEGIN));
+        assert!(guard.contains(OMC_GUARD_END));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_codex_policy_skips_omc_guard_without_omc() {
+        let dir = std::env::temp_dir()
+            .join(format!("daruma-codex-test-noguard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        install_codex_policy(&dir).unwrap();
+
+        assert!(
+            !dir.join(".omc/AGENTS.md").exists(),
+            "no OMC guard should be written without an .omc dir"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
