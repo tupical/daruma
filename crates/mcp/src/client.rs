@@ -106,6 +106,15 @@ impl ApiClient {
         Ok(enrich_mutation_response(as_json(resp).await?))
     }
 
+    pub async fn put_json(&self, path: &str, body: Value) -> anyhow::Result<Value> {
+        let resp = self
+            .auth(self.http.put(self.url(path)))
+            .json(&body)
+            .send()
+            .await?;
+        as_json(resp).await
+    }
+
     pub async fn patch_json(&self, path: &str, body: Value) -> anyhow::Result<Value> {
         let resp = self
             .auth(self.http.patch(self.url(path)))

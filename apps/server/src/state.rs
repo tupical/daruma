@@ -81,6 +81,9 @@ pub struct AppState {
     pub documents: Arc<DocumentRepo>,
     /// Per-project settings projection (auto-append toggles).
     pub project_settings: Arc<daruma_storage::ProjectSettingsRepo>,
+    /// Repo scope bindings (`scope_path → project_id`, migration 0046).
+    /// Config table for MCP scope resolution — not event-sourced.
+    pub repo_scopes: Arc<daruma_storage::RepoScopeRepo>,
     /// WorkUnit projection (P3 multi-agent coordination).
     pub work_units: Arc<daruma_storage::WorkUnitRepo>,
     pub handoffs: Arc<daruma_storage::HandoffRepo>,
@@ -188,6 +191,7 @@ impl AppState {
             capability_profiles,
             rules,
             evidence: Arc::new(EvidenceRepo::new(pool.clone())),
+            repo_scopes: Arc::new(daruma_storage::RepoScopeRepo::new(pool.clone())),
             audit_findings: Arc::new(AuditFindingRepo::new(pool)),
             entity_versions,
             complexity_hints,

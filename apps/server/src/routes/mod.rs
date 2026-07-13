@@ -227,6 +227,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/projects/{id}/triage",
             get(list_project_triage).patch(patch_project_triage),
         )
+        .route(
+            "/repo-scopes",
+            get(list_repo_scopes).put(put_repo_scope),
+        )
         .route("/rules", get(list_rules).post(create_rule))
         .route(
             "/rules/{id}",
@@ -2044,6 +2048,80 @@ fn parse_project_id(id_str: &str) -> Result<ProjectId, ApiError> {
             "invalid project id: {id_str}"
         )))
     })
+}
+
+// ── Repo scope bindings (migration 0046) ────────────────────────────────────
+
+/// `GET /v1/repo-scopes` — every configured `scope_path → project_id`
+/// binding, used by MCP clients to resolve a repo's default project.
+async fn list_repo_scopes(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let scopes = state.repo_scopes.list().await.map_err(ApiError::from)?;
+    let items = scopes
+        .into_iter()
+        .map(|(scope_path, project_id)| {
+            json!({ "scope_path": scope_path, "project_id": project_id })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(Value::Array(items)))
+}
+
+#[derive(Deserialize)]
+struct RepoScopeBody {
+    scope_path: String,
+    /// `null` (or empty) removes the binding.
+    project_id: Option<String>,
+}
+
+/// `PUT /v1/repo-scopes` — upsert a binding, or remove it with
+/// `project_id: null`. Paths are stored with the trailing slash trimmed to
+/// match the MCP client's prefix matching.
+async fn put_repo_scope(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<RepoScopeBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let scope_path = body.scope_path.trim().trim_end_matches('/').to_string();
+    if scope_path.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "`scope_path` must be a non-empty path".to_string(),
+        )));
+    }
+    match body.project_id.as_deref().filter(|p| !p.trim().is_empty()) {
+        Some(project_id) => {
+            let id = parse_project_id(project_id)?;
+            state
+                .projects
+                .get(id)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {id}"))))?;
+            state
+                .repo_scopes
+                .set(&scope_path, project_id)
+                .await
+                .map_err(ApiError::from)?;
+            Ok(Json(
+                json!({ "scope_path": scope_path, "project_id": project_id }),
+            ))
+        }
+        None => {
+            state
+                .repo_scopes
+                .remove(&scope_path)
+                .await
+                .map_err(ApiError::from)?;
+            Ok(Json(
+                json!({ "scope_path": scope_path, "project_id": Value::Null }),
+            ))
+        }
+    }
 }
 
 // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ───────────────────────────
