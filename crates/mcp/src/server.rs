@@ -11,7 +11,7 @@ use crate::protocol::{
 };
 use crate::tools::{call_tool_in_profile, tool_definitions_for, ToolProfile};
 
-const INSTRUCTIONS: &str = "daruma is the single source of truth for this workspace's tasks and plans. Drive work as: create/parse a task → build a plan (daruma_plan_create + daruma_plan_add_task) → claim with daruma_plan_next_task → daruma_complete. Never persist tasks or plans in markdown, TODO files, or .omc/plans/. Use daruma_list status=active to see open work.";
+const INSTRUCTIONS: &str = "daruma is the single source of truth for this workspace's tasks and plans. Drive work as: create/parse a task → build a plan (daruma_plan_create + daruma_plan_add_task) → claim with daruma_plan_next_task → daruma_complete. Never persist tasks or plans in markdown, TODO files, or .omc/plans/. Use daruma_list status=active to see open work. Scope resolution: pass `scope_path` (absolute repo path) on your first call so the repo's default project applies; bind a repo once via daruma_project_use {project_id, scope_path} and later calls resolve the project automatically (daruma_workspace_info shows the current bindings).";
 
 /// Dispatch a single JSON-RPC request using the profile resolved from
 /// `DARUMA_MCP_PROFILE` (unset → `default`). Returns `Ok(None)` for

@@ -122,6 +122,7 @@ impl TestAppBuilder {
         let external_refs = Arc::new(ExternalRefRepo::new(pool.clone()));
         let documents = Arc::new(DocumentRepo::new(pool.clone()));
         let project_settings = Arc::new(daruma_storage::ProjectSettingsRepo::new(pool.clone()));
+        let repo_scopes = Arc::new(daruma_storage::RepoScopeRepo::new(pool.clone()));
         let work_units = Arc::new(daruma_storage::WorkUnitRepo::new(pool.clone()));
         let handoffs = Arc::new(daruma_storage::HandoffRepo::new(pool.clone()));
         let capability_profiles =
@@ -224,6 +225,7 @@ impl TestAppBuilder {
             relations,
             documents,
             project_settings,
+            repo_scopes,
             work_units,
             handoffs,
             capability_profiles,

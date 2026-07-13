@@ -85,7 +85,9 @@ async fn list_without_resolved_project_returns_project_selection() {
             .iter()
             .map(|c| c.path.as_str())
             .collect::<Vec<_>>(),
-        vec!["/v1/projects"]
+        // The scope lookup (repo_scopes, migration 0046) precedes the
+        // project-selection fallback.
+        vec!["/v1/repo-scopes", "/v1/projects"]
     );
     assert_eq!(result["needs_project_selection"], true);
     assert_eq!(result["requested_status"], "active");

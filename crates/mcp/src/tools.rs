@@ -1159,7 +1159,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             // arguments to opt out and create an inbox-only task.
             if let Some(t) = task.as_object_mut() {
                 if !t.contains_key("project_id") {
-                    match resolve_project_filter(&args, false, true, true)? {
+                    match resolve_project_filter(client, &args, false, true, true).await? {
                         ProjectFilter::Project(pid) => {
                             t.insert("project_id".to_string(), Value::String(pid));
                         }
@@ -1245,7 +1245,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
-            match resolve_project_filter(&args, true, false, true)? {
+            match resolve_project_filter(client, &args, true, false, true).await? {
                 ProjectFilter::All => {}
                 ProjectFilter::None => {
                     return project_selection_response(client, status.trim()).await;
@@ -1291,7 +1291,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                     params.push(("scope", urlencode(s)));
                 }
             }
-            match resolve_project_filter(&args, true, false, false)? {
+            match resolve_project_filter(client, &args, true, false, false).await? {
                 ProjectFilter::All => params.push(("project_id", "all".to_string())),
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
                 ProjectFilter::None => {}
@@ -1335,7 +1335,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ("query", urlencode(&lesson_query)),
                 ("scope", "comments".to_string()),
             ];
-            match resolve_project_filter(&args, true, false, false)? {
+            match resolve_project_filter(client, &args, true, false, false).await? {
                 ProjectFilter::All => params.push(("project_id", "all".to_string())),
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
                 ProjectFilter::None => {}
@@ -1461,51 +1461,48 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }))
         }
         "daruma_project_use" => {
-            let ws = workspace::global()
-                .ok_or_else(|| anyhow::anyhow!("workspace state not initialised"))?;
+            let view = workspace::ScopeView::fetch_or_empty(client).await;
             let scope_path = args.get("scope_path").and_then(|v| v.as_str());
             match args.get("project_id") {
                 Some(v) if v.is_null() => {
-                    let scope = ws.set_default_project("", scope_path)?;
-                    Ok(json!({"workspace": ws.key(), "scope": scope, "project_id": Value::Null}))
+                    let scope = view.scope_for_binding(scope_path)?;
+                    workspace::bind(client, &scope, None).await?;
+                    Ok(json!({"workspace": view.key(), "scope": scope, "project_id": Value::Null}))
                 }
                 Some(v) => {
                     let pid = v
                         .as_str()
                         .ok_or_else(|| anyhow::anyhow!("`project_id` must be a string or null"))?;
-                    let scope = ws.set_default_project(pid, scope_path)?;
-                    Ok(json!({"workspace": ws.key(), "scope": scope, "project_id": pid}))
+                    let scope = view.scope_for_binding(scope_path)?;
+                    workspace::bind(client, &scope, Some(pid)).await?;
+                    Ok(json!({"workspace": view.key(), "scope": scope, "project_id": pid}))
                 }
                 None => anyhow::bail!("`project_id` is required (use null to clear)"),
             }
         }
         "daruma_workspace_info" => {
-            let ws = workspace::global();
-            let inferred = ws.map(|w| w.inferred_project());
-            let (inferred_project, inferred_project_error) = match inferred {
-                Some(Ok(project_id)) => (project_id, None),
-                Some(Err(err)) => (None, Some(err.to_string())),
-                None => (None, None),
+            let view = workspace::ScopeView::fetch_or_empty(client).await;
+            let (inferred_project, inferred_project_error) = match view.inferred_project() {
+                Ok(project_id) => (project_id, None),
+                Err(err) => (None, Some(err.to_string())),
             };
             Ok(json!({
-                "workspace": ws.map(|w| w.key().to_string()),
+                "workspace": view.key(),
                 "mcp_agent_id": client.agent_id(),
                 "default_project": inferred_project.clone(),
                 "inferred_project": inferred_project,
                 "inferred_project_error": inferred_project_error,
-                "scopes": ws.map(|w| {
-                    w.scopes()
-                        .into_iter()
-                        .map(|(scope, project_id)| json!({
-                            "scope": scope,
-                            "name": std::path::Path::new(&scope)
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or(&scope),
-                            "project_id": project_id,
-                        }))
-                        .collect::<Vec<_>>()
-                }).unwrap_or_default(),
+                "scopes": view.scopes()
+                    .iter()
+                    .map(|(scope, project_id)| json!({
+                        "scope": scope,
+                        "name": std::path::Path::new(scope)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(scope),
+                        "project_id": project_id,
+                    }))
+                    .collect::<Vec<_>>(),
             }))
         }
         "daruma_set_status" => {
@@ -1527,7 +1524,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_move_project" => {
             let id = required_string(&args, "id")?;
-            let project_id = match resolve_project_filter(&args, false, false, true)? {
+            let project_id = match resolve_project_filter(client, &args, false, false, true).await? {
                 ProjectFilter::Project(pid) => pid,
                 ProjectFilter::None => {
                     anyhow::bail!("`project_id`, `project_scope`, or `scope_path` is required")
@@ -1732,7 +1729,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
-            match resolve_project_filter(&args, true, false, true)? {
+            match resolve_project_filter(client, &args, true, false, true).await? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
                     params.push(("project_id", urlencode(&pid)));
@@ -1902,7 +1899,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let query = required_string(&args, "query")?;
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let mut params: Vec<(&str, String)> = vec![("query", urlencode(&query))];
-            match resolve_project_filter(&args, true, false, true)? {
+            match resolve_project_filter(client, &args, true, false, true).await? {
                 ProjectFilter::All => params.push(("project_id", "all".to_string())),
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
                 ProjectFilter::None => {}
@@ -2331,11 +2328,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await?;
             // Persist the resolved project as this scope's default so later
             // unscoped calls hit it without re-resolving.
-            if let (Some(ws), Some(project_id)) = (
-                workspace::global(),
-                resp.get("project_id").and_then(|v| v.as_str()),
-            ) {
-                let _ = ws.set_default_project(project_id, Some(&root_path));
+            if let Some(project_id) = resp.get("project_id").and_then(|v| v.as_str()) {
+                let _ = workspace::bind(client, &root_path, Some(project_id)).await;
             }
             Ok(resp)
         }
@@ -2619,7 +2613,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             // `project_id` falls back to the workspace default. The URL
             // path requires a project id, so we bail with a friendly error
             // if neither is set instead of producing a malformed URL.
-            let project_id = match resolve_project_filter(&args, false, false, true)? {
+            let project_id = match resolve_project_filter(client, &args, false, false, true).await? {
                 ProjectFilter::Project(pid) => pid,
                 ProjectFilter::None => {
                     anyhow::bail!(
@@ -4253,7 +4247,8 @@ fn schema_history_latest() -> Value {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn resolve_project_filter(
+async fn resolve_project_filter(
+    client: &ApiClient,
     args: &Map<String, Value>,
     allow_all: bool,
     allow_null_inbox: bool,
@@ -4272,34 +4267,36 @@ fn resolve_project_filter(
         };
     }
 
-    let ws = match workspace::global() {
-        Some(ws) => ws,
-        None => return Ok(ProjectFilter::None),
-    };
+    // ponytail: one GET /v1/repo-scopes per unscoped call; add a process
+    // cache if the extra round-trip ever shows up in latency.
+    let view = workspace::ScopeView::fetch_or_empty(client).await;
 
     if let Some(project_scope) = args.get("project_scope").and_then(|v| v.as_str()) {
-        return resolve_named_scope(ws, project_scope);
+        return resolve_named_scope(&view, project_scope);
     }
     if allow_scope_alias {
         if let Some(scope) = args.get("scope").and_then(|v| v.as_str()) {
-            return resolve_named_scope(ws, scope);
+            return resolve_named_scope(&view, scope);
         }
     }
     if let Some(scope_path) = args.get("scope_path").and_then(|v| v.as_str()) {
-        return ws
-            .project_for_path(scope_path)
+        return view
+            .project_for_path(scope_path)?
             .map(ProjectFilter::Project)
             .ok_or_else(|| anyhow::anyhow!("no daruma scope configured for path `{scope_path}`"));
     }
 
-    ws.inferred_project().map(|p| match p {
+    view.inferred_project().map(|p| match p {
         Some(project_id) => ProjectFilter::Project(project_id),
         None => ProjectFilter::None,
     })
 }
 
-fn resolve_named_scope(ws: &workspace::Workspace, scope: &str) -> anyhow::Result<ProjectFilter> {
-    ws.project_for_scope(scope)?
+fn resolve_named_scope(
+    view: &workspace::ScopeView,
+    scope: &str,
+) -> anyhow::Result<ProjectFilter> {
+    view.project_for_scope(scope)?
         .map(ProjectFilter::Project)
         .ok_or_else(|| anyhow::anyhow!("unknown daruma scope `{scope}`"))
 }
@@ -4348,8 +4345,9 @@ async fn create_captured_task(
         "status": "inbox",
         "priority": "p3"
     });
+    let filter = resolve_project_filter(client, args, false, true, true).await?;
     if let Some(t) = task.as_object_mut() {
-        match resolve_project_filter(args, false, true, true)? {
+        match filter {
             ProjectFilter::Project(pid) => {
                 t.insert("project_id".to_string(), Value::String(pid));
             }

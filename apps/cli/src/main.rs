@@ -271,11 +271,7 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
     }
 
     let ws = Workspace::init();
-    tracing::info!(
-        workspace = ws.key(),
-        default_project = ?ws.default_project(),
-        "workspace state loaded"
-    );
+    tracing::info!(workspace = ws.key(), "workspace state loaded");
     daruma_mcp::workspace::install(ws);
 
     let http = reqwest::Client::builder()
@@ -287,6 +283,13 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
     if let Some(workspace_id) = workspace_id {
         tracing::info!(workspace_id = %workspace_id, "workspace scope configured");
         client = client.with_workspace_id(workspace_id);
+    }
+
+    // One-time move of file-based scope bindings to the server (0046).
+    match daruma_mcp::workspace::migrate_workspaces_file(&client).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(bindings = n, "migrated workspaces.json to server repo-scopes"),
+        Err(e) => tracing::warn!(error = %e, "workspaces.json migration failed; keeping file for retry"),
     }
 
     tracing::info!(profile = profile.as_str(), "daruma mcp ready on stdio");
@@ -676,11 +679,11 @@ fn write_credentials_doc(path: &std::path::Path, doc: &Value) -> anyhow::Result<
 /// Resolve the project id to use: explicit `--project-id` > env > workspace
 /// default. Returns `None` when nothing is configured (caller decides what
 /// to do — `list` falls back to "everything").
-fn resolve_project(cli_arg: Option<String>) -> Option<String> {
+async fn resolve_project(client: &ApiClient, cli_arg: Option<String>) -> Option<String> {
     if let Some(p) = cli_arg.filter(|p| !p.is_empty()) {
         return Some(p);
     }
-    daruma_mcp::workspace::global().and_then(|w| w.default_project())
+    daruma_mcp::workspace::default_project(client).await
 }
 
 async fn cmd_next(
@@ -688,7 +691,7 @@ async fn cmd_next(
     project_id: Option<String>,
     as_json: bool,
 ) -> anyhow::Result<()> {
-    let pid = resolve_project(project_id);
+    let pid = resolve_project(client, project_id).await;
     let mut params = vec![("status", "active".to_string())];
     match pid.as_deref() {
         Some("all") => {}
@@ -770,7 +773,7 @@ async fn cmd_list(
     status: &str,
     as_json: bool,
 ) -> anyhow::Result<()> {
-    let pid = resolve_project(project_id);
+    let pid = resolve_project(client, project_id).await;
     let mut params = vec![("status", urlencode(status.trim()))];
     match pid.as_deref() {
         Some("all") => {}
