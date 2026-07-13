@@ -77,16 +77,18 @@ impl HandoffRepo {
                 handoff_id,
                 by,
                 notes,
+                latency_ms,
                 at,
             } => {
                 sqlx::query(
                     "UPDATE handoff_contracts SET \
                         status = 'accepted', accepted_by_agent_id = ?, notes = ?, \
-                        required_changes = '[]', updated_at = ? \
+                        required_changes = '[]', latency_ms = ?, updated_at = ? \
                      WHERE id = ?",
                 )
                 .bind(by.as_ref().map(|a| a.to_string()))
                 .bind(notes.as_deref())
+                .bind(*latency_ms)
                 .bind(at.to_rfc3339())
                 .bind(handoff_id.to_string())
                 .execute(&self.pool)
@@ -98,17 +100,20 @@ impl HandoffRepo {
                 handoff_id,
                 reason,
                 required_changes,
+                latency_ms,
                 at,
             } => {
                 let changes = serde_json::to_string(required_changes)
                     .map_err(|e| CoreError::serde(e.to_string()))?;
                 sqlx::query(
                     "UPDATE handoff_contracts SET \
-                        status = 'rejected', notes = ?, required_changes = ?, updated_at = ? \
+                        status = 'rejected', notes = ?, required_changes = ?, \
+                        latency_ms = ?, updated_at = ? \
                      WHERE id = ?",
                 )
                 .bind(reason)
                 .bind(changes)
+                .bind(*latency_ms)
                 .bind(at.to_rfc3339())
                 .bind(handoff_id.to_string())
                 .execute(&self.pool)
@@ -142,6 +147,7 @@ impl HandoffRepo {
                 status = excluded.status, \
                 notes = excluded.notes, \
                 required_changes = excluded.required_changes, \
+                latency_ms = NULL, \
                 updated_at = excluded.updated_at",
         )
         .bind(h.id.to_string())
@@ -277,6 +283,7 @@ mod tests {
                 handoff_id: id,
                 by: None,
                 notes: Some("looks complete".into()),
+                latency_ms: None,
                 at: time::now(),
             },
         )
@@ -299,6 +306,7 @@ mod tests {
                 handoff_id: id,
                 reason: "missing error cases".into(),
                 required_changes: vec!["add 4xx handling".into()],
+                latency_ms: None,
                 at: time::now(),
             },
         )
@@ -320,5 +328,65 @@ mod tests {
         let by_pair = repo.get_by_pair(from, to).await.unwrap().unwrap();
         assert_eq!(by_pair.id, id);
         assert_eq!(repo.list_for_work_unit(to).await.unwrap().len(), 1);
+    }
+
+    /// P6 mining fact: acceptance stamps `latency_ms`; a re-request (reopen)
+    /// clears it since no response is pending again.
+    #[tokio::test]
+    async fn latency_persisted_on_accept_and_reset_on_rerequest() {
+        let repo = repo().await;
+        let (from, to) = (WorkUnitId::new(), WorkUnitId::new());
+        let c = contract(from, to);
+        let id = c.id;
+        apply(&repo, Event::HandoffRequested { handoff: c.clone() }).await;
+        apply(
+            &repo,
+            Event::HandoffAccepted {
+                handoff_id: id,
+                by: None,
+                notes: None,
+                latency_ms: Some(1500),
+                at: time::now(),
+            },
+        )
+        .await;
+
+        let latency: Option<i64> =
+            sqlx::query("SELECT latency_ms FROM handoff_contracts WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap()
+                .try_get("latency_ms")
+                .unwrap();
+        assert_eq!(latency, Some(1500));
+
+        // Accepted contracts don't reopen, so exercise the reset via a fresh
+        // reject → re-request cycle on a second pair.
+        let (from2, to2) = (WorkUnitId::new(), WorkUnitId::new());
+        let c2 = contract(from2, to2);
+        let id2 = c2.id;
+        apply(&repo, Event::HandoffRequested { handoff: c2.clone() }).await;
+        apply(
+            &repo,
+            Event::HandoffRejected {
+                handoff_id: id2,
+                reason: "revise".into(),
+                required_changes: vec![],
+                latency_ms: Some(900),
+                at: time::now(),
+            },
+        )
+        .await;
+        apply(&repo, Event::HandoffRequested { handoff: c2 }).await;
+        let latency2: Option<i64> =
+            sqlx::query("SELECT latency_ms FROM handoff_contracts WHERE id = ?")
+                .bind(id2.to_string())
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap()
+                .try_get("latency_ms")
+                .unwrap();
+        assert_eq!(latency2, None, "reopen clears the stale latency");
     }
 }

@@ -1308,12 +1308,15 @@ impl CommandHandler {
                         "work unit {id} already closed"
                     )));
                 }
+                let now = time::now();
                 Ok(vec![Event::WorkUnitCompleted {
                     work_unit_id: id,
                     outcome: outcome.unwrap_or_else(|| "ok".into()),
                     produced_artifacts,
                     next_suggested_units,
-                    at: time::now(),
+                    completed_by: unit.owner_agent_id,
+                    elapsed_ms: Some((now - unit.created_at).num_milliseconds()),
+                    at: now,
                 }])
             }
 
@@ -1349,6 +1352,8 @@ impl CommandHandler {
                         outcome: "ok".into(),
                         produced_artifacts: vec![],
                         next_suggested_units: vec![],
+                        completed_by: unit.owner_agent_id,
+                        elapsed_ms: Some((now - unit.created_at).num_milliseconds()),
                         at: now,
                     }]),
                     WUS::Ready | WUS::Todo => Ok(vec![Event::WorkUnitReleased {
@@ -2185,11 +2190,13 @@ impl CommandHandler {
                             Actor::Agent { id, .. } => Some(*id),
                             _ => None,
                         };
+                        let now = time::now();
                         Ok(vec![Event::HandoffAccepted {
                             handoff_id,
                             by,
                             notes,
-                            at: time::now(),
+                            latency_ms: Some((now - contract.updated_at).num_milliseconds()),
+                            at: now,
                         }])
                     }
                     other => Err(CoreError::conflict(format!(
@@ -2218,12 +2225,16 @@ impl CommandHandler {
                     .ok_or_else(|| CoreError::not_found(format!("handoff {handoff_id}")))?;
                 match contract.status {
                     daruma_domain::HandoffStatus::Rejected => Ok(vec![]), // no-op
-                    daruma_domain::HandoffStatus::Open => Ok(vec![Event::HandoffRejected {
-                        handoff_id,
-                        reason,
-                        required_changes,
-                        at: time::now(),
-                    }]),
+                    daruma_domain::HandoffStatus::Open => {
+                        let now = time::now();
+                        Ok(vec![Event::HandoffRejected {
+                            handoff_id,
+                            reason,
+                            required_changes,
+                            latency_ms: Some((now - contract.updated_at).num_milliseconds()),
+                            at: now,
+                        }])
+                    }
                     other => Err(CoreError::conflict(format!(
                         "handoff {handoff_id} is {}; only an open handoff can be rejected",
                         other.as_str()
