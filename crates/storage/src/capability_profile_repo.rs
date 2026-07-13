@@ -234,6 +234,8 @@ mod tests {
                 outcome: "ok".into(),
                 produced_artifacts: vec![],
                 next_suggested_units: vec![],
+                completed_by: None,
+                elapsed_ms: None,
                 at: time::now(),
             },
         )

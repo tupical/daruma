@@ -524,6 +524,19 @@ pub enum Event {
         /// scheduler is free to ignore them).
         #[serde(default)]
         next_suggested_units: Vec<WorkUnitId>,
+        /// Mining fact (P6): the holder that closed the unit — its
+        /// `owner_agent_id` at completion. Distinct from the envelope actor
+        /// (which may be a human/system marking it done). `None` when the
+        /// unit had no live claim, and for events persisted before this field
+        /// existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completed_by: Option<AgentId>,
+        /// Mining fact (P6): wall-clock milliseconds from unit creation to
+        /// this completion (cycle time). A raw duration only — the "expected"
+        /// baseline is not observed in the core and is left to upper layers.
+        /// `None` for legacy events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<i64>,
         at: Timestamp,
     },
     /// The holder's claim was released (explicit or TTL expiry).
@@ -546,6 +559,11 @@ pub enum Event {
         by: Option<AgentId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notes: Option<String>,
+        /// Mining fact (P6): handoff latency in milliseconds — from the (last)
+        /// request to this acceptance (`now − contract.updated_at` at emit).
+        /// `None` for legacy events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<i64>,
         at: Timestamp,
     },
     /// The consuming side rejected the handoff; the producer revises and
@@ -555,6 +573,11 @@ pub enum Event {
         reason: String,
         #[serde(default)]
         required_changes: Vec<String>,
+        /// Mining fact (P6): handoff latency in milliseconds — from the (last)
+        /// request to this rejection (`now − contract.updated_at` at emit).
+        /// `None` for legacy events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<i64>,
         at: Timestamp,
     },
 
@@ -2208,6 +2231,71 @@ mod tests {
                 k.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
                 "not snake_case: {k}"
             );
+        }
+    }
+
+    // ── P6 mining-field enrichment: legacy payloads still replay ───────────────
+
+    /// `work_unit_completed` events persisted before the P6 mining fields
+    /// (`completed_by`, `elapsed_ms`) existed must still deserialise — the
+    /// projector replays them as `None`.
+    #[test]
+    fn work_unit_completed_without_mining_fields_deserialises() {
+        let legacy = r#"{
+            "type": "work_unit_completed",
+            "work_unit_id": "00000000-0000-0000-0000-000000000001",
+            "outcome": "ok",
+            "at": "2024-01-01T00:00:00Z"
+        }"#;
+        let ev: Event = serde_json::from_str(legacy).expect("legacy payload must deserialise");
+        match ev {
+            Event::WorkUnitCompleted {
+                produced_artifacts,
+                next_suggested_units,
+                completed_by,
+                elapsed_ms,
+                ..
+            } => {
+                assert!(produced_artifacts.is_empty());
+                assert!(next_suggested_units.is_empty());
+                assert_eq!(completed_by, None);
+                assert_eq!(elapsed_ms, None);
+            }
+            other => panic!("expected WorkUnitCompleted, got {}", other.kind()),
+        }
+    }
+
+    /// `handoff_accepted` / `handoff_rejected` events persisted before the
+    /// `latency_ms` field existed must still deserialise (replay as `None`).
+    #[test]
+    fn handoff_responses_without_latency_deserialise() {
+        let accepted = r#"{
+            "type": "handoff_accepted",
+            "handoff_id": "00000000-0000-0000-0000-000000000002",
+            "by": null,
+            "at": "2024-01-01T00:00:00Z"
+        }"#;
+        match serde_json::from_str::<Event>(accepted).expect("legacy accept deserialises") {
+            Event::HandoffAccepted { latency_ms, .. } => assert_eq!(latency_ms, None),
+            other => panic!("expected HandoffAccepted, got {}", other.kind()),
+        }
+
+        let rejected = r#"{
+            "type": "handoff_rejected",
+            "handoff_id": "00000000-0000-0000-0000-000000000003",
+            "reason": "revise",
+            "at": "2024-01-01T00:00:00Z"
+        }"#;
+        match serde_json::from_str::<Event>(rejected).expect("legacy reject deserialises") {
+            Event::HandoffRejected {
+                required_changes,
+                latency_ms,
+                ..
+            } => {
+                assert!(required_changes.is_empty());
+                assert_eq!(latency_ms, None);
+            }
+            other => panic!("expected HandoffRejected, got {}", other.kind()),
         }
     }
 }

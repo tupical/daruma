@@ -164,14 +164,29 @@ impl WorkUnitRepo {
                 self.update_fields(*work_unit_id, at, "status = 'blocked'", vec![])
                     .await
             }
-            Event::WorkUnitCompleted { work_unit_id, .. } => {
-                self.update_fields(
-                    *work_unit_id,
-                    at,
-                    "status = 'done', owner_agent_id = NULL, claim_expires_at = NULL",
-                    vec![],
+            Event::WorkUnitCompleted {
+                work_unit_id,
+                completed_by,
+                elapsed_ms,
+                ..
+            } => {
+                // Terminal fact: stamp the mining columns (holder + cycle
+                // time) alongside the status transition. `update_fields` only
+                // binds strings, so `elapsed_ms` (INTEGER) goes through a
+                // dedicated statement.
+                sqlx::query(
+                    "UPDATE work_units SET status = 'done', owner_agent_id = NULL, \
+                     claim_expires_at = NULL, completed_by = ?, elapsed_ms = ?, updated_at = ? \
+                     WHERE id = ?",
                 )
+                .bind(completed_by.as_ref().map(|a| a.to_string()))
+                .bind(*elapsed_ms)
+                .bind(at.to_rfc3339())
+                .bind(work_unit_id.to_string())
+                .execute(&self.pool)
                 .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+                Ok(())
             }
             Event::WorkUnitReleased { work_unit_id, .. } => {
                 self.update_fields(
@@ -408,6 +423,8 @@ mod tests {
                 outcome: "ok".into(),
                 produced_artifacts: vec!["artifact://api/users".into()],
                 next_suggested_units: vec![],
+                completed_by: None,
+                elapsed_ms: None,
                 at: Utc::now(),
             },
         );
@@ -420,6 +437,41 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// P6 mining facts: `WorkUnitCompleted` stamps the holder and cycle time
+    /// into the projection's write-through columns.
+    #[tokio::test]
+    async fn completion_persists_mining_facts() {
+        let (_db, r) = repo().await;
+        let task = TaskId::new();
+        let wu = seed(&r, task, "a").await;
+        let holder = AgentId::new();
+
+        r.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::WorkUnitCompleted {
+                work_unit_id: wu.id,
+                outcome: "ok".into(),
+                produced_artifacts: vec![],
+                next_suggested_units: vec![],
+                completed_by: Some(holder),
+                elapsed_ms: Some(4200),
+                at: Utc::now(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        let row = sqlx::query("SELECT completed_by, elapsed_ms FROM work_units WHERE id = ?")
+            .bind(wu.id.to_string())
+            .fetch_one(&r.pool)
+            .await
+            .unwrap();
+        let completed_by: Option<String> = row.try_get("completed_by").unwrap();
+        let elapsed_ms: Option<i64> = row.try_get("elapsed_ms").unwrap();
+        assert_eq!(completed_by, Some(holder.to_string()));
+        assert_eq!(elapsed_ms, Some(4200));
     }
 
     /// P5 handoff gate: a unit with a non-accepted inbound handoff is not
@@ -474,6 +526,7 @@ mod tests {
                     handoff_id,
                     reason: "not ready".into(),
                     required_changes: vec![],
+                    latency_ms: None,
                     at: daruma_shared::time::now(),
                 },
             ))
@@ -493,6 +546,7 @@ mod tests {
                     handoff_id,
                     by: None,
                     notes: None,
+                    latency_ms: None,
                     at: daruma_shared::time::now(),
                 },
             ))
