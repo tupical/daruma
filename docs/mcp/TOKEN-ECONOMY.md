@@ -78,7 +78,9 @@ fields are unchanged; `truncation` is additive.
 optional `max_tokens` budget. Without it, behaviour is unchanged — the full
 object is returned. With it, if the serialized object exceeds
 `max_tokens * 4` bytes, prose fields are trimmed (longest first, protected
-fields never touched) until it fits, and a `truncation` marker is attached.
+fields never touched) until it fits, and a `truncation` marker is attached. A
+small fixed slice of the budget is reserved for that appended marker so the
+final response (content + marker) still fits `max_tokens * 4` bytes.
 
 Edge case — **protected fields alone exceed a tiny budget**: protected fields
 win. We never drop them to hit the number, so the excerpt may exceed the

@@ -268,8 +268,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_get",
             "Get task",
-            "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority).",
-            schema_with_id("id"),
+            "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority). Pass optional `max_tokens` for a bounded excerpt when the task body may be large.",
+            schema_bounded_read("id", "Task identifier"),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
@@ -1009,8 +1009,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_doc_get",
             "Get document",
-            "Fetch a document by id, including its full markdown body.",
-            schema_with_id("document_id"),
+            "Fetch a document by id, including its full markdown body. Pass optional `max_tokens` for a bounded excerpt when the body may be large.",
+            schema_bounded_read("document_id", "Document identifier"),
             Dom::Documents, F, X, Ann::Read,
         ),
         tool(
@@ -1203,7 +1203,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_get" => {
             let id = required_string(&args, "id")?;
-            client.get_json(&format!("/v1/tasks/{id}")).await
+            let resp = client.get_json(&format!("/v1/tasks/{id}")).await?;
+            Ok(maybe_bounded(resp, &args, &id, "task description"))
         }
         "daruma_update" => {
             let id = required_string(&args, "id")?;
@@ -1718,7 +1719,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let view = view_arg(&args, "progress", &["progress", "detail"])?;
             let resp = client.get_json(&format!("/v1/plans/{id}")).await?;
             if view == "detail" {
-                Ok(resp)
+                Ok(maybe_bounded(resp, &args, &id, "plan detail"))
             } else {
                 let graph = client.get_json(&format!("/v1/plans/{id}/graph")).await?;
                 Ok(plan_progress_view(resp, graph))
@@ -2556,7 +2557,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_doc_get" => {
             let id = required_string(&args, "document_id")?;
-            client.get_json(&format!("/v1/documents/{id}")).await
+            let resp = client.get_json(&format!("/v1/documents/{id}")).await?;
+            Ok(maybe_bounded(resp, &args, &id, "document content"))
         }
         "daruma_doc_append" => {
             let id = required_string(&args, "document_id")?;
@@ -2758,6 +2760,24 @@ fn schema_with_id(field: &str) -> Value {
     json!({
         "type":"object",
         "properties": {field: {"type":"string","description":"Task identifier"}},
+        "required": [field]
+    })
+}
+
+/// `schema_with_id` plus an optional `max_tokens` budget for bounded excerpt
+/// reads. Without `max_tokens` the tool returns the full object (unchanged);
+/// with it, prose is trimmed to fit and a `truncation` marker is attached.
+fn schema_bounded_read(field: &str, id_desc: &str) -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            field: {"type":"string","description": id_desc},
+            "max_tokens": {
+                "type":"integer",
+                "minimum": 1,
+                "description":"Optional token budget. When set, the object is returned as a bounded excerpt: prose (description/body/content/…) is trimmed longest-first to fit ~max_tokens*4 bytes and a `truncation` marker describes what was withheld. Protected fields (id/status/priority/*_id) are never trimmed. Omit for the full object (default)."
+            }
+        },
         "required": [field]
     })
 }
@@ -3435,6 +3455,11 @@ fn schema_plan_get() -> Value {
                 "enum":["progress","detail"],
                 "default":"progress",
                 "description":"progress returns compact plan identity, counts, and active/blocked/next task titles; detail returns the legacy full {plan, progress} response."
+            },
+            "max_tokens": {
+                "type":"integer",
+                "minimum": 1,
+                "description":"Optional token budget for view=detail. When set, prose (goal/description/…) is trimmed to fit ~max_tokens*4 bytes and a `truncation` marker is attached; protected fields are never trimmed. Ignored for view=progress. Omit for the full object."
             }
         },
         "required":["id"]
@@ -4499,6 +4524,156 @@ impl TruncationMarker {
     }
 }
 
+/// Prose fields eligible for trimming in a bounded excerpt. Disjoint from
+/// [`PROTECTED_SUMMARY_FIELDS`] by construction — protected structural handles
+/// are never listed here, so they are never trimmed.
+const PROSE_FIELDS: &[&str] = &[
+    "description",
+    "content",
+    "body",
+    "snippet",
+    "goal",
+    "text",
+    "note",
+    "notes",
+];
+
+/// Room reserved in the byte budget for the appended [`TruncationMarker`], so
+/// the final serialized excerpt (content + marker) still fits the budget.
+const EXCERPT_MARKER_RESERVE_BYTES: u64 = 320;
+
+/// The `… [truncated]` sentinel appended to a shortened prose string.
+const PROSE_ELLIPSIS: &str = "… [truncated]";
+
+/// Bound a single object to a byte budget by trimming its prose fields, and
+/// mark what was withheld with a [`TruncationMarker`] (task B form).
+///
+/// Full reads are unchanged: this is only invoked when the caller passes an
+/// explicit `max_tokens`. Protected fields (task A) are never trimmed; only
+/// [`PROSE_FIELDS`] are shortened, longest first, until the object fits.
+///
+/// Edge case — if the protected/structural bytes alone exceed the budget
+/// (nothing trimmable), the full object is returned **unmarked and over
+/// budget**: protected fields win, and there is no truncation to mark. Budget
+/// is therefore best-effort. See `docs/mcp/TOKEN-ECONOMY.md`.
+fn bounded_excerpt(mut value: Value, budget_bytes: u64, pointer: &str, what: &str) -> Value {
+    let full = json_bytes(&value);
+    if full <= budget_bytes {
+        return value;
+    }
+    // Leave room for the marker we will append so the final response fits.
+    let content_budget = budget_bytes.saturating_sub(EXCERPT_MARKER_RESERVE_BYTES);
+    loop {
+        let current = json_bytes(&value);
+        if current <= content_budget {
+            break;
+        }
+        let overshoot = current - content_budget;
+        let trimmed = match longest_prose_mut(&mut value) {
+            Some(s) => shrink_prose(s, overshoot),
+            None => false,
+        };
+        if !trimmed {
+            break;
+        }
+    }
+    let excerpt = json_bytes(&value);
+    if excerpt >= full {
+        // Nothing could be trimmed — no truncation to mark.
+        return value;
+    }
+    let remaining = full - excerpt;
+    let marker = TruncationMarker::for_object_excerpt(pointer, remaining, what).to_value();
+    if let Value::Object(map) = &mut value {
+        map.insert("truncation".to_string(), marker);
+    }
+    value
+}
+
+/// If the caller passed a positive `max_tokens`, return a bounded excerpt;
+/// otherwise return the full object unchanged (legacy behaviour).
+fn maybe_bounded(value: Value, args: &Map<String, Value>, pointer: &str, what: &str) -> Value {
+    match args.get("max_tokens").and_then(Value::as_u64) {
+        Some(max_tokens) if max_tokens > 0 => {
+            let budget = max_tokens.saturating_mul(BYTES_PER_TOKEN_ESTIMATE);
+            bounded_excerpt(value, budget, pointer, what)
+        }
+        _ => value,
+    }
+}
+
+/// Mutable reference to the longest prose-keyed string anywhere in the tree,
+/// or `None` if there is no trimmable prose. Strings under non-prose keys
+/// (e.g. `title`) are never returned.
+fn longest_prose_mut(value: &mut Value) -> Option<&mut String> {
+    match value {
+        Value::Object(map) => {
+            let mut best: Option<&mut String> = None;
+            for (key, child) in map.iter_mut() {
+                let candidate = if PROSE_FIELDS.contains(&key.as_str()) {
+                    match child {
+                        Value::String(s) => Some(s),
+                        other => longest_prose_mut(other),
+                    }
+                } else {
+                    longest_prose_mut(child)
+                };
+                best = pick_longer(best, candidate);
+            }
+            best
+        }
+        Value::Array(items) => {
+            let mut best: Option<&mut String> = None;
+            for child in items.iter_mut() {
+                best = pick_longer(best, longest_prose_mut(child));
+            }
+            best
+        }
+        _ => None,
+    }
+}
+
+fn pick_longer<'a>(
+    a: Option<&'a mut String>,
+    b: Option<&'a mut String>,
+) -> Option<&'a mut String> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if b.len() > a.len() {
+                Some(b)
+            } else {
+                Some(a)
+            }
+        }
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    }
+}
+
+/// Shorten a prose string by roughly `shed_bytes`, keeping a char-boundary
+/// prefix and appending [`PROSE_ELLIPSIS`]. Returns `false` if the string
+/// could not be made shorter (already tiny), so callers can stop.
+fn shrink_prose(s: &mut String, shed_bytes: u64) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let want_keep = (s.len() as u64)
+        .saturating_sub(shed_bytes)
+        .saturating_sub(PROSE_ELLIPSIS.len() as u64) as usize;
+    let mut keep = want_keep.min(s.len());
+    while keep > 0 && !s.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    let mut next = s[..keep].to_string();
+    next.push_str(PROSE_ELLIPSIS);
+    if next.len() >= s.len() {
+        // Trimming would not actually shrink the value (or would inflate it).
+        return false;
+    }
+    *s = next;
+    true
+}
+
 fn mcp_page_rows<F>(
     rows: Vec<Value>,
     start: usize,
@@ -5000,6 +5175,116 @@ mod tests {
         let summary = v["summary"].as_str().unwrap();
         assert!(summary.contains("tsk_42"), "summary must name the id to re-read");
         assert!(summary.contains("max_tokens"), "summary must hint how to get full");
+    }
+
+    // ── Task C: bounded excerpt reads ───────────────────────────────────────
+
+    fn task_with_long_description(desc_len: usize) -> Value {
+        json!({
+            "id": "tsk_1",
+            "project_id": "prj_7",
+            "status": "in_progress",
+            "priority": "p0",
+            "title": "A task",
+            "description": "x".repeat(desc_len),
+        })
+    }
+
+    #[test]
+    fn bounded_excerpt_fits_budget_and_marks_prose() {
+        let value = task_with_long_description(4000);
+        let full = json_bytes(&value);
+        let budget = 800u64;
+        let out = bounded_excerpt(value, budget, "tsk_1", "task description");
+
+        // Final serialized response fits the budget (marker reserve accounted).
+        assert!(
+            json_bytes(&out) <= budget,
+            "excerpt must fit budget: {} > {budget}",
+            json_bytes(&out)
+        );
+        // Protected fields survive intact.
+        assert_eq!(out["id"], "tsk_1");
+        assert_eq!(out["status"], "in_progress");
+        assert_eq!(out["priority"], "p0");
+        assert_eq!(out["project_id"], "prj_7");
+        assert_eq!(out["title"], "A task");
+        // Prose was trimmed.
+        let desc = out["description"].as_str().unwrap();
+        assert!(desc.len() < 4000, "description must be shortened");
+        assert!(desc.ends_with(PROSE_ELLIPSIS), "trim sentinel expected");
+        // Truncation marker points back at the id and reports withheld bytes.
+        let marker = &out["truncation"];
+        assert_eq!(marker["pointer"], "tsk_1");
+        let remaining = marker["remaining_bytes"].as_u64().unwrap();
+        assert!(remaining > 0, "must report non-zero withheld bytes");
+        assert!(remaining < full, "withheld < full object");
+        assert!(!marker["summary"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bounded_excerpt_noop_when_within_budget() {
+        let value = task_with_long_description(20);
+        let out = bounded_excerpt(value.clone(), 10_000, "tsk_1", "task description");
+        // Identical to input, no marker.
+        assert_eq!(out, value);
+        assert!(out.get("truncation").is_none());
+    }
+
+    #[test]
+    fn bounded_excerpt_keeps_protected_fields_under_tiny_budget() {
+        // Budget too small even for the protected structural fields: protected
+        // fields win (never dropped), prose is emptied, and the response is
+        // explicitly marked even though it overshoots. Documented edge case.
+        let value = task_with_long_description(500);
+        let out = bounded_excerpt(value, 8, "tsk_1", "task description");
+        assert_eq!(out["id"], "tsk_1");
+        assert_eq!(out["status"], "in_progress");
+        assert_eq!(out["priority"], "p0");
+        assert!(out.get("truncation").is_some(), "trim still marked");
+    }
+
+    #[test]
+    fn maybe_bounded_is_full_read_without_budget() {
+        let value = task_with_long_description(4000);
+        // No max_tokens → unchanged full object, no marker (regression guard).
+        let args = json!({"id":"tsk_1"}).as_object().unwrap().clone();
+        let out = maybe_bounded(value.clone(), &args, "tsk_1", "task description");
+        assert_eq!(out, value);
+        assert!(out.get("truncation").is_none());
+
+        // max_tokens=0 is treated as "no budget".
+        let args0 = json!({"id":"tsk_1","max_tokens":0})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(maybe_bounded(value.clone(), &args0, "tsk_1", "x"), value);
+
+        // A positive budget engages the excerpt path.
+        let args_budget = json!({"id":"tsk_1","max_tokens":200})
+            .as_object()
+            .unwrap()
+            .clone();
+        let bounded = maybe_bounded(value, &args_budget, "tsk_1", "task description");
+        assert!(bounded.get("truncation").is_some());
+        assert!(json_bytes(&bounded) <= 200 * 4);
+    }
+
+    #[test]
+    fn bounded_excerpt_never_trims_non_prose_strings() {
+        // A long value under a NON-prose key (here `title`) must not be
+        // trimmed — only PROSE_FIELDS are eligible.
+        let value = json!({
+            "id": "tsk_1",
+            "status": "todo",
+            "priority": "p2",
+            "title": "T".repeat(2000),
+            "description": "d".repeat(2000),
+        });
+        let out = bounded_excerpt(value, 600, "tsk_1", "task description");
+        // title is preserved in full; description is what got cut.
+        assert_eq!(out["title"].as_str().unwrap().len(), 2000);
+        assert!(out["description"].as_str().unwrap().len() < 2000);
     }
 
     #[test]
