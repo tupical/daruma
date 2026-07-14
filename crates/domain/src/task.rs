@@ -139,6 +139,13 @@ pub struct Task {
     /// store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_event_id: Option<EventId>,
+    /// Opaque idempotency key from an external source (webhook / importer).
+    /// When set, it is unique within the workspace: a repeat `CreateTask`
+    /// carrying the same `external_key` upserts onto the existing task
+    /// instead of spawning a duplicate. `None` for tasks with no external
+    /// origin. Serialised as omitted (not `null`) when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_key: Option<String>,
 }
 
 impl Task {
@@ -164,6 +171,7 @@ impl Task {
             updated_event_id: None,
             updated_event_seq: None,
             source_event_id: None,
+            external_key: input.external_key,
         }
     }
 }
@@ -186,6 +194,12 @@ pub struct NewTask {
     pub triage_state: Option<TriageState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<Timestamp>,
+    /// Optional external idempotency key (see [`Task::external_key`]). When
+    /// present on `CreateTask`, a task already carrying the same key in this
+    /// workspace is upserted (context appended as a comment) rather than
+    /// duplicated. Fully optional — omitting it preserves legacy behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_key: Option<String>,
 }
 
 impl NewTask {
@@ -199,6 +213,7 @@ impl NewTask {
             priority: None,
             triage_state: None,
             due_at: None,
+            external_key: None,
         }
     }
 }

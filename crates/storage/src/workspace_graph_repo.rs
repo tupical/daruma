@@ -1547,6 +1547,7 @@ mod tests {
                         priority: Some(Priority::P2),
                         triage_state: None,
                         due_at: None,
+                        external_key: None,
                     },
                 },
             ))
@@ -1707,6 +1708,7 @@ mod tests {
                         priority: Some(Priority::P3),
                         triage_state: None,
                         due_at: None,
+                        external_key: None,
                     },
                 },
             ))
@@ -1770,6 +1772,7 @@ mod tests {
                         priority: Some(Priority::P2),
                         triage_state: None,
                         due_at: None,
+                        external_key: None,
                     },
                 },
             ))
@@ -1880,6 +1883,7 @@ mod tests {
                         priority: Some(Priority::P2),
                         triage_state: None,
                         due_at: None,
+                        external_key: None,
                     },
                 },
             ))
@@ -1942,6 +1946,7 @@ mod tests {
                         priority: Some(Priority::P2),
                         triage_state: None,
                         due_at: None,
+                        external_key: None,
                     },
                 },
             ))
@@ -1987,6 +1992,7 @@ mod tests {
                         priority: Some(Priority::P2),
                         triage_state: None,
                         due_at: None,
+                        external_key: None,
                     },
                 },
             ))

@@ -887,6 +887,51 @@ impl CommandHandler {
                     ));
                 }
                 task.title = title;
+
+                // Normalise the optional external idempotency key: trim, and
+                // collapse an empty/whitespace key to `None` so it never lands
+                // in the workspace-unique index.
+                if let Some(k) = task.external_key.as_ref() {
+                    let trimmed = k.trim();
+                    task.external_key =
+                        (!trimmed.is_empty()).then(|| trimmed.to_string());
+                }
+
+                // Idempotent create via external_key (workspace-scoped upsert).
+                // A re-delivered create from an external source (webhook /
+                // importer) carrying a key we've already seen must NOT spawn a
+                // duplicate: return the existing task and record the incoming
+                // context as a comment instead of overwriting its fields.
+                if let Some(ext_key) = task.external_key.clone() {
+                    if let Some(existing) = self.tasks.find_by_external_key(&ext_key).await? {
+                        let now = time::now();
+                        let body = redelivered_create_comment_body(&ext_key, &task);
+                        let preview: String = body.chars().take(80).collect();
+                        let comment = Comment::from_new(
+                            daruma_domain::NewComment {
+                                id: None,
+                                task_id: existing.id,
+                                body,
+                                parent_id: None,
+                                kind: Some(daruma_domain::CommentKind::Research),
+                            },
+                            actor.clone(),
+                            now,
+                        );
+                        let task_id = comment.task_id;
+                        let comment_id = comment.id;
+                        return Ok(vec![
+                            Event::CommentAdded { comment },
+                            Event::TaskCommented {
+                                task_id,
+                                comment_id,
+                                author: actor.clone(),
+                                preview,
+                            },
+                        ]);
+                    }
+                }
+
                 if task.id.is_none() {
                     task.id = Some(TaskId::new());
                 }
@@ -2580,6 +2625,26 @@ fn dedupe_ids(ids: &[TaskId]) -> Vec<TaskId> {
     out
 }
 
+/// Render the audit-comment body appended to an existing task when a create
+/// is re-delivered under a known `external_key`. Captures the incoming
+/// context (title / description) so nothing is lost, without overwriting the
+/// task's own fields.
+fn redelivered_create_comment_body(external_key: &str, task: &daruma_domain::NewTask) -> String {
+    let mut body = format!(
+        "Re-delivered create for external_key `{external_key}` (existing task kept; \
+         context recorded here instead of duplicating).\nTitle: {}",
+        task.title
+    );
+    if let Some(desc) = task.description.as_deref() {
+        let desc = desc.trim();
+        if !desc.is_empty() {
+            body.push_str("\nDescription: ");
+            body.push_str(desc);
+        }
+    }
+    body
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2957,6 +3022,93 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(indexed, "task:Indexed task");
+    }
+
+    /// Idempotent create by `external_key`: two creates carrying the same key
+    /// in one workspace yield EXACTLY one task (same id), and two distinct
+    /// events — one per call: `TaskCreated` for the first, `CommentAdded` for
+    /// the re-delivery (context appended to the existing task, not a duplicate).
+    /// Mirrors `create_plan_with_existing_external_ref_is_idempotent`.
+    #[tokio::test]
+    async fn create_task_with_existing_external_key_is_idempotent() {
+        let (handler, _store, tasks) = build_stack().await;
+
+        let make = |title: &str| Command::CreateTask {
+            task: NewTask {
+                external_key: Some("wh-123".into()),
+                description: Some(format!("payload for {title}")),
+                ..NewTask::new(title)
+            },
+        };
+
+        // First delivery → a real task is created.
+        let first = handler
+            .handle(make("Imported task"), Actor::user())
+            .await
+            .unwrap();
+        let task_id = match &first[0].payload {
+            Event::TaskCreated { task } => task.id.unwrap(),
+            other => panic!("expected TaskCreated, got {other:?}"),
+        };
+        assert!(
+            first
+                .iter()
+                .all(|e| !matches!(e.payload, Event::CommentAdded { .. })),
+            "first create must not add a comment"
+        );
+
+        // Second delivery with the same key → NO new task; the incoming
+        // context lands as a comment on the existing task.
+        let second = handler
+            .handle(make("Imported task (redelivered)"), Actor::user())
+            .await
+            .unwrap();
+        assert!(
+            second
+                .iter()
+                .all(|e| !matches!(e.payload, Event::TaskCreated { .. })),
+            "re-delivery must not spawn a second task"
+        );
+        let comment_task_id = match &second[0].payload {
+            Event::CommentAdded { comment } => comment.task_id,
+            other => panic!("expected CommentAdded, got {other:?}"),
+        };
+        assert_eq!(
+            comment_task_id, task_id,
+            "comment must attach to the existing task"
+        );
+
+        // Two distinct events across the two calls (one per create).
+        assert_ne!(first[0].id, second[0].id);
+
+        // EXACTLY one task in the workspace, carrying the external key.
+        let all = tasks.list_all().await.unwrap();
+        assert_eq!(all.len(), 1, "external_key must dedupe to a single task");
+        assert_eq!(all[0].id, task_id);
+        assert_eq!(all[0].external_key.as_deref(), Some("wh-123"));
+
+        // Lookup by key resolves to the same task.
+        let found = tasks.find_by_external_key("wh-123").await.unwrap();
+        assert_eq!(found.map(|t| t.id), Some(task_id));
+    }
+
+    #[tokio::test]
+    async fn create_task_without_external_key_is_unchanged() {
+        let (handler, _store, tasks) = build_stack().await;
+
+        // Two ordinary creates (no external_key) remain two independent tasks.
+        for title in ["one", "two"] {
+            handler
+                .handle(
+                    Command::CreateTask {
+                        task: NewTask::new(title),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(tasks.list_all().await.unwrap().len(), 2);
     }
 
     #[tokio::test]

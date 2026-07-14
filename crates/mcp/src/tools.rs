@@ -2950,7 +2950,8 @@ fn schema_create() -> Value {
                     "description": {"type":"string"},
                     "status": {"type":"string","enum":["inbox","todo","in_progress","done"]},
                     "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
-                    "project_id": {"type":"string"}
+                    "project_id": {"type":"string"},
+                    "external_key": {"type":"string","description":"Optional idempotency key from an external source (webhook/importer). Unique within the workspace: re-creating with the same key does not duplicate the task — the incoming context is appended as a comment to the existing task instead."}
                 },
                 "required":["title"]
             },
