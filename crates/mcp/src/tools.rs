@@ -1265,7 +1265,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             Ok(if view == "detail" {
                 resp
             } else {
-                summarize_rows(
+                summarize_rows_protected(
                     resp,
                     &[
                         "id",
@@ -1309,7 +1309,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             Ok(if view == "detail" {
                 resp
             } else {
-                summarize_rows(
+                summarize_rows_protected(
                     resp,
                     &[
                         "kind",
@@ -1748,7 +1748,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             Ok(if view == "detail" {
                 resp
             } else {
-                summarize_rows(
+                summarize_rows_protected(
                     resp,
                     &[
                         "id",
@@ -4466,6 +4466,56 @@ where
     })
 }
 
+/// No-compress contract (see `docs/mcp/TOKEN-ECONOMY.md`).
+///
+/// Fields that any `view=summary` / excerpt / truncated response MUST keep
+/// intact. These are the short structural handles a caller needs to decide
+/// what to hydrate next — short ids, lifecycle status, priority, error
+/// signals, and every FK-style reference already used by the per-view
+/// allowlists. Only *prose* (`description`, comment `body`, `snippet`, …)
+/// may ever be dropped or truncated; these never may.
+///
+/// `error`/`last_error` are reserved: the domain `Task`/run/plan projections
+/// do not carry such a field today, but if one lands it must be exempt from
+/// summarisation from day one rather than silently compressed away.
+const PROTECTED_SUMMARY_FIELDS: &[&str] = &[
+    "id",
+    "status",
+    "priority",
+    "project_id",
+    "task_id",
+    "plan_id",
+    "parent_plan_id",
+    "error",
+    "last_error",
+];
+
+/// Union a per-view allowlist with [`PROTECTED_SUMMARY_FIELDS`], preserving
+/// the local order first (so existing output ordering is unchanged) and
+/// appending any protected key not already present.
+///
+/// This guarantees the no-compress contract even if a future view forgets to
+/// list `id`/`status`/`priority`/`*_id` explicitly. Because [`keep_keys`]
+/// only copies keys that are actually present on a row, appending protected
+/// keys that a given row does not have is a no-op — so behaviour for the
+/// existing list/search/plan_list views is byte-for-byte identical.
+fn summary_keys(local: &[&'static str]) -> Vec<&'static str> {
+    let mut keys: Vec<&'static str> = local.to_vec();
+    for protected in PROTECTED_SUMMARY_FIELDS {
+        if !keys.contains(protected) {
+            keys.push(protected);
+        }
+    }
+    keys
+}
+
+/// [`summarize_rows`] with the no-compress contract enforced: the caller
+/// supplies only the view-specific keys and the protected set is unioned in
+/// automatically.
+fn summarize_rows_protected(value: Value, local: &[&'static str]) -> Value {
+    summarize_rows(value, &summary_keys(local))
+}
+
 fn summarize_rows(value: Value, keys: &[&str]) -> Value {
     match value {
         Value::Array(rows) => {
@@ -4728,6 +4778,99 @@ mod tests {
                 "has_more": true
             })
         );
+    }
+
+    // ── Task A: no-compress contract ────────────────────────────────────────
+
+    #[test]
+    fn summary_keys_always_include_protected_fields() {
+        // Even a view that only asks for `title` must retain the structural
+        // handles: id/status/priority + every FK-style reference.
+        let keys = summary_keys(&["title"]);
+        for protected in PROTECTED_SUMMARY_FIELDS {
+            assert!(
+                keys.contains(protected),
+                "protected field {protected:?} must be unioned in"
+            );
+        }
+        // Local key preserved and comes first (output ordering unchanged).
+        assert_eq!(keys[0], "title");
+    }
+
+    #[test]
+    fn summary_keys_do_not_duplicate_already_listed_keys() {
+        // list view already names id/status/priority/project_id — union must
+        // not double them.
+        let keys = summary_keys(&["id", "title", "status", "priority", "project_id"]);
+        let id_count = keys.iter().filter(|k| **k == "id").count();
+        assert_eq!(id_count, 1, "id must appear exactly once");
+        let status_count = keys.iter().filter(|k| **k == "status").count();
+        assert_eq!(status_count, 1, "status must appear exactly once");
+    }
+
+    #[test]
+    fn protected_summary_drops_prose_but_keeps_handles() {
+        // A row carrying prose + handles: a summary view that (buggily) only
+        // lists `title` still must not shed id/status/priority/refs, but must
+        // shed the prose `description`/`snippet`.
+        let rows = json!([{
+            "id": "tsk_1",
+            "task_id": "tsk_1",
+            "plan_id": "pln_9",
+            "project_id": "prj_7",
+            "status": "in_progress",
+            "priority": "p0",
+            "title": "Ship it",
+            "description": "a very long prose body that should be dropped",
+            "snippet": "prose excerpt"
+        }]);
+        let summary = summarize_rows_protected(rows, &["title"]);
+        let row = &summary[0];
+        // Protected handles survive.
+        assert_eq!(row["id"], "tsk_1");
+        assert_eq!(row["task_id"], "tsk_1");
+        assert_eq!(row["plan_id"], "pln_9");
+        assert_eq!(row["project_id"], "prj_7");
+        assert_eq!(row["status"], "in_progress");
+        assert_eq!(row["priority"], "p0");
+        assert_eq!(row["title"], "Ship it");
+        // Prose is compressed away.
+        assert!(row.get("description").is_none(), "description is prose");
+        assert!(row.get("snippet").is_none(), "snippet is prose");
+    }
+
+    #[test]
+    fn protected_summary_preserves_existing_view_output() {
+        // The three real views must be byte-for-byte identical to the old
+        // hard-coded `summarize_rows` output (union is a no-op for present
+        // keys, absent protected keys are skipped by keep_keys).
+        let list_row = json!([{
+            "id":"tsk_1","title":"T","status":"todo","priority":"p2",
+            "project_id":"prj_1","updated_at":"2026-01-01","description":"drop me"
+        }]);
+        let via_protected = summarize_rows_protected(
+            list_row.clone(),
+            &["id", "title", "status", "priority", "project_id", "updated_at"],
+        );
+        let via_plain = summarize_rows(
+            list_row,
+            &["id", "title", "status", "priority", "project_id", "updated_at"],
+        );
+        assert_eq!(via_protected, via_plain);
+
+        // Search rows: `snippet` (prose) must still be present here because
+        // the search view explicitly lists it — protection is a floor, not a
+        // ceiling.
+        let search_row = json!([{
+            "kind":"task","id":"tsk_1","title":"T","snippet":"hit ...",
+            "task_id":"tsk_1","plan_id":"pln_1","project_id":"prj_1"
+        }]);
+        let searched = summarize_rows_protected(
+            search_row,
+            &["kind", "id", "title", "snippet", "task_id", "plan_id", "project_id"],
+        );
+        assert_eq!(searched[0]["snippet"], "hit ...");
+        assert_eq!(searched[0]["task_id"], "tsk_1");
     }
 
     #[test]
