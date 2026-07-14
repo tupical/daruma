@@ -96,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let capability_profiles = Arc::new(daruma_storage::CapabilityProfileRepo::new(pool.clone()));
     let rules = Arc::new(daruma_storage::RuleRepo::new(pool.clone()));
     let evidence = Arc::new(daruma_storage::EvidenceRepo::new(pool.clone()));
+    let artifacts = Arc::new(daruma_storage::ArtifactRepo::new(pool.clone()));
     let audit_findings = Arc::new(AuditFindingRepo::new(pool.clone()));
     let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
     let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
@@ -298,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
         capability_profiles,
         rules,
         evidence,
+        artifacts,
         audit_findings,
         entity_versions,
         complexity_hints,

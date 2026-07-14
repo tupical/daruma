@@ -44,17 +44,18 @@ use daruma_core::{
     Command, CommandEnvelope,
 };
 use daruma_domain::{
-    slugify_title, Actor, AgentSessionPlanStep, CommentKind, CommentPatch, ComplexityHint,
-    Document, DocumentKind, NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus,
-    RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState, Verb,
+    slugify_title, Actor, AgentSessionPlanStep, ArtifactStatus, CommentKind, CommentPatch,
+    ComplexityHint, Document, DocumentKind, NewComment, NewDocument, NewPlan, Plan, PlanPatch,
+    PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState,
+    Verb,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, CommentId, CoreError, DeviceId, DocumentId, EvidenceId, PlanId,
-    ProjectId, RuleId, RunId, TaskId, TokenId, WebhookId,
+    AgentId, AgentSessionId, ArtifactId, CommentId, CoreError, DeviceId, DocumentId, EvidenceId,
+    PlanId, ProjectId, RuleId, RunId, TaskId, TokenId, WebhookId,
 };
 use daruma_storage::{ClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
@@ -238,6 +239,9 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         )
         .route("/evidence", get(list_evidence).post(record_evidence))
         .route("/evidence/{id}", get(get_evidence))
+        // ── Artifact Registry (P4) — read-only HTTP surface ─────────────────
+        .route("/artifacts", get(list_artifacts))
+        .route("/artifacts/{id}/impact", get(artifact_impact))
         // ── Audit primitives ────────────────────────────────────────────────
         .route(
             "/audit/findings",
@@ -2364,6 +2368,152 @@ async fn get_evidence(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("evidence {id}"))))?;
     Ok(Json(json!({ "evidence": evidence })))
+}
+
+// ── Artifact Registry (P4) — read-only HTTP surface ─────────────────────────────
+//
+// Wraps the already-built `ArtifactRepo` projection (migration 0036). Two
+// derived fields are computed in the presentation layer and are NOT stored
+// columns:
+//   * `kind`  — the URI scheme (`artifact` / `file` / `contract` / `env`),
+//     derived from the `artifact://…` prefix.
+//   * `current_holder_agent_id` — a best-effort join against the *active*
+//     `work_leases` whose `target_uri` matches the artifact `uri`. This is the
+//     transient lease holder, intentionally decoupled from the durable
+//     `owner_agent_id` (outcome owner). `null` when no live lease targets it.
+
+/// Derive an artifact's `kind` from its URI scheme (`artifact://api/x` → `artifact`).
+fn artifact_kind(uri: &str) -> &str {
+    uri.split_once("://").map(|(scheme, _)| scheme).unwrap_or("")
+}
+
+/// Query for `GET /v1/artifacts`. `project_id`/`task_id`/`status` are pushed
+/// into the SQL filter; `kind` is a derived post-filter applied in-handler.
+#[derive(Deserialize)]
+struct ArtifactListQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+/// `GET /v1/artifacts` — list artifacts with derived `kind` and current lease holder.
+async fn list_artifacts(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ArtifactListQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+
+    let project_id = match q.project_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => Some(raw.parse::<ProjectId>().map_err(|_| {
+            ApiError::from(CoreError::validation(format!("invalid project id: {raw}")))
+        })?),
+        None => None,
+    };
+    let task_id = match q.task_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => Some(raw.parse::<TaskId>().map_err(|_| {
+            ApiError::from(CoreError::validation(format!("invalid task id: {raw}")))
+        })?),
+        None => None,
+    };
+    let status = match q.status.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => Some(ArtifactStatus::parse(raw).ok_or_else(|| {
+            ApiError::from(CoreError::validation(format!(
+                "invalid artifact status: {raw}"
+            )))
+        })?),
+        None => None,
+    };
+
+    let artifacts = state
+        .artifacts
+        .list(project_id, task_id, status)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Best-effort map of active lease target_uri → holder agent id.
+    let leases = state
+        .work_leases
+        .list_active(project_id)
+        .await
+        .map_err(ApiError::from)?;
+    let mut holders: std::collections::HashMap<String, AgentId> = std::collections::HashMap::new();
+    for lease in leases {
+        if let Some(uri) = lease.target_uri {
+            holders.entry(uri).or_insert(lease.agent_id);
+        }
+    }
+
+    let kind_filter = q.kind.as_deref().filter(|s| !s.is_empty());
+    let items: Vec<Value> = artifacts
+        .into_iter()
+        .filter(|a| kind_filter.map_or(true, |k| artifact_kind(&a.uri) == k))
+        .map(|a| {
+            let kind = artifact_kind(&a.uri).to_string();
+            let current_holder = holders.get(&a.uri).copied();
+            json!({
+                "id": a.id,
+                "uri": a.uri,
+                "kind": kind,
+                "title": a.title,
+                "description": a.description,
+                "status": a.status.as_str(),
+                "owner_agent_id": a.owner_agent_id,
+                "current_holder_agent_id": current_holder,
+                "version": a.version,
+                "project_id": a.project_id,
+                "task_id": a.task_id,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "artifacts": items })))
+}
+
+/// Query for `GET /v1/artifacts/{id}/impact`.
+#[derive(Deserialize)]
+struct ArtifactImpactQuery {
+    limit: Option<u32>,
+}
+
+/// `GET /v1/artifacts/{id}/impact` — downstream impact neighborhood for an
+/// artifact. Thin wrapper over the shared WorkspaceGraph `impact` traversal:
+/// unlike the raw `/v1/workspacegraph/impact` route, this 404s on an unknown
+/// artifact id instead of returning an empty graph.
+async fn artifact_impact(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Query(q): Query<ArtifactImpactQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+
+    let id = id_str.parse::<ArtifactId>().map_err(|_| {
+        ApiError::from(CoreError::not_found(format!("artifact {id_str}")))
+    })?;
+    // Confirm the artifact exists so an unknown id is a clean 404 rather than
+    // an empty neighborhood from the generic graph route.
+    if state.artifacts.get(id).await.map_err(ApiError::from)?.is_none() {
+        return Err(ApiError::from(CoreError::not_found(format!("artifact {id}"))));
+    }
+
+    let node_id = format!("artifact:{id}");
+    let limit = q.limit.unwrap_or(20).clamp(1, 200);
+    let neighborhood = state
+        .workspace_graph
+        .impact(&node_id, limit)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(neighborhood))
 }
 
 #[derive(Deserialize)]

@@ -8,10 +8,11 @@ use daruma_core::CommandBus;
 use daruma_discovery::PairingStore;
 use daruma_events::EventStore;
 use daruma_storage::{
-    ActivityRepo, AgentClaimRepo, AgentInboxRepo, AuditFindingRepo, CommentRepo, DeviceRepo,
-    DocumentRepo, EntityVersionRepo, EvidenceRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo,
-    ProjectRepo, RelationRepo, RuleRepo, RunNoteRepo, RunRepo, SessionRepo, TaskComplexityRepo,
-    TaskRepo, TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, ArtifactRepo, AuditFindingRepo, CommentRepo,
+    DeviceRepo, DocumentRepo, EntityVersionRepo, EvidenceRepo, ExternalRefRepo, IdempotencyRepo,
+    PlanRepo, ProjectRepo, RelationRepo, RuleRepo, RunNoteRepo, RunRepo, SessionRepo,
+    TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo,
+    WorkspaceGraphRepo,
 };
 use daruma_sync::Hub;
 use daruma_webhooks::WebhookStore;
@@ -92,6 +93,10 @@ pub struct AppState {
     pub rules: Arc<RuleRepo>,
     /// Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3).
     pub evidence: Arc<EvidenceRepo>,
+    /// Artifact Registry projection (P4, migration 0036). Read-only HTTP
+    /// surface; the projection is populated by `ArtifactRegistered`-family
+    /// events. No command/write path is wired here.
+    pub artifacts: Arc<ArtifactRepo>,
     /// Audit findings store (Audit primitives task B). Not event-sourced:
     /// written directly by the audit HTTP routes, read with severity/category/
     /// status filters. Feeds the Cloud Workspace Audit surface.
@@ -191,6 +196,7 @@ impl AppState {
             capability_profiles,
             rules,
             evidence: Arc::new(EvidenceRepo::new(pool.clone())),
+            artifacts: Arc::new(ArtifactRepo::new(pool.clone())),
             repo_scopes: Arc::new(daruma_storage::RepoScopeRepo::new(pool.clone())),
             audit_findings: Arc::new(AuditFindingRepo::new(pool)),
             entity_versions,

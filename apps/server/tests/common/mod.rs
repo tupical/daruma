@@ -27,10 +27,10 @@ use daruma_events::{EventBus, EventStore};
 use daruma_server::{routes::router, state::AppState, workspace_graph};
 use daruma_shared::AgentId;
 use daruma_storage::{
-    ActivityRepo, AgentClaimRepo, AgentInboxRepo, CommentRepo, Db, DocumentRepo, EntityVersionRepo,
-    ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo, RunNoteRepo, RunRepo,
-    SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo, TenantQuotaRepo, TokenRepo,
-    WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
+    ActivityRepo, AgentClaimRepo, AgentInboxRepo, ArtifactRepo, CommentRepo, Db, DocumentRepo,
+    EntityVersionRepo, ExternalRefRepo, IdempotencyRepo, PlanRepo, ProjectRepo, RelationRepo,
+    RunNoteRepo, RunRepo, SessionRepo, SqliteEventStore, TaskComplexityRepo, TaskRepo,
+    TenantQuotaRepo, TokenRepo, WebhookRepo, WorkLeaseRepo, WorkspaceGraphRepo,
 };
 use daruma_sync::Hub;
 use daruma_webhooks::WebhookStore;
@@ -129,6 +129,7 @@ impl TestAppBuilder {
             Arc::new(daruma_storage::CapabilityProfileRepo::new(pool.clone()));
         let rules = Arc::new(daruma_storage::RuleRepo::new(pool.clone()));
         let evidence = Arc::new(daruma_storage::EvidenceRepo::new(pool.clone()));
+        let artifacts = Arc::new(ArtifactRepo::new(pool.clone()));
         let audit_findings = Arc::new(daruma_storage::AuditFindingRepo::new(pool.clone()));
         let complexity_hints = Arc::new(TaskComplexityRepo::new(pool.clone()));
         let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
@@ -231,6 +232,7 @@ impl TestAppBuilder {
             capability_profiles,
             rules,
             evidence,
+            artifacts,
             audit_findings,
             entity_versions,
             complexity_hints,

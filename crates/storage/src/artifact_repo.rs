@@ -39,41 +39,48 @@ impl ArtifactRepo {
         row.as_ref().map(row_to_artifact).transpose()
     }
 
-    /// List artifacts, optionally scoped to a project or task.
+    /// List artifacts, optionally scoped to a project, task, and/or status.
+    ///
+    /// Filters compose with `AND`; binds are appended in the same order the
+    /// conditions are pushed so the placeholders line up.
     pub async fn list(
         &self,
         project_id: Option<ProjectId>,
         task_id: Option<TaskId>,
+        status: Option<ArtifactStatus>,
     ) -> Result<Vec<Artifact>> {
-        let rows = match (project_id, task_id) {
-            (Some(p), Some(t)) => {
-                sqlx::query(&select_sql(
-                    "WHERE project_id = ? AND task_id = ? ORDER BY created_at",
-                ))
-                .bind(p.to_string())
-                .bind(t.to_string())
-                .fetch_all(&self.pool)
-                .await
-            }
-            (Some(p), None) => {
-                sqlx::query(&select_sql("WHERE project_id = ? ORDER BY created_at"))
-                    .bind(p.to_string())
-                    .fetch_all(&self.pool)
-                    .await
-            }
-            (None, Some(t)) => {
-                sqlx::query(&select_sql("WHERE task_id = ? ORDER BY created_at"))
-                    .bind(t.to_string())
-                    .fetch_all(&self.pool)
-                    .await
-            }
-            (None, None) => {
-                sqlx::query(&select_sql("ORDER BY created_at"))
-                    .fetch_all(&self.pool)
-                    .await
-            }
+        let mut conditions: Vec<&str> = Vec::new();
+        if project_id.is_some() {
+            conditions.push("project_id = ?");
         }
-        .map_err(|e| CoreError::storage(e.to_string()))?;
+        if task_id.is_some() {
+            conditions.push("task_id = ?");
+        }
+        if status.is_some() {
+            conditions.push("status = ?");
+        }
+        let filter = if conditions.is_empty() {
+            "ORDER BY created_at".to_string()
+        } else {
+            format!("WHERE {} ORDER BY created_at", conditions.join(" AND "))
+        };
+
+        let sql = select_sql(&filter);
+        let mut q = sqlx::query(&sql);
+        if let Some(p) = project_id {
+            q = q.bind(p.to_string());
+        }
+        if let Some(t) = task_id {
+            q = q.bind(t.to_string());
+        }
+        if let Some(s) = status {
+            q = q.bind(s.as_str());
+        }
+
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
 
         rows.iter().map(row_to_artifact).collect()
     }
@@ -501,6 +508,42 @@ mod tests {
         assert_eq!(row.status, ArtifactStatus::Pending);
         assert!(row.version.is_none());
         assert!(row.last_write_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_status() {
+        let (_db, r) = repo().await;
+        let pending = seed(&r, "artifact://svc/pending").await;
+        let active = seed(&r, "artifact://svc/active").await;
+
+        // Flip one artifact to `active` via a status-change event.
+        let env = EventEnvelope::new(
+            Actor::user(),
+            Event::ArtifactStatusChanged {
+                artifact_id: active.id,
+                from: ArtifactStatus::Pending,
+                to: ArtifactStatus::Active,
+                at: chrono::Utc::now(),
+            },
+        );
+        r.apply_event(&env).await.unwrap();
+
+        let all = r.list(None, None, None).await.unwrap();
+        assert_eq!(all.len(), 2);
+
+        let only_active = r
+            .list(None, None, Some(ArtifactStatus::Active))
+            .await
+            .unwrap();
+        assert_eq!(only_active.len(), 1);
+        assert_eq!(only_active[0].id, active.id);
+
+        let only_pending = r
+            .list(None, None, Some(ArtifactStatus::Pending))
+            .await
+            .unwrap();
+        assert_eq!(only_pending.len(), 1);
+        assert_eq!(only_pending[0].id, pending.id);
     }
 
     #[tokio::test]
