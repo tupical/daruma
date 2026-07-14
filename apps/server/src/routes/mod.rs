@@ -420,6 +420,7 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
+        "git_sha": option_env!("GIT_SHA").unwrap_or("dev"),
         "core_version": daruma_core::VERSION,
         "api_version": API_VERSION,
     }))
