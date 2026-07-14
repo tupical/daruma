@@ -268,8 +268,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_get",
             "Get task",
-            "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority). Pass optional `max_tokens` for a bounded excerpt when the task body may be large.",
-            schema_bounded_read("id", "Task identifier"),
+            "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority). Pass optional `max_tokens` for a bounded excerpt when the task body may be large. Pass `dedup: true` to get a compact `unchanged` marker when this session already holds the task at its current version.",
+            schema_bounded_read_ext("id", "Task identifier", true),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
@@ -1204,7 +1204,18 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_get" => {
             let id = required_string(&args, "id")?;
             let resp = client.get_json(&format!("/v1/tasks/{id}")).await?;
-            Ok(maybe_bounded(resp, &args, &id, "task description"))
+            let updated_at = resp
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            Ok(maybe_dedup(
+                client,
+                resp,
+                &args,
+                &id,
+                "task description",
+                updated_at.as_deref(),
+            ))
         }
         "daruma_update" => {
             let id = required_string(&args, "id")?;
@@ -1526,7 +1537,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_move_project" => {
             let id = required_string(&args, "id")?;
-            let project_id = match resolve_project_filter(client, &args, false, false, true).await? {
+            let project_id = match resolve_project_filter(client, &args, false, false, true).await?
+            {
                 ProjectFilter::Project(pid) => pid,
                 ProjectFilter::None => {
                     anyhow::bail!("`project_id`, `project_scope`, or `scope_path` is required")
@@ -1719,7 +1731,21 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let view = view_arg(&args, "progress", &["progress", "detail"])?;
             let resp = client.get_json(&format!("/v1/plans/{id}")).await?;
             if view == "detail" {
-                Ok(maybe_bounded(resp, &args, &id, "plan detail"))
+                // Dedup applies to the detail view only — `progress` is already
+                // compact, so replacing it with an `unchanged` marker saves
+                // little and would surprise the common (progress) path.
+                let updated_at = resp
+                    .pointer("/plan/updated_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Ok(maybe_dedup(
+                    client,
+                    resp,
+                    &args,
+                    &id,
+                    "plan detail",
+                    updated_at.as_deref(),
+                ))
             } else {
                 let graph = client.get_json(&format!("/v1/plans/{id}/graph")).await?;
                 Ok(plan_progress_view(resp, graph))
@@ -2616,7 +2642,8 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             // `project_id` falls back to the workspace default. The URL
             // path requires a project id, so we bail with a friendly error
             // if neither is set instead of producing a malformed URL.
-            let project_id = match resolve_project_filter(client, &args, false, false, true).await? {
+            let project_id = match resolve_project_filter(client, &args, false, false, true).await?
+            {
                 ProjectFilter::Project(pid) => pid,
                 ProjectFilter::None => {
                     anyhow::bail!(
@@ -2767,17 +2794,36 @@ fn schema_with_id(field: &str) -> Value {
 /// `schema_with_id` plus an optional `max_tokens` budget for bounded excerpt
 /// reads. Without `max_tokens` the tool returns the full object (unchanged);
 /// with it, prose is trimmed to fit and a `truncation` marker is attached.
+///
+/// When `with_dedup` is set, an optional `dedup` boolean is advertised too
+/// (task D session dedup). It is off unless the tool actually implements dedup,
+/// so clients that do not understand the `unchanged` marker never see it.
 fn schema_bounded_read(field: &str, id_desc: &str) -> Value {
+    schema_bounded_read_ext(field, id_desc, false)
+}
+
+fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Value {
+    let mut props = json!({
+        field: {"type":"string","description": id_desc},
+        "max_tokens": {
+            "type":"integer",
+            "minimum": 1,
+            "description":"Optional token budget. When set, the object is returned as a bounded excerpt: prose (description/body/content/…) is trimmed longest-first to fit ~max_tokens*4 bytes and a `truncation` marker describes what was withheld. Protected fields (id/status/priority/*_id) are never trimmed. Omit for the full object (default)."
+        }
+    });
+    if with_dedup {
+        props.as_object_mut().unwrap().insert(
+            "dedup".to_string(),
+            json!({
+                "type":"boolean",
+                "default": false,
+                "description":"Opt in to session dedup (default false). When true and this MCP session was already handed this exact object (same `updated_at`), the response is a compact `{\"unchanged\":true,\"ref\":<id>,\"since\":<updated_at>,\"id\",\"status\",\"priority\"}` marker instead of the full payload — re-read the id WITHOUT `dedup` to hydrate the full object. Leave unset unless your client understands the `unchanged`/`ref` contract."
+            }),
+        );
+    }
     json!({
         "type":"object",
-        "properties": {
-            field: {"type":"string","description": id_desc},
-            "max_tokens": {
-                "type":"integer",
-                "minimum": 1,
-                "description":"Optional token budget. When set, the object is returned as a bounded excerpt: prose (description/body/content/…) is trimmed longest-first to fit ~max_tokens*4 bytes and a `truncation` marker describes what was withheld. Protected fields (id/status/priority/*_id) are never trimmed. Omit for the full object (default)."
-            }
-        },
+        "properties": props,
         "required": [field]
     })
 }
@@ -3460,6 +3506,11 @@ fn schema_plan_get() -> Value {
                 "type":"integer",
                 "minimum": 1,
                 "description":"Optional token budget for view=detail. When set, prose (goal/description/…) is trimmed to fit ~max_tokens*4 bytes and a `truncation` marker is attached; protected fields are never trimmed. Ignored for view=progress. Omit for the full object."
+            },
+            "dedup": {
+                "type":"boolean",
+                "default": false,
+                "description":"Opt in to session dedup for view=detail (default false). When true and this MCP session was already handed this plan at its current `updated_at`, the response is a compact `{\"unchanged\":true,\"ref\":<id>,\"since\":<updated_at>,\"id\",\"status\"}` marker instead of the full {plan, progress} payload — re-read the id WITHOUT `dedup` to hydrate. Ignored for view=progress (already compact). Leave unset unless your client understands the `unchanged`/`ref` contract."
             }
         },
         "required":["id"]
@@ -4319,10 +4370,7 @@ async fn resolve_project_filter(
     })
 }
 
-fn resolve_named_scope(
-    view: &workspace::ScopeView,
-    scope: &str,
-) -> anyhow::Result<ProjectFilter> {
+fn resolve_named_scope(view: &workspace::ScopeView, scope: &str) -> anyhow::Result<ProjectFilter> {
     view.project_for_scope(scope)?
         .map(ProjectFilter::Project)
         .ok_or_else(|| anyhow::anyhow!("unknown daruma scope `{scope}`"))
@@ -4465,7 +4513,9 @@ const BYTES_PER_TOKEN_ESTIMATE: u64 = 4;
 /// Serialized byte length of a JSON value — the same measure the server uses
 /// for `result_bytes` telemetry (`serde_json::to_vec(...).len()`).
 fn json_bytes(value: &Value) -> u64 {
-    serde_json::to_vec(value).map(|b| b.len() as u64).unwrap_or(0)
+    serde_json::to_vec(value)
+        .map(|b| b.len() as u64)
+        .unwrap_or(0)
 }
 
 /// A reusable handle describing content that was withheld from a response so
@@ -4498,7 +4548,11 @@ impl TruncationMarker {
 
     /// Marker for a paginated list tail: `remaining_items` more rows are
     /// reachable via `pointer` (a cursor).
-    fn for_list_tail(pointer: impl Into<String>, remaining_items: usize, remaining_bytes: u64) -> Self {
+    fn for_list_tail(
+        pointer: impl Into<String>,
+        remaining_items: usize,
+        remaining_bytes: u64,
+    ) -> Self {
         let pointer = pointer.into();
         let summary = format!(
             "{remaining_items} more item(s) available, ~{remaining_bytes} bytes (~{} tokens); paginate with the cursor",
@@ -4602,6 +4656,69 @@ fn maybe_bounded(value: Value, args: &Map<String, Value>, pointer: &str, what: &
     }
 }
 
+/// Whether the caller opted in to session dedup (task D). Off unless the client
+/// explicitly passed `dedup: true`, so existing clients that don't understand
+/// the `unchanged`/`ref` contract keep getting full objects.
+fn dedup_requested(args: &Map<String, Value>) -> bool {
+    args.get("dedup").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The object body carrying the protected fields: tasks/documents hold `id`
+/// at the top level; the plan-detail response nests the object under `plan`.
+fn dedup_body(value: &Value) -> &Value {
+    if value.get("id").is_some() {
+        value
+    } else {
+        value.get("plan").unwrap_or(value)
+    }
+}
+
+/// Compact "unchanged since" marker (task D). Carries the human-readable `ref`
+/// (the object id — this codebase's ids already *are* short human ids, no hash),
+/// the `since` stamp, and the protected structural fields (`id`/`status`/
+/// `priority`) so a client can act without hydrating. To get the full object,
+/// re-read `ref` via the same tool WITHOUT `dedup`.
+fn unchanged_marker(value: &Value, id: &str, since: &str) -> Value {
+    let mut out = Map::new();
+    out.insert("unchanged".to_string(), json!(true));
+    out.insert("ref".to_string(), json!(id));
+    out.insert("since".to_string(), json!(since));
+    let body = dedup_body(value);
+    for key in ["id", "status", "priority"] {
+        if let Some(v) = body.get(key) {
+            out.insert(key.to_string(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// Session dedup entry point (task D). Only engages when the caller opted in
+/// with `dedup: true` and the object carries an `updated_at`:
+///
+/// * cache HIT (same `updated_at` already emitted this session) → return the
+///   compact `unchanged` marker;
+/// * cache MISS (new or changed) → record the current stamp and fall through to
+///   the normal full/bounded response.
+///
+/// Without opt-in (or without an `updated_at`) this is exactly `maybe_bounded`.
+fn maybe_dedup(
+    client: &ApiClient,
+    value: Value,
+    args: &Map<String, Value>,
+    id: &str,
+    what: &str,
+    updated_at: Option<&str>,
+) -> Value {
+    if dedup_requested(args) {
+        if let Some(stamp) = updated_at {
+            if let Some(since) = client.dedup_probe(id, stamp) {
+                return unchanged_marker(&value, id, &since);
+            }
+        }
+    }
+    maybe_bounded(value, args, id, what)
+}
+
 /// Mutable reference to the longest prose-keyed string anywhere in the tree,
 /// or `None` if there is no trimmable prose. Strings under non-prose keys
 /// (e.g. `title`) are never returned.
@@ -4633,10 +4750,7 @@ fn longest_prose_mut(value: &mut Value) -> Option<&mut String> {
     }
 }
 
-fn pick_longer<'a>(
-    a: Option<&'a mut String>,
-    b: Option<&'a mut String>,
-) -> Option<&'a mut String> {
+fn pick_longer<'a>(a: Option<&'a mut String>, b: Option<&'a mut String>) -> Option<&'a mut String> {
     match (a, b) {
         (Some(a), Some(b)) => {
             if b.len() > a.len() {
@@ -4687,7 +4801,11 @@ where
     let mut tail = rows.into_iter().skip(start).collect::<Vec<_>>();
     let truncated = tail.len() > limit;
     // Split off the withheld remainder so its size can be measured.
-    let rest = if truncated { tail.split_off(limit) } else { Vec::new() };
+    let rest = if truncated {
+        tail.split_off(limit)
+    } else {
+        Vec::new()
+    };
     let page = tail;
     let next_cursor = if truncated {
         next_cursor(start, &page)
@@ -5097,11 +5215,25 @@ mod tests {
         }]);
         let via_protected = summarize_rows_protected(
             list_row.clone(),
-            &["id", "title", "status", "priority", "project_id", "updated_at"],
+            &[
+                "id",
+                "title",
+                "status",
+                "priority",
+                "project_id",
+                "updated_at",
+            ],
         );
         let via_plain = summarize_rows(
             list_row,
-            &["id", "title", "status", "priority", "project_id", "updated_at"],
+            &[
+                "id",
+                "title",
+                "status",
+                "priority",
+                "project_id",
+                "updated_at",
+            ],
         );
         assert_eq!(via_protected, via_plain);
 
@@ -5114,7 +5246,15 @@ mod tests {
         }]);
         let searched = summarize_rows_protected(
             search_row,
-            &["kind", "id", "title", "snippet", "task_id", "plan_id", "project_id"],
+            &[
+                "kind",
+                "id",
+                "title",
+                "snippet",
+                "task_id",
+                "plan_id",
+                "project_id",
+            ],
         );
         assert_eq!(searched[0]["snippet"], "hit ...");
         assert_eq!(searched[0]["task_id"], "tsk_1");
@@ -5139,8 +5279,13 @@ mod tests {
         assert_eq!(marker["pointer"], page["next_cursor"]);
         assert_eq!(marker["pointer"], "tsk_09");
         // remaining_bytes is a real, non-zero measure of the withheld tail.
-        let remaining_bytes = marker["remaining_bytes"].as_u64().expect("remaining_bytes u64");
-        assert!(remaining_bytes > 0, "5 withheld rows must have non-zero bytes");
+        let remaining_bytes = marker["remaining_bytes"]
+            .as_u64()
+            .expect("remaining_bytes u64");
+        assert!(
+            remaining_bytes > 0,
+            "5 withheld rows must have non-zero bytes"
+        );
         // token estimate is bytes/4.
         assert_eq!(
             marker["remaining_tokens_estimate"].as_u64().unwrap(),
@@ -5148,7 +5293,10 @@ mod tests {
         );
         // human-readable, non-empty, and mentions the withheld count.
         let summary = marker["summary"].as_str().expect("summary string");
-        assert!(!summary.is_empty(), "summary must be non-empty when truncated");
+        assert!(
+            !summary.is_empty(),
+            "summary must be non-empty when truncated"
+        );
         assert!(summary.contains("5 more item"), "summary: {summary}");
     }
 
@@ -5173,8 +5321,14 @@ mod tests {
         assert_eq!(v["remaining_bytes"], 1200);
         assert_eq!(v["remaining_tokens_estimate"], 300);
         let summary = v["summary"].as_str().unwrap();
-        assert!(summary.contains("tsk_42"), "summary must name the id to re-read");
-        assert!(summary.contains("max_tokens"), "summary must hint how to get full");
+        assert!(
+            summary.contains("tsk_42"),
+            "summary must name the id to re-read"
+        );
+        assert!(
+            summary.contains("max_tokens"),
+            "summary must hint how to get full"
+        );
     }
 
     // ── Task C: bounded excerpt reads ───────────────────────────────────────
@@ -5268,6 +5422,194 @@ mod tests {
         let bounded = maybe_bounded(value, &args_budget, "tsk_1", "task description");
         assert!(bounded.get("truncation").is_some());
         assert!(json_bytes(&bounded) <= 200 * 4);
+    }
+
+    // ── Task D: session dedup (`unchanged`/`ref`) ───────────────────────────
+
+    fn dedup_client() -> ApiClient {
+        // No network is used by `maybe_dedup`; the client is just the session
+        // boundary that owns the dedup cache.
+        ApiClient::new("http://127.0.0.1:1", "test-token")
+    }
+
+    #[test]
+    fn maybe_dedup_first_hit_returns_full_then_unchanged_marker() {
+        let client = dedup_client();
+        let value = json!({
+            "id": "tsk_1",
+            "status": "in_progress",
+            "priority": "p0",
+            "title": "A task",
+            "description": "x".repeat(400),
+            "updated_at": "2026-01-01T00:00:00Z",
+        });
+        let args = json!({"id":"tsk_1","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        // First read → cache miss → full object, no `unchanged`.
+        let first = maybe_dedup(
+            &client,
+            value.clone(),
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        assert!(first.get("unchanged").is_none());
+        assert_eq!(first["description"].as_str().unwrap().len(), 400);
+
+        // Second read, same `updated_at` → hit → compact marker with protected fields.
+        let second = maybe_dedup(
+            &client,
+            value,
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        assert_eq!(second["unchanged"], json!(true));
+        assert_eq!(second["ref"], "tsk_1");
+        assert_eq!(second["since"], "2026-01-01T00:00:00Z");
+        assert_eq!(second["id"], "tsk_1");
+        assert_eq!(second["status"], "in_progress");
+        assert_eq!(second["priority"], "p0");
+        assert!(second.get("description").is_none(), "payload withheld");
+    }
+
+    #[test]
+    fn maybe_dedup_returns_full_when_updated_at_changes() {
+        let client = dedup_client();
+        let args = json!({"id":"tsk_1","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let v1 = json!({"id":"tsk_1","status":"todo","updated_at":"2026-01-01T00:00:00Z","description":"a"});
+        let v2 = json!({"id":"tsk_1","status":"done","updated_at":"2026-01-02T00:00:00Z","description":"b"});
+
+        // Prime the cache with v1.
+        let _ = maybe_dedup(
+            &client,
+            v1,
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        // A newer `updated_at` is a miss → full object again (and re-primes cache).
+        let out = maybe_dedup(
+            &client,
+            v2.clone(),
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-02T00:00:00Z"),
+        );
+        assert!(out.get("unchanged").is_none());
+        assert_eq!(out["status"], "done");
+        // The refreshed stamp now dedups on repeat.
+        let again = maybe_dedup(
+            &client,
+            v2,
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-02T00:00:00Z"),
+        );
+        assert_eq!(again["unchanged"], json!(true));
+        assert_eq!(again["since"], "2026-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn maybe_dedup_without_optin_never_dedups() {
+        let client = dedup_client();
+        let value = json!({"id":"tsk_1","status":"todo","updated_at":"2026-01-01T00:00:00Z","description":"a"});
+        // No `dedup` arg → identical repeated reads always return the full object.
+        let args = json!({"id":"tsk_1"}).as_object().unwrap().clone();
+        let first = maybe_dedup(
+            &client,
+            value.clone(),
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        let second = maybe_dedup(
+            &client,
+            value.clone(),
+            &args,
+            "tsk_1",
+            "task",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        assert_eq!(first, value);
+        assert_eq!(second, value, "no dedup without opt-in (regression guard)");
+
+        // `dedup:false` is also a no-op.
+        let args_false = json!({"id":"tsk_1","dedup":false})
+            .as_object()
+            .unwrap()
+            .clone();
+        let third = maybe_dedup(
+            &client,
+            value.clone(),
+            &args_false,
+            "tsk_1",
+            "task",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        assert_eq!(third, value);
+    }
+
+    #[test]
+    fn maybe_dedup_plan_detail_reads_nested_updated_at_and_fields() {
+        let client = dedup_client();
+        let args = json!({"id":"pln_1","view":"detail","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let value = json!({
+            "plan": {"id":"pln_1","status":"active","title":"P","goal":"g"},
+            "progress": {"tasks_total": 2}
+        });
+        // First read primes; second returns the plan-shaped marker.
+        let _ = maybe_dedup(
+            &client,
+            value.clone(),
+            &args,
+            "pln_1",
+            "plan detail",
+            Some("2026-03-03T00:00:00Z"),
+        );
+        let marker = maybe_dedup(
+            &client,
+            value,
+            &args,
+            "pln_1",
+            "plan detail",
+            Some("2026-03-03T00:00:00Z"),
+        );
+        assert_eq!(marker["unchanged"], json!(true));
+        assert_eq!(marker["ref"], "pln_1");
+        assert_eq!(marker["id"], "pln_1", "id pulled from nested plan body");
+        assert_eq!(marker["status"], "active");
+        assert!(marker.get("progress").is_none(), "full payload withheld");
+    }
+
+    #[test]
+    fn maybe_dedup_missing_updated_at_falls_through_to_full() {
+        let client = dedup_client();
+        let args = json!({"id":"tsk_1","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let value = json!({"id":"tsk_1","status":"todo","description":"no stamp"});
+        // No `updated_at` → cannot prove unchanged → always full, no marker.
+        let first = maybe_dedup(&client, value.clone(), &args, "tsk_1", "task", None);
+        let second = maybe_dedup(&client, value.clone(), &args, "tsk_1", "task", None);
+        assert_eq!(first, value);
+        assert_eq!(second, value);
     }
 
     #[test]

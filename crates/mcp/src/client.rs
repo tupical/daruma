@@ -3,6 +3,9 @@
 //! work through this client so the auth bearer is set in exactly one
 //! place.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use daruma_shared::AgentId;
 use serde_json::{json, Value};
 
@@ -18,6 +21,15 @@ pub struct ApiClient {
     /// can be grouped under a single `Actor::Agent`. Generated once when the
     /// client is built; the server stores it on every emitted event.
     agent_id: String,
+    /// Session-scoped dedup cache (task D): object id → the `updated_at` this
+    /// session was last handed the object *in full*. Shared across `.clone()`s
+    /// via `Arc<Mutex<_>>` so every clone of this client sees the same session
+    /// memory. The session boundary is exactly one `ApiClient`: on stdio that
+    /// is the whole MCP process (one client for the process lifetime); on the
+    /// HTTP transport a fresh client is built per request, so the cache starts
+    /// empty and dedup simply degrades to always-full responses — safe because
+    /// dedup is opt-in (see `crate::tools`).
+    dedup_cache: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl ApiClient {
@@ -30,6 +42,7 @@ impl ApiClient {
             workspace_id: None,
             http: reqwest::Client::new(),
             agent_id: fresh_agent_id(),
+            dedup_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -55,12 +68,44 @@ impl ApiClient {
             workspace_id: None,
             http,
             agent_id: fresh_agent_id(),
+            dedup_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Stable MCP process agent id (UUID string).
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    /// Session dedup probe (task D). Given an object `id` and its current
+    /// `updated_at`, decide whether this session was already handed the same
+    /// object in full at the same `updated_at`:
+    ///
+    /// * `Some(since)` — HIT: unchanged since `since` (the `updated_at` recorded
+    ///   at the earlier full emission, identical to the current one). The caller
+    ///   should return the compact `unchanged` marker instead of the payload.
+    /// * `None` — MISS: the object is new to this session or its `updated_at`
+    ///   changed. This call **records** the current stamp, so the caller must go
+    ///   on to emit the full object.
+    ///
+    /// `updated_at` is the single source of truth for "changed vs unchanged":
+    /// every task/plan mutation bumps it through the event pipeline, so a stamp
+    /// match is a correct-by-construction "nothing changed" signal without any
+    /// payload hashing or event subscription.
+    pub fn dedup_probe(&self, id: &str, updated_at: &str) -> Option<String> {
+        let mut cache = match self.dedup_cache.lock() {
+            Ok(guard) => guard,
+            // A poisoned lock only means a prior panic while holding it; dedup is
+            // a best-effort optimisation, so fall back to "miss" (full emit).
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match cache.get(id) {
+            Some(stamp) if stamp == updated_at => Some(stamp.clone()),
+            _ => {
+                cache.insert(id.to_string(), updated_at.to_string());
+                None
+            }
+        }
     }
 
     /// Wire-format Actor for every command this process dispatches.

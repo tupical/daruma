@@ -88,6 +88,64 @@ budget; the `truncation` marker is still emitted so the overflow is explicit
 and the caller knows content was withheld. Budget is therefore best-effort:
 "as small as possible without violating the no-compress contract".
 
+## Session dedup: `unchanged` / `ref` responses
+
+`daruma_get` and `daruma_plan_get` (`view=detail`) accept an optional
+`dedup: true` flag. When set, the server remembers — **for the lifetime of the
+MCP session** — which objects it already handed this session in full, and at
+which version. A second read of an object that has not changed returns a compact
+marker instead of the whole payload:
+
+```json
+{ "unchanged": true, "ref": "tsk_1", "since": "2026-01-01T00:00:00Z",
+  "id": "tsk_1", "status": "in_progress", "priority": "p0" }
+```
+
+- `unchanged: true` — the object is byte-identical to what you were already
+  given this session; the full payload is withheld.
+- `ref` — **the object id**, human-readable by construction (Daruma ids already
+  *are* short handles, e.g. `tsk_1` / `pln_1`; there is no separate ref format
+  and no opaque hash). To hydrate the full object, re-read `ref` via the same
+  tool **without** `dedup`.
+- `since` — the object's `updated_at` at the moment it last changed; "unchanged
+  since this timestamp".
+- `id` / `status` / `priority` — the protected structural fields (same set as
+  the no-compress contract) are still carried so a client can act on lifecycle
+  state without hydrating.
+
+### Why it is opt-in
+
+Dedup is **off unless the client passes `dedup: true`**. Existing clients
+(Cursor, Claude Desktop, `daruma-claude`) expect a full object from
+`daruma_get` / `daruma_plan_get` and would break if they suddenly received an
+`unchanged` marker they do not understand. Opt-in is therefore the explicit
+"opt-out for clients that don't understand `ref`" the design calls for: everyone
+who does not ask keeps today's behaviour byte-for-byte. Progress view
+(`daruma_plan_get` default) never dedups — it is already compact.
+
+### How change is detected
+
+The only signal is `updated_at`. Every task/plan mutation bumps it through the
+event pipeline, so a matching stamp is a correct-by-construction "nothing
+changed" — no payload hashing, no event subscription. The cache lives on the
+`ApiClient` (`crates/mcp/src/client.rs`, `dedup_probe`), whose lifetime *is* the
+MCP session: one stdio process = one client = one session, so — unlike a
+cross-session cache — the server only ever refers you back to content **this
+session already saw**. There is no blind-spot where `ref` points at content the
+client never received.
+
+On the HTTP MCP transport a fresh `ApiClient` is built per request, so the cache
+starts empty and dedup harmlessly degrades to always-full responses; the stdio
+transport (how `daruma-claude` runs the server) is where dedup actually saves
+tokens.
+
+### Client recipe
+
+When you receive `{"unchanged": true, "ref": <id>, ...}`: you already hold the
+full object from earlier this session — reuse it. Only if you truly need the
+full body again (e.g. it was evicted from your own context) re-read `ref` with
+the same tool and **omit `dedup`** to force a full payload.
+
 ## Design rationale: pre-injection compression preserves the prompt cache
 
 This is **server-side pre-injection** compression: the response is shrunk
