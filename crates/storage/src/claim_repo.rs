@@ -2,8 +2,19 @@
 
 use crate::parse_ts;
 use chrono::{Duration, Utc};
-use daruma_shared::{AgentId, CoreError, Result, TaskId, Timestamp};
+use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, Timestamp};
+use serde::Serialize;
 use sqlx::{Row, SqlitePool};
+
+/// A live task claim (agent → task lock) as surfaced by the Agent Operations
+/// read layer. Mirrors an `agent_claims` row that has not yet expired.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActiveClaim {
+    pub agent_id: AgentId,
+    pub task_id: TaskId,
+    pub acquired_at: Timestamp,
+    pub expires_at: Timestamp,
+}
 
 /// Outcome of an atomic [`AgentClaimRepo::try_acquire`] attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +131,43 @@ impl AgentClaimRepo {
                     .map_err(|e| CoreError::serde(e.to_string()))
             })
             .collect()
+    }
+
+    /// List all live (non-expired) claims, optionally scoped to a project.
+    ///
+    /// "Active" mirrors [`sweep_expired`](Self::sweep_expired)/`is_claimed`:
+    /// a row exists **and** `expires_at >= now` (released claims are hard
+    /// `DELETE`d, expired ones are swept). `agent_claims` has no `project_id`
+    /// column, so scope is applied via an `EXISTS` against `tasks`.
+    pub async fn list_active(&self, project_id: Option<ProjectId>) -> Result<Vec<ActiveClaim>> {
+        let now = Utc::now().to_rfc3339();
+        let rows = match &project_id {
+            Some(p) => {
+                sqlx::query(
+                    "SELECT agent_id, task_id, acquired_at, expires_at FROM agent_claims \
+                     WHERE expires_at >= ? AND EXISTS ( \
+                         SELECT 1 FROM tasks \
+                         WHERE tasks.id = agent_claims.task_id AND tasks.project_id = ?) \
+                     ORDER BY acquired_at",
+                )
+                .bind(&now)
+                .bind(p.to_string())
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query(
+                    "SELECT agent_id, task_id, acquired_at, expires_at FROM agent_claims \
+                     WHERE expires_at >= ? ORDER BY acquired_at",
+                )
+                .bind(&now)
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        rows.iter().map(row_to_active_claim).collect()
     }
 
     // ── mutations ────────────────────────────────────────────────────────────
@@ -308,6 +356,31 @@ impl AgentClaimRepo {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+fn row_to_active_claim(r: &sqlx::sqlite::SqliteRow) -> Result<ActiveClaim> {
+    let agent_id: String = r
+        .try_get("agent_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let task_id: String = r
+        .try_get("task_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let acquired_at: String = r
+        .try_get("acquired_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let expires_at: String = r
+        .try_get("expires_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(ActiveClaim {
+        agent_id: agent_id
+            .parse::<AgentId>()
+            .map_err(|e| CoreError::serde(e.to_string()))?,
+        task_id: task_id
+            .parse::<TaskId>()
+            .map_err(|e| CoreError::serde(e.to_string()))?,
+        acquired_at: parse_ts(&acquired_at)?,
+        expires_at: parse_ts(&expires_at)?,
+    })
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -494,6 +567,67 @@ mod tests {
             repo.is_claimed_by_other(task_id, me).await.unwrap(),
             Some(them)
         );
+    }
+
+    #[tokio::test]
+    async fn list_active_returns_live_claims_and_scopes_by_project() {
+        use daruma_shared::ProjectId;
+        let (db, repo) = make_repo().await;
+        let project = ProjectId::new();
+        let agent = AgentId::new();
+        let task = TaskId::new();
+
+        // Seed a task in `project` so the EXISTS scope can match it.
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO tasks (id, project_id, title, created_at, updated_at) \
+             VALUES (?, ?, 'parent', ?, ?)",
+        )
+        .bind(task.to_string())
+        .bind(project.to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        repo.acquire(agent, task, Duration::seconds(60))
+            .await
+            .unwrap();
+
+        // Unscoped sees it.
+        let all = repo.list_active(None).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].agent_id, agent);
+        assert_eq!(all[0].task_id, task);
+
+        // Scoped to the right project sees it; a foreign project does not.
+        assert_eq!(repo.list_active(Some(project)).await.unwrap().len(), 1);
+        assert_eq!(repo.list_active(Some(ProjectId::new())).await.unwrap().len(), 0);
+
+        // Released → gone (hard DELETE).
+        repo.release(agent, task).await.unwrap();
+        assert!(repo.list_active(None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_active_excludes_expired() {
+        let (db, repo) = make_repo().await;
+        let agent = AgentId::new();
+        let task = TaskId::new();
+        sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(agent.to_string())
+        .bind(task.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind("2000-01-01T00:00:00+00:00")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        assert!(repo.list_active(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]

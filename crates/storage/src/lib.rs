@@ -57,7 +57,7 @@ pub use agent_inbox_repo::AgentInboxRepo;
 pub use artifact_repo::ArtifactRepo;
 pub use audit_finding_repo::{AuditFindingRepo, FindingFilter};
 pub use capability_profile_repo::{CapabilityProfile, CapabilityProfileRepo};
-pub use claim_repo::{AgentClaimRepo, ClaimOutcome};
+pub use claim_repo::{ActiveClaim, AgentClaimRepo, ClaimOutcome};
 pub use comment_repo::CommentRepo;
 pub use db::Db;
 pub use device_repo::{Device, DeviceRepo};

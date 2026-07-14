@@ -46,6 +46,22 @@ impl SessionRepo {
         rows.iter().map(row_to_session).collect()
     }
 
+    /// All sessions that have not ended (`ended_at IS NULL`) — the set of
+    /// agents currently working. Not project-scoped: sessions carry no
+    /// project id in the domain.
+    pub async fn list_active(&self) -> Result<Vec<AgentSession>> {
+        let rows = sqlx::query(
+            "SELECT id, agent_id, parent_agent_id, started_at, ended_at, \
+             metadata_json, plan_steps_json \
+             FROM agent_sessions WHERE ended_at IS NULL ORDER BY started_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        rows.iter().map(row_to_session).collect()
+    }
+
     pub async fn list_artifacts(&self, session_id: AgentSessionId) -> Result<Vec<SessionArtifact>> {
         let rows = sqlx::query(
             "SELECT id, session_id, kind, ref, metadata_json, created_at \
@@ -336,6 +352,27 @@ mod tests {
 
         let others = repo.list_for_agent(other_agent).await.unwrap();
         assert_eq!(others.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_list_active_excludes_ended() {
+        let (_db, repo) = make_repo().await;
+        let live = AgentSessionId::new();
+        let done = AgentSessionId::new();
+        repo.start(&make_session(live, AgentId::new()))
+            .await
+            .unwrap();
+        repo.start(&make_session(done, AgentId::new()))
+            .await
+            .unwrap();
+
+        // Both are active initially.
+        assert_eq!(repo.list_active().await.unwrap().len(), 2);
+
+        repo.end(done, time::now()).await.unwrap();
+        let active = repo.list_active().await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, live);
     }
 
     #[tokio::test]

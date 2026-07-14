@@ -5,7 +5,7 @@ use crate::parse_ts;
 use chrono::{Duration, Utc};
 use daruma_domain::{WorkUnit, WorkUnitStatus};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{AgentId, CoreError, Result, TaskId, Timestamp, WorkUnitId};
+use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, Timestamp, WorkUnitId};
 use sqlx::{Row, SqlitePool};
 
 pub struct WorkUnitRepo {
@@ -34,6 +34,45 @@ impl WorkUnitRepo {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_unit).collect()
+    }
+
+    /// Units across a whole project, creation order. Joins `tasks` since
+    /// `work_units` carries only `task_id` (no `project_id` column). Terminal
+    /// units are included unless the caller narrows with `status`. This is the
+    /// "Agent Operations" read: the project-wide work-unit queue.
+    pub async fn list_by_project(
+        &self,
+        project_id: ProjectId,
+        status: Option<WorkUnitStatus>,
+    ) -> Result<Vec<WorkUnit>> {
+        // Columns are qualified with `work_units.` because `tasks` shares
+        // several bare names (id, status, priority, created_at, …).
+        let base = "SELECT work_units.id, work_units.task_id, work_units.stage_plan_id, \
+             work_units.title, work_units.description, work_units.status, work_units.priority, \
+             work_units.capability_tags_json, work_units.owner_agent_id, \
+             work_units.claim_expires_at, work_units.artifact_refs_json, \
+             work_units.acceptance_json, work_units.created_at, work_units.updated_at \
+             FROM work_units JOIN tasks ON work_units.task_id = tasks.id \
+             WHERE tasks.project_id = ?";
+        let rows = match status {
+            Some(s) => {
+                sqlx::query(&format!(
+                    "{base} AND work_units.status = ? ORDER BY work_units.created_at"
+                ))
+                .bind(project_id.to_string())
+                .bind(s.as_str())
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query(&format!("{base} ORDER BY work_units.created_at"))
+                    .bind(project_id.to_string())
+                    .fetch_all(&self.pool)
+                    .await
+            }
+        }
+        .map_err(|e| CoreError::storage(e.to_string()))?;
         rows.iter().map(row_to_unit).collect()
     }
 
@@ -341,6 +380,66 @@ mod tests {
         );
         r.apply_event(&env).await.unwrap();
         wu
+    }
+
+    async fn seed_task(db: &Db, task: TaskId, project: ProjectId) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO tasks (id, project_id, title, created_at, updated_at) \
+             VALUES (?, ?, 'parent', ?, ?)",
+        )
+        .bind(task.to_string())
+        .bind(project.to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_by_project_joins_tasks_and_filters_status() {
+        let (db, r) = repo().await;
+        let project = ProjectId::new();
+        let other_project = ProjectId::new();
+        let task = TaskId::new();
+        let other_task = TaskId::new();
+        seed_task(&db, task, project).await;
+        seed_task(&db, other_task, other_project).await;
+
+        seed(&r, task, "a").await;
+        seed(&r, task, "b").await;
+        seed(&r, other_task, "elsewhere").await;
+
+        // Project scope excludes the unit under the other project.
+        let all = r.list_by_project(project, None).await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|u| u.task_id == task));
+
+        // Status filter narrows to matching units.
+        let agent = AgentId::new();
+        r.try_claim_next(task, agent, Duration::seconds(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let in_progress = r
+            .list_by_project(project, Some(WorkUnitStatus::InProgress))
+            .await
+            .unwrap();
+        assert_eq!(in_progress.len(), 1);
+        assert_eq!(in_progress[0].status, WorkUnitStatus::InProgress);
+        let todo = r
+            .list_by_project(project, Some(WorkUnitStatus::Todo))
+            .await
+            .unwrap();
+        assert_eq!(todo.len(), 1);
+
+        // Empty for a project with no work units.
+        assert!(r
+            .list_by_project(ProjectId::new(), None)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
