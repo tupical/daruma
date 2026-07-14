@@ -23,7 +23,7 @@ daruma-claude start "<task>" [--plan] [--workers N] [--max-retries M] [--agent c
 
 Flag summary:
 
-- `--plan` — enable AI decomposition of the task into subtasks before execution.
+- `--plan` — enable AI decomposition of the task into subtasks before execution. Requires `daruma_ai_decompose` to be registered on the connected server (SaaS/Meisei); the OSS server doesn't carry it, so `--plan` silently falls back to single-task execution there.
 - `--workers N` — concurrent `omc team` workers per subtask.
 - `--max-retries M` — per-subtask retry budget.
 - `--agent T` — executor backend (`claude`, `codex`, or `gemini`).

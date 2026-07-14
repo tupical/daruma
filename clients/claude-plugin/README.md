@@ -177,7 +177,9 @@ Bundled skills:
 
 ## The caveat
 
-AI decomposition (`--plan`) requires `OPENAI_API_KEY` set on the **daruma server**. Without it, `daruma_ai_decompose` returns `502 ai_unavailable` and `daruma-claude` silently falls back to single-task execution on the root task. To use real decomposition, export the key before starting the server:
+`--plan` depends on the `daruma_ai_decompose` tool actually being registered on the server you're connected to. It's part of SaaS/Meisei's tool catalog, but the **OSS daruma server does not register it** — `daruma-claude` checks `tools/list` before calling it, and if it's absent, prints a `[decompose]` notice and silently falls back to single-task execution on the root task, same as the API-key case below.
+
+On servers that do carry the tool, AI decomposition additionally requires `OPENAI_API_KEY` set on the **daruma server**. Without it, `daruma_ai_decompose` returns `502 ai_unavailable` and `daruma-claude` falls back the same way. To use real decomposition, export the key before starting the server:
 
 ```bash
 OPENAI_API_KEY=sk-... ./target/release/daruma-server

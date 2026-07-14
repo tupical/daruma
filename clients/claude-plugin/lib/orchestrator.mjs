@@ -4,8 +4,11 @@
 //   3. resolve project_id (workspace default or basename(cwd)).
 //   4. seed phase:
 //        - daruma_create({task: {title, description, project_id}}) → root_task_id
-//        - if plan-mode: try daruma_ai_decompose(root_task_id) → subtasks
-//                        create plan, attach subtasks, confirm
+//        - if plan-mode: gate on tools/list for daruma_ai_decompose (only
+//                        present on servers that register it — SaaS/Meisei,
+//                        not the OSS server); if present, try it → subtasks,
+//                        create plan, attach subtasks, confirm; otherwise
+//                        fall back to single-task execution
 //   5. execute loop:
 //        - single-task: omc team N:agent "<prompt>" → comment + complete
 //        - plan-mode:   loop daruma_plan_next_task → omc team → comment + complete
@@ -229,6 +232,19 @@ async function commentBranch({ mcp, taskId, branch, write }) {
 }
 
 async function tryDecompose({ mcp, taskId, write }) {
+  // daruma_ai_decompose is only registered on servers that carry it (SaaS /
+  // Meisei); the OSS server's tool catalog stops at
+  // daruma_ai_analyze_complexity. Gate on tools/list first so we don't call a
+  // phantom tool and get a generic "unknown tool" error — this is a distinct
+  // case from ai_decompose returning 502 ai_unavailable when OPENAI_API_KEY
+  // isn't set on a server that *does* have the tool.
+  const tools = await mcp.listTools();
+  const hasDecompose = tools.some((t) => t.name === "daruma_ai_decompose");
+  if (!hasDecompose) {
+    write(`[decompose] plan decomposition unavailable on this server (OSS): daruma_ai_decompose is not registered here — available on SaaS/Meisei`);
+    return null;
+  }
+
   // ai_decompose returns 502 ai_unavailable when OPENAI_API_KEY isn't set on
   // the server. Treat that case as "no AI, single-task mode" without aborting.
   const resp = await mcp.callTool("daruma_ai_decompose", { task_id: taskId });
@@ -747,4 +763,5 @@ export const _internal = {
   currentGitBranch,
   payload,
   runTeamFromPlanWaves,
+  tryDecompose,
 };

@@ -37,7 +37,7 @@ test("currentGitBranch returns null outside a git worktree", async () => {
   });
 });
 
-function mockMcp({ drains, tasks = {} } = {}) {
+function mockMcp({ drains, tasks = {}, tools = [] } = {}) {
   const calls = [];
   return {
     calls,
@@ -55,6 +55,10 @@ function mockMcp({ drains, tasks = {} } = {}) {
         return { parsed: { id: args.id, status: "active" }, text: "{}" };
       }
       return { parsed: { ok: true }, text: "{}" };
+    },
+    async listTools() {
+      calls.push({ name: "tools/list", args: {} });
+      return tools;
     },
   };
 }
@@ -121,6 +125,25 @@ test("team-from-plan releases and comments blocker on failed task", async () => 
   assert(mcp.calls.some((c) => c.name === "daruma_release" && c.args.agent_id === "agent_1" && c.args.task_id === "a"));
   assert(mcp.calls.some((c) => c.name === "daruma_comment" && c.args.task_id === "a" && c.args.kind === "blocker"));
   assert(!mcp.calls.some((c) => c.name === "daruma_get" && c.args.id === "b"));
+});
+
+test("tryDecompose returns null and skips daruma_ai_decompose when the tool is absent from the server's catalog", async () => {
+  const mcp = mockMcp({
+    drains: [],
+    tools: [{ name: "daruma_ai_analyze_complexity" }, { name: "daruma_create" }],
+  });
+  const messages = [];
+
+  const result = await _internal.tryDecompose({
+    mcp,
+    taskId: "task_1",
+    write: (s) => messages.push(s),
+  });
+
+  assert.equal(result, null);
+  assert(!mcp.calls.some((c) => c.name === "daruma_ai_decompose"));
+  assert(mcp.calls.some((c) => c.name === "tools/list"));
+  assert(messages.some((m) => m.includes("[decompose]") && m.includes("daruma_ai_decompose")));
 });
 
 test("team-from-plan drains, fetches, executes, and completes claimed task", async () => {

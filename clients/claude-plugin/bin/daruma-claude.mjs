@@ -98,6 +98,8 @@ daruma-claude start flags:
                       Default claude.
   --plan              Ask daruma to AI-decompose the root task into a plan
                       of subtasks, then execute each subtask via \`omc team\`.
+                      Requires daruma_ai_decompose on the connected server
+                      (SaaS/Meisei); OSS servers fall back to single-task.
   --project ID        Use this daruma project id instead of auto-resolving
                       from workspace info / cwd basename.
   --yes               Skip y/n confirmation prompts (implied when stdin is
