@@ -213,6 +213,34 @@ pub trait EvidenceRepository: Send + Sync {
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
 
+// ── Artifact registry (P4) ──────────────────────────────────────────────────────
+
+/// Read / projection interface for the `artifacts` table. Used by the artifact
+/// registry command handlers (register / assign-owner / status-change) and the
+/// read endpoints (get / list).
+#[async_trait]
+pub trait ArtifactRepository: Send + Sync {
+    /// Fetch an artifact by id; `None` if not found.
+    async fn get(
+        &self,
+        id: daruma_shared::ArtifactId,
+    ) -> Result<Option<daruma_domain::Artifact>>;
+
+    /// Fetch an artifact by its canonical `uri`; `None` if not found.
+    async fn get_by_uri(&self, uri: &str) -> Result<Option<daruma_domain::Artifact>>;
+
+    /// List artifacts, optionally scoped to a project, task, and/or status.
+    async fn list(
+        &self,
+        project_id: Option<ProjectId>,
+        task_id: Option<TaskId>,
+        status: Option<daruma_domain::ArtifactStatus>,
+    ) -> Result<Vec<daruma_domain::Artifact>>;
+
+    /// Apply a persisted event to the projection.
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
+}
+
 // ── Concrete implementations ──────────────────────────────────────────────────
 //
 // `daruma-core` already depends on `daruma-storage`, so we implement the
@@ -222,9 +250,33 @@ pub trait EvidenceRepository: Send + Sync {
 
 use daruma_events::Event;
 use daruma_storage::{
-    AgentClaimRepo, DocumentRepo, EvidenceRepo, ExternalRefRepo, PlanRepo, RuleRepo, RunNoteRepo,
-    RunRepo, SessionRepo, WorkLeaseRepo,
+    AgentClaimRepo, ArtifactRepo, DocumentRepo, EvidenceRepo, ExternalRefRepo, PlanRepo, RuleRepo,
+    RunNoteRepo, RunRepo, SessionRepo, WorkLeaseRepo,
 };
+
+#[async_trait]
+impl ArtifactRepository for ArtifactRepo {
+    async fn get(
+        &self,
+        id: daruma_shared::ArtifactId,
+    ) -> Result<Option<daruma_domain::Artifact>> {
+        ArtifactRepo::get(self, id).await
+    }
+    async fn get_by_uri(&self, uri: &str) -> Result<Option<daruma_domain::Artifact>> {
+        ArtifactRepo::get_by_uri(self, uri).await
+    }
+    async fn list(
+        &self,
+        project_id: Option<ProjectId>,
+        task_id: Option<TaskId>,
+        status: Option<daruma_domain::ArtifactStatus>,
+    ) -> Result<Vec<daruma_domain::Artifact>> {
+        ArtifactRepo::list(self, project_id, task_id, status).await
+    }
+    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
+        ArtifactRepo::apply_event(self, env).await
+    }
+}
 
 #[async_trait]
 impl EvidenceRepository for EvidenceRepo {

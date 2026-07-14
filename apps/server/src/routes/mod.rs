@@ -45,7 +45,8 @@ use daruma_core::{
 };
 use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, ArtifactStatus, CommentKind, CommentPatch,
-    ComplexityHint, Document, DocumentKind, NewComment, NewDocument, NewPlan, Plan, PlanPatch,
+    ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument, NewPlan, Plan,
+    PlanPatch,
     PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState,
     Verb,
 };
@@ -240,7 +241,8 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/evidence", get(list_evidence).post(record_evidence))
         .route("/evidence/{id}", get(get_evidence))
         // ── Artifact Registry (P4) — read-only HTTP surface ─────────────────
-        .route("/artifacts", get(list_artifacts))
+        .route("/artifacts", get(list_artifacts).post(register_artifact))
+        .route("/artifacts/{id}/status", post(set_artifact_status))
         .route("/artifacts/{id}/impact", get(artifact_impact))
         // ── Audit primitives ────────────────────────────────────────────────
         .route(
@@ -2478,6 +2480,83 @@ async fn list_artifacts(
     Ok(Json(json!({ "artifacts": items })))
 }
 
+/// `POST /v1/artifacts` — register a new artifact (event-sourced via the
+/// command bus). The body is a bare `NewArtifact` (`{"uri", "title",
+/// "description"?, "task_id"?, "project_id"?}`) — NOT wrapped — matching the
+/// `daruma_artifact_register` MCP tool's wire format.
+async fn register_artifact(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<NewArtifact>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::RegisterArtifact { artifact: body },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let artifact = envs.iter().find_map(|e| match &e.payload {
+        Event::ArtifactRegistered { artifact } => Some(artifact.clone()),
+        _ => None,
+    });
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "artifact": artifact }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct SetArtifactStatusBody {
+    status: ArtifactStatus,
+}
+
+/// `POST /v1/artifacts/{id}/status` — transition an artifact into a different
+/// lifecycle status (`pending` / `active` / `committed` / `deprecated`). Emits
+/// `ArtifactStatusChanged`; a no-op when already in the requested status.
+async fn set_artifact_status(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<SetArtifactStatusBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let artifact_id = id_str.parse::<ArtifactId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid artifact id: {id_str}"
+        )))
+    })?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::ChangeArtifactStatus {
+                artifact_id,
+                to: body.status,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "artifact_id": artifact_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
 /// Query for `GET /v1/artifacts/{id}/impact`.
 #[derive(Deserialize)]
 struct ArtifactImpactQuery {
@@ -4452,7 +4531,11 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::CreateRule { .. }
         | Command::UpdateRule { .. }
         | Command::DisableRule { .. }
-        | Command::RecordEvidence { .. } => Capability::ProjectWrite,
+        | Command::RecordEvidence { .. }
+        // Artifact registry (P4) — project-scoped write surface.
+        | Command::RegisterArtifact { .. }
+        | Command::AssignArtifactOwner { .. }
+        | Command::ChangeArtifactStatus { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,
         Command::AddComment { .. }
         | Command::EditComment { .. }

@@ -186,6 +186,7 @@ impl TestAppBuilder {
         .with_capability_profiles(capability_profiles.clone())
         .with_rules(rules.clone())
         .with_evidence(evidence.clone())
+        .with_artifacts(artifacts.clone())
         .with_relations(relations.clone());
         if let Some(gate) = self.lifecycle_gate.clone() {
             handler = handler.with_lifecycle_gate(gate);

@@ -21,9 +21,9 @@ use crate::{
     plan_concurrency::detect_parent_cycle,
     relation_enforcement,
     repos::{
-        AgentClaimRepository, DocumentRepository, EvidenceRepository, ExternalRefRepository,
-        PlanRepository, RuleRepository, RunNoteRepository, RunRepository, SessionRepository,
-        WorkLeaseRepository,
+        AgentClaimRepository, ArtifactRepository, DocumentRepository, EvidenceRepository,
+        ExternalRefRepository, PlanRepository, RuleRepository, RunNoteRepository, RunRepository,
+        SessionRepository, WorkLeaseRepository,
     },
     search::{index_items_for_event, SearchProvider},
     Command,
@@ -88,6 +88,11 @@ pub struct CommandHandler {
     // until wired; `RecordEvidence` returns CoreError::Storage when absent. The
     // gate reads through this repo to satisfy `required` requirements.
     pub evidence: Option<Arc<dyn EvidenceRepository>>,
+
+    // Artifact-registry projection (P4). `None` until wired; the artifact
+    // commands (`RegisterArtifact` / `AssignArtifactOwner` /
+    // `ChangeArtifactStatus`) return CoreError::Storage when absent.
+    pub artifacts: Option<Arc<dyn ArtifactRepository>>,
 }
 
 impl CommandHandler {
@@ -126,6 +131,7 @@ impl CommandHandler {
             lifecycle_gate: None,
             rules: None,
             evidence: None,
+            artifacts: None,
         }
     }
 
@@ -228,6 +234,12 @@ impl CommandHandler {
     /// Wire the evidence-registry projection (`RecordEvidence` + gate reads).
     pub fn with_evidence(mut self, repo: Arc<dyn EvidenceRepository>) -> Self {
         self.evidence = Some(repo);
+        self
+    }
+
+    /// Wire the artifact-registry projection (P4 artifact commands).
+    pub fn with_artifacts(mut self, repo: Arc<dyn ArtifactRepository>) -> Self {
+        self.artifacts = Some(repo);
         self
     }
 
@@ -378,6 +390,9 @@ impl CommandHandler {
             }
             if let Some(evidence) = &self.evidence {
                 evidence.apply_event(env).await?;
+            }
+            if let Some(artifacts) = &self.artifacts {
+                artifacts.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -830,6 +845,9 @@ impl CommandHandler {
             }
             if let Some(evidence) = &self.evidence {
                 evidence.apply_event(env).await?;
+            }
+            if let Some(artifacts) = &self.artifacts {
+                artifacts.apply_event(env).await?;
             }
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
@@ -2483,6 +2501,66 @@ impl CommandHandler {
                 }
                 Ok(events)
             }
+
+            // ── Artifact registry (P4) ─────────────────────────────────────────
+            Command::RegisterArtifact { artifact } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                if artifact.uri.trim().is_empty() {
+                    return Err(CoreError::validation("artifact uri must not be empty"));
+                }
+                if artifact.title.trim().is_empty() {
+                    return Err(CoreError::validation("artifact title must not be empty"));
+                }
+                // Reject duplicate `uri`. The projection upserts by PRIMARY KEY
+                // `id`; a re-register with the same `uri` but a fresh id would
+                // resolve the `uri` UNIQUE conflict via delete-then-insert and
+                // cascade-drop the old row's relations. Guard at the command
+                // layer so that never happens.
+                if repo.get_by_uri(&artifact.uri).await?.is_some() {
+                    return Err(CoreError::conflict(format!(
+                        "artifact with uri {} already registered",
+                        artifact.uri
+                    )));
+                }
+                let mut record = artifact.into_artifact(time::now());
+                if record.id == daruma_shared::ArtifactId::default() {
+                    record.id = daruma_shared::ArtifactId::new();
+                }
+                Ok(vec![Event::ArtifactRegistered { artifact: record }])
+            }
+
+            Command::AssignArtifactOwner {
+                artifact_id,
+                owner_agent_id,
+            } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                repo.get(artifact_id).await?.ok_or_else(|| {
+                    CoreError::not_found(format!("artifact {artifact_id} not found"))
+                })?;
+                Ok(vec![Event::ArtifactOwnerAssigned {
+                    artifact_id,
+                    owner_agent_id,
+                    at: time::now(),
+                }])
+            }
+
+            Command::ChangeArtifactStatus { artifact_id, to } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                let current = repo.get(artifact_id).await?.ok_or_else(|| {
+                    CoreError::not_found(format!("artifact {artifact_id} not found"))
+                })?;
+                let from = current.status;
+                if from == to {
+                    // Already in the requested status — no-op.
+                    return Ok(vec![]);
+                }
+                Ok(vec![Event::ArtifactStatusChanged {
+                    artifact_id,
+                    from,
+                    to,
+                    at: time::now(),
+                }])
+            }
         }
     }
 }
@@ -2573,6 +2651,15 @@ fn require_evidence(
     evidence
         .as_ref()
         .ok_or_else(|| CoreError::storage("evidence repository not configured"))
+}
+
+/// Borrow the artifact repo or return a clean "not configured" error.
+fn require_artifacts(
+    artifacts: &Option<Arc<dyn ArtifactRepository>>,
+) -> Result<&Arc<dyn ArtifactRepository>> {
+    artifacts
+        .as_ref()
+        .ok_or_else(|| CoreError::storage("artifact repository not configured"))
 }
 
 /// Fetch the document or return `not_found`. Used by every Document-mutation

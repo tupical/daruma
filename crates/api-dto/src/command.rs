@@ -5,13 +5,13 @@
 //! in tokio / sqlx.
 
 use daruma_domain::{
-    AgentAction, AgentSessionPlanStep, CommentPatch, CompletionNote, NewComment, NewDocument,
-    NewPlan, NewTask, PlanPatch, PlanStatus, Priority, RelationKind, RunOutcome,
-    SessionArtifactKind, SignalKind, Status, TaskPatch, WorkLease,
+    AgentAction, AgentSessionPlanStep, ArtifactStatus, CommentPatch, CompletionNote, NewArtifact,
+    NewComment, NewDocument, NewPlan, NewTask, PlanPatch, PlanStatus, Priority, RelationKind,
+    RunOutcome, SessionArtifactKind, SignalKind, Status, TaskPatch, WorkLease,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, CommentId, DocumentId, HandoffId, PlanId, ProjectId, RelationId,
-    RuleId, RunId, TaskId, WorkUnitId,
+    AgentId, AgentSessionId, ArtifactId, CommentId, DocumentId, HandoffId, PlanId, ProjectId,
+    RelationId, RuleId, RunId, TaskId, WorkUnitId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -418,6 +418,27 @@ pub enum Command {
     RecordEvidence {
         evidence: daruma_domain::NewEvidence,
     },
+
+    // ── Artifact registry (P4) ────────────────────────────────────────────────
+    /// Register a new artifact in the registry. Idempotent on `uri`: a
+    /// duplicate `uri` is rejected at the command layer so a fresh id cannot
+    /// delete-then-insert the existing row (and cascade its relations away).
+    RegisterArtifact {
+        artifact: NewArtifact,
+    },
+
+    /// Assign the outcome owner (accountability) of an artifact. Decoupled
+    /// from the transient work-lease holder.
+    AssignArtifactOwner {
+        artifact_id: ArtifactId,
+        owner_agent_id: AgentId,
+    },
+
+    /// Transition an artifact's lifecycle status.
+    ChangeArtifactStatus {
+        artifact_id: ArtifactId,
+        to: ArtifactStatus,
+    },
 }
 
 impl Command {
@@ -495,6 +516,10 @@ impl Command {
             Command::DisableRule { .. } => "disable_rule",
             // Evidence registry
             Command::RecordEvidence { .. } => "record_evidence",
+            // Artifact registry (P4)
+            Command::RegisterArtifact { .. } => "register_artifact",
+            Command::AssignArtifactOwner { .. } => "assign_artifact_owner",
+            Command::ChangeArtifactStatus { .. } => "change_artifact_status",
         }
     }
 }

@@ -1,9 +1,10 @@
-//! End-to-end integration tests for the read-only Artifact Registry HTTP
-//! surface (`GET /v1/artifacts`, `GET /v1/artifacts/{id}/impact`).
+//! End-to-end integration tests for the Artifact Registry HTTP surface.
 //!
-//! There is no HTTP write path for artifacts (register is out of scope), so the
-//! projection is seeded directly via `ArtifactRepo::apply_event` and, for the
-//! impact traversal, the WorkspaceGraph is seeded the same way.
+//! Read paths (`GET /v1/artifacts`, `GET /v1/artifacts/{id}/impact`) that
+//! predate the write layer seed the projection directly via
+//! `ArtifactRepo::apply_event`. The newer write paths (`POST /v1/artifacts`,
+//! `POST /v1/artifacts/{id}/status`) exercise the real command bus → event →
+//! projection round-trip.
 
 use axum::http::StatusCode;
 use daruma_domain::{
@@ -15,7 +16,7 @@ use daruma_shared::{
 };
 
 mod common;
-use common::{json_get, test_app};
+use common::{json_get, json_post, test_app};
 
 fn artifact(uri: &str, project_id: Option<ProjectId>) -> Artifact {
     let now = chrono::Utc::now();
@@ -194,6 +195,131 @@ async fn impact_returns_neighborhood_for_known_artifact() {
             .iter()
             .any(|e| e["kind"].as_str() == Some("ArtDependsOn")),
         "dependency edge present: {body}"
+    );
+}
+
+#[tokio::test]
+async fn register_via_http_then_list_sees_artifact() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let project = ProjectId::new();
+
+    // POST /v1/artifacts — bare NewArtifact body (no wrapper), matching the
+    // daruma_artifact_register MCP wire format.
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        "/v1/artifacts",
+        &format!(
+            r#"{{"uri":"artifact://api/payments","title":"Payments API","description":"billing","project_id":"{}"}}"#,
+            project.as_uuid()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register failed: {body}");
+    assert!(body["success"].as_bool().unwrap_or(false));
+    let new_id = body["data"]["artifact"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        body["data"]["artifact"]["status"].as_str().unwrap(),
+        "pending"
+    );
+
+    // GET /v1/artifacts — the registered artifact is visible via the projection.
+    let (status, body) = json_get(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts?project_id={project}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["artifacts"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "expected registered artifact: {body}");
+    assert_eq!(items[0]["id"].as_str().unwrap(), new_id);
+    assert_eq!(
+        items[0]["uri"].as_str().unwrap(),
+        "artifact://api/payments"
+    );
+    assert_eq!(items[0]["title"].as_str().unwrap(), "Payments API");
+    assert_eq!(items[0]["status"].as_str().unwrap(), "pending");
+}
+
+#[tokio::test]
+async fn status_change_via_http_is_reflected_in_list() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let project = ProjectId::new();
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        "/v1/artifacts",
+        &format!(
+            r#"{{"uri":"artifact://svc/queue","title":"Queue","project_id":"{}"}}"#,
+            project.as_uuid()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register failed: {body}");
+    let id = body["data"]["artifact"]["id"].as_str().unwrap().to_string();
+
+    // POST /v1/artifacts/{id}/status — flip to active.
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{id}/status"),
+        r#"{"status":"active"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "status change failed: {body}");
+    assert!(body["success"].as_bool().unwrap_or(false));
+
+    // GET reflects the new status.
+    let (status, body) = json_get(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts?project_id={project}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["artifacts"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["status"].as_str().unwrap(), "active");
+
+    // Same-status change is a no-op (still 200, no error).
+    let (status, _) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{id}/status"),
+        r#"{"status":"active"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn duplicate_uri_registration_conflicts() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+
+    let body = r#"{"uri":"artifact://api/inventory","title":"Inventory"}"#;
+    let (status, first) = json_post(app.router.clone(), &token, "/v1/artifacts", body).await;
+    assert_eq!(status, StatusCode::OK, "first register failed: {first}");
+
+    // Re-registering the same uri is rejected at the command layer (409) so the
+    // existing row — and its relations — cannot be delete-then-inserted away.
+    let (status, _) = json_post(app.router.clone(), &token, "/v1/artifacts", body).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Exactly one artifact survives; the original was not clobbered.
+    let (status, list) = json_get(app.router.clone(), &token, "/v1/artifacts").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = list["artifacts"].as_array().unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .filter(|a| a["uri"].as_str() == Some("artifact://api/inventory"))
+            .count(),
+        1
     );
 }
 

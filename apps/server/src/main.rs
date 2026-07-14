@@ -157,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         .with_capability_profiles(capability_profiles.clone())
         .with_rules(rules.clone())
         .with_evidence(evidence.clone())
+        .with_artifacts(artifacts.clone())
         // Rule engine reads through the same projections (zero-cost when empty).
         // Evidence satisfies `required` requirements (spec §1.3).
         .with_lifecycle_gate(Arc::new(daruma_core::RuleEngineGate::with_evidence(
