@@ -48,7 +48,7 @@ use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, ArtifactStatus, CommentKind, CommentPatch,
     ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument, NewPlan, Plan,
     PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch,
-    TriageState, Verb,
+    TriageState, Verb, WorkUnitStatus,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -343,6 +343,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         )
         // ── Session routes (W3.1) ───────────────────────────────────────────
         .route("/sessions", post(start_session).get(list_sessions))
+        .route("/sessions/active", get(list_active_sessions))
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/end", post(end_session))
         .route(
@@ -354,11 +355,14 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             post(attach_session_artifact).get(list_session_artifacts),
         )
         // ── Claim routes (W3.1) ─────────────────────────────────────────────
-        .route("/claims", post(acquire_claim))
+        .route("/claims", post(acquire_claim).get(list_active_claims))
         .route("/claims/{agent_id}/{task_id}", delete(release_claim))
         // ── Work-lease routes (parallel-agent file coordination) ────────────
         .route("/leases", post(reserve_files).get(active_work))
-        .route("/work-units", post(create_work_unit))
+        .route(
+            "/work-units",
+            post(create_work_unit).get(list_project_work_units),
+        )
         .route("/work-units/drain-next", post(work_unit_drain_next))
         .route("/work-units/{id}/complete", post(complete_work_unit))
         .route("/work-units/{id}/release", post(release_work_unit))
@@ -1308,6 +1312,49 @@ async fn create_work_unit(
         warnings: vec![],
         client_command_id: None,
     }))
+}
+
+#[derive(Deserialize)]
+struct ListProjectWorkUnitsQuery {
+    project_id: String,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// `GET /v1/work-units?project_id=…[&status=…]` — the project-wide work-unit
+/// queue: what's queued, who took what (Agent Operations / VIZ-5). Terminal
+/// units are included unless narrowed with `status`.
+async fn list_project_work_units(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ListProjectWorkUnitsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
+        ApiError::from(CoreError::validation(format!(
+            "invalid project id: {}",
+            q.project_id
+        )))
+    })?;
+    let status = q
+        .status
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            WorkUnitStatus::parse(s).ok_or_else(|| {
+                ApiError::from(CoreError::validation(format!(
+                    "invalid work unit status: {s}"
+                )))
+            })
+        })
+        .transpose()?;
+    let units = state
+        .work_units
+        .list_by_project(project_id, status)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "work_units": units })))
 }
 
 /// `GET /v1/tasks/{id}/work-units` — full decomposition state of a task.
@@ -6214,6 +6261,15 @@ async fn start_session(
     ))
 }
 
+/// Session GETs serve two audiences: dispatch agents (`AgentDispatch`) and
+/// read-only operations viewers (`RunRead`, as on the neighbouring run/lease
+/// GETs). Accept either so a viewer token doesn't 403 on pure reads.
+fn require_session_read(auth: &AuthContext) -> Result<(), ApiError> {
+    auth.require(Capability::AgentDispatch)
+        .or_else(|_| auth.require(Capability::RunRead))
+        .map_err(ApiError::from_missing_cap)
+}
+
 #[derive(Deserialize)]
 struct ListSessionsQuery {
     agent_id: String,
@@ -6224,8 +6280,7 @@ async fn list_sessions(
     State(state): State<AppState>,
     Query(q): Query<ListSessionsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
+    require_session_read(&auth)?;
     let agent_id = q.agent_id.parse::<AgentId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid agent_id: {}",
@@ -6240,13 +6295,24 @@ async fn list_sessions(
     Ok(Json(json!({ "sessions": sessions })))
 }
 
+/// `GET /v1/sessions/active` — sessions with no `ended_at`: the set of agents
+/// currently working (Agent Operations / VIZ-5). Not project-scoped: sessions
+/// carry no project id in the domain.
+async fn list_active_sessions(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_session_read(&auth)?;
+    let sessions = state.sessions.list_active().await.map_err(ApiError::from)?;
+    Ok(Json(json!({ "sessions": sessions })))
+}
+
 async fn get_session(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Path(id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
+    require_session_read(&auth)?;
     let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid session id: {id_str}"
@@ -6386,8 +6452,7 @@ async fn list_session_artifacts(
     State(state): State<AppState>,
     Path(id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    auth.require(Capability::AgentDispatch)
-        .map_err(ApiError::from_missing_cap)?;
+    require_session_read(&auth)?;
     let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
         ApiError::from(CoreError::validation(format!(
             "invalid session id: {id_str}"
@@ -6408,6 +6473,40 @@ struct AcquireClaimBody {
     agent_id: AgentId,
     task_id: TaskId,
     ttl_secs: u32,
+}
+
+#[derive(Deserialize)]
+struct ListClaimsQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+/// `GET /v1/claims` — live (non-expired) task claims, optionally scoped to a
+/// project (Agent Operations / VIZ-5). Released claims are deleted and
+/// expired ones swept, so this is exactly "who holds what right now".
+async fn list_active_claims(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<ListClaimsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let project_id = q
+        .project_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<ProjectId>().map_err(|_| {
+                ApiError::from(CoreError::validation(format!("invalid project id: {s}")))
+            })
+        })
+        .transpose()?;
+    let claims = state
+        .claims
+        .list_active(project_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "claims": claims })))
 }
 
 async fn acquire_claim(
