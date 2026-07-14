@@ -46,7 +46,7 @@ pub use relation::{Relation, RelationKind, TaskRelations};
 pub use rule::{
     Condition, NewRule, Requirement, Rule, RuleMode, RulePatch, RuleScope, RuleTrigger,
 };
-pub use run::{Run, RunNote, RunOutcome, RunStatus};
+pub use run::{Run, RunNote, RunOutcome, RunStatus, RunStep};
 pub use session::{
     AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind, SessionStepStatus,
 };

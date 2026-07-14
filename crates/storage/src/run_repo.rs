@@ -2,9 +2,9 @@
 //! `runs` SQLite table.
 
 use crate::parse_ts;
-use daruma_domain::{Run, RunStatus};
+use daruma_domain::{Run, RunOutcome, RunStatus, RunStep};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{AgentId, CoreError, PlanId, Result, RunId, Timestamp};
+use daruma_shared::{AgentId, CoreError, PlanId, Result, RunId, TaskId, Timestamp};
 use sqlx::{Row, SqlitePool};
 
 /// Read/write access to the `runs` projection table.
@@ -62,6 +62,24 @@ impl RunRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         rows.iter().map(row_to_run).collect()
+    }
+
+    /// List the steps of a run in start order (oldest first).
+    ///
+    /// `outcome` is re-parsed from the stored `RunOutcome` JSON so callers get
+    /// a nested JSON object (e.g. `{"kind":"failed","reason":…}`), not an
+    /// escaped string.
+    pub async fn list_steps(&self, run_id: RunId) -> Result<Vec<RunStep>> {
+        let rows = sqlx::query(
+            "SELECT task_id, started_at, finished_at, outcome \
+             FROM run_steps WHERE run_id = ? ORDER BY started_at ASC, id ASC",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        rows.iter().map(row_to_run_step).collect()
     }
 
     // ── §3.7.4 liveness ──────────────────────────────────────────────────────
@@ -141,6 +159,83 @@ impl RunRepo {
             .execute(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Insert an open `run_steps` row for a `RunStepStarted` event.
+    async fn insert_step(&self, run_id: RunId, task_id: TaskId, at: Timestamp) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO run_steps (run_id, task_id, started_at, finished_at, outcome) \
+             VALUES (?, ?, ?, NULL, NULL)",
+        )
+        .bind(run_id.to_string())
+        .bind(task_id.to_string())
+        .bind(at.to_rfc3339())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Close the most recent open step for `run_id`+`task_id` on a
+    /// `RunStepFinished` event, stamping `finished_at` and the full serialised
+    /// [`RunOutcome`].
+    ///
+    /// Ordering by `started_at DESC` picks the latest open attempt so a task
+    /// retried within one run closes its most recent step. Defensive: if no
+    /// open step exists (a `RunStepFinished` with no preceding `RunStepStarted`
+    /// — should not happen in the normal command flow), we insert a synthetic
+    /// already-finished row (`started_at = finished_at = at`) so the outcome is
+    /// never silently dropped from the timeline.
+    async fn finish_step_row(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        outcome: &RunOutcome,
+        at: Timestamp,
+    ) -> Result<()> {
+        let outcome_json =
+            serde_json::to_string(outcome).map_err(|e| CoreError::serde(e.to_string()))?;
+
+        let open_id: Option<i64> = sqlx::query(
+            "SELECT id FROM run_steps \
+             WHERE run_id = ? AND task_id = ? AND finished_at IS NULL \
+             ORDER BY started_at DESC, id DESC LIMIT 1",
+        )
+        .bind(run_id.to_string())
+        .bind(task_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        .map(|r| r.try_get::<i64, _>("id"))
+        .transpose()
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        match open_id {
+            Some(id) => {
+                sqlx::query("UPDATE run_steps SET finished_at = ?, outcome = ? WHERE id = ?")
+                    .bind(at.to_rfc3339())
+                    .bind(&outcome_json)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO run_steps (run_id, task_id, started_at, finished_at, outcome) \
+                     VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(run_id.to_string())
+                .bind(task_id.to_string())
+                .bind(at.to_rfc3339())
+                .bind(at.to_rfc3339())
+                .bind(&outcome_json)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+        }
         Ok(())
     }
 
@@ -244,9 +339,24 @@ impl RunRepo {
                 self.upsert_run(run).await?;
             }
 
-            Event::RunStepStarted { run_id, at, .. }
-            | Event::RunStepFinished { run_id, at, .. } => {
+            Event::RunStepStarted {
+                run_id,
+                task_id,
+                at,
+            } => {
                 self.touch_activity(*run_id, *at).await?;
+                self.insert_step(*run_id, *task_id, *at).await?;
+            }
+
+            Event::RunStepFinished {
+                run_id,
+                task_id,
+                outcome,
+                at,
+            } => {
+                self.touch_activity(*run_id, *at).await?;
+                self.finish_step_row(*run_id, *task_id, outcome, *at)
+                    .await?;
             }
 
             Event::RunCompleted { run_id, at } => {
@@ -383,6 +493,35 @@ fn row_to_run(row: &sqlx::sqlite::SqliteRow) -> Result<Run> {
         last_activity_at: last_activity_at_s.map(|s| parse_ts(&s)).transpose()?,
         unresponsive_at: unresponsive_at_s.map(|s| parse_ts(&s)).transpose()?,
         stale_at: stale_at_s.map(|s| parse_ts(&s)).transpose()?,
+    })
+}
+
+fn row_to_run_step(row: &sqlx::sqlite::SqliteRow) -> Result<RunStep> {
+    let task_id: String = row
+        .try_get("task_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let started_at_s: String = row
+        .try_get("started_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let finished_at_s: Option<String> = row
+        .try_get("finished_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let outcome_s: Option<String> = row
+        .try_get("outcome")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    let outcome = outcome_s
+        .map(|s| serde_json::from_str::<serde_json::Value>(&s))
+        .transpose()
+        .map_err(|e| CoreError::serde(e.to_string()))?;
+
+    Ok(RunStep {
+        task_id: task_id
+            .parse::<TaskId>()
+            .map_err(|e| CoreError::serde(e.to_string()))?,
+        started_at: parse_ts(&started_at_s)?,
+        finished_at: finished_at_s.map(|s| parse_ts(&s)).transpose()?,
+        outcome,
     })
 }
 

@@ -329,8 +329,11 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/plans/{id}/progress", get(get_plan_progress))
         .route("/plans/{id}/graph", get(get_plan_graph))
         .route("/plans/{id}/fanout", get(get_plan_fanout))
+        .route("/plans/{id}/runs", get(list_plan_runs))
         // ── Run routes (W3.1) ───────────────────────────────────────────────
         .route("/runs", post(start_run))
+        .route("/runs/{id}", get(get_run))
+        .route("/runs/{id}/timeline", get(get_run_timeline))
         .route("/runs/{id}/step/start", post(run_start_step))
         .route("/runs/{id}/step/finish", post(run_finish_step))
         .route("/runs/{id}/complete", post(complete_run))
@@ -5859,6 +5862,87 @@ async fn list_run_notes(
     Ok(Json(json!({
         "notes": notes,
         "next_cursor": next_cursor,
+    })))
+}
+
+/// `GET /v1/runs/{id}` — fetch a single run projection.
+async fn get_run(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let run_id = id_str
+        .parse::<RunId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run = state
+        .runs
+        .get(run_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("run {run_id}"))))?;
+    Ok(Json(json!({ "run": run })))
+}
+
+/// `GET /v1/plans/{id}/runs` — all runs of a plan, oldest first.
+async fn list_plan_runs(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let plan_id = id_str
+        .parse::<PlanId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let runs = state
+        .runs
+        .list_by_plan(plan_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "runs": runs })))
+}
+
+/// `GET /v1/runs/{id}/timeline` — the run plus its ordered steps and notes.
+///
+/// Notes are pulled whole (fixed large limit, no client cursor) so the
+/// timeline is a single self-contained `{run, steps, notes}` document.
+async fn get_run_timeline(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let run_id = id_str
+        .parse::<RunId>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+
+    let run = state
+        .runs
+        .get(run_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("run {run_id}"))))?;
+
+    let steps = state
+        .runs
+        .list_steps(run_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Timeline shows the full note journal; `list_for_run` clamps to 500.
+    let notes = state
+        .run_notes
+        .list_for_run(run_id, 500, None)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(json!({
+        "run": run,
+        "steps": steps,
+        "notes": notes,
     })))
 }
 

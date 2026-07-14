@@ -1,6 +1,6 @@
 //! Run entity — a single agent execution pass through a Plan.
 
-use daruma_shared::{AgentId, PlanId, RunId, RunNoteId, Timestamp};
+use daruma_shared::{AgentId, PlanId, RunId, RunNoteId, TaskId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::Actor;
@@ -56,6 +56,22 @@ pub struct Run {
     /// Set once when `RunStale` has been emitted for this run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_at: Option<Timestamp>,
+}
+
+/// §3.7 — A single step of a [`Run`]: the execution of one task.
+///
+/// Projected from `RunStepStarted` / `RunStepFinished` events (migration
+/// 0049). `outcome` is the full [`RunOutcome`] parsed back into a JSON value
+/// (so `Failed { reason }` keeps its reason) and is `None` while the step is
+/// still open. Projection-only view — never dispatched as a command payload.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunStep {
+    pub task_id: TaskId,
+    pub started_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<serde_json::Value>,
 }
 
 /// §3.8.2 — A free-form journal entry attached to a [`Run`].
