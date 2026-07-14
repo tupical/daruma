@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::client::ApiClient;
@@ -4431,6 +4432,73 @@ fn mcp_page_by_offset(value: Value, cursor: Option<&str>, limit: usize) -> Value
     )
 }
 
+/// Rough token estimate from a byte count. Real tokenisation varies by model;
+/// `bytes / 4` is the usual order-of-magnitude heuristic and is documented as
+/// approximate wherever it surfaces (see `docs/mcp/TOKEN-ECONOMY.md`).
+const BYTES_PER_TOKEN_ESTIMATE: u64 = 4;
+
+/// Serialized byte length of a JSON value — the same measure the server uses
+/// for `result_bytes` telemetry (`serde_json::to_vec(...).len()`).
+fn json_bytes(value: &Value) -> u64 {
+    serde_json::to_vec(value).map(|b| b.len() as u64).unwrap_or(0)
+}
+
+/// A reusable handle describing content that was withheld from a response so
+/// the caller can decide whether to hydrate the rest *without* a blind
+/// `daruma_get` / `daruma_plan_get`. Shared by list pagination (task B) and
+/// single-object bounded excerpts (task C).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct TruncationMarker {
+    /// How to hydrate the rest: a pagination cursor for a list, or the object
+    /// id for a single-object excerpt.
+    pointer: String,
+    /// Serialized bytes of the withheld content.
+    remaining_bytes: u64,
+    /// Rough token estimate for the withheld content (`remaining_bytes / 4`).
+    /// Approximate — see `docs/mcp/TOKEN-ECONOMY.md`.
+    remaining_tokens_estimate: u64,
+    /// One human-readable line summarising what was withheld.
+    summary: String,
+}
+
+impl TruncationMarker {
+    fn new(pointer: impl Into<String>, remaining_bytes: u64, summary: impl Into<String>) -> Self {
+        Self {
+            pointer: pointer.into(),
+            remaining_bytes,
+            remaining_tokens_estimate: remaining_bytes / BYTES_PER_TOKEN_ESTIMATE,
+            summary: summary.into(),
+        }
+    }
+
+    /// Marker for a paginated list tail: `remaining_items` more rows are
+    /// reachable via `pointer` (a cursor).
+    fn for_list_tail(pointer: impl Into<String>, remaining_items: usize, remaining_bytes: u64) -> Self {
+        let pointer = pointer.into();
+        let summary = format!(
+            "{remaining_items} more item(s) available, ~{remaining_bytes} bytes (~{} tokens); paginate with the cursor",
+            remaining_bytes / BYTES_PER_TOKEN_ESTIMATE
+        );
+        Self::new(pointer, remaining_bytes, summary)
+    }
+
+    /// Marker for a single-object excerpt: prose was trimmed to fit a token
+    /// budget; re-read `pointer` (the object id) without a budget for the
+    /// full object.
+    fn for_object_excerpt(pointer: impl Into<String>, remaining_bytes: u64, what: &str) -> Self {
+        let pointer = pointer.into();
+        let summary = format!(
+            "{what} trimmed to fit token budget, ~{remaining_bytes} bytes (~{} tokens) withheld; re-read id {pointer} without `max_tokens` for the full object",
+            remaining_bytes / BYTES_PER_TOKEN_ESTIMATE
+        );
+        Self::new(pointer, remaining_bytes, summary)
+    }
+
+    fn to_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
 fn mcp_page_rows<F>(
     rows: Vec<Value>,
     start: usize,
@@ -4441,17 +4509,20 @@ fn mcp_page_rows<F>(
 where
     F: Fn(usize, &[Value]) -> Option<String>,
 {
-    let mut page = rows
-        .into_iter()
-        .skip(start)
-        .take(limit.saturating_add(1))
-        .collect::<Vec<_>>();
-    let truncated = page.len() > limit;
-    if truncated {
-        page.truncate(limit);
-    }
+    let mut tail = rows.into_iter().skip(start).collect::<Vec<_>>();
+    let truncated = tail.len() > limit;
+    // Split off the withheld remainder so its size can be measured.
+    let rest = if truncated { tail.split_off(limit) } else { Vec::new() };
+    let page = tail;
     let next_cursor = if truncated {
         next_cursor(start, &page)
+    } else {
+        None
+    };
+    let truncation = if truncated {
+        let remaining_bytes = json_bytes(&Value::Array(rest.clone()));
+        let pointer = next_cursor.clone().unwrap_or_default();
+        Some(TruncationMarker::for_list_tail(pointer, rest.len(), remaining_bytes).to_value())
     } else {
         None
     };
@@ -4463,6 +4534,7 @@ where
         "truncated": truncated,
         "returned": returned,
         "total": total,
+        "truncation": truncation,
     })
 }
 
@@ -4871,6 +4943,63 @@ mod tests {
         );
         assert_eq!(searched[0]["snippet"], "hit ...");
         assert_eq!(searched[0]["task_id"], "tsk_1");
+    }
+
+    // ── Task B: truncation markers ──────────────────────────────────────────
+
+    #[test]
+    fn page_truncation_marker_populated_when_truncated() {
+        let rows = Value::Array(
+            (0..15)
+                .map(|i| json!({"id": format!("tsk_{i:02}"), "title": "row", "status": "todo"}))
+                .collect(),
+        );
+        let page = mcp_page_by_id(rows, None, 10);
+        assert_eq!(page["truncated"], true);
+        assert_eq!(page["returned"], 10);
+
+        let marker = &page["truncation"];
+        assert!(marker.is_object(), "truncation marker must be present");
+        // pointer equals the pagination cursor — how to hydrate the rest.
+        assert_eq!(marker["pointer"], page["next_cursor"]);
+        assert_eq!(marker["pointer"], "tsk_09");
+        // remaining_bytes is a real, non-zero measure of the withheld tail.
+        let remaining_bytes = marker["remaining_bytes"].as_u64().expect("remaining_bytes u64");
+        assert!(remaining_bytes > 0, "5 withheld rows must have non-zero bytes");
+        // token estimate is bytes/4.
+        assert_eq!(
+            marker["remaining_tokens_estimate"].as_u64().unwrap(),
+            remaining_bytes / 4
+        );
+        // human-readable, non-empty, and mentions the withheld count.
+        let summary = marker["summary"].as_str().expect("summary string");
+        assert!(!summary.is_empty(), "summary must be non-empty when truncated");
+        assert!(summary.contains("5 more item"), "summary: {summary}");
+    }
+
+    #[test]
+    fn page_has_no_truncation_marker_when_within_limit() {
+        let rows = Value::Array(
+            (0..3)
+                .map(|i| json!({"id": format!("tsk_{i}"), "status": "todo"}))
+                .collect(),
+        );
+        let page = mcp_page_by_id(rows, None, 10);
+        assert_eq!(page["truncated"], false);
+        assert!(page["truncation"].is_null(), "no marker when not truncated");
+        assert!(page["next_cursor"].is_null());
+    }
+
+    #[test]
+    fn truncation_marker_object_excerpt_summary_is_actionable() {
+        let marker = TruncationMarker::for_object_excerpt("tsk_42", 1200, "task description");
+        let v = marker.to_value();
+        assert_eq!(v["pointer"], "tsk_42");
+        assert_eq!(v["remaining_bytes"], 1200);
+        assert_eq!(v["remaining_tokens_estimate"], 300);
+        let summary = v["summary"].as_str().unwrap();
+        assert!(summary.contains("tsk_42"), "summary must name the id to re-read");
+        assert!(summary.contains("max_tokens"), "summary must hint how to get full");
     }
 
     #[test]
