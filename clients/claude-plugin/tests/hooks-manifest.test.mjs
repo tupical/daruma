@@ -50,10 +50,9 @@ test("hooks/hooks.json registers Stop hook with asyncRewake", () => {
   assert.ok(typeof cmd.rewakeMessage === "string", "Stop hook must have a rewakeMessage");
 });
 
-test("plugin.json references hooks file", () => {
+test("plugin.json relies on the standard auto-loaded hooks file", () => {
   const plugin = JSON.parse(readFileSync(PLUGIN_JSON, "utf8"));
-  assert.ok(plugin.hooks, "plugin.json must reference hooks");
-  assert.match(plugin.hooks, /hooks\.json/, "hooks field must point to hooks.json");
+  assert.equal(plugin.hooks, undefined, "explicit hooks path loads hooks/hooks.json twice");
 });
 
 test("plugin.json version is semver-like", () => {

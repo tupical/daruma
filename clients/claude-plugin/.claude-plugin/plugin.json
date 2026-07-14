@@ -7,6 +7,5 @@
   "homepage": "https://github.com/tupical/daruma/tree/main/clients/claude-plugin",
   "keywords": ["daruma", "daruma", "oh-my-claudecode", "orchestration", "multi-agent", "claude-code-plugin"],
   "commands": "./commands/",
-  "skills": "./skills/",
-  "hooks": "./hooks/hooks.json"
+  "skills": "./skills/"
 }
