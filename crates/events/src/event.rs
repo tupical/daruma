@@ -59,6 +59,16 @@ pub struct OperationalMetric {
     pub attrs: serde_json::Value,
 }
 
+/// One directed edge to (re)assert alongside an [`Event::GraphNodeUpserted`].
+/// Both endpoints are graph node ids; `kind` is the edge label (e.g.
+/// `derived_from` for pipeline lineage).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphEdgeSpec {
+    pub from_id: String,
+    pub to_id: String,
+    pub kind: String,
+}
+
 /// All mutations to the system are represented as events. Events are
 /// append-only; projections are derived in [`daruma-storage`].
 ///
@@ -69,6 +79,40 @@ pub struct OperationalMetric {
 pub enum Event {
     OperationalMetricRecorded {
         metric: OperationalMetric,
+    },
+
+    /// A platform-pipeline layer artifact was projected into the workspace
+    /// graph read-model. Emitted by the mcpbox platform orchestrator after each
+    /// successful hop; the projection ([`daruma-storage`]) upserts a node of
+    /// `kind` (`RawItem` / `SensingItem` / `Decision` / `PlanBrief` /
+    /// `ActionPacket`) plus any `edges`. The orchestrator is the only writer —
+    /// this keeps the sidecar index a pure read-model whose source of truth is
+    /// the event log.
+    GraphNodeUpserted {
+        /// Stable graph node id (the artifact id when it has one, otherwise a
+        /// run-scoped synthetic id).
+        node_id: String,
+        /// Node kind string, e.g. `RawItem` / `SensingItem` / `Decision` /
+        /// `PlanBrief` / `ActionPacket`.
+        kind: String,
+        /// The originating artifact/object id recorded on the node.
+        source_id: String,
+        /// Platform project scope, when the run was project-scoped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_id: Option<String>,
+        /// Short human title for the node.
+        title: String,
+        /// Node body text — kept short (a summary, not the full artifact).
+        #[serde(default)]
+        text: String,
+        /// Arbitrary node metadata (layer kind, run id, …).
+        #[serde(default)]
+        metadata_json: serde_json::Value,
+        /// Directed edges to (re)assert with this node (e.g. lineage
+        /// `derived_from` the previous hop).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        edges: Vec<GraphEdgeSpec>,
+        at: Timestamp,
     },
     TaskCreated {
         task: NewTask,
@@ -804,6 +848,7 @@ impl Event {
     pub fn kind(&self) -> &'static str {
         match self {
             Event::OperationalMetricRecorded { .. } => "operational_metric_recorded",
+            Event::GraphNodeUpserted { .. } => "graph_node_upserted",
             Event::TaskCreated { .. } => "task_created",
             Event::TaskUpdated { .. } => "task_updated",
             Event::TaskStatusChanged { .. } => "task_status_changed",
@@ -1026,6 +1071,8 @@ impl Event {
             // ── Runs channel ──────────────────────────────────────────────────
             // Mechanical run events.
             Event::OperationalMetricRecorded { .. }
+            // Pipeline projection (orchestrator read-model writes).
+            | Event::GraphNodeUpserted { .. }
             | Event::RunStarted { .. }
             | Event::RunStepStarted { .. }
             | Event::RunStepFinished { .. }
@@ -1227,6 +1274,53 @@ mod tests {
             },
             "task_created",
         );
+    }
+
+    #[test]
+    fn graph_node_upserted_round_trip_and_channel() {
+        let ev = Event::GraphNodeUpserted {
+            node_id: "dec_1".into(),
+            kind: "Decision".into(),
+            source_id: "dec_1".into(),
+            project_id: Some("11111111-1111-1111-1111-111111111111".into()),
+            title: "Ship it".into(),
+            text: "decision body".into(),
+            metadata_json: serde_json::json!({ "layer_kind": "Decision", "run_id": "r1" }),
+            edges: vec![GraphEdgeSpec {
+                from_id: "dec_1".into(),
+                to_id: "si_1".into(),
+                kind: "derived_from".into(),
+            }],
+            at: time::now(),
+        };
+        assert_round_trip(ev.clone(), "graph_node_upserted");
+        assert_eq!(ev.channel(), Channel::Runs);
+        assert_eq!(ev.kind(), "graph_node_upserted");
+    }
+
+    /// A `GraphNodeUpserted` persisted before `project_id` / `edges` existed
+    /// (both `#[serde(default)]` / skippable) must still deserialise — the
+    /// projection catch-up must never abort on a minimal historical payload.
+    #[test]
+    fn graph_node_upserted_minimal_payload_deserialises() {
+        let minimal = r#"{
+            "type": "graph_node_upserted",
+            "node_id": "raw_1",
+            "kind": "RawItem",
+            "source_id": "raw_1",
+            "title": "an idea",
+            "at": "2026-01-01T00:00:00Z"
+        }"#;
+        let ev: Event = serde_json::from_str(minimal).expect("minimal payload must deserialise");
+        match ev {
+            Event::GraphNodeUpserted {
+                project_id, edges, ..
+            } => {
+                assert!(project_id.is_none());
+                assert!(edges.is_empty());
+            }
+            other => panic!("expected GraphNodeUpserted, got {}", other.kind()),
+        }
     }
 
     // ── Plan events ───────────────────────────────────────────────────────────

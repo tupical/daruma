@@ -673,6 +673,36 @@ impl WorkspaceGraphRepo {
                 .await?;
             }
 
+            // ── Pipeline projection (mcpbox platform orchestrator) ─────────
+            Event::GraphNodeUpserted {
+                node_id,
+                kind,
+                source_id,
+                project_id,
+                title,
+                text,
+                metadata_json,
+                edges,
+                at,
+            } => {
+                let node_updated = at.to_rfc3339();
+                self.upsert_node(
+                    node_id,
+                    kind,
+                    source_id,
+                    project_id.as_deref(),
+                    title,
+                    text,
+                    &node_updated,
+                    metadata_json.clone(),
+                )
+                .await?;
+                for edge in edges {
+                    self.upsert_edge(&edge.from_id, &edge.to_id, &edge.kind, seq, json!({}))
+                        .await?;
+                }
+            }
+
             _ => {}
         }
 
@@ -1668,6 +1698,105 @@ mod tests {
         let status = repo.status().await.unwrap();
         assert_eq!(status.node_count, 6);
         assert_eq!(status.last_event_seq, Some(8));
+    }
+
+    #[tokio::test]
+    async fn graph_node_upserted_projects_layer_nodes_and_lineage_edges() {
+        use daruma_events::event::GraphEdgeSpec;
+        let repo = repo().await;
+        let now = Utc::now();
+        let project = "proj-uuid-1";
+
+        repo.apply_event(&env(
+            1,
+            Event::GraphNodeUpserted {
+                node_id: "raw_1".into(),
+                kind: "RawItem".into(),
+                source_id: "raw_1".into(),
+                project_id: Some(project.into()),
+                title: "an idea".into(),
+                text: "an idea".into(),
+                metadata_json: serde_json::json!({ "layer_kind": "RawItem" }),
+                edges: vec![],
+                at: now,
+            },
+        ))
+        .await
+        .unwrap();
+
+        repo.apply_event(&env(
+            2,
+            Event::GraphNodeUpserted {
+                node_id: "si_1".into(),
+                kind: "SensingItem".into(),
+                source_id: "si_1".into(),
+                project_id: Some(project.into()),
+                title: "insight".into(),
+                text: "derived insight".into(),
+                metadata_json: serde_json::json!({ "layer_kind": "SensingItem" }),
+                edges: vec![GraphEdgeSpec {
+                    from_id: "si_1".into(),
+                    to_id: "raw_1".into(),
+                    kind: "derived_from".into(),
+                }],
+                at: now,
+            },
+        ))
+        .await
+        .unwrap();
+
+        // Both nodes land with the right kind and project scope.
+        let node_rows: Vec<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT kind, id, project_id FROM workspacegraph_nodes ORDER BY id")
+                .fetch_all(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(node_rows.len(), 2);
+        assert_eq!(node_rows[0], ("RawItem".into(), "raw_1".into(), Some(project.into())));
+        assert_eq!(
+            node_rows[1],
+            ("SensingItem".into(), "si_1".into(), Some(project.into()))
+        );
+
+        // The lineage edge is asserted with kind derived_from.
+        let edge_rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT from_id, to_id, kind FROM workspacegraph_edges")
+                .fetch_all(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            edge_rows,
+            vec![("si_1".into(), "raw_1".into(), "derived_from".into())]
+        );
+
+        // Re-applying the same node id updates in place (upsert, not duplicate).
+        repo.apply_event(&env(
+            3,
+            Event::GraphNodeUpserted {
+                node_id: "raw_1".into(),
+                kind: "RawItem".into(),
+                source_id: "raw_1".into(),
+                project_id: Some(project.into()),
+                title: "an idea (edited)".into(),
+                text: "an idea".into(),
+                metadata_json: serde_json::json!({ "layer_kind": "RawItem" }),
+                edges: vec![],
+                at: now,
+            },
+        ))
+        .await
+        .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspacegraph_nodes")
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "re-upsert must not duplicate the node");
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM workspacegraph_nodes WHERE id = 'raw_1'")
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(title, "an idea (edited)");
     }
 
     #[tokio::test]
