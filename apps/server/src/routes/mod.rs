@@ -20,8 +20,9 @@ pub mod shell;
 pub mod workspacegraph;
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use axum::{
@@ -46,9 +47,8 @@ use daruma_core::{
 use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, ArtifactStatus, CommentKind, CommentPatch,
     ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument, NewPlan, Plan,
-    PlanPatch,
-    PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState,
-    Verb,
+    PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch,
+    TriageState, Verb,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -229,10 +229,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/projects/{id}/triage",
             get(list_project_triage).patch(patch_project_triage),
         )
-        .route(
-            "/repo-scopes",
-            get(list_repo_scopes).put(put_repo_scope),
-        )
+        .route("/repo-scopes", get(list_repo_scopes).put(put_repo_scope))
         .route("/rules", get(list_rules).post(create_rule))
         .route(
             "/rules/{id}",
@@ -2389,7 +2386,9 @@ async fn get_evidence(
 
 /// Derive an artifact's `kind` from its URI scheme (`artifact://api/x` → `artifact`).
 fn artifact_kind(uri: &str) -> &str {
-    uri.split_once("://").map(|(scheme, _)| scheme).unwrap_or("")
+    uri.split_once("://")
+        .map(|(scheme, _)| scheme)
+        .unwrap_or("")
 }
 
 /// Query for `GET /v1/artifacts`. `project_id`/`task_id`/`status` are pushed
@@ -2579,13 +2578,21 @@ async fn artifact_impact(
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
 
-    let id = id_str.parse::<ArtifactId>().map_err(|_| {
-        ApiError::from(CoreError::not_found(format!("artifact {id_str}")))
-    })?;
+    let id = id_str
+        .parse::<ArtifactId>()
+        .map_err(|_| ApiError::from(CoreError::not_found(format!("artifact {id_str}"))))?;
     // Confirm the artifact exists so an unknown id is a clean 404 rather than
     // an empty neighborhood from the generic graph route.
-    if state.artifacts.get(id).await.map_err(ApiError::from)?.is_none() {
-        return Err(ApiError::from(CoreError::not_found(format!("artifact {id}"))));
+    if state
+        .artifacts
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .is_none()
+    {
+        return Err(ApiError::from(CoreError::not_found(format!(
+            "artifact {id}"
+        ))));
     }
 
     let node_id = format!("artifact:{id}");
@@ -3313,6 +3320,7 @@ async fn mcp_http(
     };
     let token = bearer_token(&headers)?;
     let telemetry = mcp_call_telemetry(&request, profile.as_str(), &token);
+    let regret = observe_regret(&telemetry);
     let http = reqwest::Client::builder()
         .user_agent(format!("daruma-server-mcp/{}", env!("CARGO_PKG_VERSION")))
         .build()
@@ -3325,11 +3333,16 @@ async fn mcp_http(
     match dispatch_mcp_request(&client, profile, request).await {
         Some(response) => {
             let response_meta = mcp_response_telemetry(&response);
-            log_mcp_call_telemetry(&telemetry, &response_meta, started);
+            log_mcp_call_telemetry(&telemetry, &response_meta, regret, started);
             Ok(Json(response).into_response())
         }
         None => {
-            log_mcp_call_telemetry(&telemetry, &McpResponseTelemetry::default(), started);
+            log_mcp_call_telemetry(
+                &telemetry,
+                &McpResponseTelemetry::default(),
+                regret,
+                started,
+            );
             Ok(StatusCode::ACCEPTED.into_response())
         }
     }
@@ -3346,6 +3359,9 @@ struct McpCallTelemetry {
     view: Option<String>,
     sort: Option<String>,
     session_id_hash: u64,
+    /// The single-object id this call targets (`id`/`task_id`/`plan_id`/
+    /// `document_id`), when present. Feeds regret detection (task E.1).
+    object_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -3389,7 +3405,19 @@ fn mcp_call_telemetry(request: &JsonRpcRequest, profile: &str, token: &str) -> M
             .and_then(Value::as_str)
             .map(str::to_string),
         session_id_hash: stable_hash(token),
+        object_id: args.and_then(mcp_args_object_id),
     }
+}
+
+/// First single-object id key present on the call arguments. These are the id
+/// shapes the read tools use (`daruma_get`→`id`, `daruma_plan_get`→`id`,
+/// `daruma_doc_get`→`document_id`, …).
+fn mcp_args_object_id(args: &Value) -> Option<String> {
+    let obj = args.as_object()?;
+    ["id", "task_id", "plan_id", "document_id"]
+        .iter()
+        .find_map(|key| obj.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
 }
 
 fn mcp_args_have_scope(args: &Value) -> bool {
@@ -3432,6 +3460,7 @@ fn mcp_response_telemetry(response: &daruma_mcp::JsonRpcResponse) -> McpResponse
 fn log_mcp_call_telemetry(
     call: &McpCallTelemetry,
     response: &McpResponseTelemetry,
+    regret: RegretSignal,
     started: Instant,
 ) {
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -3445,12 +3474,15 @@ fn log_mcp_call_telemetry(
         limit = ?call.limit,
         view = ?call.view,
         sort = ?call.sort,
+        object_id = ?call.object_id,
         has_more = response.has_more,
         result_bytes = response.result_bytes,
         result_items = ?response.result_items,
         duration_ms,
         session_id_hash = call.session_id_hash,
         error = response.error,
+        regret = regret.regret,
+        regret_after_ms = ?regret.regret_after_ms,
         "mcp_call"
     );
 }
@@ -3460,6 +3492,147 @@ fn stable_hash(value: &str) -> u64 {
     value.hash(&mut hasher);
     hasher.finish()
 }
+
+// ── Regret tracking (task E.1) ─────────────────────────────────────────────
+//
+// A "regret" is a `view=detail` (or full single-object) read that arrives right
+// after a `summary`/`progress`-level read of the *same object* in the *same
+// session* — a symptom that the summary default was too aggressive and the
+// client had to immediately re-fetch the detail. It is a diagnostic signal for
+// calibrating defaults, logged alongside the existing MCP telemetry; it never
+// changes a response.
+//
+// Scope note: this rides the HTTP MCP transport telemetry, where sessions are
+// grouped by bearer token (`session_id_hash`). The stdio transport has no
+// equivalent telemetry sink today, so regret is observed for the HTTP path.
+// Only tools that carry a single object id can produce the signal, so in
+// practice `daruma_plan_get` (progress→detail on the same plan) is the primary
+// producer; list/search carry no single object id and thus never seed it.
+
+/// How compressed a single-object read was.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadLevel {
+    /// Compact projection (`view=summary` / plan `view=progress`).
+    Summary,
+    /// Full or bounded object (`view=detail`, or an id read with no view).
+    Detail,
+}
+
+/// Classify a call into a read level, or `None` if it is not an object read we
+/// track for regret.
+fn classify_read(tool_name: &str, view: Option<&str>) -> Option<ReadLevel> {
+    match tool_name {
+        // Plan get has an explicit compact (`progress`) vs full (`detail`) axis.
+        "daruma_plan_get" => Some(match view {
+            Some("detail") => ReadLevel::Detail,
+            _ => ReadLevel::Summary, // progress (the default) is the compact view
+        }),
+        // These always return the full object body → detail level.
+        "daruma_get" | "daruma_doc_get" => Some(ReadLevel::Detail),
+        _ => None,
+    }
+}
+
+/// Window within which a `summary`→`detail` transition on the same object
+/// counts as regret. 60s is a deliberately short "the client bounced straight
+/// back for detail" horizon; longer gaps are ordinary later work, not
+/// over-compression. Provisional — tune from the emitted `regret_after_ms`.
+const REGRET_WINDOW_MS: u64 = 60_000;
+
+/// Hard cap on tracked keys, a backstop on top of age pruning so a pathological
+/// session cannot grow the map unbounded. Diagnostic state — dropping entries
+/// only loses a signal, never correctness.
+const REGRET_MAX_KEYS: usize = 512;
+
+#[derive(Clone, Copy, Default)]
+struct RegretSignal {
+    regret: bool,
+    regret_after_ms: Option<u64>,
+}
+
+/// Most-recent `summary`-level read time per (session, tool, object).
+type RegretMap = HashMap<(u64, String, String), Instant>;
+
+fn regret_state() -> &'static Mutex<RegretMap> {
+    static STATE: OnceLock<Mutex<RegretMap>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record this call and report whether it is a regret. A `summary`-level read
+/// seeds the map; a `detail`-level read that finds a recent summary seed for the
+/// same key within [`REGRET_WINDOW_MS`] is a regret.
+fn observe_regret(call: &McpCallTelemetry) -> RegretSignal {
+    let Some(object_id) = call.object_id.clone() else {
+        return RegretSignal::default();
+    };
+    let Some(level) = classify_read(&call.tool_name, call.view.as_deref()) else {
+        return RegretSignal::default();
+    };
+    let key = (call.session_id_hash, call.tool_name.clone(), object_id);
+    let now = Instant::now();
+
+    let mut map = match regret_state().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Drop stale seeds so the map stays bounded by the active window.
+    map.retain(|_, seen| now.duration_since(*seen).as_millis() as u64 <= REGRET_WINDOW_MS);
+
+    match level {
+        ReadLevel::Summary => {
+            if map.len() < REGRET_MAX_KEYS || map.contains_key(&key) {
+                map.insert(key, now);
+            }
+            RegretSignal::default()
+        }
+        ReadLevel::Detail => match map.remove(&key) {
+            Some(seen) => {
+                let elapsed = now.duration_since(seen).as_millis() as u64;
+                RegretSignal {
+                    regret: true,
+                    regret_after_ms: Some(elapsed),
+                }
+            }
+            None => RegretSignal::default(),
+        },
+    }
+}
+
+// ── Pressure-aware view degradation (task E.2): BLOCKED ────────────────────
+//
+// E.2 asked that, once a session has consumed enough of its token budget, the
+// *default* view for list/search/plan_list degrade summary→minimal with a
+// `context_pressure` signal. It is intentionally NOT implemented, for a reason
+// that is structural rather than incidental:
+//
+//  1. No faithful session-budget signal exists server-side. The server can only
+//     observe the cumulative `result_bytes` it has *emitted*; it cannot see how
+//     much of the model's context window is actually in use — the client evicts
+//     and compacts on its own, invisibly. Cumulative-emitted-bytes is therefore
+//     a proxy for context pressure that only ever grows.
+//
+//  2. That proxy is a one-way ratchet with no reset. The natural accumulator is
+//     the session-scoped `ApiClient` (task D's mechanism), whose lifetime on the
+//     stdio transport is the whole daruma-claude session — often very long. A
+//     fixed byte threshold on a monotonic counter means: once a session crosses
+//     it *once*, EVERY later list/search is pinned to `minimal` for the rest of
+//     the session, with no signal that could ever lower the pressure again. That
+//     is not "pressure-aware" (transient); it is "permanently minimal after N
+//     bytes". Picking the threshold would be inventing an arbitrary number with
+//     no defensible reset point — which the ticket explicitly forbids.
+//
+//  3. On the HTTP MCP transport the accumulator is worse than inert: a fresh
+//     `ApiClient` is built per request (see `mcp_http`), so a per-client byte
+//     counter resets every call and never accumulates — pressure would never
+//     trigger there at all, making the feature silently transport-dependent.
+//
+// The ticket itself flags the dependency ("Зависит от решения, как считать
+// бюджет сессии на сервере") and sanctions returning E.2 blocked. The honest
+// prerequisite is a client-reported context-usage signal (the client is the
+// only party that knows its real budget); until that exists there is no correct
+// place to initialise, threshold, or reset a server-side budget. E.1 (regret
+// tracking, above) ships as the calibration data that a future, client-informed
+// pressure model would be tuned against.
 
 fn bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     let Some(auth) = header_string(headers, "authorization") else {
@@ -6839,9 +7012,55 @@ async fn list_project_documents(
 
 #[cfg(test)]
 mod tests {
-    use super::{mcp_call_telemetry, mcp_response_telemetry};
+    use super::{mcp_call_telemetry, mcp_response_telemetry, observe_regret};
     use daruma_mcp::{JsonRpcRequest, JsonRpcResponse};
     use serde_json::json;
+
+    fn read_call(token: &str, tool: &str, id: &str, view: Option<&str>) -> super::McpCallTelemetry {
+        let mut args = json!({ "id": id });
+        if let Some(v) = view {
+            args["view"] = json!(v);
+        }
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: Some(json!({ "name": tool, "arguments": args })),
+        };
+        mcp_call_telemetry(&request, "default", token)
+    }
+
+    #[test]
+    fn regret_flagged_on_detail_right_after_summary() {
+        // Unique token/id keep this test isolated from the process-global map.
+        let token = "regret-session-A";
+        let summary = read_call(token, "daruma_plan_get", "pln_regret_a", Some("progress"));
+        assert!(
+            !observe_regret(&summary).regret,
+            "summary seeds, is not regret"
+        );
+
+        let detail = read_call(token, "daruma_plan_get", "pln_regret_a", Some("detail"));
+        let signal = observe_regret(&detail);
+        assert!(
+            signal.regret,
+            "detail right after summary of same object is regret"
+        );
+        assert!(signal.regret_after_ms.is_some());
+    }
+
+    #[test]
+    fn no_regret_on_detail_without_preceding_summary() {
+        let token = "regret-session-B";
+        let detail = read_call(token, "daruma_plan_get", "pln_regret_b", Some("detail"));
+        let signal = observe_regret(&detail);
+        assert!(!signal.regret, "cold detail read is not regret");
+        assert!(signal.regret_after_ms.is_none());
+
+        // A second cold detail (no summary in between) is still not regret.
+        let again = read_call(token, "daruma_get", "tsk_regret_b", None);
+        assert!(!observe_regret(&again).regret);
+    }
 
     #[test]
     fn mcp_call_telemetry_extracts_metadata_only() {
