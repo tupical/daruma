@@ -2,7 +2,7 @@
 //! `plans` and `plan_tasks` SQLite tables.
 
 use crate::parse_ts;
-use daruma_domain::{Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
+use daruma_domain::{Actor, Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, PlanId, ProjectId, Result, TaskId, Timestamp};
 use sqlx::{Row, SqlitePool};
@@ -345,6 +345,166 @@ impl PlanRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
+    }
+
+    // ── ADR-0007 plan-only intake: invariant guard ──────────────────────────
+    //
+    // ADR-0007 lands the "every task ∈ ≥1 plan" invariant in two halves. The
+    // *data guarantee* for all EXISTING tasks is migration 0050 (synthetic
+    // wrapper plans). The helpers below are the *storage-level guarded API*
+    // form of the invariant for tasks going forward — a get-or-create intake
+    // plan, an idempotent attach, and an invariant check. They deliberately do
+    // NOT auto-fire inside `apply_event`: this stage keeps the still-existing
+    // `CreateTask` path (and the whole command/API layer) behaving exactly as
+    // before. Wiring these into the create path (or the `MaterializePlan`
+    // command that replaces it) is the next task in the ADR-0007 series
+    // ("Уточнённая разбивка" item 2, `core`). Migration and these helpers agree
+    // on the same marker + sentinel ids, so they target the same intake plans.
+
+    /// `plans.source_brief` marker identifying a synthetic intake wrapper plan
+    /// (ADR-0007 Q2). Kept identical to migration 0050.
+    pub const INTAKE_MARKER: &'static str = "daruma:legacy-intake";
+    /// Sentinel host project for the global (project-less) intake plan.
+    /// Kept identical to migration 0050.
+    pub const GLOBAL_INTAKE_PROJECT_ID: &'static str = "prj_00000000-0000-7000-8000-0000000da0a1";
+    /// Sentinel global intake plan. Kept identical to migration 0050.
+    pub const GLOBAL_INTAKE_PLAN_ID: &'static str = "pln_00000000-0000-7000-8000-0000000da0a2";
+
+    /// Get-or-create the synthetic intake plan for `project_id`
+    /// (`None` = the global, project-less bucket). Idempotent: an existing
+    /// intake plan (matched by [`INTAKE_MARKER`](Self::INTAKE_MARKER)) is
+    /// returned rather than duplicated.
+    pub async fn ensure_intake_plan(&self, project_id: Option<ProjectId>) -> Result<PlanId> {
+        match project_id {
+            None => {
+                // Global bucket: fixed sentinel project + plan. `plans.project_id`
+                // is NOT NULL, so the global plan needs a host project row.
+                let now = daruma_shared::time::now().to_rfc3339();
+                sqlx::query(
+                    "INSERT OR IGNORE INTO projects \
+                     (id, title, description, created_at, updated_at, slug, tenant_id, triage_enabled) \
+                     VALUES (?, ?, '', ?, ?, ?, ?, 0)",
+                )
+                .bind(Self::GLOBAL_INTAKE_PROJECT_ID)
+                .bind("(legacy global intake)")
+                .bind(&now)
+                .bind(&now)
+                .bind("p-legacy-global-intake")
+                .bind(daruma_domain::DEFAULT_TENANT_ID)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+
+                let plan_id = Self::GLOBAL_INTAKE_PLAN_ID
+                    .parse::<PlanId>()
+                    .map_err(|e| CoreError::serde(e.to_string()))?;
+                let project = Self::GLOBAL_INTAKE_PROJECT_ID
+                    .parse::<ProjectId>()
+                    .map_err(|e| CoreError::serde(e.to_string()))?;
+                if self.get(plan_id).await?.is_none() {
+                    self.upsert_plan(&self.intake_plan(plan_id, project, "Legacy global intake"))
+                        .await?;
+                }
+                Ok(plan_id)
+            }
+            Some(pid) => {
+                if let Some(existing) = sqlx::query(
+                    "SELECT id FROM plans WHERE project_id = ? AND source_brief = ? \
+                     ORDER BY created_at ASC LIMIT 1",
+                )
+                .bind(pid.to_string())
+                .bind(Self::INTAKE_MARKER)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?
+                {
+                    let id: String = existing
+                        .try_get("id")
+                        .map_err(|e| CoreError::storage(e.to_string()))?;
+                    return id.parse::<PlanId>().map_err(|e| CoreError::serde(e.to_string()));
+                }
+                let plan_id = PlanId::new();
+                self.upsert_plan(&self.intake_plan(plan_id, pid, "Legacy intake"))
+                    .await?;
+                Ok(plan_id)
+            }
+        }
+    }
+
+    /// Attach a task to its project's intake plan so the ADR-0007 invariant
+    /// (task ∈ ≥1 plan) holds. Idempotent and a no-op when the task already
+    /// belongs to any plan — in that case the task's existing plan is returned
+    /// untouched. Returns the plan the task ends up a member of.
+    pub async fn attach_task_to_intake(
+        &self,
+        task_id: TaskId,
+        project_id: Option<ProjectId>,
+    ) -> Result<PlanId> {
+        if let Some(row) = sqlx::query("SELECT plan_id FROM plan_tasks WHERE task_id = ? LIMIT 1")
+            .bind(task_id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?
+        {
+            let existing: String = row
+                .try_get("plan_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            return existing
+                .parse::<PlanId>()
+                .map_err(|e| CoreError::serde(e.to_string()));
+        }
+
+        let plan_id = self.ensure_intake_plan(project_id).await?;
+        let position: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM plan_tasks WHERE plan_id = ?")
+                .bind(plan_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        self.add_task(plan_id, task_id, position as u32, &[]).await?;
+        Ok(plan_id)
+    }
+
+    /// Invariant check (ADR-0007): task ids that belong to no plan. An empty
+    /// result means the invariant "every task ∈ ≥1 plan" holds.
+    pub async fn planless_task_ids(&self) -> Result<Vec<TaskId>> {
+        let rows = sqlx::query(
+            "SELECT id FROM tasks t \
+             WHERE NOT EXISTS (SELECT 1 FROM plan_tasks pt WHERE pt.task_id = t.id) \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter()
+            .map(|r| {
+                let id: String = r
+                    .try_get("id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                id.parse::<TaskId>().map_err(|e| CoreError::serde(e.to_string()))
+            })
+            .collect()
+    }
+
+    /// Build a synthetic intake [`Plan`] carrying the [`INTAKE_MARKER`](Self::INTAKE_MARKER).
+    /// Matches the row shape migration 0050 inserts.
+    fn intake_plan(&self, id: PlanId, project_id: ProjectId, title: &str) -> Plan {
+        let now = daruma_shared::time::now();
+        Plan {
+            id,
+            project_id,
+            parent_plan_id: None,
+            title: title.to_string(),
+            description: String::new(),
+            goal: "legacy intake migration".to_string(),
+            success_criteria: Vec::new(),
+            status: PlanStatus::Draft,
+            owner: Actor::user(),
+            created_at: now,
+            updated_at: now,
+            archived_at: None,
+            source_brief: Some(Self::INTAKE_MARKER.to_string()),
+        }
     }
 
     // ── event application ────────────────────────────────────────────────────
@@ -781,5 +941,154 @@ mod tests {
 
         let fetched = repo.get(plan_id).await.unwrap().unwrap();
         assert!(fetched.archived_at.is_some());
+    }
+
+    // ── ADR-0007 plan-only intake invariant ──────────────────────────────────
+
+    /// Insert a bare task row directly into the `tasks` projection, simulating
+    /// a legacy plan-less task (no `plan_tasks` membership).
+    async fn insert_task(pool: &sqlx::SqlitePool, id: TaskId, project_id: Option<ProjectId>) {
+        let now = time::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO tasks (id, project_id, title, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(project_id.map(|p| p.to_string()))
+        .bind("legacy task")
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Migration 0050 wraps every plan-less task in a synthetic intake plan —
+    /// one per project plus a global one for project-less tasks — and is
+    /// idempotent. Runs the *real* migration SQL, so the test cannot drift from
+    /// what ships.
+    #[tokio::test]
+    async fn migration_0050_wraps_planless_tasks_per_project_and_global() {
+        let (db, repo) = make_repo().await;
+        let pool = db.pool().clone();
+
+        let proj_a = ProjectId::new();
+        let proj_b = ProjectId::new();
+        let (a1, a2, b1, g1, g2) = (
+            TaskId::new(),
+            TaskId::new(),
+            TaskId::new(),
+            TaskId::new(),
+            TaskId::new(),
+        );
+        for (t, p) in [
+            (a1, Some(proj_a)),
+            (a2, Some(proj_a)),
+            (b1, Some(proj_b)),
+            (g1, None),
+            (g2, None),
+        ] {
+            insert_task(&pool, t, p).await;
+        }
+
+        // Invariant is violated before the migration.
+        assert_eq!(repo.planless_task_ids().await.unwrap().len(), 5);
+
+        let migration = include_str!("../migrations/0050_plan_only_intake.sql");
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+
+        // Invariant now holds: nothing plan-less remains.
+        assert!(repo.planless_task_ids().await.unwrap().is_empty());
+
+        // One intake plan per project, wrapping that project's tasks.
+        let a_plans = repo.list_by_project(proj_a, None).await.unwrap();
+        assert_eq!(a_plans.len(), 1);
+        assert_eq!(
+            a_plans[0].source_brief.as_deref(),
+            Some(PlanRepo::INTAKE_MARKER)
+        );
+        assert_eq!(a_plans[0].goal, "legacy intake migration");
+        assert_eq!(repo.list_tasks_ordered(a_plans[0].id).await.unwrap().len(), 2);
+
+        let b_plans = repo.list_by_project(proj_b, None).await.unwrap();
+        assert_eq!(b_plans.len(), 1);
+        assert_ne!(a_plans[0].id, b_plans[0].id, "each project gets its own plan");
+        assert_eq!(repo.list_tasks_ordered(b_plans[0].id).await.unwrap().len(), 1);
+
+        // Global intake plan holds the project-less tasks.
+        let global_plan = PlanRepo::GLOBAL_INTAKE_PLAN_ID.parse::<PlanId>().unwrap();
+        assert!(repo.get(global_plan).await.unwrap().is_some());
+        assert_eq!(repo.list_tasks_ordered(global_plan).await.unwrap().len(), 2);
+
+        // Provenance stamped on a wrapped task; statuses untouched (default inbox).
+        let src: Option<String> =
+            sqlx::query_scalar("SELECT source_event_id FROM tasks WHERE id = ?")
+                .bind(a1.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            src.as_deref(),
+            Some("evt_00000000-0000-7000-8000-0000000da0a3")
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?")
+            .bind(a1.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "inbox", "migration must not move task statuses");
+
+        // Idempotent: a second run wraps nothing new.
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+        assert!(repo.planless_task_ids().await.unwrap().is_empty());
+        assert_eq!(repo.list_by_project(proj_a, None).await.unwrap().len(), 1);
+        assert_eq!(repo.list_tasks_ordered(global_plan).await.unwrap().len(), 2);
+    }
+
+    /// The storage-level guarded API brings a new plan-less task into
+    /// compliance and is get-or-create / idempotent.
+    #[tokio::test]
+    async fn ensure_and_attach_intake_satisfy_invariant_for_new_tasks() {
+        let (db, repo) = make_repo().await;
+        let pool = db.pool().clone();
+        let pid = ProjectId::new();
+        let t = TaskId::new();
+        insert_task(&pool, t, Some(pid)).await;
+        assert_eq!(repo.planless_task_ids().await.unwrap(), vec![t]);
+
+        let plan = repo.attach_task_to_intake(t, Some(pid)).await.unwrap();
+        assert!(repo.planless_task_ids().await.unwrap().is_empty());
+        assert_eq!(repo.list_tasks_ordered(plan).await.unwrap()[0].task_id, t);
+
+        // get-or-create: the same project resolves to the same intake plan.
+        assert_eq!(repo.ensure_intake_plan(Some(pid)).await.unwrap(), plan);
+
+        // attach is a no-op when the task already belongs to a plan.
+        assert_eq!(repo.attach_task_to_intake(t, Some(pid)).await.unwrap(), plan);
+        assert_eq!(repo.list_tasks_ordered(plan).await.unwrap().len(), 1);
+    }
+
+    /// Project-less tasks attach to the sentinel global intake plan, whose host
+    /// project row is created on demand.
+    #[tokio::test]
+    async fn attach_intake_handles_project_less_tasks_globally() {
+        let (db, repo) = make_repo().await;
+        let pool = db.pool().clone();
+        let t = TaskId::new();
+        insert_task(&pool, t, None).await;
+
+        let plan = repo.attach_task_to_intake(t, None).await.unwrap();
+        assert_eq!(
+            plan,
+            PlanRepo::GLOBAL_INTAKE_PLAN_ID.parse::<PlanId>().unwrap()
+        );
+        assert!(repo.planless_task_ids().await.unwrap().is_empty());
+
+        let host_projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects WHERE id = ?")
+            .bind(PlanRepo::GLOBAL_INTAKE_PROJECT_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(host_projects, 1, "global host project created on demand");
     }
 }
