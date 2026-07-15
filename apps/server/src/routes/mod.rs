@@ -4765,6 +4765,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::DeleteComment { .. } => Capability::CommentWrite,
         // Plan commands
         Command::CreatePlan { .. }
+        | Command::MaterializePlan { .. }
         | Command::UpdatePlan { .. }
         | Command::ArchivePlan { .. }
         | Command::AddPlanTask { .. }

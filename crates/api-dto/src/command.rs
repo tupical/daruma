@@ -146,6 +146,19 @@ pub enum Command {
         external_ref: Option<(String, String, String)>,
     },
 
+    /// Atomically materialise a plan together with its tasks (ADR-0007 Q5).
+    ///
+    /// The single intake contract of plan-only intake: accepts a ready
+    /// `NewPlan` plus its `NewTask`s (the shape of `fujin::NewPlanWithTasks`)
+    /// and, in one batch, emits `PlanCreated` + one `TaskCreated` per task
+    /// (each stamped with the `PlanCreated` event id as `source_event_id`) +
+    /// one `PlanTaskAdded` per task, ordered by position in `tasks`. daruma
+    /// does not decompose — it receives the finished structure and executes.
+    MaterializePlan {
+        plan: NewPlan,
+        tasks: Vec<NewTask>,
+    },
+
     /// Update title / description / goal / success_criteria via a sparse patch.
     UpdatePlan {
         id: PlanId,
@@ -468,6 +481,7 @@ impl Command {
             Command::DeleteComment { .. } => "delete_comment",
             // Plans
             Command::CreatePlan { .. } => "create_plan",
+            Command::MaterializePlan { .. } => "materialize_plan",
             Command::UpdatePlan { .. } => "update_plan",
             Command::ArchivePlan { .. } => "archive_plan",
             Command::AddPlanTask { .. } => "add_plan_task",

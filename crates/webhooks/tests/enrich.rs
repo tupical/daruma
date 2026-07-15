@@ -179,6 +179,7 @@ fn sample_envelope() -> EventEnvelope {
                 triage_state: None,
                 due_at: None,
                 external_key: None,
+                source_event_id: None,
             },
         },
     )

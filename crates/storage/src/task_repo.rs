@@ -292,7 +292,10 @@ impl TaskRepo {
                     updated_by: Some(envelope.actor.clone()),
                     updated_event_id: Some(envelope.id),
                     updated_event_seq: Some(envelope.seq),
-                    source_event_id: None,
+                    // ADR-0007 Q5: a plan-materialised task carries its
+                    // `PlanCreated` provenance on the `NewTask`; honour it
+                    // (was hardcoded `None`). Plain `CreateTask` leaves it unset.
+                    source_event_id: new_task.source_event_id,
                     external_key: new_task.external_key.clone(),
                 };
                 let after = task_value(&task)?;

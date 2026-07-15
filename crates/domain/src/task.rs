@@ -170,7 +170,7 @@ impl Task {
             updated_by: None,
             updated_event_id: None,
             updated_event_seq: None,
-            source_event_id: None,
+            source_event_id: input.source_event_id,
             external_key: input.external_key,
         }
     }
@@ -200,6 +200,13 @@ pub struct NewTask {
     /// duplicated. Fully optional — omitting it preserves legacy behaviour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_key: Option<String>,
+    /// §3.8.10 provenance (ADR-0007 Q5): the upstream event that produced this
+    /// task. `MaterializePlan` sets this to the `PlanCreated` event id so a
+    /// plan-derived task points back at its plan's creation. `None` for tasks
+    /// created outside a plan-materialisation. The `TaskCreated` projection
+    /// carries it onto [`Task::source_event_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_event_id: Option<EventId>,
 }
 
 impl NewTask {
@@ -214,6 +221,7 @@ impl NewTask {
             triage_state: None,
             due_at: None,
             external_key: None,
+            source_event_id: None,
         }
     }
 }

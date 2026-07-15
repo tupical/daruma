@@ -1578,6 +1578,7 @@ mod tests {
                         triage_state: None,
                         due_at: None,
                         external_key: None,
+                        source_event_id: None,
                     },
                 },
             ))
@@ -1838,6 +1839,7 @@ mod tests {
                         triage_state: None,
                         due_at: None,
                         external_key: None,
+                        source_event_id: None,
                     },
                 },
             ))
@@ -1902,6 +1904,7 @@ mod tests {
                         triage_state: None,
                         due_at: None,
                         external_key: None,
+                        source_event_id: None,
                     },
                 },
             ))
@@ -2013,6 +2016,7 @@ mod tests {
                         triage_state: None,
                         due_at: None,
                         external_key: None,
+                        source_event_id: None,
                     },
                 },
             ))
@@ -2076,6 +2080,7 @@ mod tests {
                         triage_state: None,
                         due_at: None,
                         external_key: None,
+                        source_event_id: None,
                     },
                 },
             ))
@@ -2122,6 +2127,7 @@ mod tests {
                         triage_state: None,
                         due_at: None,
                         external_key: None,
+                        source_event_id: None,
                     },
                 },
             ))

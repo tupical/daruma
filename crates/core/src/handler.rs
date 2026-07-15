@@ -93,6 +93,17 @@ pub struct CommandHandler {
     // commands (`RegisterArtifact` / `AssignArtifactOwner` /
     // `ChangeArtifactStatus`) return CoreError::Storage when absent.
     pub artifacts: Option<Arc<dyn ArtifactRepository>>,
+
+    // ADR-0007 "plan-only intake" mode. `false` (default) preserves the legacy
+    // intake surface: `CreateTask` creates tasks, `UpdateTask` may patch any
+    // field, and `SplitTask` works on plan-less parents. `true` enforces the
+    // ADR: `CreateTask` returns the plan-only bridge error (Q4), `UpdateTask`
+    // rejects plan-owned field patches (Q1), and `SplitTask` requires the
+    // parent to be in a plan and materialises children as a plan amend (Q3).
+    // `MaterializePlan` (Q5) is available regardless. The flag is the seam that
+    // the follow-up API/MCP-surface task flips on; keeping it off here lets the
+    // command/API layer stay green while this stage lands the mechanism.
+    pub plan_only_intake: bool,
 }
 
 impl CommandHandler {
@@ -132,7 +143,16 @@ impl CommandHandler {
             rules: None,
             evidence: None,
             artifacts: None,
+            plan_only_intake: false,
         }
+    }
+
+    /// Enable ADR-0007 plan-only intake enforcement (default off). When on,
+    /// `CreateTask` is bridged to an error, `UpdateTask` gates plan-owned
+    /// fields, and `SplitTask` becomes a plan amend requiring a planned parent.
+    pub fn with_plan_only_intake(mut self, enabled: bool) -> Self {
+        self.plan_only_intake = enabled;
+        self
     }
 
     /// Wire a `RelationRepo` implementation (§3.2 W2.1).
@@ -272,6 +292,10 @@ impl CommandHandler {
         actor: Actor,
     ) -> Result<DispatchOutcome> {
         let gate_override = self.lifecycle_gate.as_ref().map(|_| gate_override_of(&cmd));
+        // ADR-0007 Q5: `MaterializePlan` needs each created task's
+        // `source_event_id` to point at the real `PlanCreated` event id, which
+        // only exists once envelopes are built below. Note the command now.
+        let materialising = matches!(cmd, Command::MaterializePlan { .. });
         let events = self.build_events(cmd, &actor).await?;
         if events.is_empty() {
             return Ok(DispatchOutcome {
@@ -330,11 +354,15 @@ impl CommandHandler {
 
         // Audit events ride ahead of the mutation they describe (same actor),
         // so a subscriber sees "rule warned" then the transition it warned on.
-        let envelopes: Vec<EventEnvelope> = rule_audit
+        let mut envelopes: Vec<EventEnvelope> = rule_audit
             .into_iter()
             .chain(events)
             .map(|payload| EventEnvelope::new(actor.clone(), payload))
             .collect();
+
+        if materialising {
+            relink_materialised_provenance(&mut envelopes);
+        }
 
         let persisted = self.store.append_batch(envelopes).await?;
 
@@ -895,6 +923,18 @@ impl CommandHandler {
         match cmd {
             // ── Task commands ─────────────────────────────────────────────────
             Command::CreateTask { mut task } => {
+                // ADR-0007 Q4 bridge: under plan-only intake, direct task
+                // creation is disabled — intake happens by materialising a
+                // plan. Structured error names the replacement. The surface
+                // removal (daruma_create / POST /tasks) is a follow-up task;
+                // here the command still exists so the API/MCP layer compiles.
+                if self.plan_only_intake {
+                    return Err(CoreError::validation(
+                        "plan_only_intake: direct task creation is disabled \
+                         (ADR-0007); materialise a plan instead \
+                         (MaterializePlan / daruma_plan materialisation)",
+                    ));
+                }
                 let title = task.title.trim().to_string();
                 if title.is_empty() {
                     return Err(CoreError::validation("task title must not be empty"));
@@ -962,6 +1002,21 @@ impl CommandHandler {
             Command::UpdateTask { id, patch } => {
                 if patch.is_empty() {
                     return Err(CoreError::validation("update patch must not be empty"));
+                }
+                // ADR-0007 Q1 field-ownership gate: plan-owned fields
+                // (title/description/project_id) are materialised by the plan
+                // and immutable at the task level — amend the plan instead.
+                // Execution-owned fields (status/priority/triage/due_at) stay
+                // free. Off by default so legacy renames keep working.
+                if self.plan_only_intake {
+                    let plan_owned = daruma_domain::plan_owned_patch_fields(&patch);
+                    if !plan_owned.is_empty() {
+                        return Err(CoreError::validation(format!(
+                            "plan_owned_immutable: field(s) {plan_owned:?} are plan-owned \
+                             (ADR-0007 Q1) and cannot be patched via update_task; \
+                             amend the plan instead"
+                        )));
+                    }
                 }
                 self.tasks
                     .get(id)
@@ -1275,8 +1330,43 @@ impl CommandHandler {
                     parent,
                     subtasks: prepared.clone(),
                 }];
-                for st in prepared {
-                    events.push(Event::TaskCreated { task: st });
+                for st in &prepared {
+                    events.push(Event::TaskCreated { task: st.clone() });
+                }
+
+                // ADR-0007 Q3: under plan-only intake a split is a plan amend,
+                // not a free intake path. The parent must already belong to a
+                // plan; children inherit that membership (and thereby the
+                // plan's goal/criteria) and the operation is recorded as an
+                // amend. A split of a plan-less parent is rejected.
+                if self.plan_only_intake {
+                    let plans = self.plans.as_ref().ok_or_else(|| {
+                        CoreError::storage("plan repository not configured")
+                    })?;
+                    let parent_plans = plans.list_plans_for_task(parent).await?;
+                    if parent_plans.is_empty() {
+                        return Err(CoreError::validation(format!(
+                            "split_requires_plan: parent task {parent} is not in any plan \
+                             (ADR-0007 Q3); free split outside a plan is disabled — \
+                             materialise or amend a plan instead"
+                        )));
+                    }
+                    for plan_id in parent_plans {
+                        let existing = plans.list_plan_tasks_ordered(plan_id).await?;
+                        let base = existing.last().map_or(0, |t| t.position + 1);
+                        for (offset, st) in prepared.iter().enumerate() {
+                            events.push(Event::PlanTaskAdded {
+                                plan_id,
+                                task_id: st.id.expect("prepared subtask has an id"),
+                                position: base + offset as u32,
+                                depends_on: Vec::new(),
+                            });
+                        }
+                        events.push(Event::PlanModifiedByHuman {
+                            plan_id,
+                            during_run_id: self.active_run_for_plan(plan_id).await,
+                        });
+                    }
                 }
                 Ok(events)
             }
@@ -1564,6 +1654,75 @@ impl CommandHandler {
                 let now = time::now();
                 let new_plan = plan.into_plan(id, now);
                 Ok(vec![Event::PlanCreated { plan: new_plan }])
+            }
+
+            // ADR-0007 Q5 — the atomic plan-only intake contract. Takes a ready
+            // `NewPlan` + `NewTask`s and, in one batch, emits `PlanCreated`, one
+            // `TaskCreated` per task, and one `PlanTaskAdded` per task (position
+            // = order in `tasks`). Every created task is stamped with the
+            // `PlanCreated` event id as `source_event_id`; that final linkage
+            // happens in `relink_materialised_provenance` after the envelopes
+            // (and thus the real `PlanCreated` id) exist. daruma does not
+            // decompose — it lands the finished structure.
+            Command::MaterializePlan { mut plan, tasks } => {
+                if tasks.is_empty() {
+                    return Err(CoreError::validation(
+                        "materialize_plan requires at least one task",
+                    ));
+                }
+                let title = plan.title.trim().to_string();
+                if title.is_empty() {
+                    return Err(CoreError::validation("plan title must not be empty"));
+                }
+                if title.len() > 500 {
+                    return Err(CoreError::validation(
+                        "plan title must not exceed 500 characters",
+                    ));
+                }
+                plan.title = title;
+                if let Some(quotas) = &self.tenant_quotas {
+                    quotas.check_plan_quota(plan.project_id).await?;
+                }
+
+                let plan_id = PlanId::new();
+                if let Some(parent_id) = plan.parent_plan_id {
+                    if let Some(plan_repo) = &self.plans {
+                        detect_parent_cycle(plan_repo.as_ref(), plan_id, parent_id).await?;
+                    }
+                }
+
+                let project_id = plan.project_id;
+                let now = time::now();
+                let new_plan = plan.into_plan(plan_id, now);
+                let mut events = vec![Event::PlanCreated { plan: new_plan }];
+
+                for (position, mut task) in tasks.into_iter().enumerate() {
+                    let t_title = task.title.trim().to_string();
+                    if t_title.is_empty() {
+                        return Err(CoreError::validation("task title must not be empty"));
+                    }
+                    if t_title.len() > 500 {
+                        return Err(CoreError::validation(
+                            "task title must not exceed 500 characters",
+                        ));
+                    }
+                    task.title = t_title;
+                    let task_id = task.id.unwrap_or_else(TaskId::new);
+                    task.id = Some(task_id);
+                    // A materialised task is plan-owned (Q1): it inherits the
+                    // plan's project so membership and scope stay consistent.
+                    if task.project_id.is_none() {
+                        task.project_id = Some(project_id);
+                    }
+                    events.push(Event::TaskCreated { task });
+                    events.push(Event::PlanTaskAdded {
+                        plan_id,
+                        task_id,
+                        position: position as u32,
+                        depends_on: Vec::new(),
+                    });
+                }
+                Ok(events)
             }
 
             Command::UpdatePlan { id, patch } => {
@@ -2571,6 +2730,26 @@ fn require_rules(rules: &Option<Arc<dyn RuleRepository>>) -> Result<&Arc<dyn Rul
     rules
         .as_ref()
         .ok_or_else(|| CoreError::storage("rule repository not configured"))
+}
+
+/// ADR-0007 Q5: bind every `TaskCreated` in a `MaterializePlan` batch to the
+/// batch's `PlanCreated` event id, so a plan-derived task's `source_event_id`
+/// points at the real event that created its plan. Runs after envelope ids are
+/// assigned (they are unknown while the events are still bare payloads) and
+/// before persistence. No-op if the batch has no `PlanCreated` (defensive).
+fn relink_materialised_provenance(envelopes: &mut [EventEnvelope]) {
+    let plan_event_id = envelopes.iter().find_map(|env| match env.payload {
+        Event::PlanCreated { .. } => Some(env.id),
+        _ => None,
+    });
+    let Some(plan_event_id) = plan_event_id else {
+        return;
+    };
+    for env in envelopes.iter_mut() {
+        if let Event::TaskCreated { task } = &mut env.payload {
+            task.source_event_id = Some(plan_event_id);
+        }
+    }
 }
 
 /// Build one `RuleFired` audit event per acting rule from a gate decision.
@@ -3937,5 +4116,260 @@ mod tests {
             &envs[0].payload,
             Event::PlanStatusChanged { plan_id: p, to: PS::Completed, .. } if *p == plan_id
         ));
+    }
+
+    // ── ADR-0007 plan-only intake (core) ─────────────────────────────────────
+
+    fn plan_created_id(envs: &[EventEnvelope]) -> (daruma_shared::PlanId, daruma_shared::EventId) {
+        let env = envs
+            .iter()
+            .find(|e| matches!(e.payload, Event::PlanCreated { .. }))
+            .expect("a PlanCreated event");
+        match &env.payload {
+            Event::PlanCreated { plan } => (plan.id, env.id),
+            _ => unreachable!(),
+        }
+    }
+
+    fn created_task_ids(envs: &[EventEnvelope]) -> Vec<TaskId> {
+        envs.iter()
+            .filter_map(|e| match &e.payload {
+                Event::TaskCreated { task } => task.id,
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Q5: `MaterializePlan` atomically emits PlanCreated + N×TaskCreated +
+    /// N×PlanTaskAdded, with each task's `source_event_id` bound to the real
+    /// PlanCreated event id.
+    #[tokio::test]
+    async fn materialize_plan_atomic_with_provenance() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let project_id = ProjectId::new();
+
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("Roadmap", project_id, Actor::user()),
+                    tasks: vec![NewTask::new("t1"), NewTask::new("t2"), NewTask::new("t3")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        // 1 PlanCreated + 3×(TaskCreated + PlanTaskAdded).
+        let (plan_id, plan_event_id) = plan_created_id(&envs);
+        let task_ids = created_task_ids(&envs);
+        assert_eq!(task_ids.len(), 3);
+        assert_eq!(
+            envs.iter()
+                .filter(|e| matches!(e.payload, Event::PlanTaskAdded { .. }))
+                .count(),
+            3
+        );
+
+        // Every created task carries the PlanCreated event id as provenance.
+        for e in &envs {
+            if let Event::TaskCreated { task } = &e.payload {
+                assert_eq!(task.source_event_id, Some(plan_event_id));
+            }
+        }
+
+        // Projection: plan + ordered membership + task rows with provenance.
+        assert!(plans.get(plan_id).await.unwrap().is_some());
+        let members = plans.list_plan_tasks_ordered(plan_id).await.unwrap();
+        assert_eq!(members.len(), 3);
+        assert_eq!(members[0].position, 0);
+        assert_eq!(members[2].position, 2);
+        for tid in task_ids {
+            let stored = tasks.get(tid).await.unwrap().unwrap();
+            assert_eq!(stored.source_event_id, Some(plan_event_id));
+            assert_eq!(stored.project_id, Some(project_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn materialize_plan_rejects_empty_tasks() {
+        use daruma_domain::NewPlan;
+        let (handler, ..) = build_plan_stack().await;
+        let err = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("p", ProjectId::new(), Actor::user()),
+                    tasks: vec![],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("at least one task"), "{err}");
+    }
+
+    /// Q1: with plan-only intake on, `UpdateTask` rejects plan-owned fields but
+    /// leaves execution-owned fields free.
+    #[tokio::test]
+    async fn update_task_gates_plan_owned_fields_when_plan_only() {
+        use daruma_domain::{NewPlan, Priority, TaskPatch};
+        let (mut handler, _plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        handler.plan_only_intake = true;
+        let project_id = ProjectId::new();
+
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("p", project_id, Actor::user()),
+                    tasks: vec![NewTask::new("t1")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let task_id = created_task_ids(&envs)[0];
+
+        // plan-owned: title is rejected.
+        let err = handler
+            .handle(
+                Command::UpdateTask {
+                    id: task_id,
+                    patch: TaskPatch {
+                        title: Some("renamed".into()),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("plan_owned_immutable"), "{err}");
+
+        // execution-owned: priority is allowed.
+        handler
+            .handle(
+                Command::UpdateTask {
+                    id: task_id,
+                    patch: TaskPatch {
+                        priority: Some(Priority::P0),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tasks.get(task_id).await.unwrap().unwrap().priority, Priority::P0);
+    }
+
+    /// Q4: the CreateTask bridge only fires under plan-only intake; the default
+    /// (off) keeps legacy direct creation working.
+    #[tokio::test]
+    async fn create_task_bridged_only_under_plan_only_intake() {
+        let (mut handler, ..) = build_plan_stack().await;
+
+        // default (off): legacy create still works.
+        let ok = handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("legacy ok"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        assert!(ok.iter().any(|e| matches!(e.payload, Event::TaskCreated { .. })));
+
+        // on: bridged to a structured error.
+        handler.plan_only_intake = true;
+        let err = handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("nope"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("plan_only_intake"), "{err}");
+    }
+
+    /// Q3: under plan-only intake a split is a plan amend — children join the
+    /// parent's plan and a `PlanModifiedByHuman` is recorded.
+    #[tokio::test]
+    async fn split_task_amends_plan_when_plan_only() {
+        use daruma_domain::NewPlan;
+        let (mut handler, plans, _runs, _sessions, _ext, _tasks) = build_plan_stack().await;
+        handler.plan_only_intake = true;
+
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("p", ProjectId::new(), Actor::user()),
+                    tasks: vec![NewTask::new("parent")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let (plan_id, _) = plan_created_id(&envs);
+        let parent = created_task_ids(&envs)[0];
+
+        let split = handler
+            .handle(
+                Command::SplitTask {
+                    parent,
+                    subtasks: vec![NewTask::new("c1"), NewTask::new("c2")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            split
+                .iter()
+                .any(|e| matches!(e.payload, Event::PlanModifiedByHuman { .. })),
+            "split must record a plan amend"
+        );
+        assert_eq!(
+            split
+                .iter()
+                .filter(|e| matches!(e.payload, Event::PlanTaskAdded { .. }))
+                .count(),
+            2,
+            "both children attach to the parent's plan"
+        );
+        // parent + 2 children now in the plan.
+        assert_eq!(plans.list_plan_tasks_ordered(plan_id).await.unwrap().len(), 3);
+    }
+
+    /// Q3: a split of a plan-less parent is rejected under plan-only intake.
+    #[tokio::test]
+    async fn split_task_rejects_planless_parent_when_plan_only() {
+        let (mut handler, ..) = build_plan_stack().await;
+        // create a plan-less parent while the flag is off.
+        let created = handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("orphan"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let parent = created_task_ids(&created)[0];
+
+        handler.plan_only_intake = true;
+        let err = handler
+            .handle(
+                Command::SplitTask {
+                    parent,
+                    subtasks: vec![NewTask::new("c1"), NewTask::new("c2")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("split_requires_plan"), "{err}");
     }
 }
