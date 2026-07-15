@@ -13,9 +13,9 @@ use daruma_core::lifecycle_gate::{
     derive_gate_checks, GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
 };
 use daruma_core::{Command, CommandHandler};
-use daruma_domain::{Actor, NewTask, PlanStatus, Status};
+use daruma_domain::{Actor, DocumentKind, NewDocument, NewTask, PlanStatus, Status};
 use daruma_events::{Event, EventBus, EventStore};
-use daruma_shared::{CoreError, PlanId, RunId, TaskId};
+use daruma_shared::{CoreError, DocumentId, HandoffId, PlanId, ProjectId, RunId, TaskId};
 use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
 
 /// Recording stub: allows everything unless `block_trigger` matches; can
@@ -323,6 +323,52 @@ fn derive_checks_maps_transitions_and_skips_non_lifecycle_events() {
     assert_eq!(checks[1].run_id, Some(run_id));
     assert_eq!(checks[2].status_to, Some(Status::InProgress));
     assert_eq!(checks[3].status_from, Some(Status::InProgress));
+}
+
+#[test]
+fn derive_checks_maps_document_created_and_task_handoff() {
+    let project_id = ProjectId::new();
+    let now = daruma_shared::time::now();
+    let document = NewDocument {
+        id: Some(DocumentId::new()),
+        project_id,
+        kind: DocumentKind::Interview,
+        title: "Notes".to_string(),
+        content: None,
+        status: None,
+        task_id: None,
+        trigger_kind: None,
+        consumer: None,
+    }
+    .into_document(DocumentId::new(), now);
+    let document_id = document.id;
+    let handoff_id = HandoffId::new();
+
+    let events = vec![
+        Event::DocumentCreated {
+            document: document.clone(),
+        },
+        Event::HandoffAccepted {
+            handoff_id,
+            by: None,
+            notes: None,
+            latency_ms: Some(42),
+            at: now,
+        },
+    ];
+
+    let checks = derive_gate_checks(&events);
+    assert_eq!(
+        checks.iter().map(|c| c.trigger).collect::<Vec<_>>(),
+        vec![TriggerEvent::DocumentCreated, TriggerEvent::TaskHandoff]
+    );
+    assert_eq!(checks[0].document_id, Some(document_id));
+    assert_eq!(checks[0].project_id, Some(project_id));
+    assert_eq!(checks[1].handoff_id, Some(handoff_id));
+    // `HandoffAccepted` carries no work-unit/task ref, so this check cannot
+    // be scoped narrower than tenant (see the derivation's doc comment).
+    assert_eq!(checks[1].project_id, None);
+    assert_eq!(checks[1].task_id, None);
 }
 
 // ── Completion note + rule-fired audit (OSS task 019eb65a-86d0) ───────────────

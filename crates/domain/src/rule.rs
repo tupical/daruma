@@ -86,9 +86,11 @@ impl RuleScope {
     }
 }
 
-/// Lifecycle trigger a rule fires on (spec §1.1). Mirrors the v1-active subset
-/// of `daruma_core::TriggerEvent`; the wire strings are identical so a rule
-/// stored here matches a gate check there without translation.
+/// Lifecycle trigger a rule fires on (spec §1.1), plus `document.created` and
+/// `task.handoff` (not yet in the spec table — see
+/// `daruma_core::lifecycle_gate::TriggerEvent` doc for their semantics).
+/// Mirrors `daruma_core::TriggerEvent`; the wire strings are identical so a
+/// rule stored here matches a gate check there without translation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleTrigger {
@@ -108,6 +110,10 @@ pub enum RuleTrigger {
     RunBeforeExecute,
     #[serde(rename = "run.before_complete")]
     RunBeforeComplete,
+    #[serde(rename = "document.created")]
+    DocumentCreated,
+    #[serde(rename = "task.handoff")]
+    TaskHandoff,
 }
 
 /// Targeting predicate (spec §1.2). All fields optional; empty condition = the

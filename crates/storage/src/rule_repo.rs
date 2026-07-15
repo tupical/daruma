@@ -236,6 +236,8 @@ fn trigger_to_str(trigger: RuleTrigger) -> &'static str {
         RuleTrigger::TaskBeforeComplete => "task.before_complete",
         RuleTrigger::RunBeforeExecute => "run.before_execute",
         RuleTrigger::RunBeforeComplete => "run.before_complete",
+        RuleTrigger::DocumentCreated => "document.created",
+        RuleTrigger::TaskHandoff => "task.handoff",
     }
 }
 
@@ -321,6 +323,8 @@ fn parse_trigger(s: &str) -> Result<RuleTrigger> {
         "task.before_complete" => RuleTrigger::TaskBeforeComplete,
         "run.before_execute" => RuleTrigger::RunBeforeExecute,
         "run.before_complete" => RuleTrigger::RunBeforeComplete,
+        "document.created" => RuleTrigger::DocumentCreated,
+        "task.handoff" => RuleTrigger::TaskHandoff,
         other => return Err(CoreError::storage(format!("unknown rule trigger: {other}"))),
     })
 }
@@ -369,6 +373,43 @@ mod tests {
     async fn apply(repo: &RuleRepo, ev: Event) {
         let env = EventEnvelope::new(Actor::user(), ev);
         repo.apply_event(&env).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn document_created_and_task_handoff_triggers_roundtrip() {
+        let repo = repo().await;
+
+        let mut doc_rule = sample(RuleScope::Tenant, "doc-rule", RuleMode::Required);
+        doc_rule.trigger = RuleTrigger::DocumentCreated;
+        let doc_id = doc_rule.id;
+        apply(&repo, Event::RuleCreated { rule: doc_rule }).await;
+        assert_eq!(
+            repo.get(doc_id).await.unwrap().unwrap().trigger,
+            RuleTrigger::DocumentCreated
+        );
+        assert_eq!(
+            repo.effective_rules(&[RuleScope::Tenant], RuleTrigger::DocumentCreated)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut handoff_rule = sample(RuleScope::Tenant, "handoff-rule", RuleMode::Required);
+        handoff_rule.trigger = RuleTrigger::TaskHandoff;
+        let handoff_id = handoff_rule.id;
+        apply(&repo, Event::RuleCreated { rule: handoff_rule }).await;
+        assert_eq!(
+            repo.get(handoff_id).await.unwrap().unwrap().trigger,
+            RuleTrigger::TaskHandoff
+        );
+        assert_eq!(
+            repo.effective_rules(&[RuleScope::Tenant], RuleTrigger::TaskHandoff)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

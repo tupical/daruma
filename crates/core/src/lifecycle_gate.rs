@@ -21,15 +21,18 @@ use async_trait::async_trait;
 use daruma_api_dto::MutationWarning;
 use daruma_domain::{Actor, PlanStatus, Status};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{PlanId, ProjectId, Result, RunId, TaskId};
+use daruma_shared::{DocumentId, HandoffId, PlanId, ProjectId, Result, RunId, TaskId};
 use serde::{Deserialize, Serialize};
 
 use crate::Command;
 
-/// Lifecycle trigger taxonomy, v1-active subset (spec §1.1). Reserved
-/// events (`plan.before_start`, `run.created`, `decision.created`,
-/// `artifact.*`) are intentionally absent until the core grows their
-/// command paths.
+/// Lifecycle trigger taxonomy, v1-active subset (spec §1.1) plus two
+/// triggers not yet reflected in the spec table: `document.created`
+/// (Document domain, PR1) and `task.handoff` (P5 Handoff contracts — fires
+/// on `Event::HandoffAccepted`, i.e. "handoff about to change the task's
+/// active owner"). Reserved events (`plan.before_start`, `run.created`,
+/// `decision.created`, `artifact.*`) are intentionally absent until the
+/// core grows their command paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TriggerEvent {
     #[serde(rename = "project.created")]
@@ -48,6 +51,10 @@ pub enum TriggerEvent {
     RunBeforeExecute,
     #[serde(rename = "run.before_complete")]
     RunBeforeComplete,
+    #[serde(rename = "document.created")]
+    DocumentCreated,
+    #[serde(rename = "task.handoff")]
+    TaskHandoff,
 }
 
 impl TriggerEvent {
@@ -61,6 +68,8 @@ impl TriggerEvent {
             TriggerEvent::TaskBeforeComplete => "task.before_complete",
             TriggerEvent::RunBeforeExecute => "run.before_execute",
             TriggerEvent::RunBeforeComplete => "run.before_complete",
+            TriggerEvent::DocumentCreated => "document.created",
+            TriggerEvent::TaskHandoff => "task.handoff",
         }
     }
 }
@@ -75,6 +84,8 @@ pub struct GateCheck {
     pub task_id: Option<TaskId>,
     pub plan_id: Option<PlanId>,
     pub run_id: Option<RunId>,
+    pub document_id: Option<DocumentId>,
+    pub handoff_id: Option<HandoffId>,
     pub status_from: Option<Status>,
     pub status_to: Option<Status>,
     pub plan_status_from: Option<PlanStatus>,
@@ -89,6 +100,8 @@ impl GateCheck {
             task_id: None,
             plan_id: None,
             run_id: None,
+            document_id: None,
+            handoff_id: None,
             status_from: None,
             status_to: None,
             plan_status_from: None,
@@ -214,6 +227,26 @@ pub fn derive_gate_checks(events: &[Event]) -> Vec<GateCheck> {
             Event::RunCompleted { run_id, .. } => {
                 let mut check = GateCheck::new(TriggerEvent::RunBeforeComplete);
                 check.run_id = Some(*run_id);
+                checks.push(check);
+            }
+            Event::DocumentCreated { document } => {
+                let mut check = GateCheck::new(TriggerEvent::DocumentCreated);
+                check.document_id = Some(document.id);
+                check.project_id = Some(document.project_id);
+                checks.push(check);
+            }
+            // `task.handoff`: gated on acceptance, not on the initial request
+            // (`HandoffRequested` is not a trigger point — a rule here checks
+            // "ok to change owner", which only matters once the transfer is
+            // actually happening). `Event::HandoffAccepted` carries only
+            // `handoff_id`, not the contract's work units, so `task_id` /
+            // `project_id` cannot be derived here without a repository call —
+            // out of reach for this pure function (see module doc). A gate
+            // that needs project/task scoping for this trigger must resolve
+            // it itself from `handoff_id`.
+            Event::HandoffAccepted { handoff_id, .. } => {
+                let mut check = GateCheck::new(TriggerEvent::TaskHandoff);
+                check.handoff_id = Some(*handoff_id);
                 checks.push(check);
             }
             _ => {}

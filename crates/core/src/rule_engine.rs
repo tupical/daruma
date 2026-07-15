@@ -232,6 +232,8 @@ fn map_trigger(t: TriggerEvent) -> RuleTrigger {
         TriggerEvent::TaskBeforeComplete => RuleTrigger::TaskBeforeComplete,
         TriggerEvent::RunBeforeExecute => RuleTrigger::RunBeforeExecute,
         TriggerEvent::RunBeforeComplete => RuleTrigger::RunBeforeComplete,
+        TriggerEvent::DocumentCreated => RuleTrigger::DocumentCreated,
+        TriggerEvent::TaskHandoff => RuleTrigger::TaskHandoff,
     }
 }
 
