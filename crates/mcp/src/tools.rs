@@ -4337,10 +4337,15 @@ async fn resolve_project_filter(
         }
     }
     if let Some(scope_path) = args.get("scope_path").and_then(|v| v.as_str()) {
-        return view
-            .project_for_path(scope_path)?
-            .map(ProjectFilter::Project)
-            .ok_or_else(|| anyhow::anyhow!("no daruma scope configured for path `{scope_path}`"));
+        if let Some(project_id) = view.project_for_path(scope_path)? {
+            return Ok(ProjectFilter::Project(project_id));
+        }
+        // Unbound path: lazily provision a project when the server has the
+        // feature on (default off → None, and we fall through to the error).
+        if let Some(project_id) = client.provision_repo_scope(scope_path).await {
+            return Ok(ProjectFilter::Project(project_id));
+        }
+        anyhow::bail!("no daruma scope configured for path `{scope_path}`");
     }
 
     view.inferred_project().map(|p| match p {

@@ -315,6 +315,7 @@ async fn main() -> anyhow::Result<()> {
         pairing,
         tls_host,
         tls_fingerprint,
+        auto_provision_repo_project: daruma_server::state::env_auto_provision_repo_project(),
     };
 
     // ── Background: claim + work-lease TTL sweep (every 30 s) ─────────────────

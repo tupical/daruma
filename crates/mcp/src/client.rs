@@ -123,6 +123,22 @@ impl ApiClient {
         Ok(enrich_mutation_response(resp))
     }
 
+    /// Ask the server to resolve-or-provision the default project for an exact
+    /// `scope_path` (`POST /v1/repo-scopes/provision`). Returns the project id
+    /// when one is bound or freshly provisioned, else `None` — including when
+    /// the feature is off or the server predates the endpoint. Best-effort: any
+    /// error degrades to `None` so callers fall back to their normal error.
+    pub async fn provision_repo_scope(&self, scope_path: &str) -> Option<String> {
+        let resp = self
+            .post_json("/v1/repo-scopes/provision", json!({ "scope_path": scope_path }))
+            .await
+            .ok()?;
+        resp.get("project_id")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned)
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base.trim_end_matches('/'), path)
     }

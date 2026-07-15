@@ -6,6 +6,18 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Lazy repo-scope project auto-provisioning (opt-in)
+
+When an MCP call arrives under a repo `scope_path` that has no
+`repo_scopes` binding, the server can now lazily create a Daruma project
+(title = `basename(scope_path)`) and bind the scope to it, so a fresh
+repo becomes tracked on first touch without a manual
+`daruma_project_use`. Off by default (OSS/self-host behaviour is
+unchanged: an unbound `scope_path` still errors); enable with
+`DARUMA_AUTO_PROVISION_REPO_PROJECT=1`. Provisioning is idempotent and
+race-safe — concurrent first-touch calls converge on a single project
+(`POST /v1/repo-scopes/provision`).
+
 ## 0.3.0 — 2026-07-10
 
 ### MCP tool-surface profiles

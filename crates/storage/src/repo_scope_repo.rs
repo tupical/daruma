@@ -35,6 +35,21 @@ impl RepoScopeRepo {
             .collect()
     }
 
+    /// The project bound to an exact `scope_path`, if any. Exact match only —
+    /// prefix/longest-match resolution lives in the MCP client (`ScopeView`).
+    pub async fn get(&self, scope_path: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT project_id FROM repo_scopes WHERE scope_path = ?")
+            .bind(scope_path)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        row.map(|row| {
+            row.try_get("project_id")
+                .map_err(|e| CoreError::storage(e.to_string()))
+        })
+        .transpose()
+    }
+
     /// Upsert a binding.
     pub async fn set(&self, scope_path: &str, project_id: &str) -> Result<()> {
         sqlx::query(
@@ -74,9 +89,16 @@ mod tests {
 
         assert!(repo.list().await.unwrap().is_empty());
 
+        assert_eq!(repo.get("/home/u/projects/app").await.unwrap(), None);
+
         repo.set("/home/u/projects/app", "prj-a").await.unwrap();
         repo.set("/home/u/projects/lib", "prj-b").await.unwrap();
         repo.set("/home/u/projects/app", "prj-c").await.unwrap(); // upsert wins
+
+        assert_eq!(
+            repo.get("/home/u/projects/app").await.unwrap(),
+            Some("prj-c".to_string())
+        );
 
         assert_eq!(
             repo.list().await.unwrap(),

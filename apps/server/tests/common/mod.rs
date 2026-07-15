@@ -66,6 +66,7 @@ pub struct TestAppBuilder {
     mint_admin: bool,
     admin_agent_id: Option<AgentId>,
     lifecycle_gate: Option<Arc<dyn LifecycleGate>>,
+    auto_provision_repo_project: bool,
 }
 
 impl Default for TestAppBuilder {
@@ -75,6 +76,7 @@ impl Default for TestAppBuilder {
             mint_admin: true,
             admin_agent_id: None,
             lifecycle_gate: None,
+            auto_provision_repo_project: false,
         }
     }
 }
@@ -96,6 +98,12 @@ impl TestAppBuilder {
     /// (docs/LIFECYCLE_RULES_SPEC.md §1.5).
     pub fn lifecycle_gate(mut self, gate: Arc<dyn LifecycleGate>) -> Self {
         self.lifecycle_gate = Some(gate);
+        self
+    }
+
+    /// Enable lazy repo-scope auto-provisioning (default off).
+    pub fn auto_provision_repo_project(mut self, on: bool) -> Self {
+        self.auto_provision_repo_project = on;
         self
     }
 
@@ -244,6 +252,7 @@ impl TestAppBuilder {
             tls_host: "localhost:8443".to_string(),
             tls_fingerprint: "0000000000000000000000000000000000000000000000000000000000000000"
                 .to_string(),
+            auto_provision_repo_project: self.auto_provision_repo_project,
         };
         let router = router(state.clone());
 

@@ -230,6 +230,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             get(list_project_triage).patch(patch_project_triage),
         )
         .route("/repo-scopes", get(list_repo_scopes).put(put_repo_scope))
+        .route("/repo-scopes/provision", post(provision_repo_scope))
         .route("/rules", get(list_rules).post(create_rule))
         .route(
             "/rules/{id}",
@@ -2176,6 +2177,95 @@ async fn put_repo_scope(
             ))
         }
     }
+}
+
+/// Serializes concurrent auto-provisions so two first-touch calls for the same
+/// new repo can't each create a project. ponytail: one global lock — provision
+/// is a rare first-touch event; shard by scope_path only if it ever contends.
+static PROVISION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(Deserialize)]
+struct ProvisionBody {
+    scope_path: String,
+}
+
+/// `POST /v1/repo-scopes/provision` — resolve-or-provision the default project
+/// for an exact `scope_path`. Called by the MCP client only after its own
+/// longest-prefix resolution found no binding, so an existing exact binding
+/// here means a concurrent provision already won.
+///
+/// * existing binding → `{ project_id, provisioned: false }`
+/// * flag off (default) → `{ project_id: null, provisioned: false }` (the
+///   client falls back to its usual "no scope configured" error)
+/// * flag on + unbound → create a daruma project (title = basename(scope_path)),
+///   bind it, return `{ project_id, provisioned: true }`
+async fn provision_repo_scope(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ProvisionBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let scope_path = body.scope_path.trim().trim_end_matches('/').to_string();
+    if scope_path.is_empty() {
+        return Err(ApiError::from(CoreError::validation(
+            "`scope_path` must be a non-empty path".to_string(),
+        )));
+    }
+
+    if let Some(project_id) = state.repo_scopes.get(&scope_path).await.map_err(ApiError::from)? {
+        return Ok(Json(json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false })));
+    }
+    if !state.auto_provision_repo_project {
+        return Ok(Json(
+            json!({ "scope_path": scope_path, "project_id": Value::Null, "provisioned": false }),
+        ));
+    }
+
+    let _guard = PROVISION_LOCK.lock().await;
+    // Re-check under the lock: a racing call may have provisioned already.
+    if let Some(project_id) = state.repo_scopes.get(&scope_path).await.map_err(ApiError::from)? {
+        return Ok(Json(json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false })));
+    }
+
+    let title = std::path::Path::new(&scope_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("project")
+        .to_string();
+    let envs = state
+        .commands
+        .dispatch(
+            Command::CreateProject {
+                title,
+                description: Some(format!("Auto-provisioned for repo scope {scope_path}")),
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let project_id = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            daruma_events::Event::ProjectCreated { project } => Some(project.id),
+            _ => None,
+        })
+        .ok_or_else(|| ApiError::from(CoreError::storage("project_created event missing")))?;
+    // Store the plain (JSON) id form — `repo_scopes` mirrors what the MCP
+    // client sends via `PUT /v1/repo-scopes`, not the `prj_`-prefixed Display.
+    let project_id = project_id.as_uuid().to_string();
+    state
+        .repo_scopes
+        .set(&scope_path, &project_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(Json(json!({
+        "scope_path": scope_path,
+        "project_id": project_id,
+        "provisioned": true,
+    })))
 }
 
 // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ───────────────────────────

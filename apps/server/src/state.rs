@@ -120,6 +120,18 @@ pub struct AppState {
     /// Hex SHA-256 fingerprint of the server's self-signed TLS certificate
     /// (without the `sha256:` prefix — callers prepend it as needed).
     pub tls_fingerprint: String,
+    /// Lazily auto-provision a daruma project when an MCP call arrives under a
+    /// repo `scope_path` that has no `repo_scopes` binding (title =
+    /// basename(scope_path)). Default OFF in OSS/self-host; the mcpbox deploy
+    /// turns it ON. Read from `DARUMA_AUTO_PROVISION_REPO_PROJECT`.
+    pub auto_provision_repo_project: bool,
+}
+
+/// Truthy read of `DARUMA_AUTO_PROVISION_REPO_PROJECT` (default `false`).
+pub fn env_auto_provision_repo_project() -> bool {
+    std::env::var("DARUMA_AUTO_PROVISION_REPO_PROJECT")
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "on" | "yes"))
+        .unwrap_or(false)
 }
 
 impl AppState {
@@ -207,6 +219,7 @@ impl AppState {
             pairing,
             tls_host,
             tls_fingerprint,
+            auto_provision_repo_project: env_auto_provision_repo_project(),
         }
     }
 }
