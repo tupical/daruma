@@ -10,13 +10,13 @@
 
 | domain | Core | Enhancing | Extending |
 |---|---:|---:|---:|
-| Tasks | 8 | 5 | 5 |
+| Plans | 8 | 6 | 2 |
+| Tasks | 7 | 5 | 3 |
 | Projects | 3 | 4 | 2 |
 | Admin | 0 | 7 | 2 |
 | Coordination | 0 | 22 | 1 |
 | Ai | 0 | 0 | 1 |
 | Events | 0 | 2 | 0 |
-| Plans | 7 | 6 | 2 |
 | WorkspaceGraph | 0 | 0 | 8 |
 | Runs | 0 | 8 | 0 |
 | Sessions | 0 | 0 | 7 |
@@ -24,15 +24,33 @@
 | Relations | 0 | 3 | 0 |
 | Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 18 | 59 | 43 |
+| ИТОГО | 18 | 59 | 41 |
+
+## Plans
+
+| tool | tier | profile | title | hints |
+|---|---|---|---|---|
+| `daruma_plan_materialize` | Core / основные | `default` | Materialize plan with tasks | write |
+| `daruma_plan_create` | Core / основные | `default` | Create plan | write |
+| `daruma_plan_update` | Core / основные | `full` | Update plan | write |
+| `daruma_plan_get` | Core / основные | `default` | Get plan | read |
+| `daruma_plan_list` | Core / основные | `default` | List plans | read |
+| `daruma_plan_add_task` | Core / основные | `default` | Attach task to plan | write |
+| `daruma_plan_remove_task` | Core / основные | `full` | Detach task from plan | write |
+| `daruma_plan_reorder` | Core / основные | `full` | Reorder plan tasks | write |
+| `daruma_plan_archive` | Enhancing / усиливающие | `full` | Archive plan | write,destructive |
+| `daruma_plan_set_status` | Enhancing / усиливающие | `default` | Set plan status | write |
+| `daruma_plan_next_task` | Enhancing / усиливающие | `full` | Peek next eligible plan task | write |
+| `daruma_plan_progress` | Enhancing / усиливающие | `default` | Plan progress snapshot | read |
+| `daruma_plan_drain_next` | Enhancing / усиливающие | `default` | Claim next plan task | write |
+| `daruma_plan_graph` | Extending / расширяющие | `full` | Read plan DAG | read |
+| `daruma_plan_fanout` | Extending / расширяющие | `full` | Plan execution waves | read |
+| `daruma_bulk_attach_to_plan` | Enhancing / усиливающие | `full` | Bulk attach tasks to plan | write |
 
 ## Tasks
 
 | tool | tier | profile | title | hints |
 |---|---|---|---|---|
-| `daruma_create` | Core / основные | `default` | Create task | write |
-| `daruma_capture` | Extending / расширяющие | `default` | Capture inbox task | write |
-| `daruma_capture_batch` | Extending / расширяющие | `full` | Capture multiple inbox tasks | write |
 | `daruma_get` | Core / основные | `default` | Get task | read |
 | `daruma_update` | Core / основные | `default` | Update task | write |
 | `daruma_list` | Core / основные | `default` | List tasks | read |
@@ -117,26 +135,6 @@
 |---|---|---|---|---|
 | `daruma_subscribe_project` | Enhancing / усиливающие | `full` | Snapshot project events | read |
 | `daruma_events_since` | Enhancing / усиливающие | `full` | Load events since seq | read |
-
-## Plans
-
-| tool | tier | profile | title | hints |
-|---|---|---|---|---|
-| `daruma_plan_create` | Core / основные | `default` | Create plan | write |
-| `daruma_plan_update` | Core / основные | `full` | Update plan | write |
-| `daruma_plan_get` | Core / основные | `default` | Get plan | read |
-| `daruma_plan_list` | Core / основные | `default` | List plans | read |
-| `daruma_plan_add_task` | Core / основные | `default` | Attach task to plan | write |
-| `daruma_plan_remove_task` | Core / основные | `full` | Detach task from plan | write |
-| `daruma_plan_reorder` | Core / основные | `full` | Reorder plan tasks | write |
-| `daruma_plan_archive` | Enhancing / усиливающие | `full` | Archive plan | write,destructive |
-| `daruma_plan_set_status` | Enhancing / усиливающие | `default` | Set plan status | write |
-| `daruma_plan_next_task` | Enhancing / усиливающие | `full` | Peek next eligible plan task | write |
-| `daruma_plan_progress` | Enhancing / усиливающие | `default` | Plan progress snapshot | read |
-| `daruma_plan_drain_next` | Enhancing / усиливающие | `default` | Claim next plan task | write |
-| `daruma_plan_graph` | Extending / расширяющие | `full` | Read plan DAG | read |
-| `daruma_plan_fanout` | Extending / расширяющие | `full` | Plan execution waves | read |
-| `daruma_bulk_attach_to_plan` | Enhancing / усиливающие | `full` | Bulk attach tasks to plan | write |
 
 ## WorkspaceGraph
 

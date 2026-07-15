@@ -2,13 +2,10 @@
 //   1. spawn `daruma-mcp` (stdio JSON-RPC), connect MCP client.
 //   2. parse phase: derive {title, description} from input; show + confirm y/n.
 //   3. resolve project_id (workspace default or basename(cwd)).
-//   4. seed phase:
-//        - daruma_create({task: {title, description, project_id}}) → root_task_id
-//        - if plan-mode: gate on tools/list for daruma_ai_decompose (only
-//                        present on servers that register it — SaaS/Meisei,
-//                        not the OSS server); if present, try it → subtasks,
-//                        create plan, attach subtasks, confirm; otherwise
-//                        fall back to single-task execution
+//   4. seed phase (plan-only intake, ADR-0007):
+//        - daruma_plan_materialize({plan, tasks: [root]}) → plan + root task
+//          in one atomic command; decomposition is the planning layer's job
+//          (yatagarasu/fujin), daruma only accepts ready structure
 //   5. execute loop:
 //        - single-task: omc team N:agent "<prompt>" → comment + complete
 //        - plan-mode:   loop daruma_plan_next_task → omc team → comment + complete
@@ -201,21 +198,25 @@ function projectFromWorkspaceScopes(ws, cwd) {
     .sort((a, b) => b.scope.length - a.scope.length)[0] ?? null;
 }
 
-async function createRootTask({ mcp, title, description, projectId, write }) {
-  const resp = await callOrThrow(mcp, "daruma_create", {
-    task: {
+// Plan-only intake (ADR-0007): задачи материализуются планом одной атомарной
+// командой; create-then-attach путей (daruma_create + plan_add_task) больше нет.
+async function materializeRootPlan({ mcp, title, description, projectId, write }) {
+  const resp = await callOrThrow(mcp, "daruma_plan_materialize", {
+    plan: {
       title,
-      description,
+      description: `Plan for: ${title}`,
       project_id: projectId,
-      status: "todo",
     },
+    tasks: [{ title, description }],
   });
-  const task = payload(resp) ?? {};
-  if (!task.id) {
-    throw new Error(`daruma_create returned no id; raw: ${resp.text}`);
+  const events = (payload(resp)?.data ?? []).map((e) => e?.payload).filter(Boolean);
+  const plan = events.find((p) => p.type === "plan_created")?.plan;
+  const rootTask = events.find((p) => p.type === "task_created")?.task;
+  if (!plan?.id || !rootTask?.id) {
+    throw new Error(`daruma_plan_materialize returned no plan/task id; raw: ${resp.text}`);
   }
-  write(`[task] created root task ${task.id}: ${title}`);
-  return task;
+  write(`[plan] materialized ${plan.id} with root task ${rootTask.id}: ${title}`);
+  return { plan, rootTask };
 }
 
 async function commentBranch({ mcp, taskId, branch, write }) {
@@ -229,75 +230,6 @@ async function commentBranch({ mcp, taskId, branch, write }) {
   if (resp.isError) {
     write(`[branch] failed to comment branch on ${taskId}: ${resp.text.slice(0, 120)}`);
   }
-}
-
-async function tryDecompose({ mcp, taskId, write }) {
-  // daruma_ai_decompose is only registered on servers that carry it (SaaS /
-  // Meisei); the OSS server's tool catalog stops at
-  // daruma_ai_analyze_complexity. Gate on tools/list first so we don't call a
-  // phantom tool and get a generic "unknown tool" error — this is a distinct
-  // case from ai_decompose returning 502 ai_unavailable when OPENAI_API_KEY
-  // isn't set on a server that *does* have the tool.
-  const tools = await mcp.listTools();
-  const hasDecompose = tools.some((t) => t.name === "daruma_ai_decompose");
-  if (!hasDecompose) {
-    write(`[decompose] plan decomposition unavailable on this server (OSS): daruma_ai_decompose is not registered here — available on SaaS/Meisei`);
-    return null;
-  }
-
-  // ai_decompose returns 502 ai_unavailable when OPENAI_API_KEY isn't set on
-  // the server. Treat that case as "no AI, single-task mode" without aborting.
-  const resp = await mcp.callTool("daruma_ai_decompose", { task_id: taskId });
-  if (resp.isError) {
-    write(`[decompose] AI decomposition unavailable: ${resp.text.slice(0, 200)}`);
-    return null;
-  }
-  const result = payload(resp) ?? {};
-  const subtasks = Array.isArray(result.subtasks) ? result.subtasks
-                : Array.isArray(result) ? result
-                : null;
-  if (!subtasks || subtasks.length === 0) {
-    write(`[decompose] AI returned no subtasks; falling back to single-task mode`);
-    return null;
-  }
-  write(`[decompose] AI produced ${subtasks.length} subtasks`);
-  return subtasks;
-}
-
-async function buildPlan({ mcp, projectId, title, subtasks, write }) {
-  const planResp = await callOrThrow(mcp, "daruma_plan_create", {
-    title,
-    project_id: projectId,
-    description: `Plan for: ${title}`,
-  });
-  const plan = payload(planResp) ?? {};
-  if (!plan.id) throw new Error(`daruma_plan_create returned no id; raw: ${planResp.text}`);
-  write(`[plan] created ${plan.id}: ${title}`);
-
-  for (let i = 0; i < subtasks.length; i++) {
-    const sub = subtasks[i];
-    // ai_decompose may return tasks already persisted (with `id`) or only
-    // proposals (with title/description). Handle both.
-    let subTaskId = sub.id ?? sub.task_id ?? null;
-    if (!subTaskId) {
-      const createResp = await callOrThrow(mcp, "daruma_create", {
-        task: {
-          title: sub.title ?? `Subtask ${i + 1}`,
-          description: sub.description ?? "",
-          project_id: projectId,
-          status: "todo",
-        },
-      });
-      subTaskId = payload(createResp)?.id;
-      if (!subTaskId) throw new Error(`subtask create returned no id; raw: ${createResp.text}`);
-    }
-    await callOrThrow(mcp, "daruma_plan_add_task", {
-      plan_id: plan.id,
-      task_id: subTaskId,
-      position: i,
-    });
-  }
-  return plan;
 }
 
 function executePromptFor(task) {
@@ -589,33 +521,19 @@ export async function runDarumaStart({
       return { cancelled: true };
     }
 
-    // --- Phase 2: resolve project, create root task ---------------------
-    write(`\n=== Phase 2: Project + Root task ===`);
+    // --- Phase 2: resolve project, materialize root plan ----------------
+    // Plan-only intake (ADR-0007): план и его root-задача создаются одной
+    // атомарной командой. Декомпозиция больше не дело daruma (и этого
+    // плагина) — готовую структуру приносит planning-слой (yatagarasu/fujin).
+    write(`\n=== Phase 2: Project + Root plan ===`);
     const resolvedProjectId = await resolveProject({
       mcp, cwd, explicitProjectId: projectId, write,
     });
-    const rootTask = await createRootTask({
+    const { plan: rootPlan, rootTask } = await materializeRootPlan({
       mcp, title, description, projectId: resolvedProjectId, write,
     });
     await commentBranch({ mcp, taskId: rootTask.id, branch, write });
-
-    // --- Phase 3: decompose into plan (optional) ------------------------
-    let plan = null;
-    if (planMode) {
-      write(`\n=== Phase 3: Decompose ===`);
-      const subtasks = await tryDecompose({ mcp, taskId: rootTask.id, write });
-      if (subtasks && subtasks.length > 0) {
-        plan = await buildPlan({
-          mcp, projectId: resolvedProjectId, title, subtasks, write,
-        });
-        if (!(await confirm({ ask: userPrompt.ask, write, message: `Execute plan with ${subtasks.length} subtasks?`, autoYes }))) {
-          write("Cancelled by user.");
-          return { cancelled: true, rootTaskId: rootTask.id, planId: plan.id };
-        }
-      } else {
-        write(`[decompose] falling back to single-task execution on root task`);
-      }
-    }
+    const plan = planMode ? rootPlan : null;
 
     // --- Phase 4: execute -----------------------------------------------
     write(`\n=== Phase 4: Execute ===`);
@@ -763,5 +681,4 @@ export const _internal = {
   currentGitBranch,
   payload,
   runTeamFromPlanWaves,
-  tryDecompose,
 };

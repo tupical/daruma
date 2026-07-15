@@ -281,16 +281,22 @@ async fn doc_lifecycle_and_task_link_roundtrip() {
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
     assert_eq!(doc["document"]["status"], "outdated", "got: {doc}");
 
-    // Create a task and link the document to it.
+    // Materialize a task (plan-only intake) and link the document to it.
     let task = call_tool(
         &client,
-        "daruma_create",
-        json!({ "task": { "title": "target", "project_id": pid } }),
+        "daruma_plan_materialize",
+        json!({
+            "plan": { "title": "doc link plan", "project_id": pid },
+            "tasks": [ { "title": "target" } ]
+        }),
     )
     .await;
-    let task_id = task["data"][0]["payload"]["task"]["id"]
-        .as_str()
-        .expect("task id in create response")
+    let task_id = task["data"]
+        .as_array()
+        .expect("event envelopes")
+        .iter()
+        .find_map(|e| e["payload"]["task"]["id"].as_str())
+        .expect("task id in materialize response")
         .to_owned();
 
     let resp = call_tool(

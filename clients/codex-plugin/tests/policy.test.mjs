@@ -26,7 +26,7 @@ test("installPolicy creates AGENTS.md with policy block when missing", async () 
     const body = await fs.readFile(join(dir, "AGENTS.md"), "utf8");
     assert.ok(body.includes(BEGIN));
     assert.ok(body.includes(END));
-    assert.match(body, /daruma_plan_create/);
+    assert.match(body, /daruma_plan_materialize/);
     assert.match(body, /status=all/);
     assert.match(body, /трекер/);
     assert.match(body, /Verify real daruma state/);

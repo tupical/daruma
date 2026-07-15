@@ -9,17 +9,16 @@ Codex plugin manages this block; do not hand-edit between the markers.
 1. **All durable task/plan state lives in daruma.** Never persist
    tasks, plans, subtasks, or backlogs in markdown scratchpads,
    `TODO.md` files, or in-chat notes as the source of truth. Use
-   `daruma_create`, `daruma_plan_create`,
-   `daruma_plan_add_task`, `daruma_set_status`,
-   `daruma_comment`.
+   `daruma_plan_materialize` (plan-only intake, ADR-0007),
+   `daruma_set_status`, `daruma_comment`.
 
 2. **Do not create or modify `.omc/plans/`, `.omc/ultragoal/`, or
    `.omc/state/plans*`.** OMC skills (`/plan`, `/ultragoal`,
    `/autopilot`, `/ralph`, `/ultrawork`, `/ralplan`, `/team`)
    must not author new files under those paths. If a request triggers
    one of those skills, route the plan into daruma first:
-   `daruma_workspace_info` → `daruma_create` →
-   `daruma_plan_create` → `daruma_plan_add_task`. OMC may
+   `daruma_workspace_info` →
+   `daruma_plan_materialize` (the plan with its tasks, one atomic call). OMC may
    still execute, but the plan it follows must come from
    `daruma_plan_get` / `daruma_plan_next_task`.
 

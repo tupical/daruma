@@ -251,8 +251,8 @@ async fn plan_tool_surface_smoke() {
     // Create two tasks and attach them to the plan.
     let t1 = call_tool(
         &client,
-        "daruma_create",
-        json!({ "task": { "title": "Task 1", "project_id": pid } }),
+        "daruma_plan_materialize",
+        json!({ "plan": { "title": "seed plan", "project_id": pid }, "tasks": [ { "title": "Task 1" } ] }),
     )
     .await;
     let t1_id = t1["data"]
@@ -271,8 +271,8 @@ async fn plan_tool_surface_smoke() {
 
     let t2 = call_tool(
         &client,
-        "daruma_create",
-        json!({ "task": { "title": "Task 2", "project_id": pid } }),
+        "daruma_plan_materialize",
+        json!({ "plan": { "title": "seed plan", "project_id": pid }, "tasks": [ { "title": "Task 2" } ] }),
     )
     .await;
     let t2_id = t2["data"]
@@ -352,8 +352,8 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
     async fn make_task(client: &ApiClient, pid: &str, title: &str) -> String {
         let resp = call_tool(
             client,
-            "daruma_create",
-            json!({ "task": { "title": title, "project_id": pid } }),
+            "daruma_plan_materialize",
+            json!({ "plan": { "title": "seed plan", "project_id": pid }, "tasks": [ { "title": title } ] }),
         )
         .await;
         resp["data"]

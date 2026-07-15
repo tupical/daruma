@@ -28,21 +28,48 @@ fn req(method: &str, params: serde_json::Value) -> JsonRpcRequest {
     }
 }
 
-/// Create a task via MCP and return its task id string.
+/// Materialize a task via MCP (plan-only intake) and return its task id string.
 async fn create_task_via_mcp(client: &ApiClient, title: &str) -> String {
-    let resp = dispatch_request(
+    // MaterializePlan needs a project host; seed one per task (cheap in tests).
+    let proj = dispatch_request(
         client,
         req(
             "tools/call",
             json!({
-                "name": "daruma_create",
-                "arguments": { "task": { "title": title } }
+                "name": "daruma_project_create",
+                "arguments": { "title": format!("proj for {title}") }
             }),
         ),
     )
     .await
     .unwrap();
-    assert!(resp.error.is_none(), "create_task failed: {:?}", resp.error);
+    assert!(proj.error.is_none(), "project create failed: {:?}", proj.error);
+    let proj_text = proj.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let proj_body: serde_json::Value = serde_json::from_str(&proj_text).unwrap();
+    let pid = proj_body["project_id"]
+        .as_str()
+        .expect("project_id in response")
+        .to_owned();
+
+    let resp = dispatch_request(
+        client,
+        req(
+            "tools/call",
+            json!({
+                "name": "daruma_plan_materialize",
+                "arguments": {
+                    "plan": { "title": format!("plan for {title}"), "project_id": pid },
+                    "tasks": [ { "title": title } ]
+                }
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(resp.error.is_none(), "materialize failed: {:?}", resp.error);
     let content_text = resp.result.unwrap()["content"][0]["text"]
         .as_str()
         .unwrap()

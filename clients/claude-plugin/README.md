@@ -113,9 +113,9 @@ That's the whole workflow. Inside Claude Code, the equivalent slash commands are
 ┌──────────────────────────────────────────────────┐
 │ 1. parse        → derive {title, description}    │
 │ 2. project      → workspace_info / project_list  │
-│ 3. seed         → daruma_create(root task)    │
-│ 4. [--plan]     → daruma_ai_decompose         │
-│                   + plan_create + plan_add_task  │
+│ 3. seed         → daruma_plan_materialize     │
+│                   (plan + root task, one atomic  │
+│                   call — plan-only intake)       │
 │ 5. execute loop                                  │
 │      a. plan_next_task (or just the root)        │
 │      b. omc team N:claude "<title>\n<desc>"      │

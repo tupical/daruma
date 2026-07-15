@@ -90,25 +90,57 @@ async fn ac7_tools_list_advertises_at_least_ten_required_tools() {
     }
 }
 
+
+/// Seed a project through the MCP dispatch path; returns its id.
+async fn mcp_seed_project(client: &ApiClient, title: &str) -> String {
+    let resp = dispatch_request(
+        client,
+        req(
+            "tools/call",
+            json!({ "name": "daruma_project_create", "arguments": { "title": title } }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(resp.error.is_none(), "project create failed: {:?}", resp.error);
+    let content = resp.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body: serde_json::Value = serde_json::from_str(&content).unwrap();
+    body["project_id"]
+        .as_str()
+        .or_else(|| body["data"]["project_id"].as_str())
+        .or_else(|| body["id"].as_str())
+        .unwrap_or_else(|| panic!("no project id in {body}"))
+        .to_string()
+}
+
 #[tokio::test]
 async fn ac7_tools_call_create_task_dispatches_through_to_server() {
     let (addr, token) = spawn_daruma_inline().await;
     let client = ApiClient::new(format!("http://{addr}"), token);
 
+    // Plan-only intake (ADR-0007): the dispatch path is exercised through
+    // daruma_plan_materialize — the sole intake surface for new tasks.
+    let project = mcp_seed_project(&client, "AC-7 project").await;
     let resp = dispatch_request(
         &client,
         req(
             "tools/call",
             json!({
-                "name": "daruma_create",
-                "arguments": { "task": { "title": "AC-7 mcp" } }
+                "name": "daruma_plan_materialize",
+                "arguments": {
+                    "plan": { "title": "AC-7 plan", "project_id": project },
+                    "tasks": [ { "title": "AC-7 mcp" } ]
+                }
             }),
         ),
     )
     .await
     .unwrap();
 
-    assert!(resp.error.is_none(), "create failed: {:?}", resp.error);
+    assert!(resp.error.is_none(), "materialize failed: {:?}", resp.error);
     let content = resp.result.unwrap()["content"][0]["text"]
         .as_str()
         .unwrap()
@@ -116,12 +148,16 @@ async fn ac7_tools_call_create_task_dispatches_through_to_server() {
     let envelopes: serde_json::Value = serde_json::from_str(&content).unwrap();
     let arr = envelopes["data"]
         .as_array()
-        .expect("create returns event envelopes");
-    assert!(!arr.is_empty(), "must emit at least one event");
-    assert_eq!(arr[0]["payload"]["type"], "task_created");
+        .expect("materialize returns event envelopes");
+    let types: Vec<&str> = arr
+        .iter()
+        .filter_map(|e| e["payload"]["type"].as_str())
+        .collect();
+    assert!(types.contains(&"plan_created"), "{types:?}");
+    assert!(types.contains(&"task_created"), "{types:?}");
     assert!(
         envelopes["task_id"].is_string(),
-        "daruma_create must surface task_id for agents: {envelopes}"
+        "materialize must surface task_id for agents: {envelopes}"
     );
 
     // Follow up with healthz — verifies a non-auth path also works.
@@ -140,13 +176,17 @@ async fn tools_call_update_task_dispatches_and_records_activity() {
     let addr = spawn_server(&app).await;
     let client = ApiClient::new(format!("http://{addr}"), app.admin_token.clone());
 
+    let project = mcp_seed_project(&client, "MCP update project").await;
     let create_resp = dispatch_request(
         &client,
         req(
             "tools/call",
             json!({
-                "name": "daruma_create",
-                "arguments": { "task": { "title": "MCP update seed" } }
+                "name": "daruma_plan_materialize",
+                "arguments": {
+                    "plan": { "title": "MCP update plan", "project_id": project },
+                    "tasks": [ { "title": "MCP update seed" } ]
+                }
             }),
         ),
     )

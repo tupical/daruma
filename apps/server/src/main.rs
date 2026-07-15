@@ -158,6 +158,11 @@ async fn main() -> anyhow::Result<()> {
         .with_rules(rules.clone())
         .with_evidence(evidence.clone())
         .with_artifacts(artifacts.clone())
+        // ADR-0007 plan-only intake: the served HTTP/MCP surface rejects direct
+        // task creation with a bridge error; intake = MaterializePlan. The
+        // desktop app keeps its local create path until the terminality task
+        // migrates its UI.
+        .with_plan_only_intake(true)
         // Rule engine reads through the same projections (zero-cost when empty).
         // Evidence satisfies `required` requirements (spec §1.3).
         .with_lifecycle_gate(Arc::new(daruma_core::RuleEngineGate::with_evidence(

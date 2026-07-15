@@ -975,7 +975,7 @@ mod tests {
         let body = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
         assert!(body.contains(CODEX_POLICY_BEGIN));
         assert!(body.contains(CODEX_POLICY_END));
-        assert!(body.contains("daruma_plan_create"));
+        assert!(body.contains("daruma_plan_materialize"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

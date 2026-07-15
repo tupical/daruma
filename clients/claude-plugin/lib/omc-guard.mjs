@@ -30,8 +30,7 @@ this block; do not hand-edit between the markers.
   \`.omc/state/plans*\`. Those paths are reserved as no-write for plan
   authoring in this workspace.
 - **Author plans via daruma first:** \`daruma_workspace_info\` →
-  \`daruma_create\` → \`daruma_plan_create\` →
-  \`daruma_plan_add_task\`. OMC may still execute, but the plan it
+  \`daruma_plan_materialize\` (the plan with its tasks, one atomic call). OMC may still execute, but the plan it
   consumes is fetched via \`daruma_plan_get\` /
   \`daruma_plan_next_task\`.
 - **OMC logs, state/sessions, notepad, and research artifacts**

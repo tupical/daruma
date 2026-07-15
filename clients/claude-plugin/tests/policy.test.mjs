@@ -23,7 +23,7 @@ test("installPolicy creates CLAUDE.md with policy block when missing", async () 
     const body = await fs.readFile(join(dir, "CLAUDE.md"), "utf8");
     assert.ok(body.includes(BEGIN));
     assert.ok(body.includes(END));
-    assert.match(body, /daruma_plan_create/);
+    assert.match(body, /daruma_plan_materialize/);
     assert.match(body, /\.omc\/plans\//);
     assert.match(body, /\/daruma-claude:tasks/);
     // Trigger-word guard.
@@ -69,7 +69,7 @@ test("installPolicy refreshes managed block in place", async () => {
     assert.match(body, /^# Preamble/);
     assert.match(body, /\nAfter\n?$/);
     assert.ok(!body.includes("stale content"));
-    assert.match(body, /daruma_plan_create/);
+    assert.match(body, /daruma_plan_materialize/);
   });
 });
 

@@ -244,26 +244,16 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
 
     vec![
         // ── Tasks ─────────────────────────────────────────────────────────
+        // Intake is plan-only (ADR-0007): tasks are materialized by a plan via
+        // `daruma_plan_materialize`. The former create/capture tools are gone
+        // from the catalogue; calling them returns a bridge error naming the
+        // replacement.
         tool(
-            "daruma_create",
-            "Create task",
-            "Create a new task. `title` is required; everything else is optional. daruma is the single source of truth for tasks/plans — do not also persist them in markdown, TODO files, or .omc/plans/.",
-            schema_create(),
-            Dom::Tasks, D, C, Ann::Write,
-        ),
-        tool(
-            "daruma_capture",
-            "Capture inbox task",
-            "Quick-capture a fleeting idea as an inbox task (priority p3). Uses the resolved repo project when unambiguous; pass `project_id`, `project_scope`, or `scope_path` in multi-repo parent folders. Pass `project_id: null` for a project-less inbox task.",
-            schema_capture(),
-            Dom::Tasks, D, X, Ann::Write,
-        ),
-        tool(
-            "daruma_capture_batch",
-            "Capture multiple inbox tasks",
-            "Capture multiple inbox tasks in one call. Each string becomes a separate task (priority p3).",
-            schema_capture_batch(),
-            Dom::Tasks, F, X, Ann::Write,
+            "daruma_plan_materialize",
+            "Materialize plan with tasks",
+            "The ONLY intake path for new tasks (ADR-0007 plan-only intake): atomically create a plan together with its tasks in one transaction. Pass `plan` (title required; project resolved from the repo scope when unambiguous) and `tasks` (each title required). Tasks inherit the plan's project and carry provenance to the PlanCreated event. Raw ideas that are not yet a structured plan belong in the upstream layers (intake/sensemaking), not here.",
+            schema_plan_materialize(),
+            Dom::Plans, D, C, Ann::Write,
         ),
         tool(
             "daruma_get",
@@ -597,7 +587,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_add_task",
             "Attach task to plan",
-            "Attach a task to a plan at an optional position with optional dependencies.",
+            "Recompose plans: attach an EXISTING task (already materialized via a plan) to another plan at an optional position with optional dependencies. NOT an intake path — new tasks enter only via `daruma_plan_materialize` (ADR-0007).",
             schema_plan_add_task(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -1153,53 +1143,66 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
     let args = arguments.as_object().cloned().unwrap_or_default();
 
     match name {
-        "daruma_create" => {
-            let mut task = args.get("task").cloned().unwrap_or_else(|| json!({}));
-            // Inject the workspace default project if the task didn't
-            // specify one explicitly. Use `"project_id": null` in the
-            // arguments to opt out and create an inbox-only task.
-            if let Some(t) = task.as_object_mut() {
-                if !t.contains_key("project_id") {
-                    match resolve_project_filter(client, &args, false, true, true).await? {
-                        ProjectFilter::Project(pid) => {
-                            t.insert("project_id".to_string(), Value::String(pid));
-                        }
-                        ProjectFilter::None => {}
-                        ProjectFilter::All => unreachable!("allow_all=false"),
+        // Bridge errors (ADR-0007 Q4): the removed create/capture paths do not
+        // vanish silently — they name the replacement.
+        "daruma_create" | "daruma_capture" | "daruma_capture_batch" => {
+            Err(anyhow::anyhow!(
+                "plan_only_intake: `{name}` is removed — tasks are materialized by a plan. \
+                 Use `daruma_plan_materialize` with the plan and its tasks; raw ideas belong \
+                 in the upstream intake/sensemaking layers (ADR-0007)."
+            ))
+        }
+        "daruma_plan_materialize" => {
+            let plan_args = args
+                .get("plan")
+                .and_then(|v| v.as_object())
+                .ok_or_else(|| anyhow::anyhow!("`plan` (object with `title`) is required"))?
+                .clone();
+            let title = plan_args
+                .get("title")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("`plan.title` is required"))?;
+            // NewPlan.project_id is mandatory: take it from the plan object or
+            // resolve the repo-scoped default project (same idiom as list/get).
+            let project_id = match plan_args.get("project_id").and_then(|v| v.as_str()) {
+                Some(pid) => pid.to_string(),
+                None => match resolve_project_filter(client, &args, false, false, true).await? {
+                    ProjectFilter::Project(pid) => pid,
+                    ProjectFilter::None | ProjectFilter::All => {
+                        return Err(anyhow::anyhow!(
+                            "`plan.project_id` is required (no unambiguous repo project resolved)"
+                        ))
                     }
-                }
-                // Normalize explicit nulls to absent.
-                if let Some(v) = t.get("project_id") {
-                    if v.is_null() {
-                        t.remove("project_id");
-                    }
+                },
+            };
+            let mut plan = json!({
+                "title": title,
+                "project_id": project_id,
+                "owner": {"kind": "user"},
+            });
+            for key in ["description", "goal", "parent_plan_id"] {
+                if let Some(v) = plan_args.get(key).and_then(|v| v.as_str()) {
+                    plan[key] = json!(v);
                 }
             }
-            client
-                .post_command(json!({"type":"create_task","task": task}))
-                .await
-        }
-        "daruma_capture" => {
-            let text = required_string(&args, "text")?;
-            create_captured_task(client, &text, &args).await
-        }
-        "daruma_capture_batch" => {
-            let texts = args
-                .get("texts")
+            if let Some(criteria) = plan_args.get("success_criteria") {
+                plan["success_criteria"] = criteria.clone();
+            }
+            let tasks = args
+                .get("tasks")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| anyhow::anyhow!("`texts` (array of strings) is required"))?;
-            if texts.is_empty() {
-                return Err(anyhow::anyhow!("`texts` must contain at least one item"));
-            }
-            let mut tasks = Vec::with_capacity(texts.len());
-            for item in texts {
-                let text = item
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("each entry in `texts` must be a string"))?;
-                let resp = create_captured_task(client, text, &args).await?;
-                tasks.push(resp);
-            }
-            Ok(json!({ "count": tasks.len(), "tasks": tasks }))
+                .filter(|a| !a.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("`tasks` (non-empty array of {{title, ...}}) is required")
+                })?;
+            client
+                .post_command(json!({
+                    "type": "materialize_plan",
+                    "plan": plan,
+                    "tasks": tasks,
+                }))
+                .await
         }
         "daruma_get" => {
             let id = required_string(&args, "id")?;
@@ -3006,25 +3009,40 @@ fn schema_with_plan_id() -> Value {
     })
 }
 
-fn schema_create() -> Value {
+fn schema_plan_materialize() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "task": {
+            "plan": {
                 "type":"object",
                 "properties": {
                     "title": {"type":"string"},
                     "description": {"type":"string"},
-                    "status": {"type":"string","enum":["inbox","todo","in_progress","done"]},
-                    "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
-                    "project_id": {"type":"string"},
-                    "external_key": {"type":"string","description":"Optional idempotency key from an external source (webhook/importer). Unique within the workspace: re-creating with the same key does not duplicate the task — the incoming context is appended as a comment to the existing task instead."}
+                    "goal": {"type":"string"},
+                    "success_criteria": {"type":"array","items":{"type":"string"}},
+                    "parent_plan_id": {"type":"string"},
+                    "project_id": {"type":"string","description":"Omitted uses the resolved repo project when unambiguous."}
                 },
                 "required":["title"]
             },
+            "tasks": {
+                "type":"array",
+                "minItems": 1,
+                "items": {
+                    "type":"object",
+                    "properties": {
+                        "title": {"type":"string"},
+                        "description": {"type":"string"},
+                        "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
+                        "due_at": {"type":"string","description":"RFC3339 timestamp."}
+                    },
+                    "required":["title"]
+                },
+                "description":"Tasks materialized with the plan; each inherits the plan's project and provenance to the PlanCreated event."
+            },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (usually repo folder name) used when task.project_id is omitted."
+                "description":"Named daruma scope (usually repo folder name) used when plan.project_id is omitted."
             },
             "project_scope": {
                 "type":"string",
@@ -3035,7 +3053,7 @@ fn schema_create() -> Value {
                 "description":"Filesystem path used to resolve the nearest configured daruma scope."
             }
         },
-        "required":["task"]
+        "required":["plan","tasks"]
     })
 }
 
@@ -3052,45 +3070,6 @@ fn schema_update() -> Value {
             }
         },
         "required":["id"]
-    })
-}
-
-fn schema_capture() -> Value {
-    json!({
-        "type":"object",
-        "properties": {
-            "text": {"type":"string", "description":"Task title (the captured idea)."},
-            "project_id": {
-                "description":"Optional project scope. Omitted uses the resolved repo project when unambiguous; null means inbox-only.",
-                "anyOf": [{"type":"string"}, {"type":"null"}]
-            },
-            "scope": {"type":"string", "description":"Named daruma scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named daruma scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured daruma scope."}
-        },
-        "required":["text"]
-    })
-}
-
-fn schema_capture_batch() -> Value {
-    json!({
-        "type":"object",
-        "properties": {
-            "texts": {
-                "type":"array",
-                "items": {"type":"string"},
-                "minItems": 1,
-                "description":"Each string becomes a separate inbox task."
-            },
-            "project_id": {
-                "description":"Optional project scope. Omitted uses the resolved repo project when unambiguous; null means inbox-only.",
-                "anyOf": [{"type":"string"}, {"type":"null"}]
-            },
-            "scope": {"type":"string", "description":"Named daruma scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named daruma scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured daruma scope."}
-        },
-        "required":["texts"]
     })
 }
 
@@ -4408,31 +4387,6 @@ async fn project_selection_response(
             }
         }
     }))
-}
-
-async fn create_captured_task(
-    client: &ApiClient,
-    text: &str,
-    args: &Map<String, Value>,
-) -> anyhow::Result<Value> {
-    let mut task = json!({
-        "title": text,
-        "status": "inbox",
-        "priority": "p3"
-    });
-    let filter = resolve_project_filter(client, args, false, true, true).await?;
-    if let Some(t) = task.as_object_mut() {
-        match filter {
-            ProjectFilter::Project(pid) => {
-                t.insert("project_id".to_string(), Value::String(pid));
-            }
-            ProjectFilter::None => {}
-            ProjectFilter::All => unreachable!("allow_all=false"),
-        }
-    }
-    client
-        .post_command(json!({"type":"create_task","task": task}))
-        .await
 }
 
 fn view_arg(args: &Map<String, Value>, default: &str, allowed: &[&str]) -> anyhow::Result<String> {
@@ -5818,8 +5772,7 @@ mod profile_tests {
             default.len()
         );
         for required in [
-            "daruma_capture",
-            "daruma_create",
+            "daruma_plan_materialize",
             "daruma_list",
             "daruma_get",
             "daruma_search",

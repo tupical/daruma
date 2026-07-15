@@ -39,7 +39,7 @@ test("installOmcGuard creates AGENTS.md with managed block when .omc/ exists", a
     const body = await fs.readFile(join(dir, ".omc", "AGENTS.md"), "utf8");
     assert.ok(body.includes(BEGIN));
     assert.ok(body.includes(END));
-    assert.match(body, /daruma_plan_create/);
+    assert.match(body, /daruma_plan_materialize/);
     assert.match(body, /\.omc\/plans\//);
   });
 });
@@ -77,7 +77,7 @@ test("installOmcGuard refreshes existing managed block in place", async () => {
     assert.match(body, /^# Preamble/);
     assert.match(body, /\nAfter\n?$/);
     assert.ok(!body.includes("old stale content"));
-    assert.match(body, /daruma_plan_create/);
+    assert.match(body, /daruma_plan_materialize/);
   });
 });
 
