@@ -528,7 +528,46 @@ impl CommandHandler {
             }
         }
 
+        if to.is_terminal() {
+            events.extend(self.close_task_documents(id, to, now).await?);
+        }
+
         Ok(events)
+    }
+
+    /// Barrier cascade (task 019f6ad2; canon daruma invariant 5 — "живой
+    /// документ ⇔ живой якорь"): a task reaching a terminal status closes
+    /// its own `Draft`/`Active` documents in the same command. `Done`
+    /// freezes them (still readable, no longer live); `Cancelled` archives
+    /// them outright. Returns `[]` when the document repository isn't
+    /// configured, `to` isn't terminal, or the task has no live documents.
+    /// Shared by `Command::SetStatus`/`BulkSetStatus` (via
+    /// `emit_status_transition_events`) and `Command::CompleteTask`, which
+    /// builds its `Done` transition independently.
+    async fn close_task_documents(
+        &self,
+        task_id: TaskId,
+        to: Status,
+        now: daruma_shared::Timestamp,
+    ) -> Result<Vec<Event>> {
+        let Some(documents) = &self.documents else {
+            return Ok(vec![]);
+        };
+        let target = match to {
+            Status::Done => daruma_domain::DocumentStatus::Frozen,
+            Status::Cancelled => daruma_domain::DocumentStatus::Archived,
+            _ => return Ok(vec![]),
+        };
+        let live_docs = documents.list_live_by_task(task_id).await?;
+        Ok(live_docs
+            .into_iter()
+            .map(|doc| Event::DocumentStatusChanged {
+                document_id: doc.id,
+                from: doc.status,
+                to: target,
+                at: now,
+            })
+            .collect())
     }
 
     /// Return the first active run_id for a plan, if any.
@@ -600,6 +639,34 @@ impl CommandHandler {
             emitted += 1;
         }
         Ok(emitted)
+    }
+
+    /// Sweep backstop (task 019f6ad2; canon daruma invariant 5 — "живой
+    /// документ ⇔ живой якорь"): archives every live (`Draft`/`Active`)
+    /// document whose anchor is missing (`task_id = None`, a legacy
+    /// pre-barrier row) or whose anchor task is gone or terminal — cases the
+    /// closure cascade in [`Self::close_task_documents`] never saw (the task
+    /// was deleted rather than closed, a crash landed between the task
+    /// transition and the cascade, or a row was edited directly). Returns
+    /// the number of documents archived. Idempotent: a document already
+    /// archived by a previous sweep or the cascade is not a candidate again.
+    pub async fn sweep_orphan_documents(&self, now: daruma_shared::Timestamp) -> Result<usize> {
+        let Some(documents) = &self.documents else {
+            return Ok(0);
+        };
+        let candidates = documents.list_sweep_candidates().await?;
+        let mut swept = 0usize;
+        for doc in candidates {
+            self.persist_signal_event(Event::DocumentStatusChanged {
+                document_id: doc.id,
+                from: doc.status,
+                to: daruma_domain::DocumentStatus::Archived,
+                at: now,
+            })
+            .await?;
+            swept += 1;
+        }
+        Ok(swept)
     }
 
     /// Route freshly persisted events into the project's auto-created
@@ -1113,6 +1180,8 @@ impl CommandHandler {
                         });
                     }
                 }
+
+                events.extend(self.close_task_documents(id, Status::Done, now).await?);
 
                 Ok(events)
             }
@@ -2477,10 +2546,18 @@ impl CommandHandler {
                 }
                 let id = new_doc.id.unwrap_or_else(DocumentId::new);
                 let now = time::now();
-                if let Some(task_id) = new_doc.task_id {
-                    if self.tasks.get(task_id).await?.is_none() {
-                        return Err(CoreError::not_found(format!("task {task_id}")));
-                    }
+                // Barrier (task 019f6ad2; canon daruma invariant 5, "живой
+                // документ ⇔ живой якорь"): a document is born anchored to a
+                // task or not at all. `Document::task_id` stays `Option` for
+                // legacy pre-barrier rows, but new creation requires it.
+                let task_id = new_doc.task_id.ok_or_else(|| {
+                    CoreError::validation(
+                        "document must be anchored to a task_id on creation \
+                         (canon daruma invariant 5: \"живой документ ⇔ живой якорь\")",
+                    )
+                })?;
+                if self.tasks.get(task_id).await?.is_none() {
+                    return Err(CoreError::not_found(format!("task {task_id}")));
                 }
                 let document = daruma_domain::NewDocument {
                     id: Some(id),

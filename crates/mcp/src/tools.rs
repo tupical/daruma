@@ -4188,11 +4188,11 @@ fn schema_doc_create() -> Value {
             "title":      {"type":"string"},
             "content":    {"type":"string","description":"Initial markdown body. Defaults to empty when omitted."},
             "status":     {"type":"string","enum":["draft","active","outdated","archived"],"description":"Initial lifecycle status. Defaults to `active`."},
-            "task_id":    {"type":"string","description":"Task this document is an artifact of."},
+            "task_id":    {"type":"string","description":"Task this document is an artifact of. Required — a document must be anchored to a task at creation (canon daruma invariant 5: \"живой документ ⇔ живой якорь\")."},
             "trigger_kind": {"type":"string","description":"What triggered the document's creation (free-form, e.g. `before_start_rule`)."},
             "consumer":   {"type":"string","description":"Who/what is expected to consume the document (free-form, e.g. `reviewer`)."}
         },
-        "required":["project_id","kind","title"]
+        "required":["project_id","kind","title","task_id"]
     })
 }
 

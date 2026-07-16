@@ -70,12 +70,46 @@ async fn create_bare_project(handler: &CommandHandler) -> ProjectId {
     }
 }
 
-/// Create one document under `project_id` and return its id.
+/// Create a task under `project_id` and return its id — the barrier (task
+/// 019f6ad2) requires every document to be anchored to one at creation.
+async fn create_task(
+    handler: &CommandHandler,
+    project_id: ProjectId,
+    title: &str,
+) -> daruma_shared::TaskId {
+    let mut task = daruma_domain::NewTask::new(title);
+    task.project_id = Some(project_id);
+    let envs = handler
+        .handle(Command::CreateTask { task }, Actor::user())
+        .await
+        .unwrap();
+    envs.iter()
+        .find_map(|e| match &e.payload {
+            Event::TaskCreated { task } => task.id,
+            _ => None,
+        })
+        .expect("TaskCreated")
+}
+
+/// Create one document under `project_id`, anchored to a freshly created
+/// task, and return its id.
 async fn create_doc(
     handler: &CommandHandler,
     project_id: ProjectId,
     kind: DocumentKind,
     title: &str,
+) -> DocumentId {
+    let task_id = create_task(handler, project_id, "doc anchor").await;
+    create_doc_for_task(handler, project_id, kind, title, task_id).await
+}
+
+/// Create one document under `project_id`, anchored to a given task.
+async fn create_doc_for_task(
+    handler: &CommandHandler,
+    project_id: ProjectId,
+    kind: DocumentKind,
+    title: &str,
+    task_id: daruma_shared::TaskId,
 ) -> DocumentId {
     let envs = handler
         .handle(
@@ -87,7 +121,7 @@ async fn create_doc(
                     title: title.into(),
                     content: None,
                     status: None,
-                    task_id: None,
+                    task_id: Some(task_id),
                     trigger_kind: None,
                     consumer: None,
                 },
@@ -154,6 +188,7 @@ async fn create_document_emits_event_and_allows_duplicate_kind() {
     .await;
 
     // Second Interview document — kind is not unique per project.
+    let task_id = create_task(&handler, project_id, "second anchor").await;
     let envs = handler
         .handle(
             Command::CreateDocument {
@@ -164,7 +199,7 @@ async fn create_document_emits_event_and_allows_duplicate_kind() {
                     title: "Second Interview".into(),
                     content: Some("notes".into()),
                     status: None,
-                    task_id: None,
+                    task_id: Some(task_id),
                     trigger_kind: None,
                     consumer: None,
                 },
@@ -516,7 +551,8 @@ async fn create_document_with_lifecycle_metadata() {
     let (handler, documents) = build_stack().await;
     let project_id = create_bare_project(&handler).await;
 
-    // task_id on create is validated the same way as on link.
+    // task_id on create is validated the same way as on link: the task must
+    // exist.
     let err = handler
         .handle(
             Command::CreateDocument {
@@ -538,6 +574,7 @@ async fn create_document_with_lifecycle_metadata() {
         .unwrap_err();
     assert!(matches!(err, CoreError::NotFound { .. }), "got: {err:?}");
 
+    let task_id = create_task(&handler, project_id, "anchor").await;
     let envs = handler
         .handle(
             Command::CreateDocument {
@@ -548,7 +585,7 @@ async fn create_document_with_lifecycle_metadata() {
                     title: "Doc".into(),
                     content: None,
                     status: Some(daruma_domain::DocumentStatus::Draft),
-                    task_id: None,
+                    task_id: Some(task_id),
                     trigger_kind: Some("before_start_rule".into()),
                     consumer: Some("reviewer".into()),
                 },
@@ -563,6 +600,306 @@ async fn create_document_with_lifecycle_metadata() {
     };
     let doc = documents.get(doc_id).await.unwrap().unwrap();
     assert_eq!(doc.status, daruma_domain::DocumentStatus::Draft);
+    assert_eq!(doc.task_id, Some(task_id));
     assert_eq!(doc.trigger_kind.as_deref(), Some("before_start_rule"));
     assert_eq!(doc.consumer.as_deref(), Some("reviewer"));
+}
+
+// ── Document-task anchor barrier (task 019f6ad2) ────────────────────────────
+
+/// `CreateDocument` without a `task_id` is rejected — a document is born
+/// anchored to a task or not at all (canon daruma invariant 5).
+#[tokio::test]
+async fn create_document_without_task_id_is_rejected() {
+    let (handler, _documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+
+    let err = handler
+        .handle(
+            Command::CreateDocument {
+                new_doc: NewDocument {
+                    id: None,
+                    project_id,
+                    kind: DocumentKind::Interview,
+                    title: "Free-floating doc".into(),
+                    content: None,
+                    status: None,
+                    task_id: None,
+                    trigger_kind: None,
+                    consumer: None,
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoreError::Validation { .. }),
+        "expected Validation, got {err:?}"
+    );
+}
+
+/// Completing a task (`CompleteTask`) freezes its live `Draft`/`Active`
+/// documents in the same command — they leave `Draft`/`Active` for `Frozen`,
+/// and an already-archived sibling document is untouched.
+#[tokio::test]
+async fn complete_task_freezes_its_live_documents() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let task_id = create_task(&handler, project_id, "Ship the feature").await;
+
+    let active_id =
+        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Active", task_id)
+            .await;
+    let draft_id = {
+        let envs = handler
+            .handle(
+                Command::CreateDocument {
+                    new_doc: NewDocument {
+                        id: None,
+                        project_id,
+                        kind: DocumentKind::HumanLog,
+                        title: "Draft".into(),
+                        content: None,
+                        status: Some(daruma_domain::DocumentStatus::Draft),
+                        task_id: Some(task_id),
+                        trigger_kind: None,
+                        consumer: None,
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        match &envs[0].payload {
+            Event::DocumentCreated { document } => document.id,
+            other => panic!("expected DocumentCreated, got {other:?}"),
+        }
+    };
+    // Already-archived sibling — the cascade must leave it alone.
+    let archived_id =
+        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Archived", task_id)
+            .await;
+    handler
+        .handle(
+            Command::ArchiveDocument {
+                document_id: archived_id,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+
+    let envs = handler
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+
+    let frozen_ids: Vec<_> = envs
+        .iter()
+        .filter_map(|e| match &e.payload {
+            Event::DocumentStatusChanged { document_id, to, .. }
+                if *to == daruma_domain::DocumentStatus::Frozen =>
+            {
+                Some(*document_id)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        frozen_ids.len(),
+        2,
+        "exactly the two live docs freeze: {envs:?}"
+    );
+    assert!(frozen_ids.contains(&active_id));
+    assert!(frozen_ids.contains(&draft_id));
+
+    assert_eq!(
+        documents.get(active_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Frozen
+    );
+    assert_eq!(
+        documents.get(draft_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Frozen
+    );
+    assert_eq!(
+        documents.get(archived_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Archived,
+        "already-archived sibling is untouched by the cascade"
+    );
+}
+
+/// Cancelling a task (`SetStatus` → `Cancelled`) archives its live documents
+/// in the same command.
+#[tokio::test]
+async fn cancel_task_archives_its_live_documents() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let task_id = create_task(&handler, project_id, "Abandoned spike").await;
+    let doc_id =
+        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Notes", task_id)
+            .await;
+
+    let envs = handler
+        .handle(
+            Command::SetStatus {
+                id: task_id,
+                status: daruma_domain::Status::Cancelled,
+                force: false,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+
+    let archived_via_cascade = envs.iter().any(|e| {
+        matches!(
+            &e.payload,
+            Event::DocumentStatusChanged { document_id, to, .. }
+                if *document_id == doc_id && *to == daruma_domain::DocumentStatus::Archived
+        )
+    });
+    assert!(
+        archived_via_cascade,
+        "expected a DocumentStatusChanged→Archived event for {doc_id}: {envs:?}"
+    );
+    assert_eq!(
+        documents.get(doc_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Archived
+    );
+}
+
+/// `BulkSetStatus` runs the same cascade as `SetStatus` for every task in
+/// the batch that reaches a terminal status.
+#[tokio::test]
+async fn bulk_set_status_cascades_per_task() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let task_a = create_task(&handler, project_id, "A").await;
+    let task_b = create_task(&handler, project_id, "B").await;
+    let doc_a =
+        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "A doc", task_a).await;
+    let doc_b =
+        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "B doc", task_b).await;
+
+    handler
+        .handle(
+            Command::BulkSetStatus {
+                ids: vec![task_a, task_b],
+                status: daruma_domain::Status::Done,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        documents.get(doc_a).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Frozen
+    );
+    assert_eq!(
+        documents.get(doc_b).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Frozen
+    );
+}
+
+/// Sweep backstop: a document whose task status changed in a way that
+/// bypasses the cascade (simulated here by completing the task through a
+/// handler stack with no document repository wired, so the cascade never
+/// runs) is picked up and archived by `sweep_orphan_documents`.
+#[tokio::test]
+async fn sweep_archives_documents_whose_task_is_terminal() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let task_id = create_task(&handler, project_id, "Will be force-completed").await;
+    let doc_id =
+        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Notes", task_id)
+            .await;
+
+    // Complete the task — the cascade freezes the document immediately.
+    handler
+        .handle(
+            Command::CompleteTask {
+                id: task_id,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        documents.get(doc_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Frozen,
+        "precondition: cascade already froze the doc on completion"
+    );
+
+    // Bypass the barrier the same way an operator-applied DB fix or a crash
+    // between the task transition and the cascade would: flip the document
+    // back to `Active` after the task is already terminal, simulating a
+    // document that re-entered a live status post-closure.
+    handler
+        .handle(
+            Command::SetDocumentStatus {
+                document_id: doc_id,
+                status: daruma_domain::DocumentStatus::Active,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        documents.get(doc_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Active,
+        "precondition: document is live again while its task is already terminal"
+    );
+
+    let swept = handler.sweep_orphan_documents(daruma_shared::time::now()).await.unwrap();
+    assert_eq!(swept, 1, "exactly the one live doc on a terminal task");
+    assert_eq!(
+        documents.get(doc_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Archived
+    );
+}
+
+/// Sweep backstop also catches legacy documents with no `task_id` at all.
+#[tokio::test]
+async fn sweep_archives_legacy_documents_without_a_task() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+
+    // Simulate a pre-barrier row: build it directly rather than through
+    // `Command::CreateDocument`, which now rejects a missing task_id.
+    let legacy = NewDocument {
+        id: None,
+        project_id,
+        kind: DocumentKind::HumanLog,
+        title: "Pre-barrier doc".into(),
+        content: None,
+        status: None,
+        task_id: None,
+        trigger_kind: None,
+        consumer: None,
+    }
+    .into_document(DocumentId::new(), daruma_shared::time::now());
+    let doc_id = legacy.id;
+    documents
+        .apply_event(&daruma_events::EventEnvelope::new(
+            Actor::user(),
+            Event::DocumentCreated { document: legacy },
+        ))
+        .await
+        .unwrap();
+
+    let swept = handler.sweep_orphan_documents(daruma_shared::time::now()).await.unwrap();
+    assert_eq!(swept, 1);
+    assert_eq!(
+        documents.get(doc_id).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Archived
+    );
 }
