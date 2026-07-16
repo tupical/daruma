@@ -106,6 +106,50 @@ impl DocumentRepo {
         rows.iter().map(row_to_document).collect()
     }
 
+    /// Live (`draft`/`active`) documents anchored to `task_id`. Used by the
+    /// terminal-transition cascade (task 019f6ad2) to find what a task
+    /// closure must close; a `Frozen`/`Archived`/`Outdated` document is
+    /// already settled and never revisited by the cascade.
+    pub async fn list_live_by_task(&self, task_id: daruma_shared::TaskId) -> Result<Vec<Document>> {
+        let rows = sqlx::query(
+            "SELECT id, project_id, kind, title, content, created_at, updated_at, archived_at, \
+             last_read_at, last_read_by, read_count, status, task_id, trigger_kind, consumer \
+             FROM documents \
+             WHERE task_id = ? AND status IN ('draft', 'active') \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(task_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_document).collect()
+    }
+
+    /// Sweep backstop candidates (task 019f6ad2; canon daruma invariant 5,
+    /// "живой документ ⇔ живой якорь"): documents in a live status
+    /// (`draft`/`active`) whose anchor is missing — `task_id IS NULL`, a
+    /// legacy pre-barrier document — or whose anchor task is gone or
+    /// terminal (`done`/`cancelled`), meaning the closure cascade was
+    /// bypassed (task deleted, direct DB edit, crash between the two
+    /// writes). The join reads `tasks` directly rather than N+1 lookups
+    /// through `TaskRepo`.
+    pub async fn list_sweep_candidates(&self) -> Result<Vec<Document>> {
+        let rows = sqlx::query(
+            "SELECT d.id, d.project_id, d.kind, d.title, d.content, d.created_at, d.updated_at, \
+             d.archived_at, d.last_read_at, d.last_read_by, d.read_count, d.status, d.task_id, \
+             d.trigger_kind, d.consumer \
+             FROM documents d \
+             LEFT JOIN tasks t ON t.id = d.task_id \
+             WHERE d.status IN ('draft', 'active') \
+               AND (d.task_id IS NULL OR t.id IS NULL OR t.status IN ('done', 'cancelled')) \
+             ORDER BY d.created_at ASC, d.id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_document).collect()
+    }
+
     // ── mutations ────────────────────────────────────────────────────────────
 
     /// Apply a single event envelope, updating the `documents` projection.
@@ -530,6 +574,8 @@ fn parse_status(s: &str) -> Result<DocumentStatus> {
         "active" => Ok(DocumentStatus::Active),
         "outdated" => Ok(DocumentStatus::Outdated),
         "archived" => Ok(DocumentStatus::Archived),
+        "frozen" => Ok(DocumentStatus::Frozen),
+        "replaced" => Ok(DocumentStatus::Replaced),
         other => Err(CoreError::serde(format!(
             "unknown document status: {other:?}"
         ))),
@@ -986,6 +1032,122 @@ mod tests {
             .await
             .unwrap();
         assert!(!updated, "unknown document id must not count a read");
+    }
+
+    #[tokio::test]
+    async fn list_live_by_task_filters_status_and_task() {
+        let (_db, repo) = make_repo().await;
+        let project_id = ProjectId::new();
+        let task_a = daruma_shared::TaskId::new();
+        let task_b = daruma_shared::TaskId::new();
+
+        let mut live = seed_doc(project_id, DocumentKind::Interview, "live");
+        live.task_id = Some(task_a);
+        let mut draft = seed_doc(project_id, DocumentKind::HumanLog, "draft");
+        draft.task_id = Some(task_a);
+        draft.status = DocumentStatus::Draft;
+        let mut frozen = seed_doc(project_id, DocumentKind::Interview, "frozen");
+        frozen.task_id = Some(task_a);
+        frozen.status = DocumentStatus::Frozen;
+        let mut other_task = seed_doc(project_id, DocumentKind::Interview, "other task");
+        other_task.task_id = Some(task_b);
+
+        for d in [&live, &draft, &frozen, &other_task] {
+            repo.apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::DocumentCreated {
+                    document: d.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        }
+
+        let got = repo.list_live_by_task(task_a).await.unwrap();
+        let ids: Vec<_> = got.iter().map(|d| d.id).collect();
+        assert_eq!(got.len(), 2, "only live (draft/active) docs on task_a: {ids:?}");
+        assert!(ids.contains(&live.id));
+        assert!(ids.contains(&draft.id));
+        assert!(!ids.contains(&frozen.id), "frozen doc is already settled");
+        assert!(!ids.contains(&other_task.id), "scoped to task_a only");
+    }
+
+    #[tokio::test]
+    async fn list_sweep_candidates_finds_orphan_and_terminal_anchors() {
+        let (db, repo) = make_repo().await;
+        let project_id = ProjectId::new();
+
+        // A task that stays open — its live document is NOT a sweep candidate.
+        let open_task_id = daruma_shared::TaskId::new();
+        insert_task(&db, open_task_id, "todo").await;
+        let mut anchored_open = seed_doc(project_id, DocumentKind::Interview, "anchored open");
+        anchored_open.task_id = Some(open_task_id);
+
+        // A task that reached `done` without the cascade running (simulated
+        // direct status write) — its live document IS a sweep candidate.
+        let done_task_id = daruma_shared::TaskId::new();
+        insert_task(&db, done_task_id, "done").await;
+        let mut anchored_done = seed_doc(project_id, DocumentKind::Interview, "anchored done");
+        anchored_done.task_id = Some(done_task_id);
+
+        // A legacy document with no task_id at all.
+        let orphan = seed_doc(project_id, DocumentKind::HumanLog, "orphan");
+        assert!(orphan.task_id.is_none(), "precondition: no anchor");
+
+        // A document pointing at a task_id that no longer exists.
+        let ghost_task_id = daruma_shared::TaskId::new();
+        let mut dangling = seed_doc(project_id, DocumentKind::Interview, "dangling");
+        dangling.task_id = Some(ghost_task_id);
+
+        // Already-archived document on a done task — NOT a candidate (not live).
+        let mut archived_done = seed_doc(project_id, DocumentKind::Interview, "archived done");
+        archived_done.task_id = Some(done_task_id);
+        archived_done.status = DocumentStatus::Archived;
+
+        for d in [
+            &anchored_open,
+            &anchored_done,
+            &orphan,
+            &dangling,
+            &archived_done,
+        ] {
+            repo.apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::DocumentCreated {
+                    document: d.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        }
+
+        let candidates = repo.list_sweep_candidates().await.unwrap();
+        let ids: Vec<_> = candidates.iter().map(|d| d.id).collect();
+        assert!(!ids.contains(&anchored_open.id), "open anchor is not a candidate");
+        assert!(ids.contains(&anchored_done.id), "done anchor bypassed the cascade");
+        assert!(ids.contains(&orphan.id), "no anchor at all");
+        assert!(ids.contains(&dangling.id), "anchor task no longer exists");
+        assert!(
+            !ids.contains(&archived_done.id),
+            "already archived — not live, not a candidate"
+        );
+    }
+
+    /// Insert a minimal row directly into `tasks` for sweep-candidate tests —
+    /// bypasses `TaskRepo`/events since only `id` and `status` matter for the
+    /// join in `list_sweep_candidates`.
+    async fn insert_task(db: &Db, id: daruma_shared::TaskId, status: &str) {
+        sqlx::query(
+            "INSERT INTO tasks (id, title, status, priority, created_at, updated_at) \
+             VALUES (?, 'x', ?, 'medium', ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(status)
+        .bind(time::now().to_rfc3339())
+        .bind(time::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

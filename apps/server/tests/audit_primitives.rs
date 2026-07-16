@@ -200,9 +200,39 @@ async fn doc_read_tracking_and_unread_heuristic() {
     let token = app.admin_token.clone();
     let project_id = create_project(&app.router, &token).await;
 
+    // The document-task anchor barrier (task 019f6ad2) requires a task_id
+    // at creation — seed one to anchor the document under test to.
+    let task_body = json!({
+        "command": {
+            "type": "create_task",
+            "task": { "project_id": project_id, "title": "Doc anchor" }
+        }
+    })
+    .to_string();
+    let (s, task_ev) = json_post(app.router.clone(), &token, "/v1/commands", &task_body).await;
+    assert_eq!(s, StatusCode::OK, "create_task failed: {task_ev}");
+    let task_id = task_ev["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .find_map(|e| {
+            let p = e.get("payload")?;
+            if p.get("type")?.as_str()? == "task_created" {
+                p.get("task")?.get("id")?.as_str().map(str::to_owned)
+            } else {
+                None
+            }
+        })
+        .expect("task_created event");
+
     // Create a document.
     let create_body = json!({
-        "new_doc": { "project_id": project_id, "kind": "interview", "title": "Interview" }
+        "new_doc": {
+            "project_id": project_id,
+            "kind": "interview",
+            "title": "Interview",
+            "task_id": task_id,
+        }
     })
     .to_string();
     let (s, created) = json_post(app.router.clone(), &token, "/v1/documents", &create_body).await;

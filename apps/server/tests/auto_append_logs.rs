@@ -36,6 +36,24 @@ async fn create_project(h: &common::TestApp, title: &str) -> ProjectId {
 
     // Seed the two narrative target documents explicitly — the core does not
     // auto-create them, but auto-append still routes into them when present.
+    // The document-task anchor barrier (task 019f6ad2) requires every
+    // document to be born anchored to a task, so seed a dedicated "log
+    // anchor" task first and never close it in these tests — closing it
+    // would freeze/archive the narrative docs via the closure cascade and
+    // defeat the point of an ongoing project log.
+    let log_anchor = task_in(project_id, "project log anchor");
+    let anchor_envs = handler
+        .handle(Command::CreateTask { task: log_anchor }, Actor::user())
+        .await
+        .expect("create log anchor task");
+    let anchor_task_id = anchor_envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            daruma_events::Event::TaskCreated { task } => task.id,
+            _ => None,
+        })
+        .expect("log anchor task id");
+
     for (kind, title) in [
         (DocumentKind::Interview, "Interview"),
         (DocumentKind::HumanLog, "Human Log"),
@@ -50,7 +68,7 @@ async fn create_project(h: &common::TestApp, title: &str) -> ProjectId {
                         title: title.into(),
                         content: None,
                         status: None,
-                        task_id: None,
+                        task_id: Some(anchor_task_id),
                         trigger_kind: None,
                         consumer: None,
                     },

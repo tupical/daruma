@@ -44,6 +44,14 @@ impl DocumentKind {
 /// stored as TEXT so extending the set later is additive. `Archived` is kept
 /// coherent with `Document::archived_at` by the projector: entering
 /// `Archived` stamps `archived_at`, leaving it clears the stamp.
+///
+/// `Frozen` and `Replaced` (task 019f6ad2; canon daruma invariant 5, "живой
+/// документ ⇔ живой якорь") extend the taxonomy additively for the
+/// document-task anchor barrier: `Frozen` is the terminal state a document
+/// lands in when its anchor task completes (`Done`) — still readable, no
+/// longer live/editable-by-default. `Replaced` is reserved for the target
+/// taxonomy's "superseded by a newer document" state; nothing in the core
+/// emits it yet.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentStatus {
@@ -55,6 +63,14 @@ pub enum DocumentStatus {
     Active,
     Outdated,
     Archived,
+    /// The task this document is an artifact of reached `Done`. Distinct
+    /// from `Archived` (which is reserved for `Cancelled` anchors and
+    /// explicit archiving): a frozen document is a completed artifact, not
+    /// a discarded one.
+    Frozen,
+    /// Superseded by a newer document. Reserved for the target taxonomy;
+    /// nothing currently emits this status.
+    Replaced,
 }
 
 impl DocumentStatus {
@@ -66,6 +82,8 @@ impl DocumentStatus {
             DocumentStatus::Active => "active",
             DocumentStatus::Outdated => "outdated",
             DocumentStatus::Archived => "archived",
+            DocumentStatus::Frozen => "frozen",
+            DocumentStatus::Replaced => "replaced",
         }
     }
 }
@@ -195,6 +213,33 @@ mod tests {
             last_read_at: None,
             last_read_by: None,
             read_count: 0,
+        }
+    }
+
+    #[test]
+    fn document_status_as_str() {
+        assert_eq!(DocumentStatus::Draft.as_str(), "draft");
+        assert_eq!(DocumentStatus::Active.as_str(), "active");
+        assert_eq!(DocumentStatus::Outdated.as_str(), "outdated");
+        assert_eq!(DocumentStatus::Archived.as_str(), "archived");
+        assert_eq!(DocumentStatus::Frozen.as_str(), "frozen");
+        assert_eq!(DocumentStatus::Replaced.as_str(), "replaced");
+    }
+
+    #[test]
+    fn document_status_roundtrip_serde() {
+        for status in [
+            DocumentStatus::Draft,
+            DocumentStatus::Active,
+            DocumentStatus::Outdated,
+            DocumentStatus::Archived,
+            DocumentStatus::Frozen,
+            DocumentStatus::Replaced,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
+            let back: DocumentStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, back);
         }
     }
 

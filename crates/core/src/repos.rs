@@ -139,6 +139,15 @@ pub trait DocumentRepository: Send + Sync {
         include_archived: bool,
     ) -> Result<Vec<Document>>;
 
+    /// Live (`draft`/`active`) documents anchored to `task_id`. Used by the
+    /// task-closure cascade (task 019f6ad2) to find what to close.
+    async fn list_live_by_task(&self, task_id: TaskId) -> Result<Vec<Document>>;
+
+    /// Sweep backstop candidates: live documents whose anchor task is
+    /// missing or terminal (canon daruma invariant 5, "живой документ ⇔ живой
+    /// якорь").
+    async fn list_sweep_candidates(&self) -> Result<Vec<Document>>;
+
     /// Apply a persisted event to the projection.
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
@@ -450,6 +459,12 @@ impl DocumentRepository for DocumentRepo {
         include_archived: bool,
     ) -> Result<Vec<Document>> {
         DocumentRepo::list_by_project(self, project_id, kind_filter, include_archived).await
+    }
+    async fn list_live_by_task(&self, task_id: TaskId) -> Result<Vec<Document>> {
+        DocumentRepo::list_live_by_task(self, task_id).await
+    }
+    async fn list_sweep_candidates(&self) -> Result<Vec<Document>> {
+        DocumentRepo::list_sweep_candidates(self).await
     }
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
         DocumentRepo::apply_event(self, env).await

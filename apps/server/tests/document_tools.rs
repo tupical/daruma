@@ -56,14 +56,52 @@ async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
         .to_owned()
 }
 
-/// Create a document of `kind` under `pid` via MCP and return its id.
-/// The core no longer auto-seeds docs, so tests that need a document seed it
-/// explicitly through the same public tool agents use.
+/// Create a task under `pid` via the plan-only intake (`daruma_plan_materialize`
+/// — ADR-0007, direct task creation is not exposed) and return its id. The
+/// document-task anchor barrier (task 019f6ad2) requires every document to be
+/// anchored to a task at creation, so tests that need a document seed one of
+/// these first.
+async fn create_task_via_mcp(client: &ApiClient, pid: &str, title: &str) -> String {
+    let resp = call_tool(
+        client,
+        "daruma_plan_materialize",
+        json!({
+            "plan": { "title": format!("{title} plan"), "project_id": pid },
+            "tasks": [ { "title": title } ]
+        }),
+    )
+    .await;
+    resp["data"]
+        .as_array()
+        .expect("event envelopes")
+        .iter()
+        .find_map(|e| e["payload"]["task"]["id"].as_str())
+        .expect("task id in materialize response")
+        .to_owned()
+}
+
+/// Create a document of `kind` under `pid`, anchored to a freshly created
+/// task, via MCP and return its id. The core no longer auto-seeds docs, so
+/// tests that need a document seed it explicitly through the same public
+/// tools agents use.
 async fn create_doc_via_mcp(client: &ApiClient, pid: &str, kind: &str, title: &str) -> String {
+    let task_id = create_task_via_mcp(client, pid, "doc anchor").await;
+    create_doc_via_mcp_for_task(client, pid, kind, title, &task_id).await
+}
+
+/// Create a document of `kind` under `pid`, anchored to `task_id`, via MCP
+/// and return its id.
+async fn create_doc_via_mcp_for_task(
+    client: &ApiClient,
+    pid: &str,
+    kind: &str,
+    title: &str,
+    task_id: &str,
+) -> String {
     let resp = call_tool(
         client,
         "daruma_doc_create",
-        json!({ "project_id": pid, "kind": kind, "title": title }),
+        json!({ "project_id": pid, "kind": kind, "title": title, "task_id": task_id }),
     )
     .await;
     assert_eq!(resp["success"], true, "doc_create must succeed: {resp}");
@@ -134,9 +172,10 @@ async fn doc_create_allows_duplicate_kind() {
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
+    let task_id = create_task_via_mcp(&client, &pid, "anchor").await;
 
     // First Interview (created explicitly — nothing is auto-seeded).
-    create_doc_via_mcp(&client, &pid, "interview", "First Interview").await;
+    create_doc_via_mcp_for_task(&client, &pid, "interview", "First Interview", &task_id).await;
 
     let resp = call_tool(
         &client,
@@ -145,6 +184,7 @@ async fn doc_create_allows_duplicate_kind() {
             "project_id": pid,
             "kind": "interview",
             "title": "Second Interview",
+            "task_id": task_id,
         }),
     )
     .await;
@@ -244,6 +284,39 @@ async fn doc_archive_hides_from_default_list() {
     );
 }
 
+/// `daruma_doc_create` without `task_id` is rejected by the document-task
+/// anchor barrier (task 019f6ad2) — a document is born anchored to a task
+/// or not at all.
+#[tokio::test]
+async fn doc_create_without_task_id_is_rejected() {
+    let (addr, token) = spawn_daruma_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Demo").await;
+
+    let resp = dispatch_request(
+        &client,
+        req(
+            "tools/call",
+            json!({
+                "name": "daruma_doc_create",
+                "arguments": { "project_id": pid, "kind": "interview", "title": "Free-floating" },
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        resp.error.is_some(),
+        "doc_create without task_id must fail: {resp:?}"
+    );
+    let msg = resp.error.unwrap().message;
+    assert!(
+        msg.contains("task_id") || msg.contains("anchored"),
+        "error should explain the missing anchor: {msg}"
+    );
+}
+
 /// All protocol-level tests drive the complete catalogue explicitly; the
 /// compact `default` profile has its own dedicated coverage in
 /// `mcp_dispatch.rs::profiles`.
@@ -263,12 +336,15 @@ async fn doc_lifecycle_and_task_link_roundtrip() {
     let client = ApiClient::new(format!("http://{addr}"), token);
 
     let pid = create_project_via_mcp(&client, "Demo").await;
-    let doc_id = create_doc_via_mcp(&client, &pid, "interview", "Doc").await;
+    let anchor_task_id = create_task_via_mcp(&client, &pid, "anchor").await;
+    let doc_id =
+        create_doc_via_mcp_for_task(&client, &pid, "interview", "Doc", &anchor_task_id).await;
 
-    // Fresh doc: default lifecycle status is `active`, no task link.
+    // Fresh doc: default lifecycle status is `active`, linked to its
+    // creation-time anchor (the barrier requires one).
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
     assert_eq!(doc["document"]["status"], "active", "got: {doc}");
-    assert!(doc["document"].get("task_id").is_none(), "got: {doc}");
+    assert_eq!(doc["document"]["task_id"], anchor_task_id.as_str(), "got: {doc}");
 
     // Status change.
     let resp = call_tool(
