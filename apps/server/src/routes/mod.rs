@@ -298,6 +298,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/tasks/{id}/triage", patch(patch_task_triage))
         .route("/tokens", post(create_token).get(list_tokens))
         .route("/tokens/{id}", delete(revoke_token))
+        .route("/admin/documents/sweep", post(sweep_orphan_documents))
         .route("/devices", get(list_devices))
         .route("/devices/{id}/revoke", post(revoke_device))
         // Pairing: issue a QR ticket (requires TokenWrite capability).
@@ -4484,6 +4485,26 @@ async fn delete_comment(
 }
 
 // ── Token admin handlers ──────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct SweepDocumentsResponse {
+    swept: usize,
+}
+
+async fn sweep_orphan_documents(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+) -> Result<Json<SweepDocumentsResponse>, ApiError> {
+    auth.require(Capability::Admin)
+        .map_err(ApiError::from_missing_cap)?;
+    let swept = state
+        .commands
+        .handler()
+        .sweep_orphan_documents(daruma_shared::time::now())
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(SweepDocumentsResponse { swept }))
+}
 
 #[derive(Deserialize)]
 struct CreateTokenBody {
