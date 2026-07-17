@@ -21,7 +21,8 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 ## HTTP / MCP tools (high level)
 
 - `ai_decompose`, `ai_analyze_complexity`
-- Task mutations: `daruma_create`, `daruma_capture`, `daruma_capture_batch`, `set_status`, `complete`, `split`, `comment`, plans/runs/claims
+- Intake (new tasks): `daruma_plan_materialize` — the only path (ADR-0007 plan-only intake); `daruma_create`/`daruma_capture`/`daruma_capture_batch` are removed from the catalogue and return a bridge error naming the replacement
+- Task mutations (existing tasks): `set_status`, `complete`, `split`, `comment`, plans/runs/claims
 - Plan executor: `daruma_plan_progress`, `daruma_plan_next_task`, `daruma_run_*`
 
 Canonical schemas live in code; when the wire format changes, update `crates/ai` and MCP tool descriptors together.

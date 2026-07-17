@@ -20,8 +20,12 @@ items, and live activity stream as you do.
 > brand are **Daruma** under the Meisei umbrella. A full id migration is tracked separately.
 
 <sub>
-torii · satori · enma · yatagarasu · fujin · <b>daruma</b> · hyakki
-&nbsp;—&nbsp; intake · sensemaking · decisions · planning · actions · <b>execution</b> · clusterer
+torii · satori · enma · yatagarasu · fujin · <b>daruma</b>
+&nbsp;—&nbsp; intake · sensemaking · decisions · planning · actions · <b>execution (terminal)</b>
+</sub>
+
+<sub>
+hyakki is out-of-band (clustering/observability) — not a pipeline hop; daruma is the terminal layer, see <a href="docs/adr/terminal-execution-layer.md">ADR</a>
 </sub>
 
 ## Why Daruma

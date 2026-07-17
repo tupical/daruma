@@ -130,6 +130,20 @@ research — live in the upper-layer repos (`intake_oss`, `sensemaking_oss`,
 dependency arrow never reverses. Do not add parse/decompose/scope/research back
 to `daruma-ai` or `daruma-ai-infra`.
 
+## Pipeline position (MeiSei)
+
+Daruma is the terminal execution layer of the MeiSei maturity pipeline
+(`torii → satori → enma → yatagarasu → fujin → daruma`) — see
+[ADR: terminal-execution-layer](adr/terminal-execution-layer.md). The
+module/core contract above governs consumers of the Daruma API; it does
+not, and must not, grow a symmetric contract in the other direction — no
+module or core PR may add a `Command` that creates work for another
+pipeline layer. This mirrors the one-way dependency arrow already
+established for the AI layer above (product-layer repos depend on
+`daruma-ai`/`daruma-ai-infra`, never the reverse). `hyakki` is
+out-of-band (clustering/observability), not a pipeline hop that consumes
+daruma's output.
+
 ## Lifecycle
 
 - **Planned** — listed in [docs/MODULES.md](MODULES.md), no source tree

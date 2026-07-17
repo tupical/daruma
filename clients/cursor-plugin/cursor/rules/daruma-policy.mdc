@@ -16,8 +16,8 @@ oh-my-claudecode (OMC).
 1. **All durable task/plan state lives in daruma.** Never persist
    tasks, plans, subtasks, or backlogs in markdown scratchpads,
    `TODO.md` files, in-chat notes, or any other location as the source
-   of truth. Use `daruma_create`, `daruma_plan_create`,
-   `daruma_plan_add_task`, `daruma_set_status`, `daruma_comment`.
+   of truth. Use `daruma_plan_materialize` (plan-only intake,
+   ADR-0007), `daruma_set_status`, `daruma_comment`.
 
 2. **Do not create or modify `.omc/plans/`, `.omc/ultragoal/`, or any
    `.omc/state/plans*` artifacts.** OMC's plan-writing skills
@@ -27,8 +27,8 @@ oh-my-claudecode (OMC).
    route the plan into daruma first:
 
    - `daruma_workspace_info` → resolve project
-   - `daruma_create` → root task
-   - `daruma_plan_create` + `daruma_plan_add_task` → plan & subtasks
+   - `daruma_plan_materialize` → plan + its tasks, one atomic call
+     (the only intake path, ADR-0007)
 
    Only then proceed with execution. OMC may still be invoked as an
    executor, but the plan it follows must be fetched via

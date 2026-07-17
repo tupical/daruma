@@ -7,7 +7,7 @@ When an MCP/IDE agent starts work, it should open a **Daruma session** with
 
 1. `daruma_workspace_info` — note `mcp_agent_id`.
 2. `daruma_session_start` with `metadata` (see schema below).
-3. `daruma_create` (or plan flow) — then `daruma_comment` on the root task:
+3. `daruma_plan_materialize` — the only intake path (ADR-0007) — then `daruma_comment` on the root task:
 
    ```text
    session: <session_id from step 2>

@@ -8,6 +8,22 @@ Policy decisions (backfill, cascade, sequence_id) — [architecture-policy.md](a
 AI layer overview — [guides/ai-agent.md](guides/ai-agent.md).
 Task/document version records — [VERSION_HISTORY.md](VERSION_HISTORY.md).
 
+## Pipeline position (MeiSei)
+
+Daruma is the **terminal execution layer** of the wider MeiSei maturity
+pipeline (`torii → satori → enma → yatagarasu → fujin → daruma`): it
+receives a mature Action Packet through the platform's handoff and turns
+it into task/plan state — it does not emit work back upstream or to any
+further pipeline hop. See
+[ADR: terminal-execution-layer](adr/terminal-execution-layer.md) for the
+decision and the code audit backing it: no `Command` primitive creates
+work in another layer, the only handoffs in the `Command` enum are
+agent↔agent within a work unit (not cross-layer), `ExternalRef` is
+inbound correlation, and webhooks are observability push rather than a
+way to create downstream work. `hyakki` is an out-of-band
+clustering/observability tool, not a pipeline hop that consumes daruma's
+output.
+
 ## Strict rules
 
 1. **UI never mutates state.** UI emits commands.

@@ -56,8 +56,10 @@ debugging where no plan needs to outlive the current chat.
    `agent_id` may be omitted (defaults to `mcp_agent_id`). Save the returned
    session `id`.
 
-3. **Create the root task** — `daruma_create` with a clear `title` and
-   `description`. Capture the returned `task_id`.
+3. **Create the root task** — `daruma_plan_materialize` with a one-task
+   plan (`plan.title` + a `tasks` entry carrying the root task's `title`
+   and `description`; the only intake path, ADR-0007). Capture the
+   returned `task_id`.
 4. **Link session to task** — `daruma_comment` on the root task:
 
    ```text
@@ -68,8 +70,10 @@ debugging where no plan needs to outlive the current chat.
    `DARUMA_CHAT_ID`, `DARUMA_TRANSCRIPT_PATH` (merged into metadata).
 5. **(Optional) Decompose** — decomposition lives in the planning layer;
    there is no AI "decompose" tool. Build the breakdown yourself:
-   `daruma_plan_create` then `daruma_plan_add_task` per subtask (or
-   `daruma_split` to fan a task into given subtasks). For guidance on
+   `daruma_plan_materialize` with the plan and its subtasks in one atomic
+   call (the only intake path, ADR-0007 — `daruma_plan_add_task` only
+   attaches an already-materialized task, it is not an intake path), or
+   `daruma_split` to fan an existing task into given subtasks. For guidance on
    non-trivial work, call `daruma_ai_analyze_complexity` on the plan — it
    returns a per-task complexity score plus `recommended_subtasks` /
    `expansion_hint` (needs an AI provider on the server; if it returns
@@ -152,8 +156,8 @@ JSON) for the exact same answer.
 
 ## Hygiene
 
-- Never invent task IDs — always use the IDs returned by `daruma_create` /
-  `_plan_next_task`.
+- Never invent task IDs — always use the IDs returned by
+  `daruma_plan_materialize` / `_plan_next_task`.
 - A user mention of a task, plan, TODO file, checklist, or id-shaped string
   is not proof the item exists. Resolve the actual task/plan with a scoped
   daruma read before commenting, claiming, reopening, or completing it.
