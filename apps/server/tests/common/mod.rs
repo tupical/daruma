@@ -143,7 +143,8 @@ impl TestAppBuilder {
         let idempotency = Arc::new(IdempotencyRepo::new(pool.clone()));
         let entity_versions = Arc::new(EntityVersionRepo::new(pool.clone()));
         let tenant_quotas = Arc::new(TenantQuotaRepo::new(pool.clone()));
-        let relations = Arc::new(RelationRepo::new(pool));
+        let relations = Arc::new(RelationRepo::new(pool.clone()));
+        let snapshots = Arc::new(daruma_storage::SnapshotRepo::new(pool));
         let auth_store: Arc<dyn TokenStore> = tokens.clone();
         let webhook_store: Arc<dyn WebhookStore> = webhooks.clone();
 
@@ -246,6 +247,7 @@ impl TestAppBuilder {
             entity_versions,
             complexity_hints,
             workspace_graph,
+            snapshots,
             mcp_downloads: daruma_server::mcp_downloads::McpDownloads::default(),
             rate_limiter: daruma_server::middleware::rate_limit::RateLimiter::default(),
             pairing: daruma_discovery::PairingStore::new(),

@@ -168,7 +168,9 @@ impl ProjectRepo {
 
     // ── private helpers ───────────────────────────────────────────────────────
 
-    async fn upsert_project(&self, project: &Project) -> Result<()> {
+    /// Insert or replace a project row. Also used by the bootstrap-snapshot
+    /// restore path (device-sync catch-up).
+    pub async fn upsert_project(&self, project: &Project) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO projects \
              (id, tenant_id, slug, title, description, triage_enabled, created_at, updated_at) \

@@ -103,6 +103,8 @@ pub struct AppState {
     pub audit_findings: Arc<AuditFindingRepo>,
     /// Immutable task/document version history repo.
     pub entity_versions: Arc<EntityVersionRepo>,
+    /// Bootstrap snapshot store (device-sync catch-up, migration 0051).
+    pub snapshots: Arc<daruma_storage::SnapshotRepo>,
     // ── AI-derived projection (§3.8.3) ───────────────────────────────────────
     /// Per-task complexity hints produced by `daruma_ai_analyze_complexity`.
     pub complexity_hints: Arc<TaskComplexityRepo>,
@@ -210,7 +212,8 @@ impl AppState {
             evidence: Arc::new(EvidenceRepo::new(pool.clone())),
             artifacts: Arc::new(ArtifactRepo::new(pool.clone())),
             repo_scopes: Arc::new(daruma_storage::RepoScopeRepo::new(pool.clone())),
-            audit_findings: Arc::new(AuditFindingRepo::new(pool)),
+            audit_findings: Arc::new(AuditFindingRepo::new(pool.clone())),
+            snapshots: Arc::new(daruma_storage::SnapshotRepo::new(pool)),
             entity_versions,
             complexity_hints,
             workspace_graph,

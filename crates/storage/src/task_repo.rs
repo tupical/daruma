@@ -560,6 +560,21 @@ impl TaskRepo {
         Ok(out)
     }
 
+    /// Insert or replace a task row outside the event flow.
+    ///
+    /// Used by the bootstrap-snapshot restore path (device-sync catch-up):
+    /// replays the materialised projection state into a fresh replica. Goes
+    /// through the same upsert SQL as the projectors, but intentionally
+    /// skips the `entity_versions` audit side-writes — a restore is not an
+    /// edit.
+    pub async fn upsert_task(&self, task: &Task) -> Result<()> {
+        let mut tx = self.begin_tx().await?;
+        self.upsert_task_tx(&mut tx, task).await?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))
+    }
+
     async fn upsert_task_tx(&self, tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {
         let project_id = task.project_id.map(|p| p.to_string());
         let due_at = task.due_at.map(|t| t.to_rfc3339());

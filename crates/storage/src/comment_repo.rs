@@ -39,6 +39,26 @@ impl CommentRepo {
         rows.iter().map(row_to_comment).collect()
     }
 
+    /// List every comment row, including soft-deleted ones.
+    ///
+    /// Used by the bootstrap-snapshot writer (device-sync catch-up): the
+    /// restored replica must carry the `deleted_at` rows too, so a later
+    /// `CommentEdited` delta behaves exactly as it would after a full
+    /// replay (where the row exists).
+    pub async fn list_all(&self) -> Result<Vec<Comment>> {
+        let rows = sqlx::query(
+            "SELECT id, task_id, parent_id, author_json, body, kind, \
+             created_at, edited_at, deleted_at \
+             FROM comments \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        rows.iter().map(row_to_comment).collect()
+    }
+
     /// Search non-deleted comment bodies with SQLite LIKE.
     pub async fn search_body(
         &self,

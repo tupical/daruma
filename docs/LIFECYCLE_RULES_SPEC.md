@@ -234,6 +234,27 @@ RuleOverridden { rule_id, actor, reason, entity_ref, occurred_at }
 срабатываний и панель нарушений Cloud читают эту проекцию/события через
 `events_since`/webhooks — отдельного cloud-хранилища нет (ADR).
 
+### 1.7 Согласованная таксономия статусов (документы ↔ vision, artifact registry)
+
+Две независимые шкалы — их НЕ смешиваем и не маппим друг на друга.
+
+**Документы** (`DocumentStatus`, crates/domain/src/document.rs) — minimum
+viable slice целевой vision-таксономии
+(`draft/active/used/needs_review/accepted/outdated/replaced/archived`):
+
+| v1 (6 статусов) | vision-таксономия |
+|---|---|
+| `draft`, `active`, `outdated`, `archived` | совпадают 1:1 |
+| `frozen` | добавлен вне vision-списка: терминальное состояние документа, чей anchor-task завершён (`Done`); отличен от `archived` (отменённый anchor / явная архивация) |
+| `replaced` | зарезервирован («superseded by a newer document»); ядро пока не эмитит |
+| — | `used`, `needs_review`, `accepted` осознанно отложены (расширение аддитивно: статус хранится TEXT) |
+
+**Artifact registry** (`ArtifactStatus`, crates/domain/src/artifact.rs) —
+отдельная шкала из 4 статусов (`pending/active/committed/deprecated`) по
+решению WorkUnit-плана (`019ead4b`, P4): реестр версионирует ресурсы, а не
+живые markdown-документы, поэтому унификации с `DocumentStatus` нет и не
+планируется.
+
 ## 2. Наследование и переопределение
 
 Уровни определения: `tenant → project → plan → task`; run наследует от task

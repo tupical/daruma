@@ -276,6 +276,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/mcp", post(mcp_http))
         .route("/commands", post(dispatch_command))
         .route("/events", get(list_events))
+        .route("/events/snapshot", get(latest_bootstrap_snapshot))
         .route("/events/replica", post(append_replica_events))
         .route("/history", get(list_entity_history))
         .route("/history/latest", get(latest_history))
@@ -3886,6 +3887,21 @@ async fn list_events(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(events))
+}
+
+/// Latest bootstrap snapshot for device-sync catch-up (§3.3 Phase 5
+/// follow-up), or `null` when the writer has not produced one yet (fresh or
+/// small workspace). A freshly paired device restores the projections from
+/// the payload and then replays only `GET /v1/events?since=<seq>`; when the
+/// body is `null` it falls back to a full replay from seq 0.
+async fn latest_bootstrap_snapshot(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let snapshot = state.snapshots.latest().await.map_err(ApiError::from)?;
+    Ok(Json(snapshot))
 }
 
 #[derive(Deserialize)]

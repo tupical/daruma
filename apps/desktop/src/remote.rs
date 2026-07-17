@@ -1,7 +1,7 @@
 //! HTTP transport for flushing local replica events to a server.
 
 use async_trait::async_trait;
-use daruma_core::embed::EventEnvelope;
+use daruma_core::embed::{EventEnvelope, Snapshot};
 use daruma_shared::{CoreError, DeviceId, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,6 +47,10 @@ impl HttpReplicaSink {
         )
     }
 
+    fn snapshot_url(&self) -> String {
+        format!("{}/v1/events/snapshot", self.base_url.trim_end_matches('/'))
+    }
+
     fn devices_url(&self) -> String {
         format!("{}/v1/devices", self.base_url.trim_end_matches('/'))
     }
@@ -77,6 +81,24 @@ impl HttpReplicaSink {
             .json::<Vec<EventEnvelope>>()
             .await
             .map_err(|e| CoreError::serde(e.to_string()))
+    }
+
+    /// Fetch the latest bootstrap snapshot for catch-up, if the server has
+    /// one. `Ok(None)` covers both "writer has not produced a snapshot yet"
+    /// (200 with a `null` body) and older servers without the endpoint
+    /// (404) — in both cases the caller falls back to a full replay.
+    pub async fn fetch_snapshot(&self) -> Result<Option<Snapshot>> {
+        let response = self
+            .client
+            .get(self.snapshot_url())
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CoreError::sync(e.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        json_response(response, "snapshot fetch").await
     }
 
     pub async fn list_devices(&self) -> Result<DevicesResponse> {

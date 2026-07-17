@@ -108,7 +108,8 @@ async fn main() -> anyhow::Result<()> {
         .warm()
         .await
         .map_err(|e| anyhow::anyhow!("idempotency bloom warm failed: {e}"))?;
-    let relations = Arc::new(RelationRepo::new(pool));
+    let relations = Arc::new(RelationRepo::new(pool.clone()));
+    let snapshots = Arc::new(daruma_storage::SnapshotRepo::new(pool));
     let auth_store: Arc<dyn TokenStore> = tokens.clone();
     let webhook_store: Arc<dyn WebhookStore> = webhooks.clone();
 
@@ -310,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
         entity_versions,
         complexity_hints,
         workspace_graph,
+        snapshots,
         mcp_downloads,
         rate_limiter: RateLimiter::default(),
         pairing,
@@ -414,6 +416,61 @@ async fn main() -> anyhow::Result<()> {
                         Ok(0) => {}
                         Ok(n) => tracing::info!(count = n, "task.due notifications emitted"),
                         Err(e) => tracing::warn!(err = %e, "due-date watchdog tick failed"),
+                    }
+                }
+            });
+        }
+    }
+
+    // ── Background: bootstrap snapshot writer (device-sync catch-up) ──────────
+    //
+    // Periodically materialises the device-replicated projections
+    // (tasks / projects / comments) into the `snapshots` table, so a freshly
+    // paired device restores the latest snapshot and replays only the delta
+    // instead of the full event log from seq 0. A new snapshot is written
+    // when at least `DARUMA_SNAPSHOT_MIN_EVENTS` (default 500) events landed
+    // since the last one; the tick runs every `DARUMA_SNAPSHOT_INTERVAL_SECS`
+    // (default 300; 0 disables the writer).
+    {
+        let snapshot_interval: u64 = std::env::var("DARUMA_SNAPSHOT_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        let snapshot_min_events: u64 = std::env::var("DARUMA_SNAPSHOT_MIN_EVENTS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(500);
+        if snapshot_interval > 0 {
+            let store_bg = state.store.clone();
+            let snapshots_bg = state.snapshots.clone();
+            let tasks_bg = state.tasks.clone();
+            let projects_bg = state.projects.clone();
+            let comments_bg = state.comments.clone();
+            tokio::spawn(async move {
+                let mut tick =
+                    tokio::time::interval(std::time::Duration::from_secs(snapshot_interval));
+                loop {
+                    tick.tick().await;
+                    match maybe_write_snapshot(
+                        &*store_bg,
+                        &snapshots_bg,
+                        &tasks_bg,
+                        &projects_bg,
+                        &comments_bg,
+                        snapshot_min_events,
+                    )
+                    .await
+                    {
+                        Ok(Some(seq)) => {
+                            tracing::info!(seq, "bootstrap snapshot written");
+                            // Keep the table bounded: only the newest snapshot
+                            // is ever served, retain a couple for inspection.
+                            if let Err(e) = snapshots_bg.prune_keep_latest(3).await {
+                                tracing::warn!(err = %e, "snapshot prune failed");
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(err = %e, "snapshot writer tick failed"),
                     }
                 }
             });
@@ -553,6 +610,35 @@ async fn bootstrap_admin_token(
     );
 
     Ok(())
+}
+
+/// Write a bootstrap snapshot when at least `min_events` new events landed
+/// since the last one. Returns the new snapshot's seq, or `None` when the
+/// threshold has not been reached.
+///
+/// The seq label is read before the projections: the snapshot may already
+/// reflect a few newer events, which is safe — projectors are upsert-style,
+/// so a catching-up device re-applying them from the delta is a no-op.
+async fn maybe_write_snapshot(
+    store: &dyn EventStore,
+    snapshots: &daruma_storage::SnapshotRepo,
+    tasks: &TaskRepo,
+    projects: &ProjectRepo,
+    comments: &CommentRepo,
+    min_events: u64,
+) -> anyhow::Result<Option<u64>> {
+    let seq = store.latest_seq().await?;
+    let last = snapshots.latest().await?.map(|s| s.seq).unwrap_or(0);
+    if seq.saturating_sub(last) < min_events {
+        return Ok(None);
+    }
+    let payload = daruma_storage::ProjectionSnapshot {
+        tasks: tasks.list_all().await?,
+        projects: projects.list_all().await?,
+        comments: comments.list_all().await?,
+    };
+    let snapshot = snapshots.insert(seq, &payload).await?;
+    Ok(Some(snapshot.seq))
 }
 
 // ── Discovery helpers ─────────────────────────────────────────────────────────
