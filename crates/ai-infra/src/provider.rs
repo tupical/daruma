@@ -7,14 +7,15 @@
 //! today — [`OpenAiClient`]. The trait sets the surface area future
 //! providers must satisfy.
 //!
-//! Two methods cover the entire `crates/ai/` call surface:
+//! Two methods cover the entire AI call surface:
 //!
 //! - [`AiProvider::generate_text`] — free-form completion, no tools.
-//!   Used by [`crate::suggest`] and [`crate::summarize`].
 //! - [`AiProvider::generate_object`] — structured tool-call completion;
-//!   returns the raw JSON arguments of the first matching call. Used
-//!   by [`crate::parse`], [`crate::decompose`],
-//!   [`crate::analyze_complexity`].
+//!   returns the raw JSON arguments of the first matching call.
+//!
+//! The operations themselves (suggest, summarize, parse, decompose,
+//! analyze_complexity) live in the upper-layer repos and, for the
+//! deprecated core shim, in `apps/server/src/ai.rs`.
 //!
 //! [`use_research_provider`]: crate::PromptRegistry
 
@@ -90,7 +91,7 @@ impl AiProvider for OpenAiClient {
 /// Test doubles for the [`AiProvider`] trait, shared across crates.
 ///
 /// Gated behind the `testing` feature so downstream crates
-/// (`daruma-ai`, future upper layers) can reuse [`FakeProvider`] in
+/// (upper layers via `vendor/oss`) can reuse [`FakeProvider`] in
 /// their own tests without re-implementing it. Always compiled — not
 /// `#[cfg(test)]` — because a dependent crate's tests cannot see this
 /// crate's `cfg(test)` items.

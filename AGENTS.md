@@ -319,3 +319,10 @@ mention a different system (Linear, Jira, GitHub Issues, etc.).
 изменение поведения продукта включает docs-правку в том же PR. Профиль (S–XL) и
 полный контракт — в каноне. Проверка: `docs_frontmatter.py check` (CI) или
 `mcpbox_docs_assess`.
+
+**Жёсткий маршрут решений:** proposed-решения живут в
+`meisei-research`/`mcpbox-research`; accepted MeiSei ADR — только в
+`meisei.ru/adr`; accepted MCPBox ADR — только в `mcpbox.ru/docs/adr`.
+Implementation-репозитории хранят ссылку, не копию нормативного текста. Перед
+правкой ADR найти его `decision_id` и входящие ссылки во всём workspace, затем
+выполнить `docs_frontmatter.py decisions`. Ошибка gate блокирует завершение.

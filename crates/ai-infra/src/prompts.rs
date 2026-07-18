@@ -4,8 +4,9 @@
 //! file into named variants and rendering one through [`tinytemplate`] for
 //! `{ var }` substitution against a serde-able params struct.
 //!
-//! The *catalogue* of operation prompts (parse, decompose, scope, …) lives
-//! with the operations in `daruma-ai`; those prompts are operational, not
+//! The *catalogue* of operation prompts lives with the operations (the
+//! core shim in `apps/server/prompts/`, the upper-layer repos); those
+//! prompts are operational, not
 //! infrastructure. A crate owning a set of prompts embeds its `*.toml` via
 //! `include_str!`, parses each with [`PromptFile::parse`], and renders a
 //! chosen variant with [`render_variant`].

@@ -171,6 +171,7 @@ mod tests {
     use daruma_domain::{
         Actor, Comment, CommentPatch, NewComment, NewTask, Project, Status, Task, TaskPatch,
     };
+    use daruma_shared::TaskId;
 
     struct Device {
         replica: Replica,
@@ -266,13 +267,19 @@ mod tests {
         let s_comments = CommentRepo::new(spool.clone());
         let s_snapshots = SnapshotRepo::new(spool.clone());
 
-        // Pre-snapshot history.
+        // Pre-snapshot history. Task ids are assigned explicitly here, exactly
+        // as `CommandHandler` does before emitting `TaskCreated` — a `NewTask`
+        // with `id: None` would be materialised with a fresh random id by each
+        // projector run, making replay/snapshot non-deterministic.
         let project = Project::new("demo", None);
         let project_id = project.id;
         let mut new_t1 = NewTask::new("t1");
+        new_t1.id = Some(TaskId::new());
         new_t1.project_id = Some(project_id);
-        let t1 = new_t1.id.unwrap_or_default();
-        let t2 = NewTask::new("t2").id.unwrap_or_default();
+        let t1 = new_t1.id.unwrap();
+        let mut new_t2 = NewTask::new("t2");
+        new_t2.id = Some(TaskId::new());
+        let t2 = new_t2.id.unwrap();
         let comment = Comment::from_new(
             NewComment {
                 id: None,
@@ -289,9 +296,7 @@ mod tests {
         for payload in [
             Event::ProjectCreated { project },
             Event::TaskCreated { task: new_t1 },
-            Event::TaskCreated {
-                task: NewTask::new("t2"),
-            },
+            Event::TaskCreated { task: new_t2 },
             Event::TaskUpdated {
                 task_id: t1,
                 patch: TaskPatch {
@@ -327,10 +332,10 @@ mod tests {
         let snapshot = s_snapshots.insert(snapshot_seq, &payload).await.unwrap();
 
         // Post-snapshot delta.
+        let mut new_t3 = NewTask::new("t3");
+        new_t3.id = Some(TaskId::new());
         for payload in [
-            Event::TaskCreated {
-                task: NewTask::new("t3"),
-            },
+            Event::TaskCreated { task: new_t3 },
             Event::TaskUpdated {
                 task_id: t1,
                 patch: TaskPatch {

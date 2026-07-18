@@ -19,7 +19,7 @@ daruma-shared     = { workspace = true }
 daruma-domain     = { workspace = true }
 daruma-core       = { workspace = true }
 daruma-sync       = { workspace = true }
-daruma-ai         = { workspace = true }
+daruma-ai-infra   = { workspace = true }
 daruma-discovery  = { workspace = true }
 mdns-sd              = { workspace = true }
 rustls               = { workspace = true }

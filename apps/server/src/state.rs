@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use daruma_ai::OpenAiClient;
+use daruma_ai_infra::OpenAiClient;
 use daruma_auth::TokenStore;
 use daruma_core::CommandBus;
 use daruma_discovery::PairingStore;

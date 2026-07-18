@@ -24,7 +24,7 @@ hyper-util           = { workspace = true }
 daruma-storage = { workspace = true }
 daruma-core    = { workspace = true }
 daruma-sync    = { workspace = true }
-daruma-ai      = { workspace = true }
+daruma-ai-infra = { workspace = true }
 daruma-auth    = { workspace = true }
 daruma-webhooks = { workspace = true }
 daruma-api-dto = { workspace = true }

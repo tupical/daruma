@@ -67,6 +67,7 @@ pub struct TestAppBuilder {
     admin_agent_id: Option<AgentId>,
     lifecycle_gate: Option<Arc<dyn LifecycleGate>>,
     auto_provision_repo_project: bool,
+    plan_only_intake: bool,
 }
 
 impl Default for TestAppBuilder {
@@ -77,6 +78,7 @@ impl Default for TestAppBuilder {
             admin_agent_id: None,
             lifecycle_gate: None,
             auto_provision_repo_project: false,
+            plan_only_intake: false,
         }
     }
 }
@@ -104,6 +106,14 @@ impl TestAppBuilder {
     /// Enable lazy repo-scope auto-provisioning (default off).
     pub fn auto_provision_repo_project(mut self, on: bool) -> Self {
         self.auto_provision_repo_project = on;
+        self
+    }
+
+    /// Enable ADR-0007 plan-only intake enforcement (default off), matching
+    /// the production server (`apps/server/src/main.rs`). When on, `CreateTask`
+    /// is bridged to a structured error; intake is `MaterializePlan` only.
+    pub fn plan_only_intake(mut self, on: bool) -> Self {
+        self.plan_only_intake = on;
         self
     }
 
@@ -196,7 +206,8 @@ impl TestAppBuilder {
         .with_rules(rules.clone())
         .with_evidence(evidence.clone())
         .with_artifacts(artifacts.clone())
-        .with_relations(relations.clone());
+        .with_relations(relations.clone())
+        .with_plan_only_intake(self.plan_only_intake);
         if let Some(gate) = self.lifecycle_gate.clone() {
             handler = handler.with_lifecycle_gate(gate);
         }

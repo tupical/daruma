@@ -36,7 +36,7 @@ The runtime split is formalised in
 | `daruma-sync`       | `crates/sync/`             | `transport`   | Rust  | shipped    | core           | events        |
 | `daruma-webhooks`   | `crates/webhooks/`         | `transport`   | Rust  | shipped    | core           | events        |
 | `daruma-mcp`        | `crates/mcp/`              | `transport`   | Rust  | shipped    | core           | server (HTTP) |
-| `daruma-ai`         | `crates/ai/`               | `transport`   | Rust  | shipped    | core           | domain+events |
+| `daruma-ai-infra`   | `crates/ai-infra/`         | `transport`   | Rust  | shipped    | core           | shared        |
 | `daruma-web`        | `../daruma-web/` (repo) | `client`      | Rust/WASM | shipped | clients        | `/v1/*` + WS  |
 | `daruma-cli`        | `apps/cli/`                | `client`      | Rust  | shipped    | clients        | `/v1/*`       |
 | `daruma-desktop`    | `apps/desktop/`            | `embed`       | Rust (GPUI) | wip    | clients        | `daruma-core` in-process |

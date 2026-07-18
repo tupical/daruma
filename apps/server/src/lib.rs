@@ -3,6 +3,7 @@
 //! Exposes shared types (e.g. middleware, routes, state) so that integration
 //! tests in `tests/` can import them without duplicating the source.
 
+pub mod ai;
 pub mod cors;
 pub mod error;
 pub mod mcp_downloads;

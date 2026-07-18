@@ -7,7 +7,6 @@ members = [
     "crates/storage",
     "crates/core",
     "crates/sync",
-    "crates/ai",
     "crates/ai-infra",
     "crates/auth",
     "crates/webhooks",
@@ -37,7 +36,6 @@ daruma-events  = { path = "crates/events" }
 daruma-storage = { path = "crates/storage" }
 daruma-core    = { path = "crates/core" }
 daruma-sync    = { path = "crates/sync" }
-daruma-ai      = { path = "crates/ai" }
 daruma-ai-infra = { path = "crates/ai-infra" }
 daruma-auth    = { path = "crates/auth" }
 daruma-webhooks = { path = "crates/webhooks" }

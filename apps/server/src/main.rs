@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use daruma_ai::{AiConfig, OpenAiClient};
+use daruma_ai_infra::{AiConfig, OpenAiClient};
 use daruma_auth::{generate, NewTokenSpec, TokenKind, TokenScope, TokenStore};
 use daruma_core::{search::FtsSearchProvider, CommandBus, CommandHandler};
 use daruma_events::{EventBus, EventStore};

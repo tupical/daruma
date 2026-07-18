@@ -100,9 +100,12 @@ pub struct CommandHandler {
     // ADR: `CreateTask` returns the plan-only bridge error (Q4), `UpdateTask`
     // rejects plan-owned field patches (Q1), and `SplitTask` requires the
     // parent to be in a plan and materialises children as a plan amend (Q3).
-    // `MaterializePlan` (Q5) is available regardless. The flag is the seam that
-    // the follow-up API/MCP-surface task flips on; keeping it off here lets the
-    // command/API layer stay green while this stage lands the mechanism.
+    // `MaterializePlan` (Q5) is available regardless. Enforcement boundary
+    // (ADR-0007 §«Уточнение: граница enforcement», 2026-07-17): the production
+    // server always flips this on (`apps/server/src/main.rs`), so every server
+    // transport (POST /v1/commands, WS dispatch) enforces the ADR; the `false`
+    // default remains for the desktop offline executor (until the terminality
+    // task migrates its UI) and in-process tests.
     pub plan_only_intake: bool,
 }
 
@@ -992,9 +995,13 @@ impl CommandHandler {
             Command::CreateTask { mut task } => {
                 // ADR-0007 Q4 bridge: under plan-only intake, direct task
                 // creation is disabled — intake happens by materialising a
-                // plan. Structured error names the replacement. The surface
-                // removal (daruma_create / POST /tasks) is a follow-up task;
-                // here the command still exists so the API/MCP layer compiles.
+                // plan. Structured error names the replacement. The variant
+                // itself stays in the wire format *as* the bridge (ADR-0007
+                // §«Уточнение: граница enforcement», 2026-07-17): removing it
+                // would degrade old clients to an untyped serde
+                // "unknown variant" error with no pointer to the replacement.
+                // The legacy path below still serves the desktop offline
+                // executor (terminality task) and in-process tests.
                 if self.plan_only_intake {
                     return Err(CoreError::validation(
                         "plan_only_intake: direct task creation is disabled \

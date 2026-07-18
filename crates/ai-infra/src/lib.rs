@@ -16,10 +16,12 @@
 //! `intake_oss`, `sensemaking_oss`, `planning_oss`. They depend on this
 //! crate through `vendor/oss/crates/ai-infra`, never the reverse.
 //!
-//! `daruma-ai` (same repo) holds the one remaining core operation
-//! (`analyze_complexity`) plus the operation prompt catalogue. Upper
-//! layers that once imported parse/decompose/scope/research from here
-//! should source those from their own layer crates instead.
+//! `daruma-ai` has been collapsed: this crate is consumed directly by
+//! `apps/server` / `apps/desktop`, and the one remaining core operation
+//! (`analyze_complexity`) lives in `apps/server/src/ai.rs` as a
+//! deprecated delegation-shim until the cloud cutover to `yatagarasu`.
+//! Upper layers that once imported parse/decompose/scope/research from
+//! here should source those from their own layer crates instead.
 //!
 //! # Contract
 //! - This layer **never** writes to storage.

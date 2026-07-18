@@ -4014,7 +4014,7 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
 /// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.
 ///
 /// Loads the plan's task list, builds a `TaskBrief` per task, hands them to
-/// `daruma_ai::analyze_complexity_batch` as **one** LLM call, and upserts
+/// [`crate::ai::analyze_complexity_batch`] as **one** LLM call, and upserts
 /// the resulting hints into the `task_complexity_hints` projection. The
 /// response surfaces `batch_id` + the freshly written hints so callers (e.g.
 /// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
@@ -4116,7 +4116,7 @@ async fn ai_analyze_complexity(
             at: chrono::Utc::now(),
         })
         .await;
-    let result = daruma_ai::analyze_complexity_batch(client, briefs).await;
+    let result = crate::ai::analyze_complexity_batch(client, briefs).await;
     let outcome = match &result {
         Ok(_) => "ok".to_string(),
         Err(e) => format!("error: {e}"),
@@ -4210,11 +4210,11 @@ async fn upsert_complexity_hints(
     // Mirrors the planning layer's per-analysis cap: one batch analysis
     // yields at most MAX_BATCH_TASKS drafts, so a larger write-back is a
     // caller bug, not a bigger workload.
-    if body.hints.len() > daruma_ai::MAX_BATCH_TASKS {
+    if body.hints.len() > crate::ai::MAX_BATCH_TASKS {
         return Err(ApiError::from(CoreError::validation(format!(
             "too many hints: {} (max {})",
             body.hints.len(),
-            daruma_ai::MAX_BATCH_TASKS
+            crate::ai::MAX_BATCH_TASKS
         ))));
     }
 

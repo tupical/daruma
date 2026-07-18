@@ -120,15 +120,16 @@ directly, only via `CommandBus::dispatch`.
 no knowledge of task operations. It lives in the OSS core and is consumed by
 upper layers through `vendor/oss/crates/ai-infra`.
 
-`daruma-ai` holds the one core AI operation (`analyze_complexity`) and the
-operation prompt catalogue. It depends on `ai-infra` and is also vendored via
-`vendor/oss`.
+`daruma-ai` has been collapsed: consumers use `daruma-ai-infra` directly, and
+the one remaining core AI operation (`analyze_complexity`) lives in
+`apps/server/src/ai.rs` as a deprecated delegation-shim until the cloud
+cutover to the planning layer (`yatagarasu`).
 
 AI operations that are **product** concerns — parse, decompose, scope,
 research — live in the upper-layer repos (`intake_oss`, `sensemaking_oss`,
 `planning_oss`). They depend on `ai-infra` through `vendor/oss`; the
 dependency arrow never reverses. Do not add parse/decompose/scope/research back
-to `daruma-ai` or `daruma-ai-infra`.
+to `daruma-ai-infra` or the server shim.
 
 ## Pipeline position (MeiSei)
 
@@ -140,7 +141,7 @@ not, and must not, grow a symmetric contract in the other direction — no
 module or core PR may add a `Command` that creates work for another
 pipeline layer. This mirrors the one-way dependency arrow already
 established for the AI layer above (product-layer repos depend on
-`daruma-ai`/`daruma-ai-infra`, never the reverse). `hyakki` is
+`daruma-ai-infra`, never the reverse). `hyakki` is
 out-of-band (clustering/observability), not a pipeline hop that consumes
 daruma's output.
 

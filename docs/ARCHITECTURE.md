@@ -44,7 +44,7 @@ output.
 ┌──────────────────────────────────────────────────────────────────┐
 │ apps/desktop (GPUI)  daruma-web↗  apps/server (Axum)  apps/cli │  UI / transports
 ├──────────────────────────────────────────────────────────────────┤
-│ daruma-ai   daruma-sync   daruma-webhooks  daruma-mcp│  agent + realtime
+│ daruma-ai-infra   daruma-sync   daruma-webhooks  daruma-mcp│  agent + realtime
 ├──────────────────────────────────────────────────────────────────┤
 │ daruma-auth (bearer / capability / scope)                     │  authn / authz
 ├──────────────────────────────────────────────────────────────────┤
@@ -80,7 +80,7 @@ The **core** is the set of crates and apps that own the contract:
   (WebSocket); the only network-facing surface.
 - `apps/cli` (`daruma mcp`) — stdio MCP transport (re-exports the
   same command/event semantics over MCP framing via `crates/mcp`).
-- `crates/sync`, `crates/webhooks`, `crates/ai`, `crates/mcp` —
+- `crates/sync`, `crates/webhooks`, `crates/ai-infra`, `crates/mcp` —
   realtime fanout, outbound webhooks, AI tools, MCP wiring. Counted
   as core because they subscribe to the same `EventBus`/`EventStore`;
   no separate state of their own.
@@ -538,9 +538,11 @@ guard.
   route to `Channel::Tasks` and are therefore gated by `SubscribeTasks`
   — not by `TaskRelationRead`, which only gates the REST GET endpoint.
 
-### `daruma-ai`
+### `daruma-ai-infra`
 - `OpenAiClient` wraps the OpenAI Responses API. Returns `Command`
-  values only — never touches storage.
+  values only — never touches storage. The deprecated
+  `analyze_complexity` delegation-shim lives in
+  `apps/server/src/ai.rs` until the cloud cutover to `yatagarasu`.
 
 ### `apps/server` (Axum)
 
@@ -705,7 +707,7 @@ User keystroke / AI tool call / MCP tool/call
 ## Schemas
 
 `crates/events/src/event.rs` is the **canonical** schema. The wire
-formats (`crates/sync/src/wire.rs`, AI tools in `crates/ai/src/tools.rs`,
+formats (`crates/sync/src/wire.rs`, AI tools in `crates/ai-infra/src/tools.rs`,
 and webhook bodies) all mirror it. If they diverge, events win.
 
 ## Notes for implementers

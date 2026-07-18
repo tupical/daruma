@@ -6,7 +6,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use daruma_ai::{AiConfig, OpenAiClient};
+use daruma_ai_infra::{AiConfig, OpenAiClient};
 // §3.4 W2.1: embed-mode reaches for the runtime through `core::embed`
 // only — never via `daruma_storage::*` or `daruma_events::*`
 // directly, so the W4.1 audit-grep step can keep enforcing

@@ -15,7 +15,8 @@
 //!    cannot break out of the fence.
 //!
 //! The instruction part of each prompt stays outside the fence (the
-//! bundled templates in `crates/ai/prompts/*.toml`); see
+//! bundled templates in `apps/server/prompts/*.toml` and the upper-layer
+//! repos); see
 //! `docs/guides/ai-agent.md` for the threat model.
 
 /// Opening fence for untrusted grounding content.

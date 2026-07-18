@@ -1,4 +1,4 @@
-//! Batch task complexity analysis (§3.8.3).
+//! Batch task complexity analysis (§3.8.3) — server-local shim.
 //!
 //! Given a slice of `TaskBrief` rows, issue **one** LLM call and return a
 //! `ComplexityHint` per task. The whole point of batching is to amortise
@@ -10,31 +10,46 @@
 //! living in the **execution** core only as a transitional shim. The
 //! canonical home is `yatagarasu::analyze_complexity_batch`
 //! (`planning_oss`), whose pure primitive returns hint drafts and never
-//! touches storage. The server route still calls this shim; that wiring
-//! moves to the planning layer at the cloud cutover (separate plan), after
-//! which this module is removed and `daruma-ai` collapses to a pure
-//! `daruma-ai-infra` re-export. Do not add new callers here.
+//! touches storage. The `POST /v1/ai/analyze-complexity/{plan_id}` route
+//! still calls this shim; that wiring moves to the planning layer at the
+//! cloud cutover (separate plan), after which this module is removed. Do
+//! not add new callers here.
 //!
 //! The projection write-back (`task_complexity_hints`) is **not** part of
 //! this move — it is structural execution storage and stays in core: the
 //! planning primitive returns hints, core assigns `batch_id` +
 //! `generated_at` and upserts via `state.complexity_hints.upsert_batch`.
+//!
+//! This module used to live in `crates/ai`; that crate was collapsed once
+//! its only remaining consumers were this server and re-exports of
+//! `daruma-ai-infra` (which server/desktop now use directly).
 
 use daruma_domain::{ComplexityHint, TaskBrief};
 use daruma_shared::{time, CoreError, TaskId};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use daruma_ai_infra::client::{OpenAiClient, ResponseOutput, ResponseRequest};
+use daruma_ai_infra::prompts::PromptRegistry;
 use daruma_ai_infra::untrusted::wrap_untrusted;
-
-use crate::prompts::PromptRegistry;
 
 /// Hard cap on tasks per batch. Keeps prompt size predictable and the
 /// model's per-task attention non-degenerate. Callers with more tasks
 /// should chunk; we do not split for them here so the contract stays
 /// "one LLM call per call".
 pub const MAX_BATCH_TASKS: usize = 50;
+
+/// Operation prompt catalogue: one `prompts/*.toml` per operation, baked
+/// into the binary via `include_str!`; the first `load` call parses them.
+/// The prompt *rendering engine* lives in `daruma-ai-infra`; only the
+/// operation-specific template is declared here.
+static PROMPTS: LazyLock<PromptRegistry> = LazyLock::new(|| {
+    PromptRegistry::new(&[(
+        "analyze_complexity",
+        include_str!("../prompts/analyze_complexity.toml"),
+    )])
+});
 
 /// Function tool the model is forced to call. Mirrors the projection
 /// row but is structurally separate so future schema drift in storage
@@ -95,14 +110,15 @@ fn build_prompt(tasks: &[TaskBrief]) -> String {
     struct Ctx<'a> {
         tasks_list: &'a str,
     }
-    PromptRegistry::load(
-        "analyze_complexity",
-        "default",
-        &Ctx {
-            tasks_list: &tasks_list,
-        },
-    )
-    .expect("bundled analyze_complexity prompt is well-formed")
+    PROMPTS
+        .load(
+            "analyze_complexity",
+            "default",
+            &Ctx {
+                tasks_list: &tasks_list,
+            },
+        )
+        .expect("bundled analyze_complexity prompt is well-formed")
 }
 
 /// Run one batch complexity analysis. Returns hints in the same order as
@@ -206,6 +222,17 @@ pub async fn analyze_complexity_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_prompts_load() {
+        // Force the LazyLock catalogue to parse; a malformed bundled
+        // prompt would panic here instead of at first request.
+        let reg = LazyLock::force(&PROMPTS);
+        assert!(!reg.is_empty(), "no prompts loaded");
+        for (name, _file) in reg.iter() {
+            assert!(!name.is_empty());
+        }
+    }
 
     #[test]
     fn tool_schema_has_required_fields() {

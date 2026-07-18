@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 # Exposes provider test doubles (e.g. `testing::FakeProvider`) for reuse
-# in dependent crates' tests. Enabled by `daruma-ai` as a dev-dep.
+# in dependent crates' tests. Opt-in for upper layers via `vendor/oss`.
 testing = []
 
 [dependencies]

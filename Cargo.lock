@@ -538,23 +538,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daruma-ai"
-version = "0.3.0"
-dependencies = [
- "chrono",
- "daruma-ai-infra",
- "daruma-core",
- "daruma-domain",
- "daruma-events",
- "daruma-shared",
- "once_cell",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "daruma-ai-infra"
 version = "0.3.0"
 dependencies = [
@@ -644,7 +627,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "daruma-ai",
+ "daruma-ai-infra",
  "daruma-core",
  "daruma-discovery",
  "daruma-domain",
@@ -752,7 +735,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
- "daruma-ai",
+ "daruma-ai-infra",
  "daruma-api-dto",
  "daruma-auth",
  "daruma-core",
