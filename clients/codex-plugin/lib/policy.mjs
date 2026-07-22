@@ -79,6 +79,23 @@ Codex plugin manages this block; do not hand-edit between the markers.
    burns tokens. Default to \`status=active\` (tasks) or a narrow status
    filter (plans).
 
+## Intake strictness mode
+
+The intake mode lives in \`~/.daruma/mode\`, shared across daruma clients,
+read via \`daruma-codex mode\`. At the start of a session, or before
+materializing tasks, check the current mode and honor it:
+
+- **off** — work directly; don't force planning.
+- **lite** (default) — decompose into a plan (\`daruma_plan_materialize\`)
+  on explicit request or for work that's obviously multi-step.
+- **full** — assess every substantive input for "rawness": a raw idea,
+  hypothesis, or undetermined direction gets materialized into a plan
+  (\`daruma_plan_materialize\`) first; a concrete bounded task is worked
+  directly.
+
+daruma OSS has no pipeline (torii/satori/enma/yatagarasu/fujin) — don't
+invent one; the mode only gates \`daruma_plan_materialize\`.
+
 ## Listing tasks and plans
 
 - **Default filters:** \`status=active\` for open work;

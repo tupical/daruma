@@ -19,6 +19,9 @@
 //                                      how to drive the daruma MCP tools.
 //   doctor [--json] [--quiet]
 //                                      Probe Cursor + daruma binary + HTTP server.
+//   mode [off|lite|full]               Show or set the intake strictness mode
+//                                      (~/.daruma/mode, shared across daruma
+//                                      clients). No arg → show current mode.
 //   setup                              Print install hints for missing pieces.
 //   marketplace                        Print the daruma marketplace manifest.
 //   --version | --help
@@ -45,6 +48,7 @@ import { installCommands } from "../lib/commands.mjs";
 import { installOmcGuard, removeOmcGuard } from "../lib/omc-guard.mjs";
 import { resolveCursorAssetRoot } from "../lib/paths.mjs";
 import { createCliUi } from "../lib/cli-ui.mjs";
+import { MODES, readMode, writeMode } from "../lib/mode.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
@@ -104,7 +108,7 @@ Usage:
   daruma-cursor commands [--project DIR] [--force]
         Install the bundled .cursor/commands/*.md slash commands
         (/daruma-tasks, /daruma-plan, /daruma-next,
-        /daruma-mine) into a project.
+        /daruma-mine, /daruma-mode) into a project.
 
   daruma-cursor omc-guard [--project DIR]
         Refresh the managed .omc/AGENTS.md block that tells OMC skills to
@@ -112,6 +116,12 @@ Usage:
 
   daruma-cursor doctor [--json] [--quiet]
         Probe Cursor + daruma binary + HTTP server (exit 0 = READY).
+
+  daruma-cursor mode [off|lite|full]
+        Show or set the intake strictness mode: how aggressively raw
+        input gets decomposed into a plan via daruma_plan_materialize
+        before becoming a task. No arg (or --show) prints the current
+        mode. Persisted to ~/.daruma/mode, shared across daruma clients.
 
   daruma-cursor setup
         Print install hints for missing dependencies.
@@ -457,6 +467,16 @@ async function cmdDoctor(rest) {
   process.exit(report.ready ? 0 : 1);
 }
 
+async function cmdMode(rest) {
+  const [arg] = rest;
+  if (!arg || arg === "--show") {
+    process.stdout.write(`daruma intake mode: ${readMode()} (${MODES.join(" | ")})\n`);
+    return;
+  }
+  const mode = await writeMode(arg);
+  process.stdout.write(`✓ daruma intake mode: ${mode}\n`);
+}
+
 async function cmdSetup() {
   const ui = createCliUi({ title: "Daruma Cursor Setup" });
   ui.header();
@@ -518,6 +538,8 @@ async function main(argv) {
       return cmdOmcGuard(rest);
     case "doctor":
       return cmdDoctor(rest);
+    case "mode":
+      return cmdMode(rest);
     case "setup":
       return cmdSetup();
     case "marketplace":

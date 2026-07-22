@@ -51,9 +51,10 @@ test("installCommands overwrites with overwrite: true", async () => {
   });
 });
 
-test("COMMAND_FILES covers tasks/plan/next/mine", () => {
+test("COMMAND_FILES covers tasks/plan/next/mine/mode", () => {
   assert.deepEqual([...COMMAND_FILES].sort(), [
     "daruma-mine.md",
+    "daruma-mode.md",
     "daruma-next.md",
     "daruma-plan.md",
     "daruma-tasks.md",

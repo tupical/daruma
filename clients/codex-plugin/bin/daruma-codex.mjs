@@ -4,10 +4,12 @@
 // Subcommands:
 //   daruma-codex init [--project DIR]     Drop managed policy in AGENTS.md
 //   daruma-codex uninit [--project DIR] Remove managed policy block
+//   daruma-codex mode [off|lite|full]     Show or set intake strictness mode
 //   daruma-codex --version | -v
 //   daruma-codex --help    | -h
 
 import { installPolicy, removePolicy } from "../lib/policy.mjs";
+import { MODES, readMode, writeMode } from "../lib/mode.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -23,6 +25,8 @@ Usage:
         defaults to daruma for tasks and plans. Idempotent.
   daruma-codex uninit [--project DIR]
         Remove the managed policy block. Surrounding content is preserved.
+  daruma-codex mode [${MODES.join("|")}]
+        Show the current intake strictness mode, or set it.
   daruma-codex --version | -v   Print version
   daruma-codex --help    | -h   This message
 `;
@@ -78,6 +82,16 @@ async function cmdUninit(rest = []) {
   process.stdout.write(`${verb} ${result.path}\n`);
 }
 
+async function cmdMode(rest = []) {
+  const [arg] = rest;
+  if (!arg || arg === "--show") {
+    process.stdout.write(`daruma intake mode: ${readMode()} (off | lite | full)\n`);
+    return;
+  }
+  const mode = await writeMode(arg);
+  process.stdout.write(`✓ daruma intake mode: ${mode}\n`);
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === "--help" || cmd === "-h") {
@@ -94,6 +108,10 @@ async function main() {
   }
   if (cmd === "uninit") {
     await cmdUninit(rest);
+    return;
+  }
+  if (cmd === "mode") {
+    await cmdMode(rest);
     return;
   }
   process.stderr.write(`Unknown command: ${cmd}\n\n${HELP}`);

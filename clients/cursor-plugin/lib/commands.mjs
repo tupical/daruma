@@ -2,11 +2,13 @@
 // `<project>/.cursor/commands/`. These markdown files appear in the
 // Cursor `/` slash-menu as user-invocable commands.
 //
-// We ship four:
+// We ship five:
 //   - daruma-tasks.md  — read-only task list
 //   - daruma-plan.md   — active plan checklist + progress bar
 //   - daruma-next.md   — claim next ready task with briefing
 //   - daruma-mine.md   — tasks currently claimed by this session
+//   - daruma-mode.md   — show/set the intake strictness mode (local CLI,
+//                        not an MCP server prompt — see lib/mode.mjs)
 
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,6 +23,7 @@ export const COMMAND_FILES = [
   "daruma-plan.md",
   "daruma-next.md",
   "daruma-mine.md",
+  "daruma-mode.md",
 ];
 
 export async function installCommands({ projectDir, overwrite = false } = {}) {

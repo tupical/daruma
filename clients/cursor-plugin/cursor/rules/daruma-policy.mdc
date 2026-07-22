@@ -125,6 +125,25 @@ oh-my-claudecode (OMC).
    (+ at most one `plan_get` and one targeted `Grep`) beats a dozen
    search/get/list round-trips for the identical answer.
 
+## Intake strictness mode
+
+The intake mode lives in `~/.daruma/mode` (shared across daruma clients,
+including this one) and is read/written via `daruma-cursor mode`. At the
+start of a session, or before deciding whether a request needs a plan,
+read it and follow it:
+
+- **off** — go straight to daruma work; never force decomposition into
+  a plan.
+- **lite** (default) — decompose into a plan (`daruma_plan_materialize`)
+  only on explicit request, or when the work is obviously multi-step.
+- **full** — assess every substantive request for "rawness": raw ideas
+  and open-ended requests get materialized into a plan first; a
+  concrete, bounded task goes to daruma directly.
+
+daruma OSS has no maturity pipeline (torii/satori/enma/…) — that is a
+mcpbox-only concept and out of scope here. This mode only gates plan
+decomposition.
+
 ## Detection cues that mean "use daruma now"
 
 When the user mentions any of the following, the conversation is about
