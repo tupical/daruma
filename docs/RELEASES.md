@@ -1,7 +1,7 @@
 # Release Contract
 
 Daruma OSS is the versioned open-core runtime used by external modules:
-`daruma-web`, desktop, mobile, CLI, and future
+`daruma-web`, desktop, CLI, and future
 integrations. A released OSS core must be consumable without a mutable sibling
 checkout.
 

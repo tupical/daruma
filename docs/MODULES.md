@@ -18,7 +18,7 @@ The runtime split is formalised in
 | `core`        | Domain, command/event runtime, storage, auth. Stable contract; minor versions backwards-compat. |
 | `transport`   | Speaks HTTP / WS / MCP / webhook to clients; owned by core (lives in `crates/` or `apps/`). |
 | `client`      | Consumer of `/v1/*`; ships its own UI/CLI binary. May be replaced freely.                     |
-| `embed`       | Runs `daruma-core` in-process (no network). Desktop today; mobile later if size allows.    |
+| `embed`       | Runs `daruma-core` in-process (no network). Desktop today.    |
 | `integration` | Speaks to a third-party system (GitHub, Slack, …). Planned, no shipped impls yet.             |
 
 ## Registry
@@ -40,7 +40,6 @@ The runtime split is formalised in
 | `daruma-web`        | `../daruma-web/` (repo) | `client`      | Rust/WASM | shipped | clients        | `/v1/*` + WS  |
 | `daruma-cli`        | `apps/cli/`                | `client`      | Rust  | shipped    | clients        | `/v1/*`       |
 | `daruma-desktop`    | `apps/desktop/`            | `embed`       | Rust (GPUI) | wip    | clients        | `daruma-core` in-process |
-| `daruma-mobile`     | `apps/mobile/`             | `client`      | Rust+Tauri 2 | wip     | clients     | `/v1/*` (HTTP) |
 | GitHub integration     | `integrations/github/`     | `integration` | — | planned    | integrations   | webhooks + `/v1/*` |
 | Slack integration      | `integrations/slack/`      | `integration` | — | planned    | integrations   | webhooks + `/v1/*` |
 

@@ -5,8 +5,8 @@ crates plus `apps/server` and the `daruma mcp` stdio entry in `apps/cli`) and ev
 embed, integration) that consumes it. See
 [docs/MODULES.md](MODULES.md) for the live registry of modules.
 
-The goal is operational: a team building `apps/mobile/` or
-`integrations/github/` must be able to ship without waiting on core,
+The goal is operational: a team building `integrations/github/`
+must be able to ship without waiting on core,
 and core must be able to evolve internals without breaking shipped
 modules silently.
 

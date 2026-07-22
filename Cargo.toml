@@ -16,7 +16,6 @@ members = [
     "apps/server",
     "apps/desktop",
     "apps/cli",
-    "apps/mobile",
 ]
 
 [workspace.package]

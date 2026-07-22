@@ -55,8 +55,7 @@ use daruma_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, ArtifactId, CommentId, CoreError, DeviceId, DocumentId, EvidenceId,
-    PlanId, ProjectId, RuleId, RunId, TaskId, TokenId, WebhookId,
+    AgentId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId, RunId, TaskId,
 };
 use daruma_storage::{ClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
@@ -80,62 +79,10 @@ use crate::{
 
 /// Compute today (UTC) + 30 days as an RFC 7231 IMF-fixdate [`HeaderValue`].
 fn compute_sunset() -> HeaderValue {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let epoch_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let target = epoch_secs + 30 * 24 * 3600;
-
-    let total_days = target / 86400;
-    let rem = target % 86400;
-    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-
-    let dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][((total_days + 4) % 7) as usize];
-    let (year, mon, day) = epoch_days_to_ymd(total_days);
-    let mon_name = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ][mon - 1];
-
-    let s = format!("{dow}, {day:02} {mon_name} {year} {hh:02}:{mm:02}:{ss:02} GMT");
+    let s = (chrono::Utc::now() + chrono::TimeDelta::days(30))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
     HeaderValue::from_str(&s).expect("sunset value is valid ASCII")
-}
-
-fn epoch_days_to_ymd(mut d: u64) -> (u64, usize, u64) {
-    let mut y = 1970u64;
-    loop {
-        let n = if is_leap_year(y) { 366 } else { 365 };
-        if d < n {
-            break;
-        }
-        d -= n;
-        y += 1;
-    }
-    let mlen: [u64; 12] = [
-        31,
-        if is_leap_year(y) { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    while m < 11 && d >= mlen[m] {
-        d -= mlen[m];
-        m += 1;
-    }
-    (y, m + 1, d + 1)
-}
-
-fn is_leap_year(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
@@ -470,9 +417,7 @@ async fn revoke_device(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TokenWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let device_id = id
-        .parse::<DeviceId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid device id: {id}"))))?;
+    let device_id = parse_id(id, "device id")?;
 
     if !state
         .devices
@@ -519,9 +464,7 @@ async fn list_tasks(
         None => state.tasks.list_all_filtered(filter).await,
         Some("inbox") => state.tasks.list_by_project_filtered(None, filter).await,
         Some(raw) => {
-            let pid = raw.parse::<ProjectId>().map_err(|_| {
-                ApiError::from(CoreError::validation(format!("invalid project id: {raw}")))
-            })?;
+            let pid = parse_id(raw, "project id")?;
             state
                 .tasks
                 .list_by_project_filtered(Some(pid), filter)
@@ -635,6 +578,21 @@ fn wants_page(page: Option<bool>, cursor: Option<&str>) -> bool {
     page.unwrap_or(false) || cursor.is_some()
 }
 
+/// Take up to `limit` items starting at `start`, returning the page and
+/// whether more items remain beyond it.
+fn take_page<T>(items: Vec<T>, start: usize, limit: usize) -> (Vec<T>, bool) {
+    let mut page = items
+        .into_iter()
+        .skip(start)
+        .take(limit + 1)
+        .collect::<Vec<_>>();
+    let has_more = page.len() > limit;
+    if has_more {
+        page.truncate(limit);
+    }
+    (page, has_more)
+}
+
 fn page_by_id<T, F>(items: Vec<T>, cursor: Option<&str>, limit: usize, id_of: F) -> Value
 where
     T: Serialize,
@@ -648,20 +606,8 @@ where
             .unwrap_or(items.len()),
         None => 0,
     };
-    let mut page = items
-        .into_iter()
-        .skip(start)
-        .take(limit + 1)
-        .collect::<Vec<_>>();
-    let has_more = page.len() > limit;
-    if has_more {
-        page.truncate(limit);
-    }
-    let next_cursor = if has_more {
-        page.last().map(id_of)
-    } else {
-        None
-    };
+    let (page, has_more) = take_page(items, start, limit);
+    let next_cursor = if has_more { page.last().map(id_of) } else { None };
     json!({ "items": page, "next_cursor": next_cursor, "has_more": has_more })
 }
 
@@ -669,15 +615,7 @@ fn page_by_offset<T>(items: Vec<T>, offset: usize, limit: usize) -> Value
 where
     T: Serialize,
 {
-    let mut page = items
-        .into_iter()
-        .skip(offset)
-        .take(limit + 1)
-        .collect::<Vec<_>>();
-    let has_more = page.len() > limit;
-    if has_more {
-        page.truncate(limit);
-    }
+    let (page, has_more) = take_page(items, offset, limit);
     let next_cursor = if has_more {
         Some((offset + page.len()).to_string())
     } else {
@@ -715,9 +653,7 @@ fn parse_search_scopes(raw: Option<&str>) -> Result<Vec<SearchScope>, ApiError> 
 fn parse_search_project(raw: Option<&str>) -> Result<Option<ProjectId>, ApiError> {
     match raw {
         None | Some("") | Some("all") => Ok(None),
-        Some(pid) => pid.parse::<ProjectId>().map(Some).map_err(|_| {
-            ApiError::from(CoreError::validation(format!("invalid project id: {pid}")))
-        }),
+        Some(pid) => parse_id(pid, "project id").map(Some),
     }
 }
 
@@ -793,9 +729,7 @@ async fn get_task(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = id
-        .parse::<TaskId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id}"))))?;
+    let task_id = parse_id(&id, "task id")?;
     let task = state.tasks.get(task_id).await.map_err(ApiError::from)?;
     let t = task.ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
     Ok(Json(t))
@@ -1224,11 +1158,7 @@ async fn move_project_to_workspace(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = id_str.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {id_str}"
-        )))
-    })?;
+    let project_id: ProjectId = parse_id(id_str, "project id")?;
     let workspace_id = validate_workspace_id(&body.workspace_id)?;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -1334,12 +1264,7 @@ async fn list_project_work_units(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {}",
-            q.project_id
-        )))
-    })?;
+    let project_id = parse_id(q.project_id, "project id")?;
     let status = q
         .status
         .as_deref()
@@ -1368,9 +1293,7 @@ async fn list_task_work_units(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = id_str
-        .parse::<TaskId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id_str}"))))?;
+    let task_id = parse_id(id_str, "task id")?;
     let units = state
         .work_units
         .list_by_task(task_id)
@@ -1495,11 +1418,7 @@ async fn list_agent_capabilities(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid agent id: {agent_id_str}"
-        )))
-    })?;
+    let agent_id = parse_id(agent_id_str, "agent id")?;
     let profiles = state
         .capability_profiles
         .list_for_agent(agent_id)
@@ -1525,11 +1444,7 @@ async fn put_agent_capability(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid agent id: {agent_id_str}"
-        )))
-    })?;
+    let agent_id = parse_id(agent_id_str, "agent id")?;
     if body.capability.trim().is_empty() {
         return Err(ApiError::from(CoreError::validation(
             "capability must not be empty",
@@ -1563,11 +1478,7 @@ async fn delete_agent_capability(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid agent id: {agent_id_str}"
-        )))
-    })?;
+    let agent_id = parse_id(agent_id_str, "agent id")?;
     let removed = state
         .capability_profiles
         .delete(agent_id, &capability)
@@ -1636,11 +1547,7 @@ async fn accept_handoff(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid handoff id: {id_str}"
-        )))
-    })?;
+    let handoff_id = parse_id(id_str, "handoff id")?;
     let notes = body.and_then(|Json(b)| b.notes);
     let envs = state
         .commands
@@ -1678,11 +1585,7 @@ async fn reject_handoff(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let handoff_id = id_str.parse::<daruma_shared::HandoffId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid handoff id: {id_str}"
-        )))
-    })?;
+    let handoff_id = parse_id(id_str, "handoff id")?;
     let envs = state
         .commands
         .dispatch(
@@ -1716,11 +1619,7 @@ async fn list_work_unit_handoffs(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<daruma_shared::WorkUnitId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid work unit id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(id_str, "work unit id")?;
     let contracts = state
         .handoffs
         .list_for_work_unit(id)
@@ -1801,11 +1700,7 @@ async fn release_work_unit(
 }
 
 fn parse_work_unit_id(id_str: &str) -> Result<daruma_shared::WorkUnitId, ApiError> {
-    id_str.parse::<daruma_shared::WorkUnitId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid work unit id: {id_str}"
-        )))
-    })
+    parse_id(id_str, "work unit id")
 }
 
 #[derive(Deserialize)]
@@ -2100,11 +1995,7 @@ async fn patch_project_settings(
 }
 
 fn parse_project_id(id_str: &str) -> Result<ProjectId, ApiError> {
-    id_str.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {id_str}"
-        )))
-    })
+    parse_id(id_str, "project id")
 }
 
 // ── Repo scope bindings (migration 0046) ────────────────────────────────────
@@ -2447,9 +2338,7 @@ async fn disable_rule(
 }
 
 fn parse_rule_id(id_str: &str) -> Result<RuleId, ApiError> {
-    id_str
-        .parse::<RuleId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid rule id: {id_str}"))))
+    parse_id(id_str, "rule id")
 }
 
 // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ───────────────────────
@@ -2497,11 +2386,7 @@ async fn get_evidence(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<EvidenceId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid evidence id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(id_str, "evidence id")?;
     let evidence = state
         .evidence
         .get(id)
@@ -2554,15 +2439,11 @@ async fn list_artifacts(
         .map_err(ApiError::from_missing_cap)?;
 
     let project_id = match q.project_id.as_deref().filter(|s| !s.is_empty()) {
-        Some(raw) => Some(raw.parse::<ProjectId>().map_err(|_| {
-            ApiError::from(CoreError::validation(format!("invalid project id: {raw}")))
-        })?),
+        Some(raw) => Some(parse_id(raw, "project id")?),
         None => None,
     };
     let task_id = match q.task_id.as_deref().filter(|s| !s.is_empty()) {
-        Some(raw) => Some(raw.parse::<TaskId>().map_err(|_| {
-            ApiError::from(CoreError::validation(format!("invalid task id: {raw}")))
-        })?),
+        Some(raw) => Some(parse_id(raw, "task id")?),
         None => None,
     };
     let status = match q.status.as_deref().filter(|s| !s.is_empty()) {
@@ -2671,11 +2552,7 @@ async fn set_artifact_status(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let artifact_id = id_str.parse::<ArtifactId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid artifact id: {id_str}"
-        )))
-    })?;
+    let artifact_id = parse_id(id_str, "artifact id")?;
     let envs = state
         .commands
         .dispatch(
@@ -2838,13 +2715,7 @@ async fn get_audit_finding(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str
-        .parse::<daruma_shared::AuditFindingId>()
-        .map_err(|_| {
-            ApiError::from(CoreError::validation(format!(
-                "invalid finding id: {id_str}"
-            )))
-        })?;
+    let id = parse_id(id_str, "finding id")?;
     let finding = state
         .audit_findings
         .get(id)
@@ -2886,17 +2757,22 @@ struct RecordFindingBody {
     finding: FindingInput,
 }
 
+/// Parse a required prefixed id string into a typed id, or a 400.
+///
+/// Takes `impl AsRef<str>` so handlers can pass either the extracted
+/// `Path(String)` directly or a borrowed `&str`.
+fn parse_id<T: std::str::FromStr>(s: impl AsRef<str>, label: &str) -> Result<T, ApiError> {
+    let s = s.as_ref();
+    s.parse::<T>()
+        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid {label}: {s}"))))
+}
+
 /// Parse an optional prefixed id string into a typed id, or a 400.
 fn parse_opt_id<T: std::str::FromStr>(
     raw: &Option<String>,
     label: &str,
 ) -> Result<Option<T>, ApiError> {
-    raw.as_deref()
-        .map(|s| {
-            s.parse::<T>()
-                .map_err(|_| ApiError::from(CoreError::validation(format!("invalid {label}: {s}"))))
-        })
-        .transpose()
+    raw.as_deref().map(|s| parse_id(s, label)).transpose()
 }
 
 /// `POST /v1/audit/findings` — record (upsert) a finding from a check. The
@@ -2955,13 +2831,7 @@ async fn set_audit_finding_status(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str
-        .parse::<daruma_shared::AuditFindingId>()
-        .map_err(|_| {
-            ApiError::from(CoreError::validation(format!(
-                "invalid finding id: {id_str}"
-            )))
-        })?;
+    let id = parse_id(id_str, "finding id")?;
     let status = parse_finding_status(&body.status)?;
     let actor = daruma_domain::ActorRef::from_actor(&actor_from(&auth, None));
     let updated = state
@@ -3001,9 +2871,7 @@ async fn resolve_missing_findings(
         .seen
         .iter()
         .map(|s| {
-            s.parse::<daruma_shared::AuditFindingId>().map_err(|_| {
-                ApiError::from(CoreError::validation(format!("invalid finding id: {s}")))
-            })
+            parse_id(s, "finding id")
         })
         .collect::<Result<Vec<_>, _>>()?;
     let actor = daruma_domain::ActorRef::from_actor(&actor_from(&auth, None));
@@ -3228,11 +3096,7 @@ async fn patch_project_triage(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<daruma_shared::ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(id_str, "project id")?;
     let project = state
         .projects
         .set_triage_enabled(id, body.triage_enabled)
@@ -3249,11 +3113,7 @@ async fn list_project_triage(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<daruma_shared::ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(id_str, "project id")?;
     let project = state
         .projects
         .get(id)
@@ -3284,9 +3144,7 @@ async fn patch_task_triage(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str
-        .parse::<TaskId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id_str}"))))?;
+    let id = parse_id(id_str, "task id")?;
     let task = state
         .tasks
         .set_triage_state(id, body.triage_state)
@@ -3309,11 +3167,7 @@ async fn delete_project(
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
 
-    let id = id_str.parse::<daruma_shared::ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(id_str, "project id")?;
 
     // Verify the project exists; 404 if not.
     if state
@@ -4049,11 +3903,7 @@ async fn ai_analyze_complexity(
     auth.require(Capability::AgentDispatch)
         .map_err(ApiError::from_missing_cap)?;
 
-    let plan_id = plan_id_str.parse::<PlanId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid plan id: {plan_id_str}"
-        )))
-    })?;
+    let plan_id = parse_id(&plan_id_str, "plan id")?;
 
     // Existence check — surface 404 rather than silently returning [].
     let _plan = state
@@ -4293,11 +4143,7 @@ async fn list_task_activity(
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
 
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
+    let task_id = parse_id(&task_id_str, "task id")?;
 
     // Resolve project_id from the live tasks projection; fall back to the
     // activity audit trail for deleted tasks (hard-deleted from tasks table).
@@ -4383,11 +4229,7 @@ async fn add_comment(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::CommentWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
+    let task_id = parse_id(&task_id_str, "task id")?;
     let kind = body
         .kind
         .as_deref()
@@ -4431,11 +4273,7 @@ async fn list_task_comments(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::CommentRead)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
+    let task_id = parse_id(&task_id_str, "task id")?;
     let comments = state
         .comments
         .list_for_task(task_id)
@@ -4452,11 +4290,7 @@ async fn edit_comment(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::CommentWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let comment_id = id_str.parse::<CommentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid comment id: {id_str}"
-        )))
-    })?;
+    let comment_id = parse_id(id_str, "comment id")?;
     state
         .commands
         .dispatch(
@@ -4484,11 +4318,7 @@ async fn delete_comment(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::CommentWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let comment_id = id_str.parse::<CommentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid comment id: {id_str}"
-        )))
-    })?;
+    let comment_id = parse_id(id_str, "comment id")?;
     state
         .commands
         .dispatch(
@@ -4628,9 +4458,7 @@ async fn revoke_token(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TokenWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<TokenId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!("invalid token id: {id_str}")))
-    })?;
+    let id = parse_id(&id_str, "token id")?;
     let revoked = state.tokens.revoke(id).await.map_err(ApiError::from)?;
     if revoked {
         Ok(StatusCode::NO_CONTENT)
@@ -4662,8 +4490,7 @@ fn default_inbox_max() -> usize {
 }
 
 fn parse_agent_id(s: &str) -> Result<AgentId, ApiError> {
-    s.parse::<AgentId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid agent id: {s}"))))
+    parse_id(s, "agent id")
 }
 
 fn require_self_or_admin(auth: &AuthContext, agent_id: AgentId) -> Result<(), ApiError> {
@@ -4805,11 +4632,7 @@ async fn patch_webhook(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::WebhookWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<WebhookId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid webhook id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(&id_str, "webhook id")?;
     let updated = state
         .webhooks
         .patch(id, patch)
@@ -4826,11 +4649,7 @@ async fn delete_webhook(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::WebhookWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<WebhookId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid webhook id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(&id_str, "webhook id")?;
     let removed = state.webhooks.delete(id).await.map_err(ApiError::from)?;
     if removed {
         Ok(StatusCode::NO_CONTENT)
@@ -5003,9 +4822,7 @@ async fn update_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5088,9 +4905,7 @@ async fn get_plan_progress(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
 
     let mut summary = state
         .plans
@@ -5122,9 +4937,7 @@ async fn get_plan_graph(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let graph = plan_readiness::plan_graph(&state.plans, &state.tasks, &state.relations, plan_id)
         .await
         .map_err(ApiError::from)?;
@@ -5138,9 +4951,7 @@ async fn get_plan_fanout(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let waves = plan_readiness::plan_fanout(&state.plans, &state.tasks, &state.relations, plan_id)
         .await
         .map_err(ApiError::from)?;
@@ -5154,9 +4965,7 @@ async fn get_can_start(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = id_str
-        .parse::<TaskId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id_str}"))))?;
+    let task_id = parse_id(id_str, "task id")?;
     let readiness = plan_readiness::can_start(&state.tasks, &state.relations, task_id)
         .await
         .map_err(ApiError::from)?;
@@ -5175,9 +4984,7 @@ async fn list_task_plans(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = id_str
-        .parse::<TaskId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid task id: {id_str}"))))?;
+    let task_id = parse_id(id_str, "task id")?;
     let plans = state
         .plans
         .list_plans_for_task(task_id)
@@ -5260,9 +5067,7 @@ async fn list_plans(
 
     let mut plans = match q.project_id.as_deref() {
         Some(pid) => {
-            let project_id = pid.parse::<ProjectId>().map_err(|_| {
-                ApiError::from(CoreError::validation(format!("invalid project id: {pid}")))
-            })?;
+            let project_id = parse_id(pid, "project id")?;
             state
                 .plans
                 .list_by_project(project_id, status_filter.as_deref())
@@ -5313,9 +5118,7 @@ async fn add_plan_task(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5347,14 +5150,8 @@ async fn remove_plan_task(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
+    let plan_id = parse_id(id_str, "plan id")?;
+    let task_id = parse_id(&task_id_str, "task id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5387,9 +5184,7 @@ async fn reorder_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5419,9 +5214,7 @@ async fn archive_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5459,9 +5252,7 @@ async fn set_plan_status(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5504,15 +5295,12 @@ async fn get_next_task(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let run_id = q
         .run_id
         .as_deref()
         .map(|s| {
-            s.parse::<RunId>()
-                .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {s}"))))
+            parse_id(s, "run id")
         })
         .transpose()?
         .unwrap_or_else(RunId::new);
@@ -5679,9 +5467,7 @@ async fn drain_next_task(
         .map_err(ApiError::from_missing_cap)?;
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let run_id = body.run_id.unwrap_or_else(RunId::new);
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
@@ -5703,12 +5489,7 @@ async fn project_ready(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {}",
-            q.project_id
-        )))
-    })?;
+    let project_id = parse_id(q.project_id, "project id")?;
 
     let plans = state
         .plans
@@ -5755,12 +5536,7 @@ async fn project_ready_drain(
         .map_err(ApiError::from_missing_cap)?;
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {}",
-            q.project_id
-        )))
-    })?;
+    let project_id = parse_id(q.project_id, "project id")?;
     let run_id = body.run_id.unwrap_or_else(RunId::new);
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
@@ -5791,12 +5567,7 @@ async fn project_doctor(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = q.project_id.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {}",
-            q.project_id
-        )))
-    })?;
+    let project_id = parse_id(q.project_id, "project id")?;
 
     let in_progress = state
         .tasks
@@ -5842,12 +5613,7 @@ async fn suggest_files(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
-    let task_id = q.task_id.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {}",
-            q.task_id
-        )))
-    })?;
+    let task_id = parse_id(q.task_id, "task id")?;
     let task = state
         .tasks
         .get(task_id)
@@ -5946,9 +5712,7 @@ async fn run_start_step(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(
@@ -5985,9 +5749,7 @@ async fn run_finish_step(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6018,9 +5780,7 @@ async fn complete_run(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(Command::CompleteRun { run_id }, actor_from(&auth, None))
@@ -6050,9 +5810,7 @@ async fn abort_run(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6088,9 +5846,7 @@ async fn send_run_signal(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6126,9 +5882,7 @@ async fn append_run_note(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6186,17 +5940,13 @@ async fn list_run_notes(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let limit = q.limit.unwrap_or(50);
     let after = q
         .after
         .as_deref()
         .map(|s| {
-            s.parse::<daruma_shared::RunNoteId>().map_err(|_| {
-                ApiError::from(CoreError::validation(format!("invalid after cursor: {s}")))
-            })
+            parse_id(s, "after cursor")
         })
         .transpose()?;
 
@@ -6221,9 +5971,7 @@ async fn get_run(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let run = state
         .runs
         .get(run_id)
@@ -6241,9 +5989,7 @@ async fn list_plan_runs(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
-    let plan_id = id_str
-        .parse::<PlanId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid plan id: {id_str}"))))?;
+    let plan_id = parse_id(id_str, "plan id")?;
     let runs = state
         .runs
         .list_by_plan(plan_id)
@@ -6263,9 +6009,7 @@ async fn get_run_timeline(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
 
     let run = state
         .runs
@@ -6307,9 +6051,7 @@ async fn respond_run_signal(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let run_id = id_str
-        .parse::<RunId>()
-        .map_err(|_| ApiError::from(CoreError::validation(format!("invalid run id: {id_str}"))))?;
+    let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6409,12 +6151,7 @@ async fn list_sessions(
     Query(q): Query<ListSessionsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_session_read(&auth)?;
-    let agent_id = q.agent_id.parse::<AgentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid agent_id: {}",
-            q.agent_id
-        )))
-    })?;
+    let agent_id = parse_id(q.agent_id, "agent_id")?;
     let sessions = state
         .sessions
         .list_for_agent(agent_id)
@@ -6441,11 +6178,7 @@ async fn get_session(
     Path(id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_session_read(&auth)?;
-    let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid session id: {id_str}"
-        )))
-    })?;
+    let session_id = parse_id(id_str, "session id")?;
     let session = state
         .sessions
         .get(session_id)
@@ -6462,11 +6195,7 @@ async fn end_session(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::AgentDispatch)
         .map_err(ApiError::from_missing_cap)?;
-    let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid session id: {id_str}"
-        )))
-    })?;
+    let session_id = parse_id(id_str, "session id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6499,11 +6228,7 @@ async fn update_session_plan_steps(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::AgentDispatch)
         .map_err(ApiError::from_missing_cap)?;
-    let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid session id: {id_str}"
-        )))
-    })?;
+    let session_id = parse_id(id_str, "session id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6543,11 +6268,7 @@ async fn attach_session_artifact(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::AgentDispatch)
         .map_err(ApiError::from_missing_cap)?;
-    let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid session id: {id_str}"
-        )))
-    })?;
+    let session_id = parse_id(id_str, "session id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6581,11 +6302,7 @@ async fn list_session_artifacts(
     Path(id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_session_read(&auth)?;
-    let session_id = id_str.parse::<AgentSessionId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid session id: {id_str}"
-        )))
-    })?;
+    let session_id = parse_id(id_str, "session id")?;
     let artifacts = state
         .sessions
         .list_artifacts(session_id)
@@ -6624,9 +6341,7 @@ async fn list_active_claims(
         .as_deref()
         .filter(|s| !s.is_empty())
         .map(|s| {
-            s.parse::<ProjectId>().map_err(|_| {
-                ApiError::from(CoreError::validation(format!("invalid project id: {s}")))
-            })
+            parse_id(s, "project id")
         })
         .transpose()?;
     let claims = state
@@ -6709,16 +6424,8 @@ async fn release_claim(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid agent id: {agent_id_str}"
-        )))
-    })?;
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
+    let agent_id = parse_id(agent_id_str, "agent id")?;
+    let task_id = parse_id(&task_id_str, "task id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6853,16 +6560,8 @@ async fn release_files(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = agent_id_str.parse::<AgentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid agent id: {agent_id_str}"
-        )))
-    })?;
-    let task_id = task_id_str.parse::<TaskId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid task id: {task_id_str}"
-        )))
-    })?;
+    let agent_id = parse_id(agent_id_str, "agent id")?;
+    let task_id = parse_id(&task_id_str, "task id")?;
     let envs = state
         .commands
         .dispatch(
@@ -6901,9 +6600,7 @@ async fn active_work(
         .as_deref()
         .filter(|s| !s.is_empty())
         .map(|s| {
-            s.parse::<ProjectId>().map_err(|_| {
-                ApiError::from(CoreError::validation(format!("invalid project id: {s}")))
-            })
+            parse_id(s, "project id")
         })
         .transpose()?;
     let leases = state
@@ -6971,11 +6668,7 @@ async fn get_document(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::DocumentRead)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<DocumentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid document id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(&id_str, "document id")?;
     let doc = state
         .documents
         .get(id)
@@ -7048,11 +6741,7 @@ async fn patch_document(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::DocumentWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<DocumentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid document id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(&id_str, "document id")?;
     if body.title.is_none()
         && body.content.is_none()
         && body.status.is_none()
@@ -7146,11 +6835,7 @@ async fn append_document(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::DocumentWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<DocumentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid document id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(&id_str, "document id")?;
     let envs = state
         .commands
         .dispatch(
@@ -7181,11 +6866,7 @@ async fn archive_document(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::DocumentWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let id = id_str.parse::<DocumentId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid document id: {id_str}"
-        )))
-    })?;
+    let id = parse_id(&id_str, "document id")?;
     let envs = state
         .commands
         .dispatch(
@@ -7224,11 +6905,7 @@ async fn list_project_documents(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::DocumentRead)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = project_id_str.parse::<ProjectId>().map_err(|_| {
-        ApiError::from(CoreError::validation(format!(
-            "invalid project id: {project_id_str}"
-        )))
-    })?;
+    let project_id = parse_id(project_id_str, "project id")?;
     let docs = state
         .documents
         .list_by_project(project_id, q.kind, q.include_archived)

@@ -715,18 +715,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "daruma-mobile"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "reqwest",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "daruma-server"
 version = "0.3.0"
 dependencies = [

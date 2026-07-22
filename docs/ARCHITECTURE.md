@@ -97,7 +97,7 @@ Every other tree is a **module**, classified by *kind*:
   workspace (today: `apps/server`, the `daruma mcp` stdio entry in
   `apps/cli`, `crates/sync`, `crates/webhooks`).
 - **client** — `/v1/*` consumers with their own UI/CLI: `daruma-web`
-  (standalone repo), `apps/cli`, planned `apps/mobile`.
+  (standalone repo), `apps/cli`.
 - **embed** — runs the core in-process. `apps/desktop` (GPUI) is the
   shipped example; it does not open a port and goes through
   `crates/core/src/embed.rs` (W2.1) instead.
@@ -124,14 +124,12 @@ flowchart LR
   subgraph Modules
     web[daruma-web repo<br/>client]
     cli[apps/cli<br/>client]
-    mobile[apps/mobile<br/>client • planned]
     desktop[apps/desktop<br/>embed]
     gh[integrations/github<br/>planned]
     slack[integrations/slack<br/>planned]
   end
   web -- /v1/* + WS --> server
   cli -- /v1/* --> server
-  mobile -- /v1/* --> server
   desktop -- in-process --> coreL
   gh -- webhooks + /v1/* --> server
   slack -- webhooks + /v1/* --> server
