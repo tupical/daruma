@@ -60,7 +60,7 @@ impl OpenAiClient {
 
     /// Send a request to `POST {base_url}/responses` and parse the output list.
     pub async fn respond(&self, req: ResponseRequest) -> Result<Vec<ResponseOutput>, AiError> {
-        let body = build_request_body(&self.config.model, &req);
+        let body = build_request_body(&self.config, &req);
         debug!(url = %self.config.responses_url(), "sending responses request");
 
         let resp = self
@@ -85,13 +85,19 @@ impl OpenAiClient {
 
 // ── Request builder (pure, testable) ─────────────────────────────────────────
 
+/// Default `max_output_tokens` when [`AiConfig`] does not set one. Keeps the
+/// proxy billers' cost forecast (and thus the balance reserve) small while
+/// leaving ample room for structured tool-call replies.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 2000;
+
 /// Build the Responses API request body as a `serde_json::Value`.
 ///
 /// This function is `pub(crate)` so it can be unit-tested without networking.
-pub(crate) fn build_request_body(model: &str, req: &ResponseRequest) -> Value {
+pub(crate) fn build_request_body(config: &AiConfig, req: &ResponseRequest) -> Value {
     let mut obj = json!({
-        "model": model,
+        "model": config.model,
         "input": req.input,
+        "max_output_tokens": config.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
     });
 
     if !req.tools.is_empty() {
@@ -156,12 +162,22 @@ mod tests {
         }
     }
 
+    fn make_cfg(max_output_tokens: Option<u32>) -> AiConfig {
+        AiConfig {
+            api_key: "sk-test".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4.1".into(),
+            max_output_tokens,
+        }
+    }
+
     #[test]
     fn build_body_minimal() {
         let req = make_req("hello", vec![], None);
-        let body = build_request_body("gpt-4.1", &req);
+        let body = build_request_body(&make_cfg(None), &req);
         assert_eq!(body["model"], "gpt-4.1");
         assert_eq!(body["input"], "hello");
+        assert_eq!(body["max_output_tokens"], DEFAULT_MAX_OUTPUT_TOKENS);
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
     }
@@ -170,7 +186,8 @@ mod tests {
     fn build_body_with_tools_and_choice() {
         let tool = json!({"type": "function", "name": "do_thing"});
         let req = make_req("prompt", vec![tool.clone()], Some("auto"));
-        let body = build_request_body("gpt-4.1", &req);
+        let body = build_request_body(&make_cfg(Some(256)), &req);
+        assert_eq!(body["max_output_tokens"], 256);
         assert_eq!(body["tool_choice"], "auto");
         assert_eq!(body["tools"][0]["name"], "do_thing");
     }

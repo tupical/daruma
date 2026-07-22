@@ -12,6 +12,11 @@ pub struct AiConfig {
     pub base_url: String,
     /// Model identifier (`OPENAI_MODEL`). Defaults to `gpt-4.1`.
     pub model: String,
+    /// Cap on response tokens (`OPENAI_MAX_OUTPUT_TOKENS`). Always sent as
+    /// `max_output_tokens`: proxy billers (e.g. ProxyAPI) otherwise reserve
+    /// the model's maximum for the cost forecast, rejecting cheap calls on a
+    /// low balance. `None` falls back to the client default.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl AiConfig {
@@ -26,10 +31,15 @@ impl AiConfig {
 
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4.1".into());
 
+        let max_output_tokens = std::env::var("OPENAI_MAX_OUTPUT_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok());
+
         Ok(Self {
             api_key,
             base_url,
             model,
+            max_output_tokens,
         })
     }
 
@@ -50,6 +60,7 @@ mod tests {
             api_key: "sk-test".into(),
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-4.1".into(),
+            max_output_tokens: None,
         };
         assert_eq!(cfg.responses_url(), "https://api.openai.com/v1/responses");
     }
