@@ -8,9 +8,10 @@ policy surfaces — see the per-IDE sections below.
 
 ## What is Daruma?
 
-Daruma is an MCP-native task and plan server built for human–AI
-collaboration. It replaces ad-hoc in-session task lists with a durable,
-multi-agent-safe tracker that persists across sessions, IDEs, and agents.
+Daruma is the **execution layer** of Meisei — an MCP-native, agent-native
+execution runtime. Its surface is a durable, multi-agent-safe task and plan
+tracker that replaces ad-hoc in-session task lists and persists across
+sessions, IDEs, and agents.
 
 Source: [tupical/daruma](https://github.com/tupical/daruma)
 

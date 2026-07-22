@@ -1,6 +1,6 @@
 # Documentation
 
-Daruma is your last next task manager: crafted for speed and collaboration
+Daruma is the execution layer of Meisei — crafted for speed and collaboration
 with humans and AI.
 
 ## Core docs
