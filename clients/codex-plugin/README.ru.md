@@ -5,8 +5,8 @@ Codex-плагин для `tupical/daruma`, собранный по аналог
 ## Что внутри
 
 - `.codex-plugin/plugin.json` — manifest Codex plugin.
-- `commands/` — slash-команды daruma (`tasks`, `plan`, `next`, `mine`, `branch-tasks`, `start`, `doctor`, `setup`, `init`).
-- `skills/` — skills для сценариев setup/start/doctor, branch-tasks и lesson-capture/lesson-recall.
+- `commands/` — slash-команды daruma (`tasks`, `plan`, `next`, `mine`, `branch-tasks`, `research`, `start`, `doctor`, `setup`, `init`).
+- `skills/` — skills для research, setup/start/doctor, branch-tasks и lesson-capture/lesson-recall.
 - `lib/policy.mjs` + `bin/daruma-codex.mjs` — managed-блок в `AGENTS.md` (в т.ч. правило: спрашивать пользователя перед `status=all` у list/plan_list).
 
 Один раз на репозиторий:

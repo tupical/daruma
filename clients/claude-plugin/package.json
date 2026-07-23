@@ -1,7 +1,7 @@
 {
   "name": "daruma-claude",
-  "version": "0.3.0",
-  "description": "Glue between tupical/daruma and oh-my-claudecode. Drives the daruma pipeline (parse / decompose / plan / execute) with omc /team as the per-task executor.",
+  "version": "0.3.1",
+  "description": "Glue between tupical/daruma and oh-my-claudecode. Ships task workflows and evidence-backed MeiSei/MCPBox research.",
   "keywords": [
     "claude-code",
     "claude-code-plugin",
@@ -9,6 +9,7 @@
     "daruma",
     "oh-my-claudecode",
     "orchestration",
+    "research",
     "multi-agent",
     "agent",
     "plugin"

@@ -150,6 +150,7 @@ Inside a Claude Code REPL session:
 | `/daruma-claude:doctor`             | Same as `daruma-claude doctor`   |
 | `/daruma-claude:setup`              | Same as `daruma-claude setup`    |
 | `/daruma-claude:branch-tasks`       | Show tasks linked to the current git branch |
+| `/daruma-claude:research <idea>`    | Save sourced research in the owning MeiSei/MCPBox repository |
 
 Bundled skills:
 
@@ -159,6 +160,7 @@ Bundled skills:
 | `branch-tasks` | Find tasks linked to the current git branch through `branch:` comments. |
 | `lesson-capture` | Save a durable reusable lesson as a `lesson:` task comment. |
 | `lesson-recall` | Search captured lessons through `daruma_lesson_recall`. |
+| `research` | Route an idea to MeiSei/MCPBox and save evidence-backed research. |
 
 ---
 

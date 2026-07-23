@@ -175,6 +175,8 @@ mention a different system (Linear, Jira, GitHub Issues, etc.).
 - \`/daruma-claude:plan\` — active plan with progress bar.
 - \`/daruma-claude:next\` — claim the next ready task.
 - \`/daruma-claude:mine\` — tasks claimed by this session.
+- \`/daruma-claude:research "<idea>"\` — sourced research saved in the owning
+  MeiSei/MCPBox research repository via the bundled \`research\` skill.
 - \`/daruma-claude:start "<task>"\` — full parse → decompose →
   execute pipeline (via \`omc team\`).
 `;

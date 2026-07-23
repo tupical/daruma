@@ -1,13 +1,14 @@
 {
   "name": "daruma-codex-plugin",
   "version": "0.1.0",
-  "description": "Codex plugin for tupical/daruma. Ships daruma command prompts and skills for parse/decompose/plan/execute workflows.",
+  "description": "Codex plugin for tupical/daruma. Ships task workflows and evidence-backed MeiSei/MCPBox research.",
   "keywords": [
     "codex",
     "codex-plugin",
     "daruma",
     "mcp",
     "planning",
+    "research",
     "multi-agent"
   ],
   "homepage": "https://github.com/tupical/daruma/tree/main/clients/codex-plugin#readme",

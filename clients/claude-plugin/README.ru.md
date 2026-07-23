@@ -147,6 +147,7 @@ daruma-claude start "переписать модуль аутентификац�
 | `/daruma-claude:start <задача>`     | То же, что `daruma-claude start`     |
 | `/daruma-claude:doctor`             | То же, что `daruma-claude doctor`    |
 | `/daruma-claude:setup`              | То же, что `daruma-claude setup`     |
+| `/daruma-claude:research <идея>`    | Исследование с источниками в репозитории-владельце MeiSei/MCPBox |
 
 ---
 

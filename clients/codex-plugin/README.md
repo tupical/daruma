@@ -9,9 +9,10 @@ session.
 
 ## What it contains
 
-- Slash commands for planning, starting, listing, and claiming Daruma tasks.
+- Slash commands for planning, research, starting, listing, and claiming Daruma tasks.
 - Skills that map Codex work sessions to Daruma projects, plans, and task
   updates.
+- An evidence-backed MeiSei/MCPBox research workflow that saves durable notes.
 - Setup and doctor helpers for local MCP wiring.
 - `daruma-codex init` — drops a managed policy block into `AGENTS.md`
   (includes the rule: ask the user before `daruma_list` /

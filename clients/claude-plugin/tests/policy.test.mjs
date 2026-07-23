@@ -32,6 +32,7 @@ test("installPolicy creates CLAUDE.md with policy block when missing", async () 
     assert.match(body, /status=all/);
     assert.match(body, /Verify real daruma state/);
     assert.match(body, /checklist/);
+    assert.match(body, /daruma-claude:research/);
     // Token-economy guard: list-first, no "Prefer search" default.
     assert.match(body, /Go straight to the goal/);
     assert.doesNotMatch(body, /Prefer `daruma_search`/);

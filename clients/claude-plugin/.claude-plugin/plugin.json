@@ -1,7 +1,7 @@
 {
   "name": "daruma-claude",
-  "description": "Glue plugin: drives tupical/daruma (parse / decompose / plan / execute) and uses oh-my-claudecode /team as the executor. Ships /daruma-claude:{tasks,plan,next,mine,branch-tasks,start,doctor,setup,sync,capture,status,close} and a project-init that makes daruma the default tracker (overrides .omc/plans/). SessionStart hook proactively prints open tasks; Stop hook triggers auto-record.",
-  "version": "0.3.0",
+  "description": "Glue plugin: drives tupical/daruma (parse / decompose / plan / execute) and uses oh-my-claudecode /team as the executor. Ships /daruma-claude:{tasks,plan,next,mine,branch-tasks,research,start,doctor,setup,sync,capture,status,close} and a project-init that makes daruma the default tracker (overrides .omc/plans/). SessionStart hook proactively prints open tasks; Stop hook triggers auto-record.",
+  "version": "0.3.1",
   "author": { "name": "daruma-claude contributors" },
   "license": "MIT",
   "homepage": "https://github.com/tupical/daruma/tree/main/clients/claude-plugin",
