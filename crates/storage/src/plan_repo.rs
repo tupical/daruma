@@ -298,6 +298,11 @@ impl PlanRepo {
     ) -> Result<()> {
         let depends_on_json =
             serde_json::to_string(depends_on).map_err(|e| CoreError::serde(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
         sqlx::query(
             "INSERT OR REPLACE INTO plan_tasks (plan_id, task_id, position, depends_on_json) \
              VALUES (?, ?, ?, ?)",
@@ -306,9 +311,33 @@ impl PlanRepo {
         .bind(task_id.to_string())
         .bind(position as i64)
         .bind(depends_on_json)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        // Plan ownership supplies project scope only while it is unambiguous.
+        // A later attachment to a plan in another project must not overwrite
+        // an existing value or guess for a still-NULL legacy task.
+        sqlx::query(
+            "UPDATE tasks \
+             SET project_id = (SELECT project_id FROM plans WHERE id = ?) \
+             WHERE id = ? AND project_id IS NULL \
+               AND 1 = ( \
+                   SELECT COUNT(DISTINCT p.project_id) \
+                   FROM plan_tasks pt JOIN plans p ON p.id = pt.plan_id \
+                   WHERE pt.task_id = ? \
+               )",
+        )
+        .bind(plan_id.to_string())
+        .bind(task_id.to_string())
+        .bind(task_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
     }
 
@@ -906,13 +935,14 @@ mod tests {
 
     #[tokio::test]
     async fn plan_apply_event_task_added_and_archived() {
-        let (_db, repo) = make_repo().await;
+        let (db, repo) = make_repo().await;
         let project_id = ProjectId::new();
         let plan = make_plan(PlanId::new(), project_id);
         let plan_id = plan.id;
         repo.insert(&plan).await.unwrap();
 
         let task_id = TaskId::new();
+        insert_task(db.pool(), task_id, None).await;
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
             Event::PlanTaskAdded {
@@ -928,6 +958,13 @@ mod tests {
         let tasks = repo.list_tasks_ordered(plan_id).await.unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].task_id, task_id);
+        let inherited: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
+                .bind(task_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(inherited, Some(project_id.to_string()));
 
         repo.apply_event(&EventEnvelope::new(
             Actor::user(),
@@ -941,6 +978,30 @@ mod tests {
 
         let fetched = repo.get(plan_id).await.unwrap().unwrap();
         assert!(fetched.archived_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn add_task_does_not_overwrite_project_for_conflicting_plan() {
+        let (db, repo) = make_repo().await;
+        let project_a = ProjectId::new();
+        let project_b = ProjectId::new();
+        let plan_a = PlanId::new();
+        let plan_b = PlanId::new();
+        repo.insert(&make_plan(plan_a, project_a)).await.unwrap();
+        repo.insert(&make_plan(plan_b, project_b)).await.unwrap();
+
+        let task_id = TaskId::new();
+        insert_task(db.pool(), task_id, None).await;
+        repo.add_task(plan_a, task_id, 0, &[]).await.unwrap();
+        repo.add_task(plan_b, task_id, 0, &[]).await.unwrap();
+
+        let project_id: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
+                .bind(task_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(project_id, Some(project_a.to_string()));
     }
 
     // ── ADR-0007 plan-only intake invariant ──────────────────────────────────
@@ -1043,6 +1104,68 @@ mod tests {
         assert!(repo.planless_task_ids().await.unwrap().is_empty());
         assert_eq!(repo.list_by_project(proj_a, None).await.unwrap().len(), 1);
         assert_eq!(repo.list_tasks_ordered(global_plan).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn migration_0052_backfills_only_unambiguous_plan_tasks() {
+        let (db, repo) = make_repo().await;
+        let pool = db.pool();
+        let project_a = ProjectId::new();
+        let project_b = ProjectId::new();
+        let plan_a = PlanId::new();
+        let plan_b = PlanId::new();
+        repo.insert(&make_plan(plan_a, project_a)).await.unwrap();
+        repo.insert(&make_plan(plan_b, project_b)).await.unwrap();
+
+        let single = TaskId::new();
+        let ambiguous = TaskId::new();
+        insert_task(pool, single, None).await;
+        insert_task(pool, ambiguous, None).await;
+        sqlx::query(
+            "INSERT INTO plan_tasks (plan_id, task_id, position) VALUES (?, ?, 0), (?, ?, 0), (?, ?, 0)",
+        )
+        .bind(plan_a.to_string())
+        .bind(single.to_string())
+        .bind(plan_a.to_string())
+        .bind(ambiguous.to_string())
+        .bind(plan_b.to_string())
+        .bind(ambiguous.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO snapshots (id, seq, created_at, payload_json) \
+             VALUES ('stale', 1, '2026-01-01T00:00:00Z', '{}')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let migration = include_str!("../migrations/0052_backfill_plan_task_project.sql");
+        sqlx::raw_sql(migration).execute(pool).await.unwrap();
+
+        let single_project: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
+                .bind(single.to_string())
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let ambiguous_project: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM tasks WHERE id = ?")
+                .bind(ambiguous.to_string())
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(single_project, Some(project_a.to_string()));
+        assert_eq!(ambiguous_project, None);
+        let snapshots: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM snapshots")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(snapshots, 0);
+
+        let second = sqlx::raw_sql(migration).execute(pool).await.unwrap();
+        assert_eq!(second.rows_affected(), 0);
     }
 
     /// The storage-level guarded API brings a new plan-less task into
