@@ -265,7 +265,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, or due date. Recorded in the task event/activity log.",
+            "Update a task's title, description, or due date. Plan-owned title and description must be amended through the plan instead. Recorded in the task event/activity log.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -636,7 +636,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
-            "Atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Concurrent callers each get a distinct task; returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
+            "Atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Omit run_id unless continuing a UUID returned by daruma_run_start. Concurrent callers each get a distinct task; returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
             schema_plan_drain_next(),
             Dom::Plans, D, E, Ann::Write,
         ),
@@ -785,7 +785,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_claim",
             "Claim task",
-            "Acquire an optimistic claim on a task for a given TTL in seconds.",
+            "Acquire an optimistic claim on a task for a given TTL in seconds. Pass the agent UUID from daruma_workspace_info.mcp_agent_id.",
             schema_claim(),
             Dom::Coordination, D, E, Ann::Write,
         ),
@@ -3593,7 +3593,7 @@ fn schema_plan_drain_next() -> Value {
         "type":"object",
         "properties": {
             "plan_id": {"type":"string","description":"Plan id"},
-            "run_id": {"type":"string","description":"Optional run id; omitted creates an ephemeral id server-side."},
+            "run_id": {"type":"string","format":"uuid","description":"Optional run UUID returned by daruma_run_start; omit to create an ephemeral id server-side."},
             "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL in seconds; defaults to 300."}
         },
         "required":["plan_id"]
@@ -3775,7 +3775,7 @@ fn schema_claim() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string"},
+            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from daruma_workspace_info.mcp_agent_id."},
             "task_id":  {"type":"string"},
             "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
         },
@@ -3787,7 +3787,7 @@ fn schema_release() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string"},
+            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from daruma_workspace_info.mcp_agent_id."},
             "task_id":  {"type":"string"}
         },
         "required":["agent_id","task_id"]
@@ -5737,6 +5737,32 @@ mod tests {
             let s = serde_json::to_string(&tool.input_schema).unwrap();
             let _: Value = serde_json::from_str(&s).unwrap();
         }
+    }
+
+    #[test]
+    fn frequently_misused_ids_explain_uuid_sources() {
+        let tools = tool_definitions();
+        let claim = tools
+            .iter()
+            .find(|tool| tool.name == "daruma_claim")
+            .unwrap();
+        let drain = tools
+            .iter()
+            .find(|tool| tool.name == "daruma_plan_drain_next")
+            .unwrap();
+        let update = tools
+            .iter()
+            .find(|tool| tool.name == "daruma_update")
+            .unwrap();
+
+        assert_eq!(
+            claim.input_schema["properties"]["agent_id"]["format"],
+            "uuid"
+        );
+        assert!(claim.description.contains("daruma_workspace_info"));
+        assert_eq!(drain.input_schema["properties"]["run_id"]["format"], "uuid");
+        assert!(drain.description.contains("Omit run_id"));
+        assert!(update.description.contains("Plan-owned"));
     }
 }
 
