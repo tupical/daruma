@@ -11,6 +11,7 @@
 use crate::parse_ts;
 use chrono::{Duration, Utc};
 use daruma_domain::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
+use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, WorkLeaseId};
 use sqlx::{Row, SqlitePool};
 
@@ -354,6 +355,24 @@ impl WorkLeaseRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// Apply a persisted lease event to the projection (idempotent).
+    pub async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
+        match &env.payload {
+            Event::FilesReserved { leases } => {
+                for lease in leases {
+                    self.apply_reserved(lease).await?;
+                }
+                Ok(())
+            }
+            Event::FilesReleased { agent_id, task_id } => {
+                self.release_for_task(*agent_id, *task_id).await
+            }
+            // Auto-release every file lease when the task closes.
+            Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
+            _ => Ok(()),
+        }
     }
 
     /// Delete all expired leases, returning the distinct `(agent_id, task_id)`

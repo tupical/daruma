@@ -2,15 +2,14 @@
 //!
 //! These traits are the contract between `daruma-core` (commands,
 //! concurrency logic) and `daruma-storage` (concrete SQLite
-//! implementations landing in W2.1).  Until W2.1 merges, the handler
-//! scaffolds against these traits; tests supply in-memory stub impls.
+//! implementations).  A trait lives here only where tests supply an
+//! in-memory stub impl; a repository with a single implementation is
+//! held as its concrete `daruma-storage` type instead.
 
 use async_trait::async_trait;
-use daruma_domain::{AgentSession, Document, DocumentKind, Plan, PlanTask, Run, RunNote};
+use daruma_domain::{AgentSession, Plan, PlanTask, Run};
 use daruma_events::EventEnvelope;
-use daruma_shared::{
-    AgentId, AgentSessionId, DocumentId, PlanId, ProjectId, Result, RunId, RunNoteId, TaskId,
-};
+use daruma_shared::{AgentSessionId, PlanId, Result, RunId, TaskId};
 
 // ── Plan ──────────────────────────────────────────────────────────────────────
 
@@ -68,24 +67,6 @@ pub trait RunRepository: Send + Sync {
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
 
-// ── RunNote (§3.8.2) ──────────────────────────────────────────────────────────
-
-/// Read / projection interface for the `run_notes` table.
-#[async_trait]
-pub trait RunNoteRepository: Send + Sync {
-    /// List notes for a run in chronological order. `after` is an opaque
-    /// cursor (the id of the last seen note); `limit` is clamped by the impl.
-    async fn list_for_run(
-        &self,
-        run_id: RunId,
-        limit: u32,
-        after: Option<RunNoteId>,
-    ) -> Result<Vec<RunNote>>;
-
-    /// Apply a persisted event to the projection.
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
 // ── AgentSession ──────────────────────────────────────────────────────────────
 
 /// Read / projection interface for the `agent_sessions` table.
@@ -93,60 +74,6 @@ pub trait RunNoteRepository: Send + Sync {
 pub trait SessionRepository: Send + Sync {
     /// Fetch a session by id; `None` if not found.
     async fn get(&self, id: AgentSessionId) -> Result<Option<AgentSession>>;
-
-    /// Apply a persisted event to the projection.
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
-// ── AgentClaim ────────────────────────────────────────────────────────────────
-
-/// Read / projection interface for the `agent_claims` table.
-#[async_trait]
-pub trait AgentClaimRepository: Send + Sync {
-    /// Return the agent IDs that currently hold an active (non-expired) claim
-    /// on the given task.
-    async fn get_agents_claiming_task(&self, task_id: TaskId) -> Result<Vec<AgentId>>;
-
-    /// Apply a persisted event to the projection.
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
-// ── Work leases ─────────────────────────────────────────────────────────────
-
-/// Projection interface for the `work_leases` table.
-#[async_trait]
-pub trait WorkLeaseRepository: Send + Sync {
-    /// Apply a persisted lease event to the projection (idempotent).
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
-// ── Document (PR1 §3-4) ───────────────────────────────────────────────────────
-
-/// Read / projection interface for the `documents` table.
-#[async_trait]
-pub trait DocumentRepository: Send + Sync {
-    /// Fetch a document by id; `None` if not found.
-    async fn get(&self, id: DocumentId) -> Result<Option<Document>>;
-
-    /// List documents owned by a project.
-    ///
-    /// - `kind_filter`: when `Some`, returns only documents of that kind.
-    /// - `include_archived`: when `false`, soft-archived rows are hidden.
-    async fn list_by_project(
-        &self,
-        project_id: ProjectId,
-        kind_filter: Option<DocumentKind>,
-        include_archived: bool,
-    ) -> Result<Vec<Document>>;
-
-    /// Live (`draft`/`active`) documents anchored to `task_id`. Used by the
-    /// task-closure cascade (task 019f6ad2) to find what to close.
-    async fn list_live_by_task(&self, task_id: TaskId) -> Result<Vec<Document>>;
-
-    /// Sweep backstop candidates: live documents whose anchor task is
-    /// missing or terminal (canon daruma invariant 5, "живой документ ⇔ живой
-    /// якорь").
-    async fn list_sweep_candidates(&self) -> Result<Vec<Document>>;
 
     /// Apply a persisted event to the projection.
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
@@ -165,91 +92,6 @@ pub trait ExternalRefRepository: Send + Sync {
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
 
-// ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4) ───────────────────────────
-
-/// Read / projection interface for the `lifecycle_rules` table. Used by the
-/// rule-engine gate (effective rules) and CRUD endpoints (get / list).
-#[async_trait]
-pub trait RuleRepository: Send + Sync {
-    /// Fetch a rule by id; `None` if not found.
-    async fn get(&self, id: daruma_shared::RuleId) -> Result<Option<daruma_domain::Rule>>;
-
-    /// All rules defined directly at a scope level (any enabled state).
-    async fn list_for_scope(
-        &self,
-        scope: &daruma_domain::RuleScope,
-    ) -> Result<Vec<daruma_domain::Rule>>;
-
-    /// Effective enabled rules for a scope chain firing on `trigger`
-    /// (inheritance/override resolved by `rule_key`).
-    async fn effective_rules(
-        &self,
-        chain: &[daruma_domain::RuleScope],
-        trigger: daruma_domain::RuleTrigger,
-    ) -> Result<Vec<daruma_domain::Rule>>;
-
-    /// Apply a persisted event to the projection.
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
-// ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ───────────────────────
-
-/// Read / projection interface for the `evidence` table. Used by the rule-engine
-/// gate (to decide whether a `required` rule's requirement is satisfied) and by
-/// the evidence CRUD endpoints (get / list).
-#[async_trait]
-pub trait EvidenceRepository: Send + Sync {
-    /// Fetch evidence by id; `None` if not found.
-    async fn get(&self, id: daruma_shared::EvidenceId) -> Result<Option<daruma_domain::Evidence>>;
-
-    /// Evidence recorded directly at a scope level (newest first).
-    async fn list_for_scope(
-        &self,
-        scope: &daruma_domain::RuleScope,
-        include_superseded: bool,
-    ) -> Result<Vec<daruma_domain::Evidence>>;
-
-    /// Gate hot path: does live (non-superseded) evidence of `kind` exist
-    /// anywhere in the scope chain, optionally matching `target`?
-    async fn has_live_evidence(
-        &self,
-        chain: &[daruma_domain::RuleScope],
-        kind: daruma_domain::EvidenceKind,
-        target: Option<&str>,
-    ) -> Result<bool>;
-
-    /// Apply a persisted event to the projection.
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
-// ── Artifact registry (P4) ──────────────────────────────────────────────────────
-
-/// Read / projection interface for the `artifacts` table. Used by the artifact
-/// registry command handlers (register / assign-owner / status-change) and the
-/// read endpoints (get / list).
-#[async_trait]
-pub trait ArtifactRepository: Send + Sync {
-    /// Fetch an artifact by id; `None` if not found.
-    async fn get(
-        &self,
-        id: daruma_shared::ArtifactId,
-    ) -> Result<Option<daruma_domain::Artifact>>;
-
-    /// Fetch an artifact by its canonical `uri`; `None` if not found.
-    async fn get_by_uri(&self, uri: &str) -> Result<Option<daruma_domain::Artifact>>;
-
-    /// List artifacts, optionally scoped to a project, task, and/or status.
-    async fn list(
-        &self,
-        project_id: Option<ProjectId>,
-        task_id: Option<TaskId>,
-        status: Option<daruma_domain::ArtifactStatus>,
-    ) -> Result<Vec<daruma_domain::Artifact>>;
-
-    /// Apply a persisted event to the projection.
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
-}
-
 // ── Concrete implementations ──────────────────────────────────────────────────
 //
 // `daruma-core` already depends on `daruma-storage`, so we implement the
@@ -257,83 +99,7 @@ pub trait ArtifactRepository: Send + Sync {
 // crate then coerces `Arc<PlanRepo>` → `Arc<dyn PlanRepository>` via the
 // builder methods on `CommandHandler`.
 
-use daruma_events::Event;
-use daruma_storage::{
-    AgentClaimRepo, ArtifactRepo, DocumentRepo, EvidenceRepo, ExternalRefRepo, PlanRepo, RuleRepo,
-    RunNoteRepo, RunRepo, SessionRepo, WorkLeaseRepo,
-};
-
-#[async_trait]
-impl ArtifactRepository for ArtifactRepo {
-    async fn get(
-        &self,
-        id: daruma_shared::ArtifactId,
-    ) -> Result<Option<daruma_domain::Artifact>> {
-        ArtifactRepo::get(self, id).await
-    }
-    async fn get_by_uri(&self, uri: &str) -> Result<Option<daruma_domain::Artifact>> {
-        ArtifactRepo::get_by_uri(self, uri).await
-    }
-    async fn list(
-        &self,
-        project_id: Option<ProjectId>,
-        task_id: Option<TaskId>,
-        status: Option<daruma_domain::ArtifactStatus>,
-    ) -> Result<Vec<daruma_domain::Artifact>> {
-        ArtifactRepo::list(self, project_id, task_id, status).await
-    }
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        ArtifactRepo::apply_event(self, env).await
-    }
-}
-
-#[async_trait]
-impl EvidenceRepository for EvidenceRepo {
-    async fn get(&self, id: daruma_shared::EvidenceId) -> Result<Option<daruma_domain::Evidence>> {
-        EvidenceRepo::get(self, id).await
-    }
-    async fn list_for_scope(
-        &self,
-        scope: &daruma_domain::RuleScope,
-        include_superseded: bool,
-    ) -> Result<Vec<daruma_domain::Evidence>> {
-        EvidenceRepo::list_for_scope(self, scope, include_superseded).await
-    }
-    async fn has_live_evidence(
-        &self,
-        chain: &[daruma_domain::RuleScope],
-        kind: daruma_domain::EvidenceKind,
-        target: Option<&str>,
-    ) -> Result<bool> {
-        EvidenceRepo::has_live_evidence(self, chain, kind, target).await
-    }
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        EvidenceRepo::apply_event(self, env).await
-    }
-}
-
-#[async_trait]
-impl RuleRepository for RuleRepo {
-    async fn get(&self, id: daruma_shared::RuleId) -> Result<Option<daruma_domain::Rule>> {
-        RuleRepo::get(self, id).await
-    }
-    async fn list_for_scope(
-        &self,
-        scope: &daruma_domain::RuleScope,
-    ) -> Result<Vec<daruma_domain::Rule>> {
-        RuleRepo::list_for_scope(self, scope).await
-    }
-    async fn effective_rules(
-        &self,
-        chain: &[daruma_domain::RuleScope],
-        trigger: daruma_domain::RuleTrigger,
-    ) -> Result<Vec<daruma_domain::Rule>> {
-        RuleRepo::effective_rules(self, chain, trigger).await
-    }
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        RuleRepo::apply_event(self, env).await
-    }
-}
+use daruma_storage::{ExternalRefRepo, PlanRepo, RunRepo, SessionRepo};
 
 #[async_trait]
 impl PlanRepository for PlanRepo {
@@ -383,91 +149,12 @@ impl RunRepository for RunRepo {
 }
 
 #[async_trait]
-impl RunNoteRepository for RunNoteRepo {
-    async fn list_for_run(
-        &self,
-        run_id: RunId,
-        limit: u32,
-        after: Option<RunNoteId>,
-    ) -> Result<Vec<RunNote>> {
-        RunNoteRepo::list_for_run(self, run_id, limit, after).await
-    }
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        RunNoteRepo::apply_event(self, env).await
-    }
-}
-
-#[async_trait]
 impl SessionRepository for SessionRepo {
     async fn get(&self, id: AgentSessionId) -> Result<Option<AgentSession>> {
         SessionRepo::get(self, id).await
     }
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
         SessionRepo::apply_event(self, env).await
-    }
-}
-
-#[async_trait]
-impl AgentClaimRepository for AgentClaimRepo {
-    async fn get_agents_claiming_task(&self, task_id: TaskId) -> Result<Vec<AgentId>> {
-        AgentClaimRepo::get_agents_claiming_task(self, task_id).await
-    }
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        match &env.payload {
-            Event::AgentClaimed {
-                agent_id,
-                task_id,
-                expires_at,
-            } => self.acquire_until(*agent_id, *task_id, *expires_at).await,
-            Event::AgentReleased { agent_id, task_id } => self.release(*agent_id, *task_id).await,
-            // Auto-release every claim when the task closes.
-            Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
-            _ => Ok(()),
-        }
-    }
-}
-
-#[async_trait]
-impl WorkLeaseRepository for WorkLeaseRepo {
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        match &env.payload {
-            Event::FilesReserved { leases } => {
-                for lease in leases {
-                    self.apply_reserved(lease).await?;
-                }
-                Ok(())
-            }
-            Event::FilesReleased { agent_id, task_id } => {
-                self.release_for_task(*agent_id, *task_id).await
-            }
-            // Auto-release every file lease when the task closes.
-            Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
-            _ => Ok(()),
-        }
-    }
-}
-
-#[async_trait]
-impl DocumentRepository for DocumentRepo {
-    async fn get(&self, id: DocumentId) -> Result<Option<Document>> {
-        DocumentRepo::get(self, id).await
-    }
-    async fn list_by_project(
-        &self,
-        project_id: ProjectId,
-        kind_filter: Option<DocumentKind>,
-        include_archived: bool,
-    ) -> Result<Vec<Document>> {
-        DocumentRepo::list_by_project(self, project_id, kind_filter, include_archived).await
-    }
-    async fn list_live_by_task(&self, task_id: TaskId) -> Result<Vec<Document>> {
-        DocumentRepo::list_live_by_task(self, task_id).await
-    }
-    async fn list_sweep_candidates(&self) -> Result<Vec<Document>> {
-        DocumentRepo::list_sweep_candidates(self).await
-    }
-    async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
-        DocumentRepo::apply_event(self, env).await
     }
 }
 

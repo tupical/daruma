@@ -2,6 +2,7 @@
 
 use crate::parse_ts;
 use chrono::{Duration, Utc};
+use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, CoreError, ProjectId, Result, TaskId, Timestamp};
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
@@ -310,6 +311,21 @@ impl AgentClaimRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// Apply a persisted event to the projection.
+    pub async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
+        match &env.payload {
+            Event::AgentClaimed {
+                agent_id,
+                task_id,
+                expires_at,
+            } => self.acquire_until(*agent_id, *task_id, *expires_at).await,
+            Event::AgentReleased { agent_id, task_id } => self.release(*agent_id, *task_id).await,
+            // Auto-release every claim when the task closes.
+            Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
+            _ => Ok(()),
+        }
     }
 
     /// Delete all expired claims and return the `(agent_id, task_id)` pairs

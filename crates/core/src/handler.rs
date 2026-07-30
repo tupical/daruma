@@ -13,18 +13,15 @@ use daruma_shared::{
     RunId, RunNoteId, SessionArtifactId, TaskId,
 };
 use daruma_storage::{
-    ActivityRepo, CommentRepo, ProjectRepo, ProjectSettingsRepo, RelationRepo, TaskRepo,
-    TenantQuotaRepo, WorkUnitRepo,
+    ActivityRepo, AgentClaimRepo, ArtifactRepo, CommentRepo, DocumentRepo, EvidenceRepo,
+    ProjectRepo, ProjectSettingsRepo, RelationRepo, RuleRepo, RunNoteRepo, TaskRepo,
+    TenantQuotaRepo, WorkLeaseRepo, WorkUnitRepo,
 };
 
 use crate::{
     plan_concurrency::detect_parent_cycle,
     relation_enforcement,
-    repos::{
-        AgentClaimRepository, ArtifactRepository, DocumentRepository, EvidenceRepository,
-        ExternalRefRepository, PlanRepository, RuleRepository, RunNoteRepository, RunRepository,
-        SessionRepository, WorkLeaseRepository,
-    },
+    repos::{ExternalRefRepository, PlanRepository, RunRepository, SessionRepository},
     search::{index_items_for_event, SearchProvider},
     Command,
 };
@@ -51,10 +48,10 @@ pub struct CommandHandler {
     // return CoreError::Storage when not configured.
     pub plans: Option<Arc<dyn PlanRepository>>,
     pub runs: Option<Arc<dyn RunRepository>>,
-    pub run_notes: Option<Arc<dyn RunNoteRepository>>,
+    pub run_notes: Option<Arc<RunNoteRepo>>,
     pub sessions: Option<Arc<dyn SessionRepository>>,
-    pub claims: Option<Arc<dyn AgentClaimRepository>>,
-    pub work_leases: Option<Arc<dyn WorkLeaseRepository>>,
+    pub claims: Option<Arc<AgentClaimRepo>>,
+    pub work_leases: Option<Arc<WorkLeaseRepo>>,
     /// Per-project settings projection (auto-append toggles). `None` only in
     /// minimal test harnesses; when absent, defaults apply and the settings
     /// command is rejected.
@@ -68,7 +65,7 @@ pub struct CommandHandler {
 
     // Document-domain repo (PR1 §3-4) — None until wired; CreateDocument and
     // related commands will return CoreError::Storage when not configured.
-    pub documents: Option<Arc<dyn DocumentRepository>>,
+    pub documents: Option<Arc<DocumentRepo>>,
 
     // Optional async search indexing pipeline. Failures are logged and do not
     // make command dispatch fail.
@@ -82,17 +79,17 @@ pub struct CommandHandler {
     // Lifecycle-rule projection (docs/LIFECYCLE_RULES_SPEC.md §4). `None`
     // until wired; the rule CRUD commands return CoreError::Storage when
     // absent. The gate above reads through this same repo.
-    pub rules: Option<Arc<dyn RuleRepository>>,
+    pub rules: Option<Arc<RuleRepo>>,
 
     // Evidence-registry projection (OSS task 019eb65a-3185; spec §1.3). `None`
     // until wired; `RecordEvidence` returns CoreError::Storage when absent. The
     // gate reads through this repo to satisfy `required` requirements.
-    pub evidence: Option<Arc<dyn EvidenceRepository>>,
+    pub evidence: Option<Arc<EvidenceRepo>>,
 
     // Artifact-registry projection (P4). `None` until wired; the artifact
     // commands (`RegisterArtifact` / `AssignArtifactOwner` /
     // `ChangeArtifactStatus`) return CoreError::Storage when absent.
-    pub artifacts: Option<Arc<dyn ArtifactRepository>>,
+    pub artifacts: Option<Arc<ArtifactRepo>>,
 
     // ADR-0007 "plan-only intake" mode. `false` (default) preserves the legacy
     // intake surface: `CreateTask` creates tasks, `UpdateTask` may patch any
@@ -176,8 +173,8 @@ impl CommandHandler {
         self
     }
 
-    /// Wire a `RunNoteRepository` implementation (§3.8.2).
-    pub fn with_run_notes(mut self, repo: Arc<dyn RunNoteRepository>) -> Self {
+    /// Wire a `RunNoteRepo` implementation (§3.8.2).
+    pub fn with_run_notes(mut self, repo: Arc<RunNoteRepo>) -> Self {
         self.run_notes = Some(repo);
         self
     }
@@ -188,14 +185,14 @@ impl CommandHandler {
         self
     }
 
-    /// Wire an `AgentClaimRepository` implementation.
-    pub fn with_claims(mut self, repo: Arc<dyn AgentClaimRepository>) -> Self {
+    /// Wire an `AgentClaimRepo` implementation.
+    pub fn with_claims(mut self, repo: Arc<AgentClaimRepo>) -> Self {
         self.claims = Some(repo);
         self
     }
 
-    /// Wire a `WorkLeaseRepository` implementation.
-    pub fn with_work_leases(mut self, repo: Arc<dyn WorkLeaseRepository>) -> Self {
+    /// Wire a `WorkLeaseRepo` implementation.
+    pub fn with_work_leases(mut self, repo: Arc<WorkLeaseRepo>) -> Self {
         self.work_leases = Some(repo);
         self
     }
@@ -236,8 +233,8 @@ impl CommandHandler {
         self
     }
 
-    /// Wire a `DocumentRepository` implementation (PR1 §3-4).
-    pub fn with_documents(mut self, repo: Arc<dyn DocumentRepository>) -> Self {
+    /// Wire a `DocumentRepo` implementation (PR1 §3-4).
+    pub fn with_documents(mut self, repo: Arc<DocumentRepo>) -> Self {
         self.documents = Some(repo);
         self
     }
@@ -249,19 +246,19 @@ impl CommandHandler {
     }
 
     /// Wire the lifecycle-rule projection (CRUD + gate reads).
-    pub fn with_rules(mut self, repo: Arc<dyn RuleRepository>) -> Self {
+    pub fn with_rules(mut self, repo: Arc<RuleRepo>) -> Self {
         self.rules = Some(repo);
         self
     }
 
     /// Wire the evidence-registry projection (`RecordEvidence` + gate reads).
-    pub fn with_evidence(mut self, repo: Arc<dyn EvidenceRepository>) -> Self {
+    pub fn with_evidence(mut self, repo: Arc<EvidenceRepo>) -> Self {
         self.evidence = Some(repo);
         self
     }
 
     /// Wire the artifact-registry projection (P4 artifact commands).
-    pub fn with_artifacts(mut self, repo: Arc<dyn ArtifactRepository>) -> Self {
+    pub fn with_artifacts(mut self, repo: Arc<ArtifactRepo>) -> Self {
         self.artifacts = Some(repo);
         self
     }
@@ -2810,7 +2807,7 @@ impl CommandHandler {
 
 /// Borrow the rule repo or return a clean "not configured" error. Every rule
 /// CRUD command needs it; centralised so the message stays consistent.
-fn require_rules(rules: &Option<Arc<dyn RuleRepository>>) -> Result<&Arc<dyn RuleRepository>> {
+fn require_rules(rules: &Option<Arc<RuleRepo>>) -> Result<&Arc<RuleRepo>> {
     rules
         .as_ref()
         .ok_or_else(|| CoreError::storage("rule repository not configured"))
@@ -2908,18 +2905,14 @@ fn blocked_outcomes(
 }
 
 /// Borrow the evidence repo or return a clean "not configured" error.
-fn require_evidence(
-    evidence: &Option<Arc<dyn EvidenceRepository>>,
-) -> Result<&Arc<dyn EvidenceRepository>> {
+fn require_evidence(evidence: &Option<Arc<EvidenceRepo>>) -> Result<&Arc<EvidenceRepo>> {
     evidence
         .as_ref()
         .ok_or_else(|| CoreError::storage("evidence repository not configured"))
 }
 
 /// Borrow the artifact repo or return a clean "not configured" error.
-fn require_artifacts(
-    artifacts: &Option<Arc<dyn ArtifactRepository>>,
-) -> Result<&Arc<dyn ArtifactRepository>> {
+fn require_artifacts(artifacts: &Option<Arc<ArtifactRepo>>) -> Result<&Arc<ArtifactRepo>> {
     artifacts
         .as_ref()
         .ok_or_else(|| CoreError::storage("artifact repository not configured"))
@@ -2929,7 +2922,7 @@ fn require_artifacts(
 /// command except `CreateDocument`. Centralised so the "no repo wired" and
 /// "no such id" error messages stay consistent.
 async fn require_document(
-    documents: &Option<Arc<dyn DocumentRepository>>,
+    documents: &Option<Arc<DocumentRepo>>,
     id: DocumentId,
 ) -> Result<daruma_domain::Document> {
     let repo = documents

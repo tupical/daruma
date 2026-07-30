@@ -40,7 +40,7 @@ use daruma_auth::{
 use daruma_core::{
     plan_concurrency::NextTaskResolver,
     plan_readiness,
-    repos::{AgentClaimRepository, ExternalRefRepository, PlanRepository},
+    repos::{ExternalRefRepository, PlanRepository},
     search::{FtsSearchProvider, SearchProvider, SearchQuery as CoreSearchQuery, SearchScope},
     Command, CommandEnvelope,
 };

@@ -11,7 +11,7 @@
 //!
 //! Determinism (spec invariant 8): no clock, no network — the only inputs are
 //! the check, the stored rules, and recorded evidence. Evidence-based
-//! *satisfaction* (spec §1.3) is wired through an [`EvidenceRepository`]: for
+//! *satisfaction* (spec §1.3) is wired through an [`EvidenceRepo`]: for
 //! each `required` rule whose condition matches, the gate maps the rule's
 //! [`Requirement`] to the evidence kind that satisfies it and asks the registry
 //! whether live (non-superseded) evidence exists anywhere in the scope chain. A
@@ -38,19 +38,19 @@ use daruma_shared::Result;
 use serde_json::json;
 
 use crate::lifecycle_gate::{GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent};
-use crate::repos::{EvidenceRepository, RuleRepository};
+use daruma_storage::{EvidenceRepo, RuleRepo};
 
-/// Rule engine over a [`RuleRepository`] and, optionally, an
-/// [`EvidenceRepository`] for requirement satisfaction.
+/// Rule engine over a [`RuleRepo`] and, optionally, an [`EvidenceRepo`]
+/// for requirement satisfaction.
 pub struct RuleEngineGate {
-    rules: Arc<dyn RuleRepository>,
-    evidence: Option<Arc<dyn EvidenceRepository>>,
+    rules: Arc<RuleRepo>,
+    evidence: Option<Arc<EvidenceRepo>>,
 }
 
 impl RuleEngineGate {
     /// Construct without evidence: every requirement is treated as unsatisfied
     /// (honest v1 behaviour). Prefer [`RuleEngineGate::with_evidence`].
-    pub fn new(rules: Arc<dyn RuleRepository>) -> Self {
+    pub fn new(rules: Arc<RuleRepo>) -> Self {
         Self {
             rules,
             evidence: None,
@@ -59,10 +59,7 @@ impl RuleEngineGate {
 
     /// Construct with an evidence registry so satisfied `required` requirements
     /// unblock the transition (spec §1.3).
-    pub fn with_evidence(
-        rules: Arc<dyn RuleRepository>,
-        evidence: Arc<dyn EvidenceRepository>,
-    ) -> Self {
+    pub fn with_evidence(rules: Arc<RuleRepo>, evidence: Arc<EvidenceRepo>) -> Self {
         Self {
             rules,
             evidence: Some(evidence),
