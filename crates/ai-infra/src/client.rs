@@ -65,16 +65,7 @@ impl OpenAiClient {
 
     /// Send a request through the configured protocol and parse the output list.
     pub async fn respond(&self, req: ResponseRequest) -> Result<Vec<ResponseOutput>, AiError> {
-        let (url, body) = match self.config.api_protocol {
-            ApiProtocol::Responses => (
-                self.config.responses_url(),
-                build_request_body(&self.config, &req),
-            ),
-            ApiProtocol::ChatCompletions => (
-                self.config.chat_completions_url(),
-                build_chat_request_body(&self.config, &req),
-            ),
-        };
+        let (url, body) = endpoint_and_body(&self.config, &req);
         debug!(%url, "sending AI request");
 
         let resp = self
@@ -93,10 +84,36 @@ impl OpenAiClient {
         }
 
         let json: Value = resp.json().await?;
-        match self.config.api_protocol {
-            ApiProtocol::Responses => parse_outputs(&json),
-            ApiProtocol::ChatCompletions => parse_chat_outputs(&json),
-        }
+        parse_by_protocol(self.config.api_protocol, &json)
+    }
+}
+
+/// Pick the endpoint and the matching request body for the configured protocol.
+///
+/// Split out of [`OpenAiClient::respond`] purely so it is reachable from a unit
+/// test without a network: this pairing *is* the fix for the outage where every
+/// workspace posted Responses bodies to a Chat-Completions-only provider. Two
+/// crossed arms here — right URL, wrong body — reproduce that outage exactly
+/// while every other test in this file stays green.
+pub(crate) fn endpoint_and_body(config: &AiConfig, req: &ResponseRequest) -> (String, Value) {
+    match config.api_protocol {
+        ApiProtocol::Responses => (config.responses_url(), build_request_body(config, req)),
+        ApiProtocol::ChatCompletions => (
+            config.chat_completions_url(),
+            build_chat_request_body(config, req),
+        ),
+    }
+}
+
+/// Parse a provider reply with the parser that matches the protocol it was
+/// requested over. Split out for the same reason as [`endpoint_and_body`].
+pub(crate) fn parse_by_protocol(
+    protocol: ApiProtocol,
+    json: &Value,
+) -> Result<Vec<ResponseOutput>, AiError> {
+    match protocol {
+        ApiProtocol::Responses => parse_outputs(json),
+        ApiProtocol::ChatCompletions => parse_chat_outputs(json),
     }
 }
 
@@ -271,6 +288,50 @@ mod tests {
             api_protocol: ApiProtocol::Responses,
             max_output_tokens,
         }
+    }
+
+    #[test]
+    fn protocol_selects_matching_endpoint_and_body_shape() {
+        // The outage this shipped to fix was exactly a crossed pair: a
+        // Responses-shaped body posted to a Chat-Completions-only provider.
+        // Assert URL *and* body marker together — checking either alone lets a
+        // swapped arm through.
+        let req = make_req("hi", vec![], None);
+
+        let mut cfg = make_cfg(None);
+        cfg.api_protocol = ApiProtocol::Responses;
+        let (url, body) = endpoint_and_body(&cfg, &req);
+        assert!(url.ends_with("/responses"), "{url}");
+        assert_eq!(body["input"], "hi");
+        assert!(body.get("messages").is_none(), "chat body on responses");
+
+        cfg.api_protocol = ApiProtocol::ChatCompletions;
+        let (url, body) = endpoint_and_body(&cfg, &req);
+        assert!(url.ends_with("/chat/completions"), "{url}");
+        assert_eq!(body["messages"][0]["content"], "hi");
+        assert!(body.get("input").is_none(), "responses body on chat");
+    }
+
+    #[test]
+    fn protocol_selects_matching_reply_parser() {
+        // Same crossed-arm risk on the way back: each parser must be fed only
+        // the wire shape its protocol actually returns.
+        let responses_json = json!({"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": "from responses"}
+        ]}]});
+        let chat_json = json!({"choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": "from chat"
+        }}]});
+
+        let out = parse_by_protocol(ApiProtocol::Responses, &responses_json).unwrap();
+        assert!(matches!(&out[..], [ResponseOutput::Message(t)] if t == "from responses"));
+        let out = parse_by_protocol(ApiProtocol::ChatCompletions, &chat_json).unwrap();
+        assert!(matches!(&out[..], [ResponseOutput::Message(t)] if t == "from chat"));
+
+        // Crossed the other way, each parser must fail rather than silently
+        // return nothing — a quiet empty list is what makes such a bug survive.
+        assert!(parse_by_protocol(ApiProtocol::ChatCompletions, &responses_json).is_err());
+        assert!(parse_by_protocol(ApiProtocol::Responses, &chat_json).is_err());
     }
 
     #[test]
