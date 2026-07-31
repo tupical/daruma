@@ -6,7 +6,7 @@ user's request is even read. Profiles split the surface:
 
 | Profile | Tools | Audience |
 |---------|-------|----------|
-| `default` | 31 — compact, workflow-first | Everyday agent work: materialize (plan+tasks, ADR-0007) → execute → close |
+| `default` | 32 — compact, workflow-first | Everyday agent work: materialize (plan+tasks, ADR-0007) → execute → close |
 | `full` | complete catalogue | Power users, orchestrators, dashboards, backward compat |
 
 `full` is always a strict superset of `default`.
@@ -64,6 +64,7 @@ job — competing/overlapping alternatives stay in `full`:
 | Runs | run_start, run_complete, run_abort, run_note_append | run_start_step, run_finish_step, run_log, run_notes_list (step-level tracing) |
 | Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration), handoff_* (3; P5 gates), audit_* (4; advisory hygiene) |
 | Relations | link, relations | unlink (destructive) |
+| Lifecycle rules | evidence_submit, evidence_list | rule_create, rule_update, rule_disable, rule_list (defining rules is an admin act) |
 | Search/graph | — (plain `search` is in Tasks) | workspacegraph_* (5; competes with list/search for inventory questions) |
 | Documents | — | doc_* (7) |
 | History | — | history_* (6; incl. destructive rollback) |

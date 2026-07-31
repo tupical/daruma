@@ -265,7 +265,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, or due date. Plan-owned title and description must be amended through the plan instead. Recorded in the task event/activity log.",
+            "Update a task's title, description, or due date. When plan-only intake is on, title and description are plan-owned and this tool rejects them — there is no amend path yet, so recreate the plan with the intended values. Status and priority are set by daruma_set_status and daruma_set_priority, not here. Recorded in the task event/activity log.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -473,14 +473,20 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "Record lifecycle evidence",
             "Record evidence that a lifecycle requirement is satisfied, so a `required` rule unblocks the transition. Pass the `evidence` object: `kind` (document_read_ack | impact_assessment | decision_record | completion_note | artifact_created | owner_assigned | acceptance_criteria_defined | risk_check_completed), `scope` (tenant/project/plan/task — same shape as a rule scope), an optional `target` (the doc/module the requirement names; omit to satisfy any target), plus optional bindings (project_id/plan_id/task_id/run_id/artifact_id/rule_id), `reason`, `payload`, and `doc_version` (for document_read_ack). Evidence is immutable; set `supersedes` to replace an earlier record.",
             schema_evidence_submit(),
-            Dom::Admin, F, E, Ann::Write,
+            // Default profile, not full: defining a rule is an admin act, but
+            // attesting that a requirement is met is the executor's — and it is
+            // the only way to clear a `required` rule. Admin-only made
+            // agent-facing rules unclearable rather than deliberate.
+            Dom::Coordination, D, E, Ann::Write,
         ),
         tool(
             "daruma_evidence_list",
             "List lifecycle evidence",
             "List evidence recorded at a scope (tenant by default; pass `project_id`, `plan_id`, or `task_id` for a narrower scope). Superseded records are hidden unless `include_superseded` is true.",
             schema_evidence_list(),
-            Dom::Admin, F, E, Ann::Read,
+            // Paired with submit: an executor that can attest must be able to
+            // see what is already attested, or it re-submits blindly.
+            Dom::Coordination, D, E, Ann::Read,
         ),
         // ── Audit primitives ───────────────────────────────────────────────
         tool(
@@ -5762,7 +5768,16 @@ mod tests {
         assert!(claim.description.contains("daruma_workspace_info"));
         assert_eq!(drain.input_schema["properties"]["run_id"]["format"], "uuid");
         assert!(drain.description.contains("Omit run_id"));
-        assert!(update.description.contains("Plan-owned"));
+        assert!(update.description.contains("plan-owned"));
+        // Agents read tools/list before they ever see an error, so a false
+        // hint here costs more than a false error message. There is no Amend*
+        // command, no HTTP route and no MCP tool — ADR-0007 specified the path
+        // and it was never built. Drop this assert only with the command that
+        // makes the advice true.
+        assert!(
+            !update.description.contains("amended through the plan"),
+            "daruma_update advertises a non-existent amend path"
+        );
     }
 }
 
@@ -5795,11 +5810,16 @@ mod profile_tests {
             .collect();
         // Compact: meaningfully smaller than the full catalogue, but still a
         // complete capture→plan→execute→close workflow.
-        assert!(
-            default.len() <= 32,
-            "default profile grew to {} tools — keep it compact (PROFILES.md \
-             documents a 31-tool default; adding here needs a deliberate \
-             budget decision, not a guard bump)",
+        // assert_eq, not <=: the documented number is what drifted. PROFILES.md
+        // claimed 31 while the catalogue held 30 (healthz is listed twice in
+        // that table, by section), and nothing machine-checked it. Pinning both
+        // directions means removing a tool also forces the doc edit.
+        assert_eq!(
+            default.len(),
+            32,
+            "default profile is {} tools — PROFILES.md documents 32; changing \
+             the set needs a deliberate budget decision and a doc edit, not a \
+             guard bump",
             default.len()
         );
         for required in [

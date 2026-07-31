@@ -1076,16 +1076,26 @@ impl CommandHandler {
                 }
                 // ADR-0007 Q1 field-ownership gate: plan-owned fields
                 // (title/description/project_id) are materialised by the plan
-                // and immutable at the task level — amend the plan instead.
-                // Execution-owned fields (status/priority/triage/due_at) stay
-                // free. Off by default so legacy renames keep working.
+                // and immutable at the task level. Execution-owned fields
+                // (status/priority/due_at) stay free. Off by default so legacy
+                // renames keep working.
                 if self.plan_only_intake {
                     let plan_owned = daruma_domain::plan_owned_patch_fields(&patch);
                     if !plan_owned.is_empty() {
+                        // Do NOT advise "amend the plan": ADR-0007 specified
+                        // that path but it was never built — there is no
+                        // amend command in the enum, no HTTP route, no MCP
+                        // tool. Pointing at it sent callers chasing something
+                        // that does not exist. Say what is actually true until
+                        // AmendPlanTask lands, then name it here.
                         return Err(CoreError::validation(format!(
                             "plan_owned_immutable: field(s) {plan_owned:?} are plan-owned \
-                             (ADR-0007 Q1) and cannot be patched via update_task; \
-                             amend the plan instead"
+                             (ADR-0007 Q1) and cannot be patched via update_task. \
+                             No amend path exists yet; recreate the plan with the \
+                             intended values. Execution-owned fields are unaffected: \
+                             status and priority have their own commands \
+                             (set_status, set_priority), and due_at still \
+                             patches through update_task"
                         )));
                     }
                 }
@@ -4321,6 +4331,15 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("plan_owned_immutable"), "{err}");
+        // The message must not send callers after an amend path that does not
+        // exist: there is no Amend* command, no HTTP route and no MCP tool.
+        // ADR-0007 specified one, it was never built, and the old wording cost
+        // a caller a round of chasing it. Delete this assert only together with
+        // the command that makes the advice true.
+        assert!(
+            !err.to_string().contains("amend the plan"),
+            "error advises a non-existent amend path: {err}"
+        );
 
         // execution-owned: priority is allowed.
         handler

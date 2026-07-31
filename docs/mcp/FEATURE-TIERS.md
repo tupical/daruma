@@ -13,8 +13,8 @@
 | Plans | 8 | 6 | 2 |
 | Tasks | 7 | 5 | 3 |
 | Projects | 3 | 4 | 2 |
-| Admin | 0 | 7 | 2 |
-| Coordination | 0 | 22 | 1 |
+| Admin | 0 | 5 | 2 |
+| Coordination | 0 | 24 | 1 |
 | Ai | 0 | 0 | 1 |
 | Events | 0 | 2 | 0 |
 | WorkspaceGraph | 0 | 0 | 8 |
@@ -91,14 +91,14 @@
 | `daruma_rule_create` | Enhancing / усиливающие | `full` | Create a lifecycle rule | write |
 | `daruma_rule_update` | Enhancing / усиливающие | `full` | Update a lifecycle rule | write |
 | `daruma_rule_disable` | Enhancing / усиливающие | `full` | Disable a lifecycle rule | write,destructive |
-| `daruma_evidence_submit` | Enhancing / усиливающие | `full` | Record lifecycle evidence | write |
-| `daruma_evidence_list` | Enhancing / усиливающие | `full` | List lifecycle evidence | read |
 | `daruma_healthz` | Extending / расширяющие | `default` | Server health check | read |
 
 ## Coordination
 
 | tool | tier | profile | title | hints |
 |---|---|---|---|---|
+| `daruma_evidence_submit` | Enhancing / усиливающие | `default` | Record lifecycle evidence | write |
+| `daruma_evidence_list` | Enhancing / усиливающие | `default` | List lifecycle evidence | read |
 | `daruma_audit_findings` | Enhancing / усиливающие | `full` | List audit findings | read |
 | `daruma_audit_finding_ack` | Enhancing / усиливающие | `full` | Acknowledge/mute/resolve a finding | write |
 | `daruma_audit_stuck_tasks` | Enhancing / усиливающие | `full` | Tasks stuck in a status | read |
