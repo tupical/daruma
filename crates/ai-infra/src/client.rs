@@ -4,6 +4,7 @@
 //! All JSON is built with `serde_json::json!` — no string concatenation.
 
 use serde_json::{json, Value};
+use std::time::Duration;
 use tracing::debug;
 
 use crate::{config::AiConfig, config::ApiProtocol, error::AiError};
@@ -49,13 +50,63 @@ pub struct OpenAiClient {
     config: AiConfig,
 }
 
+/// How long to wait for the TCP+TLS handshake before giving up.
+///
+/// The kernel's own ceiling here is `tcp_syn_retries`, typically two minutes of
+/// silent retrying. Nothing upstream wants to wait that long to learn a provider
+/// is unreachable.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on a whole request, handshake to last byte.
+///
+/// Generous on purpose: a reasoning model can spend minutes on hidden reasoning
+/// tokens before it emits anything, and cutting that off would break the very
+/// models this client exists to talk to. It is here so a wedged connection fails
+/// as a stated timeout instead of hanging on an unbounded read — `reqwest` sets
+/// no timeout at all by default.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Keepalive probe interval on idle sockets.
+///
+/// A request awaiting a slow model looks exactly like an idle connection to a
+/// NAT or load balancer, which is how such a connection gets dropped mid-answer;
+/// probes keep the flow alive and, if the peer really is gone, surface it as a
+/// prompt error rather than a stalled read.
+const TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// Drop pooled connections well before typical middlebox idle limits, so a
+/// request is not handed a socket that has already been discarded upstream.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl OpenAiClient {
     /// Build a client from the given config. Reuses a single connection pool.
     pub fn new(config: AiConfig) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: Self::default_http_client(),
             config,
         }
+    }
+
+    /// The transport settings [`OpenAiClient::new`] applies.
+    ///
+    /// Exposed so callers that must build their own client — DNS pinning for an
+    /// SSRF guard, say — start from these rather than from a bare
+    /// `reqwest::Client::new()`, which has no timeout, no connect timeout and no
+    /// keepalive whatsoever.
+    pub fn http_client_builder() -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .tcp_keepalive(TCP_KEEPALIVE)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+    }
+
+    fn default_http_client() -> reqwest::Client {
+        Self::http_client_builder()
+            .build()
+            // Only fails if the TLS backend cannot initialise, which would break
+            // every request anyway; a bare client keeps `new` infallible.
+            .unwrap_or_else(|_| reqwest::Client::new())
     }
 
     /// Build a client with caller-owned transport settings (timeouts, DNS pinning).
