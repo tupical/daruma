@@ -59,12 +59,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Ceiling on a whole request, handshake to last byte.
 ///
-/// Generous on purpose: a reasoning model can spend minutes on hidden reasoning
-/// tokens before it emits anything, and cutting that off would break the very
-/// models this client exists to talk to. It is here so a wedged connection fails
-/// as a stated timeout instead of hanging on an unbounded read — `reqwest` sets
-/// no timeout at all by default.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// Well above any legitimate reasoning time for a single tool call, and far
+/// enough below "wait forever" to bound the damage when a provider accepts a
+/// request and never answers. That is not hypothetical: production recorded a
+/// call sitting on a TCP-healthy connection for a full 300 seconds with nothing
+/// coming back, which no transport setting can fix. This is the ceiling that
+/// actually applies now that `tcp_user_timeout` no longer cuts calls off early,
+/// so it doubles as the cap on how long one wedged call can stall an audit pass.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Keepalive probe interval on idle sockets.
 ///
