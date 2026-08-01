@@ -98,6 +98,20 @@ impl OpenAiClient {
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .tcp_keepalive(TCP_KEEPALIVE)
+            // `reqwest` defaults this to 30 seconds, which quietly caps how long
+            // any request may wait: `TCP_USER_TIMEOUT` makes the kernel abort the
+            // connection with `ETIMEDOUT` once data goes unacknowledged that
+            // long, and an unanswered keepalive probe counts. A provider that
+            // stays silent while its model thinks therefore had its connection
+            // killed mid-answer at ~32s — measured in production at 32348,
+            // 32102 and 32263 ms, a spread far too tight for packet loss.
+            //
+            // The ceiling on a slow model belongs to the request timeout, not to
+            // a TCP-level abort a full order of magnitude below it, so this is
+            // aligned with `REQUEST_TIMEOUT`. Keepalive still runs, so a peer
+            // that is genuinely gone is still detected — just not mistaken for
+            // one that is merely thinking.
+            .tcp_user_timeout(REQUEST_TIMEOUT)
             .pool_idle_timeout(POOL_IDLE_TIMEOUT)
     }
 
