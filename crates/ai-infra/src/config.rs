@@ -38,6 +38,14 @@ pub struct AiConfig {
     pub model: String,
     /// Provider wire protocol (`OPENAI_API_PROTOCOL`). Defaults to Responses.
     pub api_protocol: ApiProtocol,
+    /// Reasoning budget for models that expose one (`OPENAI_REASONING_EFFORT`).
+    ///
+    /// `None` sends nothing, which is the only safe default: providers reject
+    /// parameters they do not know, so this must stay opt-in per workspace. Set
+    /// it where the model reasons by default — Kimi K3 defaults to `max`, and at
+    /// `max` it spends an entire token budget thinking about a yes/no question
+    /// and never reaches the tool call.
+    pub reasoning_effort: Option<String>,
     /// Cap on response tokens (`OPENAI_MAX_OUTPUT_TOKENS`). Always sent as
     /// `max_output_tokens` (Responses) or `max_tokens` (Chat Completions):
     /// proxy billers otherwise reserve the model's maximum for the cost
@@ -62,6 +70,11 @@ impl AiConfig {
             .unwrap_or_else(|_| "responses".into())
             .parse()?;
 
+        let reasoning_effort = std::env::var("OPENAI_REASONING_EFFORT")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
         let max_output_tokens = std::env::var("OPENAI_MAX_OUTPUT_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok());
@@ -71,6 +84,7 @@ impl AiConfig {
             base_url,
             model,
             api_protocol,
+            reasoning_effort,
             max_output_tokens,
         })
     }
@@ -126,6 +140,7 @@ mod tests {
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-4.1".into(),
             api_protocol: ApiProtocol::Responses,
+            reasoning_effort: None,
             max_output_tokens: None,
         };
         assert_eq!(cfg.responses_url(), "https://api.openai.com/v1/responses");

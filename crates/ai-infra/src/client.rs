@@ -209,6 +209,13 @@ pub(crate) fn build_request_body(config: &AiConfig, req: &ResponseRequest) -> Va
         obj["tool_choice"] = Value::String(tc.clone());
     }
 
+    // Responses API nests it where Chat Completions takes a flat field. Omitted
+    // entirely when unset: a provider that does not know this parameter rejects
+    // the whole request rather than ignoring it, so it stays opt-in.
+    if let Some(effort) = &config.reasoning_effort {
+        obj["reasoning"] = json!({ "effort": effort });
+    }
+
     obj
 }
 
@@ -239,6 +246,10 @@ pub(crate) fn build_chat_request_body(config: &AiConfig, req: &ResponseRequest) 
 
     if let Some(tc) = &req.tool_choice {
         obj["tool_choice"] = Value::String(tc.clone());
+    }
+
+    if let Some(effort) = &config.reasoning_effort {
+        obj["reasoning_effort"] = Value::String(effort.clone());
     }
 
     obj
@@ -353,8 +364,37 @@ mod tests {
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-4.1".into(),
             api_protocol: ApiProtocol::Responses,
+            reasoning_effort: None,
             max_output_tokens,
         }
+    }
+
+    #[test]
+    fn reasoning_effort_uses_each_protocol_own_shape_and_is_omitted_when_unset() {
+        // Two different schemas for one setting: Responses nests it under
+        // `reasoning.effort`, Chat Completions takes a flat `reasoning_effort`.
+        // Sending the wrong shape is silently ignored by a lenient gateway,
+        // which would leave the model on its default — for Kimi K3 that default
+        // is `max`, and at `max` it spends the whole token budget thinking and
+        // never emits the tool call.
+        let req = make_req("hi", vec![], None);
+
+        let mut cfg = make_cfg(None);
+        assert!(build_request_body(&cfg, &req).get("reasoning").is_none());
+        assert!(build_chat_request_body(&cfg, &req)
+            .get("reasoning_effort")
+            .is_none());
+
+        cfg.reasoning_effort = Some("low".into());
+        assert_eq!(build_request_body(&cfg, &req)["reasoning"]["effort"], "low");
+        assert!(build_request_body(&cfg, &req)
+            .get("reasoning_effort")
+            .is_none());
+        assert_eq!(
+            build_chat_request_body(&cfg, &req)["reasoning_effort"],
+            "low"
+        );
+        assert!(build_chat_request_body(&cfg, &req).get("reasoning").is_none());
     }
 
     #[test]
