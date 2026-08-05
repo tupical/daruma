@@ -4164,6 +4164,7 @@ mod tests {
                     id: task_ids[1],
                     status: daruma_domain::Status::Cancelled,
                     force: false,
+                    override_reason: None,
                 },
                 Actor::user(),
             )

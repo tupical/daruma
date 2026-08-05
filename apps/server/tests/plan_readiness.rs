@@ -158,6 +158,31 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
         json!(c)
     );
 
+    // An `override_reason` without `force` overrides nothing (the rule engine
+    // needs both), so it must not cost the caller the soft warning either —
+    // otherwise they get neither the bypass nor the heads-up.
+    let (status, with_reason) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/commands",
+        &json!({
+            "command": {
+                "type": "set_status",
+                "id": b,
+                "status": "in_progress",
+                "override_reason": "explaining myself without forcing"
+            },
+            "actor": {"kind": "user"}
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "set_status response: {with_reason}");
+    assert_eq!(
+        with_reason["warnings"][0]["code"], "task_blocked",
+        "a reason without force must not swallow the warning: {with_reason}"
+    );
+
     let (status, forced) = json_post(
         app.router.clone(),
         &app.admin_token,
@@ -223,6 +248,7 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
                 id: c,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

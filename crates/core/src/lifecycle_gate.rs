@@ -112,12 +112,14 @@ impl GateCheck {
 
 /// Command-level override signal (spec §1.5). `force` alone only soft-acks
 /// `can_start` blockers; passing a *blocked rule* additionally requires a
-/// non-empty `override_reason` and per-rule `override_allowed` — both
-/// enforced by the gate implementation, which also records `RuleOverridden`.
+/// non-empty `override_reason` and per-rule `override_allowed` — both enforced
+/// by the gate implementation. NOTE: no `RuleOverridden` audit event exists yet,
+/// so an override currently lands in the log as a plain `RuleFired` warning and
+/// the reason is not persisted.
 ///
-/// `override_reason` has no wire field yet — it lands together with the rule
-/// engine (`RuleOverridden` event); the contract is fixed here so the trait
-/// does not change.
+/// Both fields come straight off `Command::SetStatus`. `override_reason` is an
+/// escape hatch, not the normal way past a rule: the normal way is to satisfy
+/// the requirement with evidence.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct GateOverride {
     pub force: bool,
@@ -127,9 +129,13 @@ pub struct GateOverride {
 /// Extract the override signal from a command (spec §1.5).
 pub fn gate_override_of(cmd: &Command) -> GateOverride {
     match cmd {
-        Command::SetStatus { force, .. } => GateOverride {
+        Command::SetStatus {
+            force,
+            override_reason,
+            ..
+        } => GateOverride {
             force: *force,
-            override_reason: None,
+            override_reason: override_reason.clone(),
         },
         _ => GateOverride::default(),
     }

@@ -251,11 +251,10 @@ async fn rule_readiness(
     let mut rule_blockers = Vec::new();
     let mut rule_warnings = Vec::new();
     for check in derive_gate_checks(&events) {
-        // Equivalent to the live path *because* `gate_override_of` always
-        // yields `override_reason: None` for `SetStatus`, and the engine
-        // refuses an override without a reason — so `force` alone never passes
-        // a `required` rule today. When `override_reason` gains a wire field
-        // (see `lifecycle_gate`), this line becomes a real fork.
+        // No override: the question is whether a NORMAL start works. A caller
+        // holding `force` + `override_reason` can get past a rule that permits
+        // it, so `ready == false` does not mean "impossible" — it means "not
+        // without an explicit, recorded override".
         match gate.check(actor, &check, &GateOverride::default()).await? {
             GateDecision::Allowed => {}
             GateDecision::Warning(batch) => {

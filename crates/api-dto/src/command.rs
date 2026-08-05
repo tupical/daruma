@@ -48,6 +48,12 @@ pub enum Command {
         /// active blockers. Omitted by legacy clients; defaults to soft warning.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
+        /// Why a *blocked rule* is being overridden. `force` alone only
+        /// soft-acks relation blockers; passing a blocked lifecycle rule needs
+        /// this too, and the rule must permit override. Deliberately an escape
+        /// hatch — the normal way past a rule is to satisfy it with evidence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_reason: Option<String>,
     },
     SetPriority {
         id: TaskId,

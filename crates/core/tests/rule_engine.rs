@@ -221,6 +221,7 @@ async fn example3_completion_note_required_blocks_complete() {
                 id: task,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -262,6 +263,7 @@ async fn example3_recommendation_warns_but_proceeds() {
                 id: task,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -301,6 +303,7 @@ async fn off_mode_not_evaluated() {
                 id: task,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -342,6 +345,7 @@ async fn example2_impact_check_required_blocks_start() {
                 id: task,
                 status: Status::InProgress,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -399,9 +403,9 @@ async fn example1_read_artifact_required_blocks_plan_approve() {
 
 #[tokio::test]
 async fn override_allowed_rule_passes_with_force_in_commands_path() {
-    // The HTTP /commands path is where override_reason rides; the gate honours
-    // force only with a non-empty reason. Here force without reason still
-    // blocks (silent force does not bypass a required rule — spec §1.5).
+    // `force` without a reason is a silent override, and the gate refuses it:
+    // an escape hatch that leaves no trace is indistinguishable from the rule
+    // not existing (spec §1.5).
     let stack = stack().await;
     install(
         &stack,
@@ -425,13 +429,147 @@ async fn override_allowed_rule_passes_with_force_in_commands_path() {
             Command::SetStatus {
                 id: task,
                 status: Status::Done,
-                force: true, // force alone, no override_reason
+                force: true,
+                override_reason: None, // force alone, no reason
             },
             Actor::user(),
         )
         .await
         .expect_err("silent force must not bypass a required rule");
     assert!(is_blocked(&err, "completion-note"), "got: {err}");
+}
+
+/// `force` + a non-empty reason passes a rule that permits override. This is
+/// the whole escape hatch: before `override_reason` had a wire field it was
+/// unreachable from any client, so the branch existed only on paper.
+#[tokio::test]
+async fn force_with_a_reason_overrides_a_rule_that_allows_it() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: true,
+                override_reason: Some("hotfix: production is down".into()),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("force + reason must pass an override_allowed rule");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Done
+    );
+}
+
+/// A blank reason is no reason: whitespace must not buy a bypass, or the
+/// requirement degrades to "type any character".
+#[tokio::test]
+async fn a_blank_override_reason_does_not_buy_a_bypass() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: true,
+                override_reason: Some("   ".into()),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("a whitespace reason must not override");
+    assert!(is_blocked(&err, "completion-note"), "got: {err}");
+}
+
+/// One rule that forbids override poisons the whole override, even when every
+/// other blocked rule would have allowed it — otherwise the strictest rule in
+/// the set could be bypassed by pairing it with a lenient one.
+#[tokio::test]
+async fn a_single_non_overridable_rule_poisons_the_whole_override() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    install(
+        &stack,
+        new_rule(
+            "no-bypass",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::OwnerRequired,
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: true,
+                override_reason: Some("hotfix: production is down".into()),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("a non-overridable rule must survive force + reason");
+    assert!(is_blocked(&err, "no-bypass"), "got: {err}");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Inbox,
+        "blocked before persist"
+    );
 }
 
 // ── Determinism (spec invariant 8) ──────────────────────────────────────────────
@@ -463,6 +601,7 @@ async fn decision_is_deterministic() {
                     id: task,
                     status: Status::Done,
                     force: false,
+                    override_reason: None,
                 },
                 Actor::user(),
             )
@@ -508,6 +647,7 @@ async fn required_with_evidence_allows_complete() {
                 id: task,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -548,6 +688,7 @@ async fn required_without_evidence_blocks_complete() {
                 id: task,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -589,6 +730,7 @@ async fn evidence_of_wrong_kind_does_not_satisfy() {
                 id: task,
                 status: Status::Done,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -675,6 +817,7 @@ async fn start(
                 id: task,
                 status: Status::InProgress,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

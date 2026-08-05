@@ -1529,11 +1529,19 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let id = required_string(&args, "id")?;
             let status = required_string(&args, "status")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            client
-                .post_command(
-                    json!({"type":"set_status","id": id, "status": status, "force": force}),
-                )
-                .await
+            let mut command =
+                json!({"type":"set_status","id": id, "status": status, "force": force});
+            // Omitted rather than sent as null: the server treats a blank reason
+            // as no reason, and an explicit null would read like an attempted
+            // override that silently did nothing.
+            if let Some(reason) = args
+                .get("override_reason")
+                .and_then(|v| v.as_str())
+                .filter(|r| !r.trim().is_empty())
+            {
+                command["override_reason"] = json!(reason);
+            }
+            client.post_command(command).await
         }
         "daruma_set_priority" => {
             let id = required_string(&args, "id")?;
@@ -3086,6 +3094,10 @@ fn schema_set_status() -> Value {
             "force": {
                 "type":"boolean",
                 "description":"When setting in_progress, suppress the soft can_start warning for actively blocked tasks."
+            },
+            "override_reason": {
+                "type":"string",
+                "description":"Escape hatch: with `force`, overrides a blocking lifecycle rule that permits override, and records why. A blank reason does not override, and one non-overridable rule blocks the whole set. The normal way past a rule is to satisfy it with evidence (daruma_evidence_submit), not this."
             }
         },
         "required":["id","status"]

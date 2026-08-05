@@ -752,6 +752,7 @@ async fn cancel_task_archives_its_live_documents() {
                 id: task_id,
                 status: daruma_domain::Status::Cancelled,
                 force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

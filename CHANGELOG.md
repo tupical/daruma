@@ -6,6 +6,19 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### `set_status` can carry an override reason
+
+Overriding a blocking lifecycle rule always required three things: `force`, a
+non-empty reason, and a rule that permits override. The reason had no wire
+field, so the escape hatch existed in the design and was reachable from
+nowhere — `force` alone is refused, by design, because an override that
+leaves no trace is indistinguishable from the rule not existing.
+
+`set_status` now accepts `override_reason` (MCP: `daruma_set_status`). Blank
+reasons still do not override, and a single non-overridable rule still blocks
+the whole set. This is an escape hatch: the normal way past a rule is to
+satisfy it with evidence.
+
 ### `can_start` now answers for lifecycle rules too
 
 `GET /v1/tasks/{id}/can_start` (MCP: `daruma_can_start`) used to consider

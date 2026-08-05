@@ -155,8 +155,10 @@ impl LifecycleGate for RuleEngineGate {
             && !override_forbidden;
         if override_ok {
             // Overridden blocks degrade to warnings so the executor still sees
-            // what was bypassed; the RuleOverridden audit trail lands with the
-            // evidence registry task.
+            // what was bypassed. The RuleOverridden audit trail does NOT exist
+            // yet, so the bypass is indistinguishable from a recommendation in
+            // the event log, and `override_reason` is checked for emptiness and
+            // then dropped.
             for rule in blocked {
                 warnings.push(rule_warning(rule));
             }

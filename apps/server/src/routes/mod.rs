@@ -3688,6 +3688,10 @@ async fn mutation_warnings(
         id,
         status: Status::InProgress,
         force: false,
+        // Only `force` decides whether the soft warning is wanted. Matching on
+        // the reason too would swallow the warning for a caller who sent one
+        // without `force` — no override AND no warning.
+        override_reason: _,
     } = command
     else {
         return Ok(vec![]);
@@ -5426,7 +5430,11 @@ async fn drain_one_plan(
                         Command::SetStatus {
                             id: next.task_id,
                             status: daruma_domain::Status::InProgress,
+                            // Drain acks relation blockers (it picked a ready
+                            // task itself); rules stay hard — no reason, so no
+                            // rule override.
                             force: true,
+                            override_reason: None,
                         },
                         actor_from(auth, None),
                     )
