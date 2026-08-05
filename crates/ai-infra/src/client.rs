@@ -83,8 +83,16 @@ const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 impl OpenAiClient {
     /// Build a client from the given config. Reuses a single connection pool.
     pub fn new(config: AiConfig) -> Self {
+        let timeout = config
+            .request_timeout_seconds
+            .map(Duration::from_secs)
+            .unwrap_or(REQUEST_TIMEOUT);
         Self {
-            http: Self::default_http_client(),
+            http: Self::http_client_builder()
+                .timeout(timeout)
+                .tcp_user_timeout(timeout)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             config,
         }
     }
@@ -117,14 +125,6 @@ impl OpenAiClient {
             .pool_idle_timeout(POOL_IDLE_TIMEOUT)
     }
 
-    fn default_http_client() -> reqwest::Client {
-        Self::http_client_builder()
-            .build()
-            // Only fails if the TLS backend cannot initialise, which would break
-            // every request anyway; a bare client keeps `new` infallible.
-            .unwrap_or_else(|_| reqwest::Client::new())
-    }
-
     /// Build a client with caller-owned transport settings (timeouts, DNS pinning).
     pub fn with_http_client(config: AiConfig, http: reqwest::Client) -> Self {
         Self { http, config }
@@ -132,7 +132,7 @@ impl OpenAiClient {
 
     /// Send a request through the configured protocol and parse the output list.
     pub async fn respond(&self, req: ResponseRequest) -> Result<Vec<ResponseOutput>, AiError> {
-        let (url, body) = endpoint_and_body(&self.config, &req);
+        let (url, body) = endpoint_and_body(&self.config, &req)?;
         debug!(%url, "sending AI request");
 
         let resp = self
@@ -162,13 +162,16 @@ impl OpenAiClient {
 /// workspace posted Responses bodies to a Chat-Completions-only provider. Two
 /// crossed arms here — right URL, wrong body — reproduce that outage exactly
 /// while every other test in this file stays green.
-pub(crate) fn endpoint_and_body(config: &AiConfig, req: &ResponseRequest) -> (String, Value) {
+pub(crate) fn endpoint_and_body(
+    config: &AiConfig,
+    req: &ResponseRequest,
+) -> Result<(String, Value), AiError> {
     match config.api_protocol {
-        ApiProtocol::Responses => (config.responses_url(), build_request_body(config, req)),
-        ApiProtocol::ChatCompletions => (
+        ApiProtocol::Responses => Ok((config.responses_url(), build_request_body(config, req))),
+        ApiProtocol::ChatCompletions => Ok((
             config.chat_completions_url(),
-            build_chat_request_body(config, req),
-        ),
+            build_chat_request_body(config, req)?,
+        )),
     }
 }
 
@@ -220,7 +223,10 @@ pub(crate) fn build_request_body(config: &AiConfig, req: &ResponseRequest) -> Va
 }
 
 /// Build a Chat Completions request body from the provider-neutral request.
-pub(crate) fn build_chat_request_body(config: &AiConfig, req: &ResponseRequest) -> Value {
+pub(crate) fn build_chat_request_body(
+    config: &AiConfig,
+    req: &ResponseRequest,
+) -> Result<Value, AiError> {
     let mut obj = json!({
         "model": config.model,
         "messages": [{"role": "user", "content": req.input}],
@@ -232,15 +238,28 @@ pub(crate) fn build_chat_request_body(config: &AiConfig, req: &ResponseRequest) 
             req.tools
                 .iter()
                 .map(|tool| {
+                    if tool.get("type").and_then(Value::as_str) != Some("function") {
+                        return Err(AiError::Config(format!(
+                            "chat_completions does not support built-in tool {}",
+                            tool.get("type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                        )));
+                    }
                     let mut function = serde_json::Map::new();
                     for field in ["name", "description", "parameters"] {
                         if let Some(value) = tool.get(field) {
                             function.insert(field.into(), value.clone());
                         }
                     }
-                    json!({"type": "function", "function": function})
+                    if function.get("name").and_then(Value::as_str).is_none() {
+                        return Err(AiError::Config(
+                            "chat_completions function tool requires name".into(),
+                        ));
+                    }
+                    Ok(json!({"type": "function", "function": function}))
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, AiError>>()?,
         );
     }
 
@@ -252,7 +271,7 @@ pub(crate) fn build_chat_request_body(config: &AiConfig, req: &ResponseRequest) 
         obj["reasoning_effort"] = Value::String(effort.clone());
     }
 
-    obj
+    Ok(obj)
 }
 
 // ── Response parser (pure) ────────────────────────────────────────────────────
@@ -366,6 +385,7 @@ mod tests {
             api_protocol: ApiProtocol::Responses,
             reasoning_effort: None,
             max_output_tokens,
+            request_timeout_seconds: None,
         }
     }
 
@@ -382,6 +402,7 @@ mod tests {
         let mut cfg = make_cfg(None);
         assert!(build_request_body(&cfg, &req).get("reasoning").is_none());
         assert!(build_chat_request_body(&cfg, &req)
+            .unwrap()
             .get("reasoning_effort")
             .is_none());
 
@@ -391,10 +412,13 @@ mod tests {
             .get("reasoning_effort")
             .is_none());
         assert_eq!(
-            build_chat_request_body(&cfg, &req)["reasoning_effort"],
+            build_chat_request_body(&cfg, &req).unwrap()["reasoning_effort"],
             "low"
         );
-        assert!(build_chat_request_body(&cfg, &req).get("reasoning").is_none());
+        assert!(build_chat_request_body(&cfg, &req)
+            .unwrap()
+            .get("reasoning")
+            .is_none());
     }
 
     #[test]
@@ -407,13 +431,13 @@ mod tests {
 
         let mut cfg = make_cfg(None);
         cfg.api_protocol = ApiProtocol::Responses;
-        let (url, body) = endpoint_and_body(&cfg, &req);
+        let (url, body) = endpoint_and_body(&cfg, &req).unwrap();
         assert!(url.ends_with("/responses"), "{url}");
         assert_eq!(body["input"], "hi");
         assert!(body.get("messages").is_none(), "chat body on responses");
 
         cfg.api_protocol = ApiProtocol::ChatCompletions;
-        let (url, body) = endpoint_and_body(&cfg, &req);
+        let (url, body) = endpoint_and_body(&cfg, &req).unwrap();
         assert!(url.ends_with("/chat/completions"), "{url}");
         assert_eq!(body["messages"][0]["content"], "hi");
         assert!(body.get("input").is_none(), "responses body on chat");
@@ -471,7 +495,7 @@ mod tests {
             "parameters": {"type": "object"}
         });
         let req = make_req("prompt", vec![tool], Some("required"));
-        let body = build_chat_request_body(&make_cfg(None), &req);
+        let body = build_chat_request_body(&make_cfg(None), &req).unwrap();
 
         assert_eq!(
             body["messages"],
@@ -485,6 +509,16 @@ mod tests {
             body["tools"][0]["function"]["parameters"],
             json!({"type": "object"})
         );
+    }
+
+    #[test]
+    fn chat_rejects_responses_only_tools() {
+        let req = make_req(
+            "search",
+            vec![json!({"type": "web_search"})],
+            Some("required"),
+        );
+        assert!(build_chat_request_body(&make_cfg(None), &req).is_err());
     }
 
     #[test]
