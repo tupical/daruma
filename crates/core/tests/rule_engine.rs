@@ -632,14 +632,18 @@ async fn required_with_evidence_allows_complete() {
     )
     .await;
 
-    // Evidence of the matching kind at the (tenant) scope the rule fires in.
+    let task = create_task(&stack, "Ship it").await;
+    // A completion note is a statement about THIS task, so it is recorded on the
+    // task — a tenant-wide one is refused, and would not satisfy the rule anyway.
     record_evidence(
         &stack,
-        new_evidence(EvidenceKind::CompletionNote, RuleScope::Tenant, None),
+        new_evidence(
+            EvidenceKind::CompletionNote,
+            RuleScope::Task { id: task },
+            None,
+        ),
     )
     .await;
-
-    let task = create_task(&stack, "Ship it").await;
     let outcome = stack
         .handler
         .handle_with_warnings(
@@ -715,14 +719,17 @@ async fn evidence_of_wrong_kind_does_not_satisfy() {
         ),
     )
     .await;
+    let task = create_task(&stack, "Ship it").await;
     // Wrong kind: a risk check does not satisfy a completion-note requirement.
     record_evidence(
         &stack,
-        new_evidence(EvidenceKind::RiskCheckCompleted, RuleScope::Tenant, None),
+        new_evidence(
+            EvidenceKind::RiskCheckCompleted,
+            RuleScope::Task { id: task },
+            None,
+        ),
     )
     .await;
-
-    let task = create_task(&stack, "Ship it").await;
     let err = stack
         .handler
         .handle(
@@ -875,7 +882,7 @@ async fn can_start_ready_implies_the_transition_passes_the_gate() {
         &stack,
         new_evidence(
             EvidenceKind::ImpactAssessment,
-            RuleScope::Tenant,
+            RuleScope::Task { id: task },
             Some("auth-module"),
         ),
     )
@@ -992,4 +999,108 @@ async fn already_in_progress_is_ready_because_the_transition_is_a_no_op() {
     start(&stack, task)
         .await
         .expect("no-op start must still succeed");
+}
+
+// ── Evidence reach (a wide record must not be a global off-switch) ─────────────
+
+/// The defect this cap exists for, end to end: one `evidence_submit` at tenant
+/// scope used to clear "task needs acceptance criteria" for every task in the
+/// tenant, forever — a global off-switch with a single audit record, wearing the
+/// costume of proof.
+#[tokio::test]
+async fn tenant_wide_acceptance_criteria_cannot_unlock_every_task() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "acceptance-criteria",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeStart,
+            Requirement::AcceptanceCriteriaRequired,
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Ship it").await;
+
+    // The shortcut is accepted — evidence is an immutable audit fact and the
+    // engine does not police what a caller chooses to assert — but it is inert:
+    // a tenant-wide claim reaches nothing, so the rule stays in force.
+    //
+    // Enforcing on submission instead was tried and reverted: the matcher falls
+    // back to the innermost scope when the chain lacks the kind's level, so any
+    // width check on submission makes some legitimate rule unsatisfiable (a
+    // `run.before_complete` check carries only `[Tenant]`).
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::AcceptanceCriteriaDefined,
+            RuleScope::Tenant,
+            None,
+        ),
+    )
+    .await;
+
+    // The rule is still in force.
+    assert!(!stack.can_start(task).await.ready);
+
+    // Recorded where it belongs, it unlocks that task and only that task.
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::AcceptanceCriteriaDefined,
+            RuleScope::Task { id: task },
+            None,
+        ),
+    )
+    .await;
+    assert!(stack.can_start(task).await.ready);
+
+    let other = create_task(&stack, "Something else").await;
+    assert!(
+        !stack.can_start(other).await.ready,
+        "unlocking one task must not unlock the next"
+    );
+}
+
+/// Knowledge-shaped evidence keeps its inheritance: capping reach per kind must
+/// not degenerate into "no inheritance at all", which was the deliberate design.
+#[tokio::test]
+async fn a_document_read_ack_still_reaches_tenant_wide() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "read-architecture-md",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeStart,
+            Requirement::ReadArtifact {
+                doc_ref: "architecture.md".into(),
+                min_version: "latest".into(),
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Tenant,
+            Some("architecture.md"),
+        ),
+    )
+    .await;
+
+    // Two different tasks, one acknowledgement: reading the document once
+    // legitimately covers both.
+    for title in ["First", "Second"] {
+        let task = create_task(&stack, title).await;
+        assert!(
+            stack.can_start(task).await.ready,
+            "{title}: a tenant-wide read ack must still inherit downwards"
+        );
+    }
 }

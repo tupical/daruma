@@ -6,6 +6,27 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Evidence no longer reaches further than it can mean anything
+
+One `evidence_submit` at tenant scope used to satisfy a rule for every entity
+in the tenant, permanently — a global off-switch with a single audit record.
+"This task has acceptance criteria" recorded tenant-wide is a claim about
+tasks nobody has written yet: policy wearing the costume of proof.
+
+Each evidence kind now carries a ceiling on how widely it can be read.
+`acceptance_criteria_defined`, `completion_note` and `owner_assigned` state a
+fact about one entity and are read only at its own scope; `impact_assessment`
+and `risk_check_completed` reach the plan; `decision_record` and
+`artifact_created` the project; `document_read_ack` stays tenant-wide, because
+reading a document once legitimately covers everything below it. A record
+above its ceiling is still stored — evidence is an immutable audit fact — but
+it satisfies nothing.
+
+Existing records are neither migrated nor deleted — evidence is immutable, and
+capping reach at match time makes an over-wide record inert on its own. The
+`target` axis is unchanged: broader proof still covers a narrower ask there,
+because targets name things that already exist.
+
 ### `set_status` can carry an override reason
 
 Overriding a blocking lifecycle rule always required three things: `force`, a

@@ -34,7 +34,7 @@ pub use comment::{Comment, CommentKind, CommentPatch, NewComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;
 pub use document::{Document, DocumentKind, DocumentStatus, NewDocument};
-pub use evidence::{ActorRef, Evidence, EvidenceKind, NewEvidence};
+pub use evidence::{ActorRef, Evidence, EvidenceKind, EvidenceReach, NewEvidence};
 pub use external_ref::ExternalRef;
 pub use field_ownership::{plan_owned_patch_fields, FieldOwner, TaskField};
 pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};

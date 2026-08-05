@@ -50,7 +50,53 @@ pub enum EvidenceKind {
     RiskCheckCompleted,
 }
 
+/// How far a piece of evidence of a given kind can legitimately reach.
+///
+/// Evidence about *knowledge or policy* ("the team read this document") travels
+/// widely. Evidence about a *property of one work unit* ("this task has
+/// acceptance criteria") does not travel at all: it cannot possibly be a
+/// statement about tasks that do not exist yet. Without this ceiling a single
+/// tenant-scoped record silently and permanently disables a rule for every task
+/// in the tenant — a global off-switch wearing the costume of an audit fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EvidenceReach {
+    /// Only the innermost scope of the thing being checked.
+    SelfOnly,
+    /// The plan and inwards.
+    Plan,
+    /// The project and inwards.
+    Project,
+    /// Anywhere, including tenant-wide.
+    Tenant,
+}
+
 impl EvidenceKind {
+    /// Ceiling on how widely this kind of evidence may satisfy a rule.
+    ///
+    /// New kinds default to [`EvidenceReach::SelfOnly`] — widen deliberately,
+    /// rather than discovering later that something was too wide all along.
+    pub fn reach(&self) -> EvidenceReach {
+        match self {
+            // Knowledge: reading a document once legitimately covers everything.
+            EvidenceKind::DocumentReadAck => EvidenceReach::Tenant,
+            // A recorded decision (an ADR) belongs to a project; "some decision
+            // was made somewhere in the tenant" proves nothing.
+            EvidenceKind::DecisionRecord => EvidenceReach::Project,
+            // An artifact of the project covers that project's work; `target`
+            // narrows it further.
+            EvidenceKind::ArtifactCreated => EvidenceReach::Project,
+            // An impact assessment is about one coherent change, and the plan
+            // is that change's boundary.
+            EvidenceKind::ImpactAssessment => EvidenceReach::Plan,
+            EvidenceKind::RiskCheckCompleted => EvidenceReach::Plan,
+            // "X has an owner" / "X has acceptance criteria" / "X was finished
+            // with a note" are statements about X and nothing else.
+            EvidenceKind::OwnerAssigned => EvidenceReach::SelfOnly,
+            EvidenceKind::AcceptanceCriteriaDefined => EvidenceReach::SelfOnly,
+            EvidenceKind::CompletionNote => EvidenceReach::SelfOnly,
+        }
+    }
+
     /// Stable discriminant stored in the `kind` column. Identical to the
     /// matching `Requirement::type_str()` so the gate can compare directly.
     pub fn as_str(&self) -> &'static str {

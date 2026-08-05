@@ -10,7 +10,7 @@
 //! place except to set `superseded_by`.
 
 use crate::parse_ts;
-use daruma_domain::{ActorRef, Evidence, EvidenceKind, RuleScope};
+use daruma_domain::{ActorRef, Evidence, EvidenceKind, EvidenceReach, RuleScope};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, EvidenceId, Result};
 use sqlx::{Row, SqlitePool};
@@ -72,18 +72,30 @@ impl EvidenceRepo {
     }
 
     /// Gate hot path: does *live* evidence of `kind` exist anywhere in the scope
-    /// chain, optionally matching `target`? `target = None` accepts any target;
-    /// `target = Some(t)` accepts a record whose `target` is `t` *or* `NULL`
-    /// (untargeted evidence satisfies a targeted requirement — the broader proof
-    /// covers the narrower ask). Returns on the first match; one indexed query
-    /// per scope, short-circuiting, so it stays cheap and deterministic.
+    /// chain the kind can legitimately reach, optionally matching `target`?
+    ///
+    /// `target = None` accepts any target; `target = Some(t)` accepts a record
+    /// whose `target` is `t` *or* `NULL` (untargeted evidence satisfies a
+    /// targeted requirement — the broader proof covers the narrower ask).
+    ///
+    /// The two axes are not symmetric, and the difference is the whole point of
+    /// [`EvidenceKind::reach`]. `target` enumerates referents that already
+    /// exist, so a broader proof there really is a stronger claim about the same
+    /// set. `scope` quantifies over an open set that includes entities not yet
+    /// created — so a tenant-wide "acceptance criteria are defined" is a claim
+    /// about tasks nobody has written, which is policy wearing the costume of
+    /// proof. Hence: the broader proof covers the narrower ask *within the
+    /// kind's semantic reach*, and no further.
+    ///
+    /// Returns on the first match; one indexed query per scope, short-circuiting,
+    /// so it stays cheap and deterministic.
     pub async fn has_live_evidence(
         &self,
         chain: &[RuleScope],
         kind: EvidenceKind,
         target: Option<&str>,
     ) -> Result<bool> {
-        for scope in chain {
+        for scope in reachable(chain, kind.reach()) {
             let matched = match scope.id_string() {
                 Some(id) => self.scope_has(scope.kind(), Some(id), kind, target).await?,
                 None => self.scope_has(scope.kind(), None, kind, target).await?,
@@ -297,7 +309,7 @@ mod tests {
     use super::*;
     use crate::Db;
     use daruma_domain::{Actor, NewEvidence};
-    use daruma_shared::ProjectId;
+    use daruma_shared::{PlanId, ProjectId, TaskId};
 
     fn sample(scope: RuleScope, kind: EvidenceKind, target: Option<&str>) -> Evidence {
         NewEvidence {
@@ -349,7 +361,129 @@ mod tests {
     async fn has_live_evidence_matches_in_chain() {
         let repo = repo().await;
         let project = ProjectId::new();
-        // Recorded at tenant; a project-scoped check walks tenant in its chain.
+        // `document_read_ack` reaches tenant-wide: reading a document once
+        // legitimately covers everything below it.
+        apply(
+            &repo,
+            Event::EvidenceRecorded {
+                evidence: sample(RuleScope::Tenant, EvidenceKind::DocumentReadAck, None),
+            },
+        )
+        .await;
+        let chain = [RuleScope::Tenant, RuleScope::Project { id: project }];
+        assert!(repo
+            .has_live_evidence(&chain, EvidenceKind::DocumentReadAck, None)
+            .await
+            .unwrap());
+        // Wrong kind → no match. The record has to sit somewhere the query can
+        // actually reach, or the assertion passes for the wrong reason: with no
+        // reachable rows at all it would hold even if the kind filter were gone.
+        apply(
+            &repo,
+            Event::EvidenceRecorded {
+                evidence: sample(
+                    RuleScope::Project { id: project },
+                    EvidenceKind::CompletionNote,
+                    None,
+                ),
+            },
+        )
+        .await;
+        assert!(repo
+            .has_live_evidence(&chain, EvidenceKind::CompletionNote, None)
+            .await
+            .unwrap());
+        assert!(
+            !repo
+                .has_live_evidence(&chain, EvidenceKind::RiskCheckCompleted, None)
+                .await
+                .unwrap(),
+            "same scope, different kind → no match"
+        );
+    }
+
+    /// The reach table is what the whole cap rests on, and it is pure — so it
+    /// gets checked directly rather than only through the two kinds that
+    /// integration tests happen to exercise.
+    #[test]
+    fn reachable_caps_the_chain_per_kind() {
+        let project = ProjectId::new();
+        let plan = PlanId::new();
+        let task = TaskId::new();
+        let p = RuleScope::Project { id: project };
+        let pl = RuleScope::Plan { id: plan };
+        let t = RuleScope::Task { id: task };
+
+        let full = [RuleScope::Tenant, p.clone(), pl.clone(), t.clone()];
+        assert_eq!(reachable(&full, EvidenceReach::Tenant).len(), 4);
+        assert_eq!(reachable(&full, EvidenceReach::Project), &full[1..]);
+        assert_eq!(reachable(&full, EvidenceReach::Plan), &full[2..]);
+        assert_eq!(reachable(&full, EvidenceReach::SelfOnly), &full[3..]);
+
+        // The usual shape of a task-triggered check: no project, no plan.
+        let task_chain = [RuleScope::Tenant, t.clone()];
+        assert_eq!(reachable(&task_chain, EvidenceReach::Tenant).len(), 2);
+        for reach in [
+            EvidenceReach::Project,
+            EvidenceReach::Plan,
+            EvidenceReach::SelfOnly,
+        ] {
+            assert_eq!(
+                reachable(&task_chain, reach),
+                &task_chain[1..],
+                "a missing level falls back inwards, never outwards: {reach:?}"
+            );
+        }
+
+        // Tenant-only chain (a run or handoff check): everything collapses onto
+        // the tenant, because that is genuinely the innermost thing there is.
+        let tenant_only = [RuleScope::Tenant];
+        for reach in [
+            EvidenceReach::Tenant,
+            EvidenceReach::Project,
+            EvidenceReach::Plan,
+            EvidenceReach::SelfOnly,
+        ] {
+            assert_eq!(reachable(&tenant_only, reach), &tenant_only[..]);
+        }
+
+        // The only shape where the fallback actually fires: nothing in the chain
+        // is at or below the ceiling. It must land on the innermost element, not
+        // on the whole chain — falling back outwards would let a tenant-wide
+        // impact assessment satisfy a project's rule, which is the hole this
+        // cap exists to close.
+        let project_chain = [RuleScope::Tenant, p.clone()];
+        assert_eq!(
+            reachable(&project_chain, EvidenceReach::Plan),
+            &project_chain[1..],
+            "no plan in the chain → the project, never back out to the tenant"
+        );
+
+        // Plan without a project above it: project-reach must still read the
+        // plan, because a plan sits inside a project even when the chain does
+        // not spell it out.
+        let plan_chain = [RuleScope::Tenant, pl.clone(), t.clone()];
+        assert_eq!(
+            reachable(&plan_chain, EvidenceReach::Project),
+            &plan_chain[1..]
+        );
+        assert_eq!(
+            reachable(&plan_chain, EvidenceReach::Plan),
+            &plan_chain[1..]
+        );
+        assert_eq!(
+            reachable(&plan_chain, EvidenceReach::SelfOnly),
+            &plan_chain[2..]
+        );
+    }
+
+    /// The defect this cap exists for: one tenant-scoped record used to satisfy
+    /// a rule for every entity in the tenant, forever. A `completion_note` is a
+    /// statement about one work unit, so it must not reach past its own scope.
+    #[tokio::test]
+    async fn a_tenant_wide_record_does_not_satisfy_a_self_only_kind() {
+        let repo = repo().await;
+        let project = ProjectId::new();
         apply(
             &repo,
             Event::EvidenceRecorded {
@@ -358,13 +492,28 @@ mod tests {
         )
         .await;
         let chain = [RuleScope::Tenant, RuleScope::Project { id: project }];
+        assert!(
+            !repo
+                .has_live_evidence(&chain, EvidenceKind::CompletionNote, None)
+                .await
+                .unwrap(),
+            "tenant-wide completion_note must not satisfy a project's rule"
+        );
+
+        // Recorded where it belongs, it does satisfy.
+        apply(
+            &repo,
+            Event::EvidenceRecorded {
+                evidence: sample(
+                    RuleScope::Project { id: project },
+                    EvidenceKind::CompletionNote,
+                    None,
+                ),
+            },
+        )
+        .await;
         assert!(repo
             .has_live_evidence(&chain, EvidenceKind::CompletionNote, None)
-            .await
-            .unwrap());
-        // Wrong kind → no match.
-        assert!(!repo
-            .has_live_evidence(&chain, EvidenceKind::RiskCheckCompleted, None)
             .await
             .unwrap());
     }
@@ -429,4 +578,37 @@ mod tests {
             .await
             .unwrap());
     }
+}
+
+/// The part of a scope chain a kind of evidence may be read from.
+///
+/// The chain runs outermost → innermost (`[Tenant, Project?, Plan?, Task?]`),
+/// so capping reach means dropping the outer prefix. Elements are optional:
+/// a task-triggered check carries `[Tenant, Task]` with no project or plan.
+///
+/// When the chain has no element at the kind's ceiling, the fallback is the
+/// innermost element — never the whole chain. That direction matters: falling
+/// back outwards would reopen exactly the hole this exists to close.
+/// `SelfOnly` is that fallback by definition — the scope of the thing being
+/// checked, whatever it happens to be.
+fn reachable(chain: &[RuleScope], reach: EvidenceReach) -> &[RuleScope] {
+    fn rank(scope: &RuleScope) -> u8 {
+        match scope {
+            RuleScope::Tenant => 0,
+            RuleScope::Project { .. } => 1,
+            RuleScope::Plan { .. } => 2,
+            RuleScope::Task { .. } => 3,
+        }
+    }
+    let ceiling = match reach {
+        EvidenceReach::Tenant => 0,
+        EvidenceReach::Project => 1,
+        EvidenceReach::Plan => 2,
+        EvidenceReach::SelfOnly => return &chain[chain.len().saturating_sub(1)..],
+    };
+    let cut = chain
+        .iter()
+        .position(|s| rank(s) >= ceiling)
+        .unwrap_or_else(|| chain.len().saturating_sub(1));
+    &chain[cut..]
 }
