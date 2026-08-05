@@ -6,6 +6,20 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### `can_start` now answers for lifecycle rules too
+
+`GET /v1/tasks/{id}/can_start` (MCP: `daruma_can_start`) used to consider
+only relation blockers. A task held back by a `required` lifecycle rule
+came back `ready: true`, and the very next `set_status in_progress`
+returned `409 rule_blocked` — the one question the endpoint exists to
+answer, answered wrongly.
+
+It now dry-runs the same lifecycle gate the transition passes, and the
+response carries two additive fields: `rule_blockers` (rules that block;
+non-empty means `ready: false`) and `rule_warnings` (advisory rules,
+which never move `ready`). Both are omitted when empty, so a workspace
+with no rules sees the response it always had.
+
 ### Lazy repo-scope project auto-provisioning (opt-in)
 
 When an MCP call arrives under a repo `scope_path` that has no

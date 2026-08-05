@@ -39,8 +39,9 @@ pub use external_ref::ExternalRef;
 pub use field_ownership::{plan_owned_patch_fields, FieldOwner, TaskField};
 pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};
 pub use plan::{
-    CanStart, CanStartBlocker, NewPlan, Plan, PlanFanoutWave, PlanGraph, PlanGraphEdge,
-    PlanGraphNode, PlanPatch, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask,
+    CanStart, CanStartBlocker, CanStartRule, NewPlan, Plan, PlanFanoutWave, PlanGraph,
+    PlanGraphEdge, PlanGraphNode, PlanPatch, PlanProgress, PlanProgressSummary, PlanStatus,
+    PlanTask,
 };
 pub use project::{slugify_title, Project, DEFAULT_TENANT_ID};
 pub use project_settings::{AutoAppendPatch, AutoAppendSettings};

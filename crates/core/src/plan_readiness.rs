@@ -3,11 +3,15 @@
 use std::collections::{HashMap, HashSet};
 
 use daruma_domain::{
-    CanStart, CanStartBlocker, PlanFanoutWave, PlanGraph, PlanGraphEdge, PlanGraphNode,
-    RelationKind, Status,
+    Actor, CanStart, CanStartBlocker, CanStartRule, PlanFanoutWave, PlanGraph, PlanGraphEdge,
+    PlanGraphNode, RelationKind, Status, Task,
 };
+use daruma_events::Event;
 use daruma_shared::{CoreError, PlanId, Result, TaskId};
 use daruma_storage::{PlanRepo, RelationRepo, TaskRepo};
+
+use crate::handler::blocked_outcomes;
+use crate::lifecycle_gate::{derive_gate_checks, GateDecision, GateOverride, LifecycleGate};
 
 pub async fn plan_graph(
     plans: &PlanRepo,
@@ -150,12 +154,34 @@ pub async fn plan_fanout(
     Ok(waves)
 }
 
+/// Can this task be moved into `in_progress` right now?
+///
+/// Two different things, deliberately reported apart:
+///
+/// - `rule_blockers` — lifecycle rules that HARD-block the transition. Asking is
+///   a dry run: `LifecycleGate` is read-only and deterministic by contract, so
+///   it costs nothing but the query.
+/// - `blockers` — relation blockers. Starting a task does NOT enforce these
+///   (only `→ Done` does, see `CommandHandler`); they are a readiness policy the
+///   caller is expected to respect, and `force` exists for the cases it should
+///   not. So `ready == false` from relations alone does not mean the transition
+///   would be refused.
+///
+/// The gate input is built by [`derive_gate_checks`] from the very event the
+/// real transition would emit, rather than assembled by hand here. That is the
+/// whole point: a hand-built `GateCheck` drifts from the real one, and then
+/// `can_start` starts lying again, just more subtly.
+///
+/// `gate` is optional and carries its actor: with no gate wired the answer is
+/// relation-only, exactly as before. The pair is one argument so a caller
+/// cannot supply half of it.
 pub async fn can_start(
     tasks: &TaskRepo,
     relations: &RelationRepo,
+    gate: Option<(&dyn LifecycleGate, &Actor)>,
     task_id: TaskId,
 ) -> Result<CanStart> {
-    tasks
+    let task = tasks
         .get(task_id)
         .await?
         .ok_or_else(|| CoreError::not_found(format!("task {task_id}")))?;
@@ -176,18 +202,128 @@ pub async fn can_start(
         }
     }
 
-    let ready = blockers.is_empty();
-    let reason = if ready {
-        "ready".to_string()
-    } else {
-        format!("blocked_by_{}_task(s)", blockers.len())
+    let (rule_blockers, rule_warnings) = rule_readiness(gate, &task).await?;
+
+    let ready = blockers.is_empty() && rule_blockers.is_empty();
+    let reason = match (blockers.len(), rule_blockers.len()) {
+        (0, 0) => "ready".to_string(),
+        (0, r) => format!("blocked_by_{r}_rule(s)"),
+        (t, 0) => format!("blocked_by_{t}_task(s)"),
+        (t, r) => format!("blocked_by_{t}_task(s)_and_{r}_rule(s)"),
     };
 
     Ok(CanStart {
         ready,
         blockers,
+        rule_blockers,
+        rule_warnings,
         reason,
     })
+}
+
+/// Dry-run the lifecycle gate for `task` → `in_progress`.
+///
+/// Returns `(blocking rules, advisory rules)`. A `required` rule blocks;
+/// a `recommendation` only warns and must never move `ready`, or `can_start`
+/// would acquire the mirror-image defect — not-ready for a transition that
+/// actually succeeds.
+async fn rule_readiness(
+    gate: Option<(&dyn LifecycleGate, &Actor)>,
+    task: &Task,
+) -> Result<(Vec<CanStartRule>, Vec<CanStartRule>)> {
+    let Some((gate, actor)) = gate else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    // A no-op transition emits no events and therefore passes no gate
+    // (`CommandHandler::emit_status_transition_events` returns early when the
+    // status already matches). Reporting rule blockers here would claim the
+    // caller cannot do something that would in fact succeed.
+    if task.status == Status::InProgress {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let events = vec![Event::TaskStatusChanged {
+        task_id: task.id,
+        from: task.status,
+        to: Status::InProgress,
+    }];
+
+    let mut rule_blockers = Vec::new();
+    let mut rule_warnings = Vec::new();
+    for check in derive_gate_checks(&events) {
+        // Equivalent to the live path *because* `gate_override_of` always
+        // yields `override_reason: None` for `SetStatus`, and the engine
+        // refuses an override without a reason — so `force` alone never passes
+        // a `required` rule today. When `override_reason` gains a wire field
+        // (see `lifecycle_gate`), this line becomes a real fork.
+        match gate.check(actor, &check, &GateOverride::default()).await? {
+            GateDecision::Allowed => {}
+            GateDecision::Warning(batch) => {
+                rule_warnings.extend(batch.iter().map(|w| CanStartRule {
+                    rule_key: warning_rule_key(w),
+                    message: w.message.clone(),
+                }));
+            }
+            GateDecision::Blocked { message, details } => {
+                rule_blockers.extend(blocked_outcomes(&details, &message).into_iter().map(
+                    |(outcome, message)| CanStartRule {
+                        rule_key: rule_key_of(&outcome).unwrap_or_else(|| UNNAMED_RULE.to_string()),
+                        message,
+                    },
+                ));
+                // A blocked decision packs *every* acting rule into
+                // `details.outcomes`, and `blocked_outcomes` keeps only the
+                // blocking ones. Without this the advisories would vanish while
+                // a blocker is present and reappear the moment it is satisfied
+                // — the caller would think the list grew on its own.
+                rule_warnings.extend(warning_outcomes(&details));
+            }
+        }
+    }
+    Ok((rule_blockers, rule_warnings))
+}
+
+/// Stand-in when a gate reports a rule without naming it: a stable literal
+/// beats an empty string, which reads like a bug on the client side.
+const UNNAMED_RULE: &str = "unnamed_rule";
+
+fn rule_key_of(details: &serde_json::Value) -> Option<String> {
+    details
+        .get("rule_key")
+        .and_then(|k| k.as_str())
+        .map(str::to_string)
+}
+
+/// `MutationWarning::code` is `rule_warning:<key>` (see `rule_engine`), so the
+/// prefix comes off before it stands in for a missing `rule_key`.
+fn warning_rule_key(warning: &daruma_api_dto::MutationWarning) -> String {
+    if let Some(key) = rule_key_of(&warning.details) {
+        return key;
+    }
+    warning
+        .code
+        .strip_prefix("rule_warning:")
+        .unwrap_or(&warning.code)
+        .to_string()
+}
+
+/// Advisory rules carried inside a `Blocked` payload's structured outcomes.
+fn warning_outcomes(details: &serde_json::Value) -> Vec<CanStartRule> {
+    let Some(outcomes) = details.get("outcomes").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    outcomes
+        .iter()
+        .filter(|o| o.get("decision").and_then(|d| d.as_str()) == Some("warning"))
+        .map(|o| CanStartRule {
+            rule_key: rule_key_of(o).unwrap_or_else(|| UNNAMED_RULE.to_string()),
+            message: o
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .collect()
 }
 
 async fn ensure_plan_exists(plans: &PlanRepo, plan_id: PlanId) -> Result<()> {

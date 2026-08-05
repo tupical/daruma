@@ -2890,7 +2890,7 @@ fn rule_fired_events<'a>(
 /// rule into `details.outcomes`; the fallback to the top-level `details` keeps a
 /// single `RuleFired` for any other `LifecycleGate` impl whose `Blocked` payload
 /// has no structured outcomes (e.g. a custom gate, exercised by the tests).
-fn blocked_outcomes(
+pub(crate) fn blocked_outcomes(
     details: &serde_json::Value,
     message: &str,
 ) -> Vec<(serde_json::Value, String)> {

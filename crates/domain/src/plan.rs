@@ -132,11 +132,31 @@ pub struct CanStartBlocker {
     pub status: Status,
 }
 
+/// A lifecycle rule standing between the task and `in_progress`.
+///
+/// Deliberately a separate list from [`CanStartBlocker`]: "waiting on another
+/// task" and "a requirement is not met" are different problems with different
+/// fixes, and collapsing them would tell the caller to go look at the wrong
+/// thing.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CanStartRule {
+    pub rule_key: String,
+    pub message: String,
+}
+
 /// Readiness result for starting or continuing work on a task.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CanStart {
     pub ready: bool,
     pub blockers: Vec<CanStartBlocker>,
+    /// `required` rules that would block the transition into `in_progress`.
+    /// Non-empty means `ready == false`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_blockers: Vec<CanStartRule>,
+    /// `recommendation` rules: surfaced, but they do not block the transition,
+    /// so they never move `ready`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_warnings: Vec<CanStartRule>,
     pub reason: String,
 }
 

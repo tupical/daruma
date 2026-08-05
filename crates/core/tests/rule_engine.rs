@@ -12,21 +12,40 @@
 
 use std::sync::Arc;
 
+use daruma_core::lifecycle_gate::LifecycleGate;
 use daruma_core::rule_engine::RuleEngineGate;
 use daruma_core::{Command, CommandHandler};
 use daruma_domain::{
-    Actor, EvidenceKind, NewEvidence, NewPlan, NewRule, PlanStatus, Requirement, Rule, RuleMode,
-    RuleScope, RuleTrigger, Status,
+    Actor, CanStart, Condition, EvidenceKind, NewEvidence, NewPlan, NewRule, PlanStatus,
+    Requirement, Rule, RuleMode, RuleScope, RuleTrigger, Status,
 };
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::{CoreError, PlanId, ProjectId, TaskId};
 use daruma_storage::{
-    ActivityRepo, CommentRepo, Db, EvidenceRepo, PlanRepo, ProjectRepo, RuleRepo, SqliteEventStore,
-    TaskRepo,
+    ActivityRepo, CommentRepo, Db, EvidenceRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo,
+    SqliteEventStore, TaskRepo,
 };
 
 struct Stack {
     handler: CommandHandler,
+    relations: Arc<RelationRepo>,
+    gate: Arc<dyn LifecycleGate>,
+}
+
+impl Stack {
+    /// `can_start` as the HTTP route calls it: same gate the command dispatch
+    /// uses, so the two answers are comparable.
+    async fn can_start(&self, task: TaskId) -> CanStart {
+        let actor = Actor::user();
+        daruma_core::can_start(
+            &self.handler.tasks,
+            &self.relations,
+            Some((self.gate.as_ref(), &actor)),
+            task,
+        )
+        .await
+        .expect("can_start")
+    }
 }
 
 async fn stack() -> Stack {
@@ -41,6 +60,11 @@ async fn stack() -> Stack {
     let plans = Arc::new(PlanRepo::new(pool.clone()));
     let rules = Arc::new(RuleRepo::new(pool.clone()));
     let evidence = Arc::new(EvidenceRepo::new(pool.clone()));
+    let relations = Arc::new(RelationRepo::new(pool.clone()));
+    let gate: Arc<dyn LifecycleGate> = Arc::new(RuleEngineGate::with_evidence(
+        rules.clone(),
+        evidence.clone(),
+    ));
 
     let handler = CommandHandler::new(
         store,
@@ -54,12 +78,14 @@ async fn stack() -> Stack {
     .with_rules(rules.clone())
     .with_evidence(evidence.clone())
     // The gate reads evidence so a satisfied `required` requirement unblocks.
-    .with_lifecycle_gate(Arc::new(RuleEngineGate::with_evidence(
-        rules.clone(),
-        evidence.clone(),
-    )));
+    // The same instance answers `can_start`: two gates could drift, one cannot.
+    .with_lifecycle_gate(gate.clone());
 
-    Stack { handler }
+    Stack {
+        handler,
+        relations,
+        gate,
+    }
 }
 
 /// Record a piece of evidence through the command bus (so it lands in the same
@@ -614,4 +640,213 @@ async fn targeted_read_artifact_satisfied_by_matching_target() {
         )
         .await
         .expect("matching read-ack satisfies the requirement → approve allowed");
+}
+
+// ── can_start agrees with the gate ──────────────────────────────────────────────
+//
+// `can_start` exists to answer "may I start this task". Before the gate was
+// wired into it, it read only relation blockers, so a task held back by a
+// `required` rule came back `ready: true` and the very next `set_status`
+// returned `409 rule_blocked`. For an autonomous agent that is the worst kind
+// of answer: the one question the tool exists to answer, answered wrongly.
+
+fn impact_check_rule() -> NewRule {
+    new_rule(
+        "auth-impact-check",
+        RuleScope::Tenant,
+        RuleTrigger::TaskBeforeStart,
+        Requirement::ImpactCheck {
+            target: "auth-module".into(),
+            required_fields: vec!["risk_level".into()],
+        },
+        RuleMode::Required,
+        true,
+    )
+}
+
+async fn start(
+    stack: &Stack,
+    task: TaskId,
+) -> Result<Vec<daruma_events::EventEnvelope>, CoreError> {
+    stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::InProgress,
+                force: false,
+            },
+            Actor::user(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn can_start_reports_the_rule_that_blocks_the_transition() {
+    let stack = stack().await;
+    install(&stack, impact_check_rule()).await;
+    let task = create_task(&stack, "Touch auth").await;
+
+    let readiness = stack.can_start(task).await;
+
+    assert!(
+        !readiness.ready,
+        "unsatisfied required rule must not be ready"
+    );
+    assert!(
+        readiness.blockers.is_empty(),
+        "a rule is not a task blocker: {:?}",
+        readiness.blockers
+    );
+    assert_eq!(
+        readiness
+            .rule_blockers
+            .iter()
+            .map(|r| r.rule_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["auth-impact-check"],
+        "the blocking rule must be named, not just counted: {readiness:?}"
+    );
+    assert_eq!(readiness.reason, "blocked_by_1_rule(s)");
+}
+
+/// The invariant the whole change exists for: whatever `can_start` says is
+/// ready must actually survive the gate. Checked in both directions on the same
+/// task, so a `can_start` that consults a *different* input than the real
+/// transition fails here rather than in production.
+#[tokio::test]
+async fn can_start_ready_implies_the_transition_passes_the_gate() {
+    let stack = stack().await;
+    install(&stack, impact_check_rule()).await;
+    let task = create_task(&stack, "Touch auth").await;
+
+    // Not ready → the transition must indeed be refused.
+    assert!(!stack.can_start(task).await.ready);
+    let err = start(&stack, task)
+        .await
+        .expect_err("rule must block start");
+    assert!(is_blocked(&err, "auth-impact-check message"), "got: {err}");
+
+    // Satisfy the requirement the same way a real caller would.
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::ImpactAssessment,
+            RuleScope::Tenant,
+            Some("auth-module"),
+        ),
+    )
+    .await;
+
+    // Ready → the transition must now succeed. If `can_start` built its gate
+    // input differently from the real path, one of these two would disagree.
+    let readiness = stack.can_start(task).await;
+    assert!(readiness.ready, "evidence must unblock: {readiness:?}");
+    assert!(readiness.rule_blockers.is_empty());
+    assert_eq!(readiness.reason, "ready");
+
+    start(&stack, task)
+        .await
+        .expect("ready must mean startable");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::InProgress
+    );
+}
+
+/// A `recommendation` warns but does not block, so it must never move `ready` —
+/// otherwise `can_start` acquires the mirror-image defect: refusing a
+/// transition that in fact succeeds.
+#[tokio::test]
+async fn recommendation_rules_warn_without_making_can_start_unready() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "auth-impact-check",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeStart,
+            Requirement::ImpactCheck {
+                target: "auth-module".into(),
+                required_fields: vec!["risk_level".into()],
+            },
+            RuleMode::Recommendation,
+            true,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Touch auth").await;
+
+    let readiness = stack.can_start(task).await;
+    assert!(
+        readiness.ready,
+        "a recommendation must not block: {readiness:?}"
+    );
+    assert!(readiness.rule_blockers.is_empty());
+    assert_eq!(
+        readiness
+            .rule_warnings
+            .iter()
+            .map(|r| r.rule_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["auth-impact-check"],
+        "the advisory rule must still be visible: {readiness:?}"
+    );
+
+    start(&stack, task)
+        .await
+        .expect("recommendation must not block");
+}
+
+/// The dry run must see the task's REAL current status: a rule conditioned on
+/// `status_from` has to match (or not match) identically on both paths. This is
+/// the first thing a hand-built `GateCheck` would get wrong.
+#[tokio::test]
+async fn can_start_honours_a_rule_conditioned_on_the_status_being_left() {
+    let stack = stack().await;
+    let mut rule = impact_check_rule();
+    // The task below sits in `inbox`, so a rule scoped to leaving `todo` must
+    // not fire — for `can_start` exactly as for the transition itself.
+    rule.condition = Some(Condition {
+        status_from: Some(vec![Status::Todo]),
+        status_to: None,
+    });
+    install(&stack, rule).await;
+    let task = create_task(&stack, "Touch auth").await;
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Inbox,
+        "precondition: the rule's status_from must not match"
+    );
+
+    let readiness = stack.can_start(task).await;
+    assert!(
+        readiness.ready,
+        "condition does not match, so nothing blocks: {readiness:?}"
+    );
+    start(&stack, task)
+        .await
+        .expect("and the transition agrees");
+}
+
+/// A task already `in_progress`: the real `set_status` is a no-op that emits no
+/// events and therefore passes no gate, so `can_start` must not invent blockers.
+#[tokio::test]
+async fn already_in_progress_is_ready_because_the_transition_is_a_no_op() {
+    let stack = stack().await;
+    let task = create_task(&stack, "Touch auth").await;
+    start(&stack, task).await.expect("first start");
+
+    // Install the blocking rule only now, so it would fire on a real start.
+    install(&stack, impact_check_rule()).await;
+
+    let readiness = stack.can_start(task).await;
+    assert!(
+        readiness.ready,
+        "no-op transition is not blocked: {readiness:?}"
+    );
+    assert!(readiness.rule_blockers.is_empty());
+    start(&stack, task)
+        .await
+        .expect("no-op start must still succeed");
 }

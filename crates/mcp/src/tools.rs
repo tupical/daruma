@@ -356,7 +356,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_can_start",
             "Check task readiness",
-            "Check whether a task is ready to start, returning active blockers with title and status.",
+            "Check whether a task is ready to start. Reports blocking tasks (`blockers`) and, separately, lifecycle rules that would refuse the transition (`rule_blockers`) plus advisory ones (`rule_warnings`). `ready: true` means `daruma_set_status in_progress` passes the rule gate.",
             schema_can_start(),
             Dom::Tasks, D, X, Ann::Read,
         ),
@@ -1151,13 +1151,11 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
     match name {
         // Bridge errors (ADR-0007 Q4): the removed create/capture paths do not
         // vanish silently — they name the replacement.
-        "daruma_create" | "daruma_capture" | "daruma_capture_batch" => {
-            Err(anyhow::anyhow!(
-                "plan_only_intake: `{name}` is removed — tasks are materialized by a plan. \
+        "daruma_create" | "daruma_capture" | "daruma_capture_batch" => Err(anyhow::anyhow!(
+            "plan_only_intake: `{name}` is removed — tasks are materialized by a plan. \
                  Use `daruma_plan_materialize` with the plan and its tasks; raw ideas belong \
                  in the upstream intake/sensemaking layers (ADR-0007)."
-            ))
-        }
+        )),
         "daruma_plan_materialize" => {
             let plan_args = args
                 .get("plan")
@@ -3610,7 +3608,7 @@ fn schema_can_start() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "task_id": {"type":"string","description":"Task id to check for active blockers"}
+            "task_id": {"type":"string","description":"Task id to check for blocking tasks and lifecycle rules"}
         },
         "required":["task_id"]
     })

@@ -3693,7 +3693,11 @@ async fn mutation_warnings(
         return Ok(vec![]);
     };
 
-    let readiness = plan_readiness::can_start(&state.tasks, &state.relations, *id).await?;
+    // Relation blockers only (no gate): this is the *soft* warning attached to
+    // a mutation that is about to run. Rules are enforced hard by the gate
+    // inside the same dispatch, so running them here too would only duplicate
+    // the message on a command that is already being rejected.
+    let readiness = plan_readiness::can_start(&state.tasks, &state.relations, None, *id).await?;
     if readiness.ready {
         return Ok(vec![]);
     }
@@ -4966,7 +4970,15 @@ async fn get_can_start(
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
     let task_id = parse_id(id_str, "task id")?;
-    let readiness = plan_readiness::can_start(&state.tasks, &state.relations, task_id)
+    // The question this endpoint answers is "would `set_status in_progress`
+    // succeed", so it has to consult the same rule gate that transition does.
+    let handler = state.commands.handler();
+    let actor = actor_from(&auth, None);
+    let gate = handler
+        .lifecycle_gate
+        .as_ref()
+        .map(|gate| (gate.as_ref(), &actor));
+    let readiness = plan_readiness::can_start(&state.tasks, &state.relations, gate, task_id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(readiness))
