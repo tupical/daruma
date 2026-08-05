@@ -52,6 +52,8 @@ pub struct AiConfig {
     /// forecast, rejecting cheap calls on a low balance. `None` uses the client
     /// default.
     pub max_output_tokens: Option<u32>,
+    /// Whole-request timeout selected for this provider profile.
+    pub request_timeout_seconds: Option<u64>,
 }
 
 impl AiConfig {
@@ -78,6 +80,9 @@ impl AiConfig {
         let max_output_tokens = std::env::var("OPENAI_MAX_OUTPUT_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok());
+        let request_timeout_seconds = std::env::var("OPENAI_REQUEST_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok());
 
         Ok(Self {
             api_key,
@@ -86,6 +91,7 @@ impl AiConfig {
             api_protocol,
             reasoning_effort,
             max_output_tokens,
+            request_timeout_seconds,
         })
     }
 
@@ -142,6 +148,7 @@ mod tests {
             api_protocol: ApiProtocol::Responses,
             reasoning_effort: None,
             max_output_tokens: None,
+            request_timeout_seconds: None,
         };
         assert_eq!(cfg.responses_url(), "https://api.openai.com/v1/responses");
         assert_eq!(
