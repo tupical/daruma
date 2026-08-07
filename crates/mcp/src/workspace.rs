@@ -122,7 +122,12 @@ impl ScopeView {
         if scope.is_empty() {
             return Ok(None);
         }
-        if let Some((_, project_id)) = self.scopes.iter().find(|(key, _)| key == scope) {
+        let wanted = normalize_path(scope);
+        if let Some((_, project_id)) = self
+            .scopes
+            .iter()
+            .find(|(key, _)| key.as_str() == scope || normalize_path(key) == wanted)
+        {
             return Ok(Some(project_id.clone()));
         }
         let matches = self
@@ -190,9 +195,12 @@ impl ScopeView {
         }
     }
 
-    fn resolve_path(&self, path: &str) -> anyhow::Result<String> {
+    /// Canonical absolute form of a client-supplied path: absolute paths
+    /// (POSIX, Windows or UNC — the client's OS need not match ours) are
+    /// normalized as-is, relative ones resolve against the workspace key.
+    pub fn resolve_path(&self, path: &str) -> anyhow::Result<String> {
         let path = path.trim();
-        if Path::new(path).is_absolute() {
+        if daruma_shared::is_absolute_scope_path(path) {
             return Ok(normalize_path(path));
         }
         let Some(key) = self.key.as_deref() else {
@@ -299,16 +307,15 @@ pub async fn migrate_workspaces_file(client: &ApiClient) -> anyhow::Result<usize
     Ok(migrated)
 }
 
-fn scope_name(scope: &str) -> Option<&str> {
-    Path::new(scope).file_name()?.to_str()
+fn scope_name(scope: &str) -> Option<String> {
+    Path::new(&normalize_path(scope))
+        .file_name()?
+        .to_str()
+        .map(str::to_string)
 }
 
 fn normalize_path(path: &str) -> String {
-    let mut out = path.trim_end_matches('/').to_string();
-    if out.is_empty() {
-        out.push('/');
-    }
-    out
+    daruma_shared::normalize_scope_path(path)
 }
 
 fn path_is_inside(path: &str, root: &str) -> bool {
@@ -469,5 +476,60 @@ mod tests {
         assert!(ws.project_for_path("sub").is_err());
         assert!(ws.scope_for_binding(None).is_err());
         assert_eq!(ws.scope_for_binding(Some("/srv/repo")).unwrap(), "/srv/repo");
+    }
+
+    #[test]
+    fn hosted_session_accepts_windows_client_paths() {
+        // Regression: a Windows client against a Linux-hosted MCP had every
+        // scoped call rejected as "relative `scope_path` … needs a local
+        // workspace", so no task ever got created.
+        let _guard = env_lock();
+        std::env::remove_var("DARUMA_PROJECT_ID");
+        let ws = ScopeView::new(
+            None,
+            vec![(
+                "C:/OSPanel/domains/investprojects.local".to_string(),
+                "prj".to_string(),
+            )],
+        );
+
+        for raw in [
+            r"c:\OSPanel\domains\investprojects.local",
+            "C:/OSPanel/domains/investprojects.local",
+            r"C:\OSPanel\domains\investprojects.local\",
+            r"c:\OSPanel\domains\investprojects.local\vendor\sub",
+        ] {
+            assert_eq!(
+                ws.project_for_path(raw).unwrap(),
+                Some("prj".to_string()),
+                "raw = {raw}"
+            );
+        }
+        // Every spelling binds under one canonical key — no duplicate scopes.
+        assert_eq!(
+            ws.scope_for_binding(Some(r"c:\OSPanel\domains\investprojects.local\"))
+                .unwrap(),
+            "C:/OSPanel/domains/investprojects.local"
+        );
+        // Named-scope lookup still finds it by basename.
+        assert_eq!(
+            ws.project_for_scope("investprojects.local").unwrap(),
+            Some("prj".to_string())
+        );
+    }
+
+    #[test]
+    fn unc_client_paths_resolve() {
+        let _guard = env_lock();
+        std::env::remove_var("DARUMA_PROJECT_ID");
+        let ws = ScopeView::new(
+            None,
+            vec![("//build/share/repo".to_string(), "prj".to_string())],
+        );
+
+        assert_eq!(
+            ws.project_for_path(r"\\build\share\repo\crates").unwrap(),
+            Some("prj".to_string())
+        );
     }
 }

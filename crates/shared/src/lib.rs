@@ -6,6 +6,7 @@
 pub mod error;
 pub mod ids;
 pub mod path_lease;
+pub mod scope_path;
 pub mod time;
 
 pub use error::CoreError;
@@ -16,6 +17,7 @@ pub use ids::{
     WebhookId, WorkLeaseId, WorkUnitId,
 };
 pub use path_lease::{normalize_lease_path, paths_overlap};
+pub use scope_path::{is_absolute_scope_path, normalize_scope_path};
 pub use time::Timestamp;
 
 pub type Result<T, E = CoreError> = std::result::Result<T, E>;

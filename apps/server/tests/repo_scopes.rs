@@ -265,6 +265,53 @@ async fn mcp_list_auto_provisions_scoped_path() {
     assert_eq!(project_count(&app.router, &token).await, 1);
 }
 
+#[tokio::test]
+async fn windows_client_paths_resolve_to_one_project() {
+    // Regression: a Windows client against this Linux-hosted server had every
+    // scoped call rejected ("relative `scope_path` … needs a local workspace"),
+    // so no task could be created. Each spelling must also land on ONE project.
+    let app = TestAppBuilder::default()
+        .auto_provision_repo_project(true)
+        .build()
+        .await;
+    let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
+
+    for scope_path in [
+        r"c:\OSPanel\domains\investprojects.local",
+        "C:/OSPanel/domains/investprojects.local",
+        r"C:\OSPanel\domains\investprojects.local\",
+        r"c:\OSPanel\domains\investprojects.local\vendor",
+    ] {
+        let listed = mcp_call(
+            &addr,
+            &token,
+            "daruma_list",
+            json!({ "status": "active", "scope_path": scope_path }),
+        )
+        .await;
+        assert!(
+            listed.get("needs_project_selection").is_none(),
+            "`{scope_path}` must resolve: {listed}"
+        );
+    }
+
+    let (_, scopes) = json_get(app.router.clone(), &token, "/v1/repo-scopes").await;
+    let arr = scopes.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "one canonical binding expected: {scopes}");
+    assert_eq!(
+        arr[0]["scope_path"],
+        "C:/OSPanel/domains/investprojects.local"
+    );
+    assert_eq!(project_count(&app.router, &token).await, 1, "no duplicates");
+
+    let (_, projects) = json_get(app.router.clone(), &token, "/v1/projects").await;
+    assert_eq!(
+        projects[0]["title"], "investprojects.local",
+        "title = basename, not the whole path: {projects}"
+    );
+}
+
 async fn mcp_call(addr: &std::net::SocketAddr, token: &str, name: &str, args: Value) -> Value {
     let body: Value = reqwest::Client::new()
         .post(format!("http://{addr}/v1/mcp"))

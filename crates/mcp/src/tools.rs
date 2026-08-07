@@ -2349,7 +2349,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let ws = workspace::global();
             let raw_path = args.get("scope_path").and_then(|v| v.as_str());
             let root_path = match (raw_path, ws) {
-                (Some(p), Some(ws)) if !std::path::Path::new(p).is_absolute() => {
+                (Some(p), Some(ws)) if !daruma_shared::is_absolute_scope_path(p) => {
                     std::path::Path::new(ws.key())
                         .join(p)
                         .to_string_lossy()
@@ -2359,6 +2359,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 (None, Some(ws)) => ws.key().to_string(),
                 (None, None) => anyhow::bail!("`scope_path` is required (no workspace state)"),
             };
+            let root_path = daruma_shared::normalize_scope_path(&root_path);
             let mut body = json!({ "root_path": root_path });
             if let Some(c) = args.get("create").and_then(|v| v.as_bool()) {
                 body["create"] = json!(c);
@@ -4353,12 +4354,15 @@ async fn resolve_project_filter(
         }
     }
     if let Some(scope_path) = args.get("scope_path").and_then(|v| v.as_str()) {
-        if let Some(project_id) = view.project_for_path(scope_path)? {
+        // Resolve once and provision under the same canonical key, or a
+        // Windows client would re-provision on every spelling of its path.
+        let scope_path = view.resolve_path(scope_path)?;
+        if let Some(project_id) = view.project_for_path(&scope_path)? {
             return Ok(ProjectFilter::Project(project_id));
         }
         // Unbound path: lazily provision a project when the server has the
         // feature on (default off → None, and we fall through to the error).
-        if let Some(project_id) = client.provision_repo_scope(scope_path).await {
+        if let Some(project_id) = client.provision_repo_scope(&scope_path).await {
             return Ok(ProjectFilter::Project(project_id));
         }
         anyhow::bail!("no daruma scope configured for path `{scope_path}`");

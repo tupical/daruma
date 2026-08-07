@@ -2035,12 +2035,7 @@ async fn put_repo_scope(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let scope_path = body.scope_path.trim().trim_end_matches('/').to_string();
-    if scope_path.is_empty() {
-        return Err(ApiError::from(CoreError::validation(
-            "`scope_path` must be a non-empty path".to_string(),
-        )));
-    }
+    let scope_path = normalized_scope_path(&body.scope_path)?;
     match body.project_id.as_deref().filter(|p| !p.trim().is_empty()) {
         Some(project_id) => {
             let id = parse_project_id(project_id)?;
@@ -2082,6 +2077,19 @@ struct ProvisionBody {
     scope_path: String,
 }
 
+/// Canonical storage key for a client-supplied repo path. Clients run on any
+/// OS, so `c:\Repos\app`, `C:/Repos/app` and `C:/Repos/app/` must all land on
+/// the same `repo_scopes` row instead of provisioning three projects.
+fn normalized_scope_path(raw: &str) -> Result<String, ApiError> {
+    let scope_path = daruma_shared::normalize_scope_path(raw);
+    if raw.trim().is_empty() || scope_path == "/" {
+        return Err(ApiError::from(CoreError::validation(
+            "`scope_path` must be a non-empty path".to_string(),
+        )));
+    }
+    Ok(scope_path)
+}
+
 /// `POST /v1/repo-scopes/provision` — resolve-or-provision the default project
 /// for an exact `scope_path`. Called by the MCP client only after its own
 /// longest-prefix resolution found no binding, so an existing exact binding
@@ -2099,12 +2107,7 @@ async fn provision_repo_scope(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let scope_path = body.scope_path.trim().trim_end_matches('/').to_string();
-    if scope_path.is_empty() {
-        return Err(ApiError::from(CoreError::validation(
-            "`scope_path` must be a non-empty path".to_string(),
-        )));
-    }
+    let scope_path = normalized_scope_path(&body.scope_path)?;
 
     if let Some(project_id) = state.repo_scopes.get(&scope_path).await.map_err(ApiError::from)? {
         return Ok(Json(json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false })));
