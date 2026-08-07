@@ -127,6 +127,21 @@ mod tests {
     }
 
     #[test]
+    fn non_ascii_path_segments_survive() {
+        // A Windows account name is often Cyrillic; byte-level drive/segment
+        // handling must not touch multi-byte segments.
+        assert_eq!(
+            normalize_scope_path(r"c:\Users\Пользователь\repo\"),
+            "C:/Users/Пользователь/repo"
+        );
+        assert!(is_absolute_scope_path(r"c:\Users\Пользователь\repo"));
+        assert_eq!(
+            normalize_scope_path("/home/пользователь/проект"),
+            "/home/пользователь/проект"
+        );
+    }
+
+    #[test]
     fn basename_survives_normalization() {
         // The server derives an auto-provisioned project title from this.
         let p = normalize_scope_path(r"c:\OSPanel\domains\investprojects.local");
