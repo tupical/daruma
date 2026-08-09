@@ -1183,7 +1183,7 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 "project_id": project_id,
                 "owner": {"kind": "user"},
             });
-            for key in ["description", "goal", "parent_plan_id"] {
+            for key in ["description", "goal", "parent_plan_id", "source_brief"] {
                 if let Some(v) = plan_args.get(key).and_then(|v| v.as_str()) {
                     plan[key] = json!(v);
                 }
@@ -3032,6 +3032,7 @@ fn schema_plan_materialize() -> Value {
                     "goal": {"type":"string"},
                     "success_criteria": {"type":"array","items":{"type":"string"}},
                     "parent_plan_id": {"type":"string"},
+                    "source_brief": {"type":"string","description":"Free-text brief that produced this plan (e.g. the original prompt). Set at materialize only; not updatable."},
                     "project_id": {"type":"string","description":"Project; omit to infer from the repo."}
                 },
                 "required":["title"]

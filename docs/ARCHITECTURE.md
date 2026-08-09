@@ -206,7 +206,7 @@ network by design.
 
 - `Plan { id, project_id, parent_plan_id?, title, description, goal,
          success_criteria, status, owner, created_at, updated_at,
-         archived_at? }`, `NewPlan`, `PlanPatch`.
+         archived_at?, source_brief? }`, `NewPlan`, `PlanPatch`.
 - `PlanStatus: Draft | Active | Completed | Abandoned`.
 - `PlanTask { plan_id, task_id, position, depends_on }` — composite-PK
   junction; ordering by `position` is stable; the agent cursor is

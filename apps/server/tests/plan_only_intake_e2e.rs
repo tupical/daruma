@@ -76,7 +76,7 @@ async fn materialize_plan_accepted_when_plan_only_intake_on() {
         &app,
         json!({
             "type": "materialize_plan",
-            "plan": { "title": "POI plan", "project_id": project_id, "owner": { "kind": "user" } },
+            "plan": { "title": "POI plan", "project_id": project_id, "owner": { "kind": "user" }, "source_brief": "raw prompt" },
             "tasks": [ { "title": "POI task" } ]
         }),
     )
@@ -94,4 +94,9 @@ async fn materialize_plan_accepted_when_plan_only_intake_on() {
     assert!(types.contains(&"plan_created"), "{types:?}");
     assert!(types.contains(&"task_created"), "{types:?}");
     assert!(types.contains(&"plan_task_added"), "{types:?}");
+    let created = envelopes
+        .iter()
+        .find(|e| e["payload"]["type"] == "plan_created")
+        .unwrap_or_else(|| panic!("no plan_created envelope: {body}"));
+    assert_eq!(created["payload"]["plan"]["source_brief"], "raw prompt");
 }

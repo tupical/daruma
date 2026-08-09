@@ -115,6 +115,30 @@ async fn plan_materialize_posts_materialize_plan_command() {
 }
 
 #[tokio::test]
+async fn plan_materialize_forwards_source_brief() {
+    let (result, captured) = with_recording_server(
+        "daruma_plan_materialize",
+        json!({
+            "plan": {
+                "title": "From brief",
+                "project_id": "prj-1",
+                "source_brief": "raw prompt"
+            },
+            "tasks": [{"title": "step 1"}],
+        }),
+    )
+    .await;
+    result.expect("materialize must succeed against 200 {}");
+
+    let cap = captured
+        .iter()
+        .find(|c| c.path == "/v1/commands")
+        .expect("materialize must POST /v1/commands");
+    let body = &cap.body["command"];
+    assert_eq!(body["plan"]["source_brief"], "raw prompt");
+}
+
+#[tokio::test]
 async fn plan_materialize_requires_tasks() {
     for args in [
         json!({"plan": {"title": "no tasks", "project_id": "prj-1"}}),
