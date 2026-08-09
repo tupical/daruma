@@ -147,7 +147,6 @@ impl Tier {
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolAnnotations {
-    pub title: &'static str,
     pub read_only_hint: bool,
     pub destructive_hint: bool,
     pub idempotent_hint: bool,
@@ -171,7 +170,7 @@ enum Ann {
 }
 
 impl Ann {
-    fn build(self, title: &'static str) -> ToolAnnotations {
+    fn build(self) -> ToolAnnotations {
         let (read_only, destructive, idempotent, open_world) = match self {
             Ann::Read => (true, false, true, false),
             Ann::Write => (false, false, false, false),
@@ -180,7 +179,6 @@ impl Ann {
             Ann::AiWrite => (false, false, false, true),
         };
         ToolAnnotations {
-            title,
             read_only_hint: read_only,
             destructive_hint: destructive,
             idempotent_hint: idempotent,
@@ -225,7 +223,7 @@ fn tool(
         title,
         description,
         input_schema,
-        annotations: ann.build(title),
+        annotations: ann.build(),
         domain,
         profile,
         tier,
@@ -471,7 +469,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_evidence_submit",
             "Record lifecycle evidence",
-            "Record evidence that a lifecycle requirement is satisfied, so a `required` rule unblocks the transition. Pass the `evidence` object: `kind` (document_read_ack | impact_assessment | decision_record | completion_note | artifact_created | owner_assigned | acceptance_criteria_defined | risk_check_completed), `scope` (tenant/project/plan/task — same shape as a rule scope; each kind has a ceiling on how far it is READ: acceptance_criteria_defined / completion_note / owner_assigned state a fact about ONE entity and are only read at its own scope, impact_assessment and risk_check_completed reach the plan, decision_record and artifact_created the project, document_read_ack tenant-wide. A record wider than its ceiling is stored but satisfies nothing, so record it at the scope of the thing it is about), an optional `target` (the doc/module the requirement names; omit to satisfy any target), plus optional bindings (project_id/plan_id/task_id/run_id/artifact_id/rule_id), `reason`, `payload`, and `doc_version` (for document_read_ack). Evidence is immutable; set `supersedes` to replace an earlier record.",
+            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Kinds: document_read_ack, impact_assessment, decision_record, completion_note, artifact_created, owner_assigned, acceptance_criteria_defined, risk_check_completed. Scope ceilings: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records are stored but satisfy nothing; use the scope of the described entity. Evidence is immutable; `supersedes` replaces a prior record.",
             schema_evidence_submit(),
             // Default profile, not full: defining a rule is an admin act, but
             // attesting that a requirement is met is the executor's — and it is
@@ -2824,7 +2822,7 @@ fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Valu
         "max_tokens": {
             "type":"integer",
             "minimum": 1,
-            "description":"Optional token budget. When set, the object is returned as a bounded excerpt: prose (description/body/content/…) is trimmed longest-first to fit ~max_tokens*4 bytes and a `truncation` marker describes what was withheld. Protected fields (id/status/priority/*_id) are never trimmed. Omit for the full object (default)."
+            "description":"Token budget for a bounded excerpt; prose is trimmed and `truncation` reports omissions; id/status/priority are never trimmed. Omit for the full object."
         }
     });
     if with_dedup {
@@ -2833,7 +2831,7 @@ fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Valu
             json!({
                 "type":"boolean",
                 "default": false,
-                "description":"Opt in to session dedup (default false). When true and this MCP session was already handed this exact object (same `updated_at`), the response is a compact `{\"unchanged\":true,\"ref\":<id>,\"since\":<updated_at>,\"id\",\"status\",\"priority\"}` marker instead of the full payload — re-read the id WITHOUT `dedup` to hydrate the full object. Leave unset unless your client understands the `unchanged`/`ref` contract."
+                "description":"Defaults false. A hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }),
         );
     }
@@ -2851,10 +2849,10 @@ fn schema_complete() -> Value {
         "type":"object",
         "properties": {
             "id": {"type":"string","description":"Task identifier"},
-            "reason": {"type":"string","description":"Optional: why the task is done."},
-            "result_summary": {"type":"string","description":"Optional: what was produced / the outcome."},
-            "acceptance_criteria_status": {"type":"string","description":"Optional: e.g. \"3/3 met\", \"AC2 waived\"."},
-            "related_artifacts": {"type":"array","items":{"type":"string"},"description":"Optional: paths/URLs/doc refs/PR links produced."}
+            "reason": {"type":"string","description":"Why the task is done."},
+            "result_summary": {"type":"string","description":"Produced outcome."},
+            "acceptance_criteria_status": {"type":"string","description":"Acceptance-criteria result."},
+            "related_artifacts": {"type":"array","items":{"type":"string"},"description":"Produced paths, URLs, docs, or PRs."}
         },
         "required": ["id"]
     })
@@ -2920,21 +2918,21 @@ fn schema_evidence_submit() -> Value {
         "properties": {
             "evidence": {
                 "type":"object",
-                "description":"Evidence record (immutable). See the evidence registry.",
+                "description":"Immutable evidence record.",
                 "properties": {
                     "kind": {"type":"string","enum":["document_read_ack","impact_assessment","decision_record","completion_note","artifact_created","owner_assigned","acceptance_criteria_defined","risk_check_completed"]},
-                    "scope": {"type":"object","description":"{\"kind\":\"tenant\"} | {\"kind\":\"project\",\"id\":...} | plan | task."},
-                    "target": {"type":"string","description":"Optional discriminator matching a requirement target / doc_ref; omit to satisfy any target."},
-                    "doc_version": {"type":"string","description":"For document_read_ack: the document version that was read."},
+                    "scope": {"type":"object","description":"{kind: tenant|project|plan|task} plus `id` for non-tenant scopes."},
+                    "target": {"type":"string","description":"Requirement target; omit to match any."},
+                    "doc_version": {"type":"string","description":"Document version read by document_read_ack."},
                     "reason": {"type":"string"},
-                    "payload": {"description":"Optional structured payload (any JSON)."},
+                    "payload": {"description":"Any JSON payload."},
                     "project_id": {"type":"string"},
                     "plan_id": {"type":"string"},
                     "task_id": {"type":"string"},
                     "run_id": {"type":"string"},
                     "artifact_id": {"type":"string"},
                     "rule_id": {"type":"string"},
-                    "supersedes": {"type":"string","description":"Id of an earlier record this one supersedes (immutability: the old row is marked, not edited)."}
+                    "supersedes": {"type":"string","description":"Earlier record replaced by this one."}
                 },
                 "required": ["kind","scope"]
             }
@@ -2947,10 +2945,10 @@ fn schema_evidence_list() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "project_id": {"type":"string","description":"List evidence at this project scope."},
-            "plan_id": {"type":"string","description":"List evidence at this plan scope."},
-            "task_id": {"type":"string","description":"List evidence at this task scope."},
-            "include_superseded": {"type":"boolean","description":"Include superseded records (default false)."}
+            "project_id": {"type":"string","description":"Project scope."},
+            "plan_id": {"type":"string","description":"Plan scope."},
+            "task_id": {"type":"string","description":"Task scope."},
+            "include_superseded": {"type":"boolean","default":false,"description":"Include replaced records."}
         }
     })
 }
@@ -3034,7 +3032,7 @@ fn schema_plan_materialize() -> Value {
                     "goal": {"type":"string"},
                     "success_criteria": {"type":"array","items":{"type":"string"}},
                     "parent_plan_id": {"type":"string"},
-                    "project_id": {"type":"string","description":"Omitted uses the resolved repo project when unambiguous."}
+                    "project_id": {"type":"string","description":"Project; omit to infer from the repo."}
                 },
                 "required":["title"]
             },
@@ -3051,19 +3049,19 @@ fn schema_plan_materialize() -> Value {
                     },
                     "required":["title"]
                 },
-                "description":"Tasks materialized with the plan; each inherits the plan's project and provenance to the PlanCreated event."
+                "description":"Tasks inheriting the plan's project and provenance."
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (usually repo folder name) used when plan.project_id is omitted."
+                "description":"Named daruma scope (repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope (alias-safe form; preferred when a tool already has a `scope` option)."
+                "description":"Named daruma scope, alias-safe form."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured daruma scope."
+                "description":"Path resolved to the nearest configured daruma scope."
             }
         },
         "required":["plan","tasks"]
@@ -3094,11 +3092,11 @@ fn schema_set_status() -> Value {
             "status": {"type":"string","enum":["inbox","todo","in_progress","in_review","done","cancelled"]},
             "force": {
                 "type":"boolean",
-                "description":"When setting in_progress, suppress the soft can_start warning for actively blocked tasks."
+                "description":"Suppress the soft can_start warning when setting in_progress."
             },
             "override_reason": {
                 "type":"string",
-                "description":"Escape hatch: with `force`, overrides a blocking lifecycle rule that permits override, and records why. A blank reason does not override, and one non-overridable rule blocks the whole set. The normal way past a rule is to satisfy it with evidence (daruma_evidence_submit), not this."
+                "description":"With `force`, explain an allowed rule override. Blank reasons and non-overridable rules block the whole set; prefer satisfying the rule with daruma_evidence_submit."
             }
         },
         "required":["id","status"]
@@ -3122,9 +3120,9 @@ fn schema_move_project() -> Value {
         "properties": {
             "id": {"type":"string", "description":"Task id to move."},
             "project_id": {"type":"string", "description":"Destination project id."},
-            "scope": {"type":"string", "description":"Destination daruma scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Destination daruma scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the destination daruma scope."}
+            "scope": {"type":"string", "description":"Destination daruma scope (repo folder name)."},
+            "project_scope": {"type":"string", "description":"Destination daruma scope, alias-safe form."},
+            "scope_path": {"type":"string", "description":"Path resolved to the destination daruma scope."}
         },
         "required":["id"]
     })
@@ -3215,7 +3213,7 @@ fn schema_comment() -> Value {
                     "intent","progress","outcome","blocker","research",
                     "Intent","Progress","Outcome","Blocker","Research"
                 ],
-                "description":"Optional semantic kind (Intent/Progress/Outcome/Blocker/Research)."
+                "description":"Semantic comment kind."
             }
         },
         "required":["task_id","body"]
@@ -3251,23 +3249,23 @@ fn schema_list() -> Value {
         "properties": {
             "project_id": {
                 "type":"string",
-                "description": "Either a project id, `inbox` for tasks with no project, or `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous."
+                "description": "Project id, `inbox` (tasks with no project), or `all` (every project); omit to infer from the repo."
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (usually repo folder name)."
+                "description":"Named daruma scope (repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope (alias-safe form)."
+                "description":"Named daruma scope, alias-safe form."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured daruma scope."
+                "description":"Path resolved to the nearest configured daruma scope."
             },
             "status": {
                 "type":"string",
-                "description": "Required. Single status (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), comma-separated list (e.g. `todo,in_progress`), shortcut `active` (non-terminal), or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
+                "description": "Required. inbox|todo|in_progress|in_review|done|cancelled, a comma-separated list, `active` (non-terminal), or `all`. Ask before `all`: the archive can be very heavy."
             },
             "limit": {
                 "type":"integer",
@@ -3277,13 +3275,13 @@ fn schema_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"Opaque next_cursor from the previous response. Never auto-fetch it without user intent."
+                "description":"Opaque next_cursor; do not auto-fetch."
             },
             "view": {
                 "type":"string",
                 "enum":["summary","detail"],
                 "default":"summary",
-                "description":"summary returns id/title/status/priority/project only; detail returns the legacy full task rows."
+                "description":"summary: id/title/status/priority/project; detail: full task rows."
             }
         },
         "required": ["status"]
@@ -3301,15 +3299,15 @@ fn schema_search() -> Value {
             },
             "project_id": {
                 "type":"string",
-                "description":"Project id, or `all` for every project. Omitted uses the resolved repo project when unambiguous."
+                "description":"Project id or `all`; omit to infer from the repo."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope (use this instead of `scope`, which filters search domains)."
+                "description":"Named daruma scope; use this, not `scope` (which filters search domains)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured daruma scope."
+                "description":"Path resolved to the nearest configured daruma scope."
             },
             "limit": {
                 "type":"integer",
@@ -3319,13 +3317,13 @@ fn schema_search() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"Opaque next_cursor from the previous response. Never auto-fetch it without user intent."
+                "description":"Opaque next_cursor; do not auto-fetch."
             },
             "view": {
                 "type":"string",
                 "enum":["summary","detail"],
                 "default":"summary",
-                "description":"summary returns compact hit rows; detail returns the legacy full search hits."
+                "description":"Compact summaries or full search hits."
             }
         },
         "required":["query"]
@@ -3346,11 +3344,11 @@ fn schema_lesson_recall() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope."
+                "description":"Named daruma scope, alias-safe form."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured daruma scope."
+                "description":"Path resolved to the nearest configured daruma scope."
             },
             "limit": {
                 "type":"integer",
@@ -3400,11 +3398,11 @@ fn schema_project_use() -> Value {
         "properties": {
             "project_id": {
                 "type": ["string", "null"],
-                "description": "Project id, or null to clear the selected workspace/repo scope."
+                "description": "Project id; null clears the selected scope."
             },
             "scope_path": {
                 "type": "string",
-                "description": "Workspace or repository path to bind. Relative paths are resolved from DARUMA_WORKSPACE / process CWD. Omit only when MCP is running inside the repository scope."
+                "description": "Workspace/repo path; relative to DARUMA_WORKSPACE or CWD."
             }
         },
         "required":["project_id"]
@@ -3496,17 +3494,17 @@ fn schema_plan_get() -> Value {
                 "type":"string",
                 "enum":["progress","detail"],
                 "default":"progress",
-                "description":"progress returns compact plan identity, counts, and active/blocked/next task titles; detail returns the legacy full {plan, progress} response."
+                "description":"progress: identity, counts, active/blocked/next task titles; detail: full {plan, progress}."
             },
             "max_tokens": {
                 "type":"integer",
                 "minimum": 1,
-                "description":"Optional token budget for view=detail. When set, prose (goal/description/…) is trimmed to fit ~max_tokens*4 bytes and a `truncation` marker is attached; protected fields are never trimmed. Ignored for view=progress. Omit for the full object."
+                "description":"Token budget for detail; trims prose and adds `truncation`; id/status/priority are never trimmed. Omit for the full object."
             },
             "dedup": {
                 "type":"boolean",
                 "default": false,
-                "description":"Opt in to session dedup for view=detail (default false). When true and this MCP session was already handed this plan at its current `updated_at`, the response is a compact `{\"unchanged\":true,\"ref\":<id>,\"since\":<updated_at>,\"id\",\"status\"}` marker instead of the full {plan, progress} payload — re-read the id WITHOUT `dedup` to hydrate. Ignored for view=progress (already compact). Leave unset unless your client understands the `unchanged`/`ref` contract."
+                "description":"Detail-view session dedup, default false. A hit returns a compact `unchanged` marker with `ref`; re-read without `dedup` for full detail."
             }
         },
         "required":["id"]
@@ -3519,23 +3517,23 @@ fn schema_plan_list() -> Value {
         "properties": {
             "project_id": {
                 "type":"string",
-                "description":"Project id, or `all` to ignore repo inference. When omitted, the resolved repo project is used only if unambiguous."
+                "description":"Project id or `all`; omit to infer from the repo."
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (usually repo folder name)."
+                "description":"Named daruma scope (repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope (alias-safe form)."
+                "description":"Named daruma scope, alias-safe form."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured daruma scope."
+                "description":"Path resolved to the nearest configured daruma scope."
             },
             "status": {
                 "type":"string",
-                "description": "Required. `draft`/`active`/`completed`/`abandoned`, comma-separated list, or `all`. **Ask the user before `all`** — full archive can be a very heavy response."
+                "description": "Required. draft|active|completed|abandoned, a comma-separated list, or `all`. Ask before `all`: the archive can be very heavy."
             },
             "limit": {
                 "type":"integer",
@@ -3545,13 +3543,13 @@ fn schema_plan_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"Opaque next_cursor from the previous response. Never auto-fetch it without user intent."
+                "description":"Opaque next_cursor; do not auto-fetch."
             },
             "view": {
                 "type":"string",
                 "enum":["summary","detail"],
                 "default":"summary",
-                "description":"summary returns id/title/status/project only; detail returns the legacy full plan rows."
+                "description":"summary: id/title/status/project; detail: full plan rows."
             }
         },
         "required": ["status"]
@@ -3610,8 +3608,8 @@ fn schema_plan_drain_next() -> Value {
         "type":"object",
         "properties": {
             "plan_id": {"type":"string","description":"Plan id"},
-            "run_id": {"type":"string","format":"uuid","description":"Optional run UUID returned by daruma_run_start; omit to create an ephemeral id server-side."},
-            "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL in seconds; defaults to 300."}
+            "run_id": {"type":"string","format":"uuid","description":"Run UUID; omit for a server-generated id."},
+            "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL seconds; default 300."}
         },
         "required":["plan_id"]
     })
@@ -3621,7 +3619,7 @@ fn schema_can_start() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "task_id": {"type":"string","description":"Task id to check for blocking tasks and lifecycle rules"}
+            "task_id": {"type":"string","description":"Task checked for blockers and lifecycle rules."}
         },
         "required":["task_id"]
     })
@@ -3661,15 +3659,15 @@ fn schema_workspacegraph_search() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (usually repo folder name)."
+                "description":"Named daruma scope (repo folder name)."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope (alias-safe form)."
+                "description":"Named daruma scope, alias-safe form."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Filesystem path used to resolve the nearest configured daruma scope."
+                "description":"Path resolved to the nearest configured daruma scope."
             },
             "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
         },
@@ -3792,7 +3790,7 @@ fn schema_claim() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from daruma_workspace_info.mcp_agent_id."},
+            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from workspace_info."},
             "task_id":  {"type":"string"},
             "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
         },
@@ -3804,7 +3802,7 @@ fn schema_release() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from daruma_workspace_info.mcp_agent_id."},
+            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from workspace_info."},
             "task_id":  {"type":"string"}
         },
         "required":["agent_id","task_id"]
@@ -4276,9 +4274,9 @@ fn schema_doc_list() -> Value {
                 "type":"string",
                 "description":"Project id. When omitted, the resolved repo project is used only if unambiguous."
             },
-            "scope": {"type":"string", "description":"Named daruma scope (usually repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named daruma scope (alias-safe form)."},
-            "scope_path": {"type":"string", "description":"Filesystem path used to resolve the nearest configured daruma scope."},
+            "scope": {"type":"string", "description":"Named daruma scope (repo folder name)."},
+            "project_scope": {"type":"string", "description":"Named daruma scope, alias-safe form."},
+            "scope_path": {"type":"string", "description":"Path resolved to the nearest configured daruma scope."},
             "kind":             {"type":"string","enum":["interview","human_log"]},
             "include_archived": {"type":"boolean","default":false}
         }
@@ -5877,7 +5875,6 @@ mod profile_tests {
         for t in &tools {
             assert!(!t.title.is_empty(), "{} missing title", t.name);
             assert!(!t.description.is_empty(), "{} missing description", t.name);
-            assert_eq!(t.annotations.title, t.title, "{} annotation title", t.name);
             assert!(seen.insert(t.name), "duplicate tool name {}", t.name);
         }
     }
@@ -5937,7 +5934,6 @@ mod profile_tests {
             "destructiveHint",
             "idempotentHint",
             "openWorldHint",
-            "title",
         ] {
             assert!(ann.get(key).is_some(), "annotations.{key}");
         }
