@@ -233,6 +233,10 @@ pub struct NewPlan {
     pub success_criteria: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_plan_id: Option<PlanId>,
+    /// §3.8.10 provenance: free-text brief that produced this plan
+    /// (typically the original user prompt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_brief: Option<String>,
 }
 
 impl NewPlan {
@@ -246,6 +250,7 @@ impl NewPlan {
             goal: None,
             success_criteria: None,
             parent_plan_id: None,
+            source_brief: None,
         }
     }
 
@@ -264,7 +269,7 @@ impl NewPlan {
             created_at: now,
             updated_at: now,
             archived_at: None,
-            source_brief: None,
+            source_brief: self.source_brief,
         }
     }
 }

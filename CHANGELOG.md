@@ -6,6 +6,13 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Plans retain the brief they came from
+
+Plans can now keep the original brief or prompt that produced them in an
+optional, write-once `source_brief`. Set it during intake with
+`daruma_plan_materialize` or `POST /v1/plans`; previously the database had
+room for it, but no intake path could populate it.
+
 ### Evidence no longer reaches further than it can mean anything
 
 One `evidence_submit` at tenant scope used to satisfy a rule for every entity

@@ -912,6 +912,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_source_brief_survives_new_plan_intake() {
+        use daruma_domain::NewPlan;
+
+        let (_db, repo) = make_repo().await;
+        let plan_id = PlanId::new();
+        let mut new_plan = NewPlan::new("Plan", ProjectId::new(), Actor::user());
+        new_plan.source_brief = Some("brief text".to_string());
+        let plan = new_plan.into_plan(plan_id, time::now());
+
+        let env = EventEnvelope::new(Actor::user(), Event::PlanCreated { plan });
+        repo.apply_event(&env).await.unwrap();
+
+        let fetched = repo.get(plan_id).await.unwrap().expect("plan should exist");
+        assert_eq!(fetched.source_brief.as_deref(), Some("brief text"));
+    }
+
+    #[tokio::test]
     async fn plan_apply_event_status_changed() {
         let (_db, repo) = make_repo().await;
         let project_id = ProjectId::new();
