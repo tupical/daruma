@@ -28,9 +28,8 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // rustls refuses to pick a CryptoProvider when both `ring` and `aws-lc-rs`
-    // end up in the dependency graph — pin ring explicitly before any TLS use
-    // (the pairing client builds a rustls ClientConfig).
+    // reqwest uses `rustls-no-provider` and only reads CryptoProvider::get_default();
+    // without an explicit provider, building any reqwest client panics.
     let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
 
     init_tracing();

@@ -16,6 +16,10 @@ pub struct HttpReplicaSink {
 
 impl HttpReplicaSink {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
+        // Не удалять: тестовые процессы не запускают main; reqwest с
+        // `rustls-no-provider` требует CryptoProvider::get_default().
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
         Self {
             client: reqwest::Client::new(),
             base_url: base_url.into(),

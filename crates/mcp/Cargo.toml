@@ -10,6 +10,7 @@ daruma-shared = { workspace = true }
 
 # HTTP client to daruma-server (HTTP-hop architecture for W3.2 MVP).
 reqwest = { workspace = true }
+tokio-rustls = { workspace = true }
 
 # Async / serde
 tokio       = { workspace = true, features = ["io-util", "io-std", "rt", "rt-multi-thread", "macros", "sync"] }

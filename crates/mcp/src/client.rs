@@ -36,6 +36,10 @@ impl ApiClient {
     /// `base` is the server's root (no trailing slash), e.g.
     /// `http://localhost:8080`. `token` is the bearer.
     pub fn new(base: impl Into<String>, token: impl Into<String>) -> Self {
+        // Не удалять: тесты обходят main, а reqwest с `rustls-no-provider`
+        // паникует, если CryptoProvider::get_default() пуст.
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
         Self {
             base: base.into(),
             token: token.into(),

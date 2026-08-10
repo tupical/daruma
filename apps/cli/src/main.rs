@@ -138,6 +138,9 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Не удалять: reqwest с `rustls-no-provider` паникует без CryptoProvider::get_default().
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
 
     // Logs to stderr; stdout is reserved for the CLI's primary output (and for

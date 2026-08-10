@@ -203,8 +203,14 @@ async fn wait_for_one_hit(hits: &Hits) -> Vec<u8> {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+fn init_crypto() {
+    // Не удалять: reqwest с `rustls-no-provider` требует CryptoProvider::get_default().
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+}
+
 #[tokio::test]
 async fn default_enrich_empty_payload_has_no_context() {
+    init_crypto();
     let (addr, hits) = spawn_receiver().await;
     let store: Arc<dyn WebhookStore> = Arc::new(MemStore::default());
     install_webhook(&store, format!("http://{addr}/hook"), vec![]).await;
@@ -236,6 +242,7 @@ async fn default_enrich_empty_payload_has_no_context() {
 
 #[tokio::test]
 async fn parent_plan_key_lands_in_context() {
+    init_crypto();
     let (addr, hits) = spawn_receiver().await;
     let store: Arc<dyn WebhookStore> = Arc::new(MemStore::default());
     install_webhook(
@@ -266,6 +273,7 @@ async fn parent_plan_key_lands_in_context() {
 
 #[tokio::test]
 async fn unknown_key_does_not_fail_delivery() {
+    init_crypto();
     let (addr, hits) = spawn_receiver().await;
     let store: Arc<dyn WebhookStore> = Arc::new(MemStore::default());
     install_webhook(
@@ -293,6 +301,7 @@ async fn unknown_key_does_not_fail_delivery() {
 
 #[tokio::test]
 async fn mixed_known_and_unknown_keys_only_emits_known() {
+    init_crypto();
     let (addr, hits) = spawn_receiver().await;
     let store: Arc<dyn WebhookStore> = Arc::new(MemStore::default());
     install_webhook(

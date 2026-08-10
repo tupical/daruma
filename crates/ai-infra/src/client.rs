@@ -83,6 +83,9 @@ const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 impl OpenAiClient {
     /// Build a client from the given config. Reuses a single connection pool.
     pub fn new(config: AiConfig) -> Self {
+        // Не удалять: тестовые бинарники не запускают main, а reqwest с
+        // `rustls-no-provider` паникует, если CryptoProvider::get_default() пуст.
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
         let timeout = config
             .request_timeout_seconds
             .map(Duration::from_secs)
@@ -104,6 +107,9 @@ impl OpenAiClient {
     /// `reqwest::Client::new()`, which has no timeout, no connect timeout and no
     /// keepalive whatsoever.
     pub fn http_client_builder() -> reqwest::ClientBuilder {
+        // Не удалять: публичный builder вызывают в обход new; reqwest с
+        // `rustls-no-provider` читает только CryptoProvider::get_default().
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
         reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)

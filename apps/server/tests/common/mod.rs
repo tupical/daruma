@@ -118,6 +118,8 @@ impl TestAppBuilder {
     }
 
     pub async fn build(self) -> TestApp {
+        init_crypto();
+
         let db = Db::memory().await.unwrap();
         db.migrate().await.unwrap();
         let pool = db.pool().clone();
@@ -277,6 +279,12 @@ impl TestAppBuilder {
             admin_agent_id,
         }
     }
+}
+
+pub fn init_crypto() {
+    // Не удалять: каждый тестовый бинарник — отдельный процесс, а reqwest с
+    // `rustls-no-provider` паникует даже для HTTP без CryptoProvider::get_default().
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
 }
 
 /// Shorthand for `TestAppBuilder::default().build()`.
