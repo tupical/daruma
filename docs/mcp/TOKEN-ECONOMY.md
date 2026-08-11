@@ -146,6 +146,23 @@ full object from earlier this session — reuse it. Only if you truly need the
 full body again (e.g. it was evicted from your own context) re-read `ref` with
 the same tool and **omit `dedup`** to force a full payload.
 
+## Mutation-response echo projection
+
+Mutating tools (`readOnlyHint: false`) go through `strip_request_echo`
+(`crates/mcp/src/tools.rs`): the HTTP API echoes request fields back in
+mutation responses, so values that deep-equal something the client itself
+sent in the same call are projected away. Result fields (ids, `status`,
+`seq`, timestamps, error fields — see `is_result_key`) are always kept, and
+strings shorter than `ECHO_MIN_STRIP_LEN` (32 bytes) are never treated as
+echo — the savings would be noise, and stripping enum-like values once
+sliced the `to` out of `task_status_changed` events.
+
+**Escape hatch:** pass `verbose: true` in any tool's arguments to get the
+raw, unprojected response body. The field is deliberately not advertised in
+input schemas (`tools/list` size is its own budget); it validates because
+schemas allow extra keys. Use it when debugging the projection itself or
+when you genuinely need the echoed body back.
+
 ## Design rationale: pre-injection compression preserves the prompt cache
 
 This is **server-side pre-injection** compression: the response is shrunk

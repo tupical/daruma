@@ -4,7 +4,7 @@
 //! the inputs come in as JSON arguments from the MCP client and the
 //! outputs are forwarded as JSON `content` text frames.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1140,10 +1140,174 @@ pub async fn call_tool_in_profile(
     call_tool(client, name, arguments).await
 }
 
+/// Names of catalogue tools that mutate state (readOnlyHint == false),
+/// computed once — building the full catalogue per call would allocate
+/// ~30 KB of definitions for one boolean, on every tool call. Only mutation
+/// responses carry the request echo worth projecting away; read tools are
+/// out of scope here (separate task).
+fn mutation_tool_names() -> &'static HashSet<&'static str> {
+    static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        tool_definitions()
+            .into_iter()
+            .filter(|t| !t.annotations.read_only_hint)
+            .map(|t| t.name)
+            .collect()
+    })
+}
+
+fn is_mutation_tool(name: &str) -> bool {
+    mutation_tool_names().contains(name)
+}
+
+/// Object keys whose values are the *result* of a mutation, never echo.
+/// Kept even when byte-identical to an input value — e.g. the `status` a
+/// `daruma_set_status` caller just sent comes back as the confirmation, and
+/// `daruma_claim` returns the very `task_id` it was given as part of the
+/// granted claim. A result field's subtree is kept verbatim too: projection
+/// does not descend into it.
+fn is_result_key(key: &str) -> bool {
+    key == "id"
+        || key == "ids"
+        || key.ends_with("_id")
+        || key.ends_with("_ids")
+        || key.ends_with("_at")
+        || matches!(
+            key,
+            "status"
+                | "seq"
+                | "event_seq"
+                | "version"
+                | "success"
+                | "error"
+                | "errors"
+                | "code"
+                | "message"
+                | "truncation"
+        )
+}
+
+/// MCP-only response projection for mutating tools: drop every value that is
+/// byte-identical to something the client itself sent in this call's
+/// arguments (`body` of a comment, plan/task titles of a materialize,
+/// completion-note fields, …), keeping everything the client cannot derive
+/// on its own — ids, status, seq, version, timestamps, error fields
+/// (see [`is_result_key`]). This is a projection, not a truncation: nothing
+/// is shortened, only request echo is removed.
+fn strip_request_echo(mut response: Value, args: &Map<String, Value>) -> Value {
+    let mut sent: Vec<Value> = Vec::new();
+    for (key, value) in args {
+        if key != "verbose" {
+            collect_arg_values(value, &mut sent);
+        }
+    }
+    if sent.is_empty() {
+        return response;
+    }
+    strip_echo_values(&mut response, &sent);
+    response
+}
+
+/// Every nested value of `v`, itself included — the set of things the client
+/// already knows because it just sent them.
+fn collect_arg_values(v: &Value, out: &mut Vec<Value>) {
+    out.push(v.clone());
+    match v {
+        Value::Object(map) => {
+            for child in map.values() {
+                collect_arg_values(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                collect_arg_values(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_echo_values(value: &mut Value, sent: &[Value]) {
+    match value {
+        Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                // A result field is kept verbatim, subtree included: its
+                // contents are the mutation's outcome, so nothing inside it
+                // can be request echo.
+                if is_result_key(&key) {
+                    continue;
+                }
+                let child = map.get_mut(&key).expect("key collected from this map");
+                if is_echo(child, sent) {
+                    map.remove(&key);
+                } else {
+                    strip_echo_values(child, sent);
+                }
+            }
+        }
+        // Array elements keep their position — stripping happens at the
+        // object-field level (an echoed array matches its argument as a
+        // whole and is removed with its key).
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                strip_echo_values(item, sent);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Minimum length of a string eligible for echo stripping. The echo worth
+/// projecting away is bulk prose — comment bodies, descriptions, titles,
+/// completion notes. Short enum-like strings (statuses, priorities, event
+/// `from`/`to` values) are a handful of bytes: stripping them saves nothing
+/// and can slice a server-produced record in half — a `task_status_changed`
+/// payload whose `to` equals the `status` the caller just sent would keep
+/// `from` but lose `to`, reporting a transition with an origin and no
+/// destination. Anything shorter than a real sentence is kept.
+const ECHO_MIN_STRIP_LEN: usize = 32;
+
+/// A value is echo when it deep-equals something from the request arguments.
+/// Strings qualify only above [`ECHO_MIN_STRIP_LEN`]; objects/arrays qualify
+/// as a whole (an echoed object matches its argument wholesale). Numbers,
+/// bools and null never qualify — too cheap to matter and too easy to
+/// false-positive (e.g. `success: true`).
+fn is_echo(value: &Value, sent: &[Value]) -> bool {
+    match value {
+        Value::String(s) => {
+            s.len() >= ECHO_MIN_STRIP_LEN && sent.iter().any(|candidate| candidate == value)
+        }
+        Value::Object(_) | Value::Array(_) => sent.iter().any(|candidate| candidate == value),
+        _ => false,
+    }
+}
+
 /// Dispatch a single tool call by name. The MCP client passes `arguments`
 /// as a JSON object; this function returns the JSON body the server
 /// should embed in `content[0].text`.
+///
+/// Mutating tools (readOnlyHint == false) go through [`strip_request_echo`]
+/// on the way out: the HTTP API echoes the request body back in mutation
+/// responses, and forwarding that verbatim makes the agent pay tokens twice
+/// for the same text. The HTTP surface is intentionally untouched — the web
+/// cabinet and other non-agent clients need the full body. Escape hatch:
+/// `verbose: true` in the tool arguments returns the raw, unprojected body
+/// (deliberately not advertised in input schemas — `tools/list` size is a
+/// separate budget; the field validates because schemas allow extra keys).
 pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyhow::Result<Value> {
+    let args = arguments.as_object().cloned().unwrap_or_default();
+    let verbose = args.get("verbose").and_then(Value::as_bool).unwrap_or(false);
+    let result = dispatch_tool(client, name, arguments).await?;
+    // Errors never reach the projection: they are `Err` long before this.
+    if verbose || !is_mutation_tool(name) {
+        return Ok(result);
+    }
+    Ok(strip_request_echo(result, &args))
+}
+
+/// Raw dispatch by tool name, without the mutation-response projection.
+async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyhow::Result<Value> {
     let args = arguments.as_object().cloned().unwrap_or_default();
 
     match name {
@@ -5022,6 +5186,55 @@ fn normalise_comment_kind(raw: &str) -> anyhow::Result<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── mutation-response projection ────────────────────────────────────────
+
+    #[test]
+    fn projection_strips_long_echo_but_keeps_short_enum_strings() {
+        let long_echo = "a long comment body the client sent and the server echoed back";
+        let args = json!({"body": long_echo, "status": "in_progress"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let response = json!({
+            "success": true,
+            "data": {
+                "note": long_echo,
+                "payload": {"from": "todo", "to": "in_progress"}
+            }
+        });
+        let projected = strip_request_echo(response, &args);
+        assert!(
+            projected["data"]["note"].is_null(),
+            "long echoed prose must be stripped: {projected}"
+        );
+        assert_eq!(
+            projected["data"]["payload"]["to"], "in_progress",
+            "short enum-like strings are never echo — the transition target must stay: {projected}"
+        );
+    }
+
+    #[test]
+    fn projection_keeps_protected_key_subtree_verbatim() {
+        let quoted = "a long input fragment the server quoted inside an error detail";
+        let args = json!({"body": quoted}).as_object().unwrap().clone();
+        let response = json!({
+            "success": true,
+            "data": {
+                "note": quoted,
+                "errors": [{"detail": quoted}]
+            }
+        });
+        let projected = strip_request_echo(response, &args);
+        assert!(
+            projected["data"]["note"].is_null(),
+            "unprotected echo must be stripped: {projected}"
+        );
+        assert_eq!(
+            projected["data"]["errors"][0]["detail"], quoted,
+            "a protected result field keeps its whole subtree: {projected}"
+        );
+    }
 
     // ── §3.8.8: comment kind normalisation ──────────────────────────────────
 
