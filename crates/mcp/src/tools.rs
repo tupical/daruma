@@ -2669,7 +2669,10 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("`steps` (array, max 100) is required"))?;
             client
-                .post_json(&format!("/v1/sessions/{id}/plan"), json!({"steps": steps}))
+                .patch_json(
+                    &format!("/v1/sessions/{id}/plan-steps"),
+                    json!({"steps": steps}),
+                )
                 .await
         }
         "daruma_session_artifact" => {
@@ -2699,7 +2702,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("`kind` (signal object) is required"))?;
             client
-                .post_json(&format!("/v1/runs/{run_id}/signals"), json!({"kind": kind}))
+                .post_json(&format!("/v1/runs/{run_id}/signal"), json!({"kind": kind}))
                 .await
         }
         "daruma_signal_respond" => {
@@ -2707,7 +2710,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let choice = required_string(&args, "choice")?;
             client
                 .post_json(
-                    &format!("/v1/runs/{run_id}/signals/respond"),
+                    &format!("/v1/runs/{run_id}/signal/respond"),
                     json!({"choice": choice}),
                 )
                 .await
@@ -4259,10 +4262,10 @@ fn schema_session_set_plan() -> Value {
                 "items": {
                     "type":"object",
                     "properties": {
-                        "label":  {"type":"string"},
+                        "content": {"type":"string"},
                         "status": {"type":"string","enum":["pending","in_progress","done","skipped"]}
                     },
-                    "required":["label"]
+                    "required":["content","status"]
                 },
                 "maxItems": 100
             }
@@ -4335,11 +4338,11 @@ fn schema_signal_send() -> Value {
             "run_id": {"type":"string"},
             "kind": {
                 "type":"object",
-                "description":"Signal payload — e.g. {\"type\":\"stop\"} or {\"type\":\"elicit\",\"prompt\":\"...\"}",
+                "description":"Signal payload — e.g. {\"kind\":\"stop\"} or {\"kind\":\"elicit\",\"prompt\":\"...\",\"choices\":[]}",
                 "properties": {
-                    "type": {"type":"string","enum":["stop","elicit","auth_required","intervention_accepted"]}
+                    "kind": {"type":"string","enum":["stop","elicit","auth_required","intervention_accepted"]}
                 },
-                "required":["type"]
+                "required":["kind"]
             }
         },
         "required":["run_id","kind"]
