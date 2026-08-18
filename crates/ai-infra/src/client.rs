@@ -283,6 +283,20 @@ pub(crate) fn build_chat_request_body(
 // ── Response parser (pure) ────────────────────────────────────────────────────
 
 fn parse_outputs(json: &Value) -> Result<Vec<ResponseOutput>, AiError> {
+    // Ответ, обрезанный по лимиту токенов, приходит с валидным конвертом и
+    // ПОЛОВИНОЙ tool-call'а: `arguments` — оборванная JSON-строка. Без этой
+    // проверки такой ответ уезжал дальше и падал у вызывающего невнятным
+    // `serialization error: EOF while parsing a string at line 1 column N`.
+    // Chat Completions ветка уже ловит это по `finish_reason == "length"`.
+    if json["status"] == "incomplete" {
+        let reason = json["incomplete_details"]["reason"]
+            .as_str()
+            .unwrap_or("unknown");
+        return Err(AiError::ParseFailed(format!(
+            "response incomplete ({reason}); increase max_output_tokens              or ask for fewer items per call"
+        )));
+    }
+
     let items = json["output"]
         .as_array()
         .ok_or_else(|| AiError::ParseFailed("response missing 'output' array".into()))?;
@@ -559,6 +573,26 @@ mod tests {
     fn parse_outputs_missing_array_is_error() {
         let json = json!({"id": "resp_123"});
         assert!(parse_outputs(&json).is_err());
+    }
+
+    /// Регрессия: обрезанный по лимиту токенов ответ несёт валидный конверт и
+    /// оборванный `arguments`. Раньше он проходил парсер и падал у вызывающего
+    /// как «serialization error: EOF while parsing a string».
+    #[test]
+    fn parse_outputs_rejects_truncated_response_with_actionable_message() {
+        let json = json!({
+            "id": "resp_123",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{
+                "type": "function_call",
+                "name": "report_duplicates",
+                "arguments": "{\"verdicts\":[{\"pair_index\":1,\"reason\":\"обрыв"
+            }]
+        });
+
+        let err = parse_outputs(&json).unwrap_err().to_string();
+        assert!(err.contains("max_output_tokens"), "{err}");
     }
 
     #[test]
