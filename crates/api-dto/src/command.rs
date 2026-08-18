@@ -210,6 +210,14 @@ pub enum Command {
     SetPlanStatus {
         plan_id: PlanId,
         status: PlanStatus,
+        /// Required together with `override_reason` to bypass an
+        /// `override_allowed` lifecycle rule; on its own it does nothing.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
+        /// Why an `override_allowed` lifecycle rule is being overridden.
+        /// Requires `force`; blank reasons do not bypass the rule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_reason: Option<String>,
     },
 
     // ── Run commands (W2.2) ───────────────────────────────────────────────────

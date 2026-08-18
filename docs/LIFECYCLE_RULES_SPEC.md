@@ -3,7 +3,7 @@
 - **Статус:** v1 — маппинг сверен с кодом ядра; двойное ревью пройдено
   (code-consistency: approve-with-fixes; coverage: needs-rework → все 17
   находок закрыты правками, 2026-06-11)
-- **Дата:** 2026-06-11
+- **Дата:** 2026-08-18
 - **Контекст:** план «Правила жизненного цикла задач и триггеры» (`019eb654-f391`),
   задача Этапа 1 (`019eb655-92f7`); ADR — your-project/docs/adr-lifecycle-rules.md
 - **Источники:** tupical-personal/docs/{manifest,vision,architecture,plan}.md
@@ -224,20 +224,27 @@ struct EnforcementResult {           // агрегат по всем срабо�
 либо фильтровать и проецировать outcomes в handler.
 
 **Override:** если `override_allowed=true`, мутация с `force=true` +
-непустым `override_reason` проходит сквозь `blocked`; ядро пишет событие
-`RuleOverridden {rule_id, actor, reason}`. Поле `SetStatus.force` уже
-существует и документировано как мягкий обход can_start-блокеров
-(api-dto/src/command.rs:36-43); rules-override расширяет ту же семантику с
-ужесточением: для прохода required-правила `force` без `override_reason`
-НЕ работает — молчаливый force пропускает только can_start-предупреждение,
-но не правило.
+непустым `override_reason` проходит сквозь `blocked`. Поля доступны у
+`SetStatus` и `SetPlanStatus` (MCP: `daruma_set_status` и
+`daruma_plan_set_status`; для плана также HTTP `POST /v1/plans/{id}/status`).
+Override едет на команде, а не на триггере: для обхода при завершении задачи
+нужен `daruma_set_status status=done`, а не `daruma_complete`.
+Обойдённый `blocked` возвращается исполнителю как warning и сейчас попадает в
+аудит как `RuleFired(warning)`; отдельное `RuleOverridden` с сохранением причины
+остаётся целевым контрактом §1.6. Для прохода required-правила `force` без
+`override_reason` НЕ работает — молчаливый force пропускает только
+can_start-предупреждение задачи, но не правило.
 
 Уточнения: override применим только к `blocked` (warning не блокирует и
 override не требует); если среди blocked есть хотя бы одно правило с
 `override_allowed=false`, мутация отклоняется независимо от force;
-can_start-семантика force остаётся отдельным, совместимым путём. Сегодня
-handler `force` не инспектирует (handler.rs:898-906) — вся описанная
-семантика реализуется вместе с гейтом (задача `019eb659-74e6`).
+can_start-семантика force остаётся отдельным, совместимым путём.
+
+Остальные триггеры тоже могут блокировать мутацию, но их команды пока не несут
+override-сигнал: `PlanCreated`, `ProjectCreated`, `TaskCreated`, `TaskHandoff`,
+`RunBeforeExecute`, `RunBeforeComplete`, `DocumentCreated`. Им нужен тот же
+escape-hatch, если продукт разрешает аварийный обход этих правил; это расширение
+за рамками текущего изменения и потому оставлено явно видимым здесь.
 
 ### 1.6 RuleFired / Violation
 

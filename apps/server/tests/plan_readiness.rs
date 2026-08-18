@@ -225,6 +225,8 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
             Command::SetPlanStatus {
                 plan_id,
                 status: daruma_domain::PlanStatus::Active,
+                force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

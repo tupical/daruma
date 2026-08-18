@@ -117,9 +117,9 @@ impl GateCheck {
 /// so an override currently lands in the log as a plain `RuleFired` warning and
 /// the reason is not persisted.
 ///
-/// Both fields come straight off `Command::SetStatus`. `override_reason` is an
-/// escape hatch, not the normal way past a rule: the normal way is to satisfy
-/// the requirement with evidence.
+/// Both fields come straight off task or plan status commands.
+/// `override_reason` is an escape hatch, not the normal way past a rule: the
+/// normal way is to satisfy the requirement with evidence.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct GateOverride {
     pub force: bool,
@@ -130,6 +130,11 @@ pub struct GateOverride {
 pub fn gate_override_of(cmd: &Command) -> GateOverride {
     match cmd {
         Command::SetStatus {
+            force,
+            override_reason,
+            ..
+        }
+        | Command::SetPlanStatus {
             force,
             override_reason,
             ..

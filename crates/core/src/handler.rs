@@ -2034,7 +2034,9 @@ impl CommandHandler {
                 ])
             }
 
-            Command::SetPlanStatus { plan_id, status } => {
+            Command::SetPlanStatus {
+                plan_id, status, ..
+            } => {
                 let plan_repo = self
                     .plans
                     .as_ref()
@@ -3692,6 +3694,8 @@ mod tests {
                 Command::SetPlanStatus {
                     plan_id,
                     status: PS::Active,
+                    force: false,
+                    override_reason: None,
                 },
                 Actor::user(),
             )
@@ -4120,6 +4124,8 @@ mod tests {
                 Command::SetPlanStatus {
                     plan_id,
                     status: PS::Completed,
+                    force: false,
+                    override_reason: None,
                 },
                 Actor::user(),
             )
@@ -4202,6 +4208,8 @@ mod tests {
                 Command::SetPlanStatus {
                     plan_id,
                     status: PS::Completed,
+                    force: false,
+                    override_reason: None,
                 },
                 Actor::user(),
             )

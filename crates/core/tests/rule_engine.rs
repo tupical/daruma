@@ -390,6 +390,8 @@ async fn example1_read_artifact_required_blocks_plan_approve() {
             Command::SetPlanStatus {
                 plan_id: plan,
                 status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -399,6 +401,152 @@ async fn example1_read_artifact_required_blocks_plan_approve() {
         is_blocked(&err, "read-architecture-md message"),
         "got: {err}"
     );
+}
+
+#[tokio::test]
+async fn plan_approve_override_passes_and_returns_the_bypassed_rule_as_a_warning() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "read-architecture-md",
+            RuleScope::Tenant,
+            RuleTrigger::PlanBeforeApprove,
+            Requirement::ReadArtifact {
+                doc_ref: "architecture.md".into(),
+                min_version: "latest".into(),
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let plan = create_plan(&stack, ProjectId::new()).await;
+    let command = |force, override_reason| Command::SetPlanStatus {
+        plan_id: plan,
+        status: PlanStatus::Active,
+        force,
+        override_reason,
+    };
+    let err = stack
+        .handler
+        .handle(command(false, None), Actor::user())
+        .await
+        .expect_err("the rule must block a normal approval");
+    assert!(is_blocked(&err, "read-architecture-md message"), "got: {err}");
+
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            command(true, Some("urgent production repair".into())),
+            Actor::user(),
+        )
+        .await
+        .expect("force + reason must pass an override_allowed plan rule");
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        Event::PlanStatusChanged {
+            plan_id,
+            to: PlanStatus::Active,
+            ..
+        } if *plan_id == plan
+    )));
+    assert_eq!(outcome.warnings.len(), 1);
+    assert_eq!(
+        outcome.warnings[0].code,
+        "rule_warning:read-architecture-md"
+    );
+}
+
+#[tokio::test]
+async fn blank_plan_override_reason_does_not_bypass_the_rule() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "read-architecture-md",
+            RuleScope::Tenant,
+            RuleTrigger::PlanBeforeApprove,
+            Requirement::ReadArtifact {
+                doc_ref: "architecture.md".into(),
+                min_version: "latest".into(),
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let plan = create_plan(&stack, ProjectId::new()).await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetPlanStatus {
+                plan_id: plan,
+                status: PlanStatus::Active,
+                force: true,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("force alone must not override a plan rule");
+    assert!(is_blocked(&err, "read-architecture-md"), "got: {err}");
+
+    let err = stack
+        .handler
+        .handle(
+            Command::SetPlanStatus {
+                plan_id: plan,
+                status: PlanStatus::Active,
+                force: true,
+                override_reason: Some("   ".into()),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("a whitespace reason must not override a plan rule");
+    assert!(is_blocked(&err, "read-architecture-md"), "got: {err}");
+}
+
+#[tokio::test]
+async fn non_overridable_plan_rule_poisons_the_whole_override() {
+    let stack = stack().await;
+    for (rule_key, override_allowed) in [("may-bypass", true), ("no-bypass", false)] {
+        install(
+            &stack,
+            new_rule(
+                rule_key,
+                RuleScope::Tenant,
+                RuleTrigger::PlanBeforeApprove,
+                Requirement::ReadArtifact {
+                    doc_ref: format!("{rule_key}.md"),
+                    min_version: "latest".into(),
+                },
+                RuleMode::Required,
+                override_allowed,
+            ),
+        )
+        .await;
+    }
+
+    let plan = create_plan(&stack, ProjectId::new()).await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetPlanStatus {
+                plan_id: plan,
+                status: PlanStatus::Active,
+                force: true,
+                override_reason: Some("urgent production repair".into()),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("a non-overridable plan rule must survive force + reason");
+    assert!(is_blocked(&err, "may-bypass"), "got: {err}");
+    assert!(is_blocked(&err, "no-bypass"), "got: {err}");
 }
 
 // ── Override (spec §1.5) ────────────────────────────────────────────────────────
@@ -566,6 +714,7 @@ async fn a_single_non_overridable_rule_poisons_the_whole_override() {
         )
         .await
         .expect_err("a non-overridable rule must survive force + reason");
+    assert!(is_blocked(&err, "completion-note"), "got: {err}");
     assert!(is_blocked(&err, "no-bypass"), "got: {err}");
     assert_eq!(
         stack.handler.tasks.get(task).await.unwrap().unwrap().status,
@@ -786,6 +935,8 @@ async fn targeted_read_artifact_satisfied_by_matching_target() {
             Command::SetPlanStatus {
                 plan_id: plan,
                 status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
             },
             Actor::user(),
         )
@@ -1422,6 +1573,8 @@ async fn blocked_error_tells_the_agent_which_evidence_unblocks_it() {
             Command::SetPlanStatus {
                 plan_id: plan,
                 status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

@@ -5,16 +5,53 @@
 //! `{patch: PlanPatch}` respectively; the shim previously sent flat bodies
 //! and got HTTP 422 "missing field `plan`/`patch`").
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use daruma_api_dto::MutationWarning;
+use daruma_core::lifecycle_gate::{
+    GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
+};
+use daruma_domain::Actor;
 use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 use serde_json::json;
 
 mod common;
-use common::{spawn_server, test_app};
+use common::{spawn_server, test_app, TestAppBuilder};
 
 async fn spawn_daruma_inline() -> (std::net::SocketAddr, String) {
     let app = test_app().await;
     let addr = spawn_server(&app).await;
     (addr, app.admin_token)
+}
+
+struct PlanOverrideGate;
+
+#[async_trait]
+impl LifecycleGate for PlanOverrideGate {
+    async fn check(
+        &self,
+        _actor: &Actor,
+        check: &GateCheck,
+        gate_override: &GateOverride,
+    ) -> daruma_shared::Result<GateDecision> {
+        if check.trigger != TriggerEvent::PlanBeforeApprove {
+            return Ok(GateDecision::Allowed);
+        }
+        if gate_override.force
+            && gate_override.override_reason.as_deref() == Some("urgent production repair")
+        {
+            return Ok(GateDecision::Warning(vec![MutationWarning {
+                code: "rule_warning:plan-approval-proof".into(),
+                message: "Read architecture.md before approval.".into(),
+                details: json!({"rule_key": "plan-approval-proof"}),
+            }]));
+        }
+        Ok(GateDecision::Blocked {
+            message: "Read architecture.md before approval.".into(),
+            details: json!({"rule_key": "plan-approval-proof"}),
+        })
+    }
 }
 
 fn req(method: &str, params: serde_json::Value) -> JsonRpcRequest {
@@ -323,6 +360,37 @@ async fn plan_tool_surface_smoke() {
     // Archive.
     let archive = call_tool(&client, "daruma_plan_archive", json!({ "id": plan_id })).await;
     assert_eq!(archive["success"], true, "archive must succeed: {archive}");
+}
+
+#[tokio::test]
+async fn plan_status_override_reaches_http_and_returns_warning_via_mcp() {
+    let app = TestAppBuilder::default()
+        .lifecycle_gate(Arc::new(PlanOverrideGate))
+        .build()
+        .await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token);
+    let project_id = create_project_via_mcp(&client, "Override Project").await;
+    create_plan_via_mcp(&client, &project_id, "Override Plan").await;
+    let plan_id = first_plan_id(&client, &project_id).await;
+
+    let response = call_tool(
+        &client,
+        "daruma_plan_set_status",
+        json!({
+            "plan_id": plan_id,
+            "status": "active",
+            "force": true,
+            "override_reason": "urgent production repair"
+        }),
+    )
+    .await;
+    assert_eq!(response["success"], true);
+    assert_eq!(
+        response["warnings"][0]["code"],
+        "rule_warning:plan-approval-proof",
+        "response: {response}"
+    );
 }
 
 // ── §3.8.14 plan_next_task sort order verification (CTM A.7) ──────────────────

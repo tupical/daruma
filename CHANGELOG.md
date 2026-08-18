@@ -55,6 +55,15 @@ reasons still do not override, and a single non-overridable rule still blocks
 the whole set. This is an escape hatch: the normal way past a rule is to
 satisfy it with evidence.
 
+### Plan status can override an allowed lifecycle block
+
+`set_plan_status` now carries the same `force` and `override_reason` contract
+through the command, MCP tool, and HTTP route. An allowed override returns the
+bypassed `PlanBeforeApprove` rule as a warning; blank reasons and any
+non-overridable blocking rule still reject the transition. The plan-status
+route now also forwards `recommendation` warnings that HTTP/MCP previously
+dropped by returning a hard-coded empty warning list.
+
 ### `can_start` now answers for lifecycle rules too
 
 `GET /v1/tasks/{id}/can_start` (MCP: `daruma_can_start`) used to consider

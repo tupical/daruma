@@ -70,6 +70,8 @@ async fn start_active_run(handler: &CommandHandler) -> RunId {
             Command::SetPlanStatus {
                 plan_id,
                 status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

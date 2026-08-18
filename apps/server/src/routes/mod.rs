@@ -5256,6 +5256,10 @@ async fn archive_plan(
 #[derive(Deserialize)]
 struct SetPlanStatusBody {
     status: PlanStatus,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    override_reason: Option<String>,
 }
 
 /// `POST /v1/plans/{id}/status` — transition a plan into a different
@@ -5272,24 +5276,26 @@ async fn set_plan_status(
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
-    let envs = state
+    let outcome = state
         .commands
-        .dispatch(
+        .dispatch_with_warnings(
             Command::SetPlanStatus {
                 plan_id,
                 status: body.status,
+                force: body.force,
+                override_reason: body.override_reason,
             },
             actor_from(&auth, None),
         )
         .await
         .map_err(ApiError::from)?;
-    let last = envs.last();
+    let last = outcome.events.last();
     Ok(Json(MutationResponse {
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
         data: serde_json::json!({ "plan_id": plan_id }),
-        warnings: vec![],
+        warnings: outcome.warnings,
         client_command_id: None,
     }))
 }

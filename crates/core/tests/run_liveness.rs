@@ -70,6 +70,8 @@ async fn create_active_plan(handler: &CommandHandler) -> daruma_shared::PlanId {
             Command::SetPlanStatus {
                 plan_id,
                 status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
             },
             Actor::user(),
         )

@@ -2009,11 +2009,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_plan_set_status" => {
             let id = required_string(&args, "plan_id")?;
             let status = required_string(&args, "status")?;
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut body = json!({ "status": status, "force": force });
+            if let Some(reason) = args
+                .get("override_reason")
+                .and_then(|v| v.as_str())
+                .filter(|r| !r.trim().is_empty())
+            {
+                body["override_reason"] = json!(reason);
+            }
             client
-                .post_json(
-                    &format!("/v1/plans/{id}/status"),
-                    json!({ "status": status }),
-                )
+                .post_json(&format!("/v1/plans/{id}/status"), body)
                 .await
         }
         "daruma_plan_next_task" => {
@@ -3647,7 +3653,15 @@ fn schema_plan_set_status() -> Value {
         "type":"object",
         "properties": {
             "plan_id": {"type":"string"},
-            "status":  {"type":"string","enum":["draft","active","completed","abandoned"]}
+            "status":  {"type":"string","enum":["draft","active","completed","abandoned"]},
+            "force": {
+                "type":"boolean",
+                "description":"Required together with override_reason to bypass an override_allowed rule on plan.before_approve; on its own it does nothing."
+            },
+            "override_reason": {
+                "type":"string",
+                "description":"With `force`, explain an allowed rule override. Blank reasons and non-overridable rules block the whole set; prefer satisfying the rule with daruma_evidence_submit."
+            }
         },
         "required":["plan_id","status"]
     })
@@ -5278,6 +5292,20 @@ mod tests {
         assert!(
             !required.iter().any(|v| v.as_str() == Some("kind")),
             "`kind` must remain optional"
+        );
+    }
+
+    #[test]
+    fn plan_status_override_schema_matches_task_status() {
+        let task = schema_set_status();
+        let plan = schema_plan_set_status();
+        assert_eq!(
+            plan["properties"]["override_reason"], task["properties"]["override_reason"],
+            "override_reason must keep the task status contract"
+        );
+        assert_eq!(
+            plan["properties"]["force"]["description"],
+            "Required together with override_reason to bypass an override_allowed rule on plan.before_approve; on its own it does nothing."
         );
     }
 
