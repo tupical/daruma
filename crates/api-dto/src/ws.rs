@@ -7,9 +7,37 @@
 use daruma_domain::Actor;
 use daruma_events::{Channel, EventEnvelope};
 use daruma_shared::{EventId, ProjectId};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::command::Command;
+
+/// Принять список `ProjectId` в обеих формах: голым uuid и с префиксом
+/// (`prj_<uuid>`).
+///
+/// `ProjectId` — `#[serde(transparent)]` над `Uuid`, поэтому штатный
+/// `Deserialize` понимает только голую форму. А наружу — в `daruma_project_list`,
+/// в кабинет, в MCP-ответы — id уезжают через `Display`, то есть С префиксом.
+/// Клиент, честно вернувший то, что получил, ронял разбор ВСЕГО кадра
+/// `subscribe`: сервер отвечал `ws_malformed`, подписка не создавалась, а
+/// соединение оставалось живым — лента молча пустела навсегда. Разбираем через
+/// `FromStr`, который принимает обе формы.
+fn de_project_ids<'de, D>(deserializer: D) -> Result<Option<Vec<ProjectId>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let Some(raw) = Option::<Vec<String>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    raw.into_iter()
+        .map(|id| {
+            id.parse::<ProjectId>()
+                .map_err(|e| D::Error::custom(format!("invalid project id `{id}`: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
 
 // ── Server → Client ───────────────────────────────────────────────────────────
 
@@ -100,7 +128,11 @@ pub enum WsClientMessage {
     Subscribe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since_seq: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "de_project_ids",
+            skip_serializing_if = "Option::is_none"
+        )]
         projects: Option<Vec<ProjectId>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         channels: Option<Vec<Channel>>,
@@ -117,4 +149,71 @@ pub enum WsClientMessage {
     Pong,
     /// Ack a delivered event (at-least-once scaffold for future use).
     Ack { event_id: EventId },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn subscribe_projects(json: &str) -> Option<Vec<ProjectId>> {
+        match serde_json::from_str::<WsClientMessage>(json).expect("frame must parse") {
+            WsClientMessage::Subscribe { projects, .. } => projects,
+            other => panic!("expected subscribe, got {other:?}"),
+        }
+    }
+
+    /// Регрессия: id, полученный от daruma в Display-форме, ронял разбор всего
+    /// кадра — сервер отвечал `ws_malformed`, и подписки не возникало.
+    #[test]
+    fn subscribe_accepts_project_ids_with_and_without_prefix() {
+        let uuid = "019e5f3f-ab10-7451-8455-6f3807545eb9";
+        let bare = subscribe_projects(&format!(
+            r#"{{"type":"subscribe","projects":["{uuid}"],"channels":["tasks"]}}"#
+        ));
+        let prefixed = subscribe_projects(&format!(
+            r#"{{"type":"subscribe","projects":["prj_{uuid}"],"channels":["tasks"]}}"#
+        ));
+
+        assert_eq!(
+            bare, prefixed,
+            "обе формы обязаны давать один и тот же фильтр"
+        );
+        assert_eq!(bare.unwrap()[0].to_string(), format!("prj_{uuid}"));
+    }
+
+    #[test]
+    fn subscribe_without_projects_stays_unfiltered() {
+        assert_eq!(
+            subscribe_projects(r#"{"type":"subscribe","channels":["tasks"]}"#),
+            None
+        );
+    }
+
+    /// Мусор по-прежнему ошибка: терпимость к префиксу не должна превращаться
+    /// в молчаливое «подписались на всё».
+    #[test]
+    fn subscribe_rejects_a_project_id_that_is_not_an_id() {
+        let json = r#"{"type":"subscribe","projects":["не-id"],"channels":["tasks"]}"#;
+        assert!(serde_json::from_str::<WsClientMessage>(json).is_err());
+    }
+
+    /// Сериализация не менялась: наружу по-прежнему уезжает голый uuid.
+    #[test]
+    fn subscribe_still_serializes_project_ids_bare() {
+        let uuid = "019e5f3f-ab10-7451-8455-6f3807545eb9";
+        let frame = WsClientMessage::Subscribe {
+            since_seq: None,
+            projects: Some(vec![uuid.parse().unwrap()]),
+            channels: None,
+            assignee: None,
+            verb: None,
+            parent_plan: None,
+        };
+
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(
+            json.contains(&format!(r#""projects":["{uuid}"]"#)),
+            "{json}"
+        );
+    }
 }
