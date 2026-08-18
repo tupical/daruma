@@ -346,7 +346,16 @@ impl CommandHandler {
                                 self.bus.publish(env.clone());
                             }
                         }
-                        return Err(CoreError::conflict(format!("rule_blocked: {message}")));
+                        // Keep the human message first and append the
+                        // machine-readable unblock hints (when the gate
+                        // provides them) so the caller knows exactly which
+                        // evidence satisfies each blocking rule. Code stays
+                        // `conflict`, the `rule_blocked:` prefix is unchanged.
+                        let hint = match details.get("unblock") {
+                            Some(unblock) => format!(" | unblock: {unblock}"),
+                            None => String::new(),
+                        };
+                        return Err(CoreError::conflict(format!("rule_blocked: {message}{hint}")));
                     }
                 }
             }

@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
-use daruma_core::lifecycle_gate::LifecycleGate;
+use daruma_core::lifecycle_gate::{
+    GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
+};
 use daruma_core::rule_engine::RuleEngineGate;
 use daruma_core::{Command, CommandHandler};
 use daruma_domain::{
@@ -1101,6 +1103,452 @@ async fn a_document_read_ack_still_reaches_tenant_wide() {
         assert!(
             stack.can_start(task).await.ready,
             "{title}: a tenant-wide read ack must still inherit downwards"
+        );
+    }
+}
+
+// ── Blocked errors carry a machine-readable unblock hint ─────────────────────
+//
+// A blocked transition used to return only the human rule message
+// (`rule_blocked: Запусти /grill-with-docs`), so an agent could not tell which
+// evidence kind, target and scope would lift the block — and a custom rule
+// message hides even the requirement type. The error now ends with
+// ` | unblock: <compact JSON array>`, one hint per blocking rule.
+
+/// Parse the `unblock` suffix off a `rule_blocked` error. Panics when the
+/// suffix is missing or is not valid JSON — that is the regression guard:
+/// a bare human phrase again must fail these tests. Split on the LAST
+/// occurrence: the rule `message` is free operator text and may itself
+/// contain the ` | unblock: ` separator.
+fn unblock_hints(err: &CoreError) -> Vec<serde_json::Value> {
+    let msg = err.to_string();
+    let (_, suffix) = msg.rsplit_once(" | unblock: ").unwrap_or_else(|| {
+        panic!("blocked error must carry a machine-readable unblock hint, got: {msg}")
+    });
+    serde_json::from_str(suffix)
+        .unwrap_or_else(|e| panic!("unblock suffix must be valid JSON ({e}): {suffix}"))
+}
+
+#[tokio::test]
+async fn creation_hint_excludes_the_entity_that_does_not_exist_yet() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    install(
+        &stack,
+        new_rule(
+            "plan-decision",
+            RuleScope::Tenant,
+            RuleTrigger::PlanCreated,
+            Requirement::DecisionRecord {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+
+    let err = stack
+        .handler
+        .handle(
+            Command::CreatePlan {
+                plan: NewPlan::new("Blocked plan", project, Actor::user()),
+                external_ref: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("required plan.created rule must block creation");
+    let hints = unblock_hints(&err);
+
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0]["evidence"]["kind"], "decision_record");
+    assert_eq!(
+        hints[0]["evidence"]["scope"],
+        serde_json::to_value(RuleScope::Project { id: project }).unwrap(),
+        "the not-yet-persisted plan id must not be suggested as evidence scope"
+    );
+}
+
+#[tokio::test]
+async fn self_only_creation_requirement_reports_that_it_cannot_be_satisfied() {
+    for (override_allowed, expected_note) in [
+        (
+            true,
+            "unsatisfiable before creation; requires override",
+        ),
+        (
+            false,
+            "unsatisfiable before creation and this rule forbids override; the rule must be relaxed or disabled",
+        ),
+    ] {
+        let stack = stack().await;
+        let project = ProjectId::new();
+        install(
+            &stack,
+            new_rule(
+                "plan-owner",
+                RuleScope::Tenant,
+                RuleTrigger::PlanCreated,
+                Requirement::OwnerRequired,
+                RuleMode::Required,
+                override_allowed,
+            ),
+        )
+        .await;
+
+        let err = stack
+            .handler
+            .handle(
+                Command::CreatePlan {
+                    plan: NewPlan::new("Blocked plan", project, Actor::user()),
+                    external_ref: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .expect_err("self-only plan.created rule must block creation");
+        let hints = unblock_hints(&err);
+        let hint = &hints[0];
+
+        assert_eq!(hint["reach"], "self_only");
+        assert_eq!(hint["note"], expected_note);
+        assert!(
+            hint["evidence"].get("scope").is_none(),
+            "no existing scope can satisfy self-only evidence before creation: {hint}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn document_read_hint_keeps_innermost_scope_and_exposes_tenant_reach() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "read-architecture-md",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeStart,
+            Requirement::ReadArtifact {
+                doc_ref: "architecture.md".into(),
+                min_version: "latest".into(),
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Implement architecture").await;
+
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::InProgress,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("missing document read acknowledgement must block");
+    let hints = unblock_hints(&err);
+    let hint = &hints[0];
+
+    assert_eq!(hint["reach"], "tenant");
+    assert_eq!(
+        hint["evidence"]["scope"],
+        serde_json::to_value(RuleScope::Task { id: task }).unwrap(),
+        "the actionable default stays innermost even when wider reuse is valid"
+    );
+}
+
+#[tokio::test]
+async fn unblock_suffix_is_never_added_to_allowed_or_warning_results() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Recommendation,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Warned task").await;
+    let warning = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("recommendation must proceed");
+    assert_eq!(warning.warnings.len(), 1);
+    assert!(!warning.warnings[0].message.contains(" | unblock: "));
+
+    let satisfied = create_task(&stack, "Allowed task").await;
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::CompletionNote,
+            RuleScope::Task { id: satisfied },
+            None,
+        ),
+    )
+    .await;
+    let allowed = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: satisfied,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("satisfied requirement must be allowed");
+    assert!(allowed.warnings.is_empty());
+}
+
+#[tokio::test]
+async fn blocked_details_keep_outcomes_beside_unblock_hints() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    install(
+        &stack,
+        new_rule(
+            "risk-advisory",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::RiskCheck {
+                target: "release".into(),
+                required_fields: vec![],
+            },
+            RuleMode::Recommendation,
+            false,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Blocked task").await;
+    let check = GateCheck {
+        trigger: TriggerEvent::TaskBeforeComplete,
+        project_id: None,
+        task_id: Some(task),
+        plan_id: None,
+        run_id: None,
+        document_id: None,
+        handoff_id: None,
+        status_from: Some(Status::Inbox),
+        status_to: Some(Status::Done),
+        plan_status_from: None,
+        plan_status_to: None,
+    };
+
+    let GateDecision::Blocked { details, .. } = stack
+        .gate
+        .check(&Actor::user(), &check, &GateOverride::default())
+        .await
+        .expect("gate check")
+    else {
+        panic!("required rule must block");
+    };
+    let outcomes = details["outcomes"].as_array().expect("outcomes array");
+    let unblock = details["unblock"].as_array().expect("unblock array");
+
+    assert_eq!(outcomes.len(), 2, "blocked outcome plus recommendation");
+    assert_eq!(unblock.len(), 1, "only blocked outcomes get hints");
+    for (outcome, hint) in outcomes.iter().zip(unblock) {
+        assert_eq!(outcome["decision"], "blocked");
+        assert_eq!(outcome["rule_key"], hint["rule_key"]);
+    }
+    assert_eq!(outcomes[1]["decision"], "warning");
+}
+
+/// The live case: a custom-message `impact_check` rule blocks
+/// plan draft→active; the error must name the rule, the requirement type, the
+/// satisfying evidence kind and target, and the plan scope — not project or
+/// tenant, which `impact_assessment` does not reach.
+#[tokio::test]
+async fn blocked_error_tells_the_agent_which_evidence_unblocks_it() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    install(
+        &stack,
+        new_rule(
+            "grill-with-docs",
+            RuleScope::Tenant,
+            RuleTrigger::PlanBeforeApprove,
+            Requirement::ImpactCheck {
+                target: "release".into(),
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+
+    let plan = create_plan(&stack, project).await;
+    let approve = || {
+        stack.handler.handle(
+            Command::SetPlanStatus {
+                plan_id: plan,
+                status: PlanStatus::Active,
+            },
+            Actor::user(),
+        )
+    };
+    let err = approve().await.expect_err("unsatisfied rule must block");
+
+    let msg = err.to_string();
+    assert!(
+        msg.starts_with("conflict: rule_blocked: "),
+        "code and prefix must not change: {msg}"
+    );
+    assert!(
+        msg.contains("grill-with-docs message"),
+        "the human rule message stays visible: {msg}"
+    );
+
+    let hints = unblock_hints(&err);
+    assert_eq!(hints.len(), 1, "one blocking rule → one hint: {hints:?}");
+    let hint = &hints[0];
+    assert_eq!(hint["rule_key"], "grill-with-docs");
+    assert_eq!(hint["requirement_type"], "impact_check");
+    // The `evidence` object mirrors the `daruma_evidence_submit` argument
+    // shape (`{kind, scope, target?}`), so the hint pastes into the call
+    // without renaming a single field.
+    assert_eq!(hint["evidence"]["kind"], "impact_assessment");
+    assert_eq!(hint["evidence"]["target"], "release");
+    assert_eq!(
+        hint["evidence"]["scope"],
+        serde_json::to_value(RuleScope::Plan { id: plan }).unwrap(),
+        "impact_assessment reaches the plan, not project/tenant"
+    );
+    assert_eq!(hint["reach"], "plan", "the hint exposes the kind's ceiling");
+
+    // The hint is actionable, not just well-formed: evidence recorded exactly
+    // as told lifts the block.
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::ImpactAssessment,
+            RuleScope::Plan { id: plan },
+            Some("release"),
+        ),
+    )
+    .await;
+    approve()
+        .await
+        .expect("evidence recorded per the hint must unblock the approve");
+}
+
+/// Several rules blocking the same transition must ALL appear in the hint
+/// list, not just the first. Also pins the self-only/fallback scope: a
+/// task-triggered check has no project/plan in its chain, so both hints point
+/// at the task itself.
+#[tokio::test]
+async fn blocked_error_lists_every_blocking_rule_not_just_the_first() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    install(
+        &stack,
+        new_rule(
+            "risk-check",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::RiskCheck {
+                target: "deploy".into(),
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("both required rules must block");
+
+    let hints = unblock_hints(&err);
+    assert_eq!(
+        hints.len(),
+        2,
+        "every blocking rule gets a hint, not just the first: {hints:?}"
+    );
+    let by_key: std::collections::HashMap<&str, &serde_json::Value> = hints
+        .iter()
+        .map(|h| (h["rule_key"].as_str().unwrap(), h))
+        .collect();
+    let note = by_key["completion-note"];
+    assert_eq!(note["requirement_type"], "completion_note");
+    assert_eq!(note["evidence"]["kind"], "completion_note");
+    assert!(
+        note["evidence"].get("target").is_none(),
+        "a targetless requirement must not invent a target: {note}"
+    );
+    let risk = by_key["risk-check"];
+    assert_eq!(risk["requirement_type"], "risk_check");
+    assert_eq!(risk["evidence"]["kind"], "risk_check_completed");
+    assert_eq!(risk["evidence"]["target"], "deploy");
+    let task_scope = serde_json::to_value(RuleScope::Task { id: task }).unwrap();
+    for hint in &hints {
+        assert_eq!(
+            hint["evidence"]["scope"], task_scope,
+            "no plan/project in the chain → scope falls back inwards to the task"
         );
     }
 }

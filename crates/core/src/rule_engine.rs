@@ -32,7 +32,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use daruma_api_dto::MutationWarning;
 use daruma_domain::{
-    Actor, Condition, EvidenceKind, Requirement, Rule, RuleMode, RuleScope, RuleTrigger,
+    Actor, Condition, EvidenceKind, EvidenceReach, Requirement, Rule, RuleMode, RuleScope,
+    RuleTrigger,
 };
 use daruma_shared::Result;
 use serde_json::json;
@@ -182,6 +183,14 @@ impl LifecycleGate for RuleEngineGate {
                 })
             }))
             .collect();
+        // Machine-readable unblock hints: one per blocked rule, so the caller
+        // learns the exact evidence that satisfies each requirement without
+        // a trial-and-error loop (the custom rule `message` does not carry
+        // the requirement type, let alone the evidence kind/scope).
+        let unblock: Vec<serde_json::Value> = blocked
+            .iter()
+            .map(|r| unblock_hint(r, &chain, check.trigger))
+            .collect();
         let first = blocked[0];
         Ok(GateDecision::Blocked {
             message: blocked_message(&blocked),
@@ -190,6 +199,7 @@ impl LifecycleGate for RuleEngineGate {
                 "rule_key": first.rule_key,
                 "requirement": first.requirement,
                 "outcomes": outcomes,
+                "unblock": unblock,
             }),
         })
     }
@@ -291,6 +301,117 @@ fn rule_outcome(rule: &Rule, decision: &str) -> serde_json::Value {
         "message": warn_message(rule),
         "requirement": rule.requirement,
     })
+}
+
+/// "What unblocks me" for one blocked rule: the requirement type, the evidence
+/// kind's reach ceiling, and an `evidence` object shaped exactly like the
+/// `evidence` argument of `daruma_evidence_submit` — `{kind, scope, target?}`,
+/// where `scope` is the serde form of [`RuleScope`] (`{kind, id}`) — so the
+/// hint can be pasted into the tool call without renaming a single field. The
+/// handler appends these hints to the `rule_blocked` error so an agent can
+/// submit the right evidence on the first attempt.
+///
+/// Scope choice mirrors `reachable` in `daruma_storage::evidence_repo`: the
+/// innermost element of the check's chain that the kind's reach covers (with
+/// the same inwards fallback when the chain has no element at the ceiling).
+///
+/// Creation triggers are special: the gate runs BEFORE persist, so the
+/// innermost id belongs to an entity that does not exist yet, and a retry
+/// mints a fresh one (`CreateTask`/`CreatePlan` assign ids server-side;
+/// `NewPlan` has no id field at all). Evidence recorded against the phantom
+/// id would never match, so the element the trigger itself creates is
+/// excluded from the advice and the parent scope is hinted instead. When no
+/// remaining element sits inside the kind's reach — always the case for
+/// self-only kinds (`owner_assigned`, `acceptance_criteria_defined`,
+/// `completion_note`) on a creation trigger, since the parent is above their
+/// ceiling — the requirement cannot be satisfied before creation at all. The
+/// hint then carries no `scope` (none would work) and an honest `note`
+/// instead of pretending otherwise.
+fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serde_json::Value {
+    let (kind, target) = requirement_evidence(&rule.requirement);
+    let reach = kind.reach();
+    // Sanity on the FULL chain (before any slicing): `scope_chain` always
+    // seeds the tenant root.
+    let _tenant_root = chain.first().expect("scope chain always has the tenant root");
+
+    let creates_innermost = matches!(
+        trigger,
+        TriggerEvent::ProjectCreated | TriggerEvent::PlanCreated | TriggerEvent::TaskCreated
+    );
+    // The slice of the chain the kind may be read from (mirrors `reachable`),
+    // minus the phantom element a creation trigger is about to persist.
+    let start = match reach {
+        EvidenceReach::SelfOnly => chain.len() - 1,
+        _ => {
+            let ceiling = reach_ceiling(reach);
+            chain
+                .iter()
+                .position(|s| scope_rank(s) >= ceiling)
+                .unwrap_or(chain.len() - 1)
+        }
+    };
+    let end = if creates_innermost {
+        chain.len() - 1
+    } else {
+        chain.len()
+    };
+    let advised = chain[start..end].last();
+
+    let mut evidence = json!({ "kind": kind.as_str() });
+    if let Some(target) = target {
+        evidence["target"] = json!(target);
+    }
+    if let Some(scope) = advised {
+        evidence["scope"] = json!(scope);
+    }
+    let mut hint = json!({
+        "rule_key": rule.rule_key,
+        "requirement_type": rule.requirement.type_str(),
+        "reach": reach_str(reach),
+        "evidence": evidence,
+    });
+    if advised.is_none() {
+        hint["note"] = json!(if rule.override_allowed {
+            "unsatisfiable before creation; requires override"
+        } else {
+            "unsatisfiable before creation and this rule forbids override; the rule must be relaxed or disabled"
+        });
+    }
+    hint
+}
+
+/// Rank of a scope level (tenant outermost … task innermost) — the same table
+/// `reachable` in `daruma_storage::evidence_repo` caps chains with.
+fn scope_rank(scope: &RuleScope) -> u8 {
+    match scope {
+        RuleScope::Tenant => 0,
+        RuleScope::Project { .. } => 1,
+        RuleScope::Plan { .. } => 2,
+        RuleScope::Task { .. } => 3,
+    }
+}
+
+/// Ceiling rank for an evidence reach. `SelfOnly` is handled by slicing to the
+/// innermost element, not by rank; its value here is never used.
+fn reach_ceiling(reach: EvidenceReach) -> u8 {
+    match reach {
+        EvidenceReach::Tenant => 0,
+        EvidenceReach::Project => 1,
+        EvidenceReach::Plan => 2,
+        EvidenceReach::SelfOnly => 3,
+    }
+}
+
+/// Wire form of [`EvidenceReach`] for the unblock hint. A `match` rather than
+/// a `Serialize` impl: the domain enum keeps no serde contract until a real
+/// consumer needs one.
+fn reach_str(reach: EvidenceReach) -> &'static str {
+    match reach {
+        EvidenceReach::SelfOnly => "self_only",
+        EvidenceReach::Plan => "plan",
+        EvidenceReach::Project => "project",
+        EvidenceReach::Tenant => "tenant",
+    }
 }
 
 fn warn_message(rule: &Rule) -> String {

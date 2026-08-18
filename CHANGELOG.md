@@ -6,6 +6,14 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Blocked rules explain how to satisfy them
+
+`rule_blocked` errors now keep the operator-facing message and append a
+machine-readable `unblock` JSON suffix for every blocking rule. Each hint names
+the required evidence, an actionable scope, and its reuse ceiling; requirements
+that cannot be satisfied before entity creation say so instead of suggesting a
+not-yet-persisted id.
+
 ### Plans retain the brief they came from
 
 Plans can now keep the original brief or prompt that produced them in an
