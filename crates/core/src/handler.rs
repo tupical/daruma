@@ -1785,7 +1785,15 @@ impl CommandHandler {
 
                 let project_id = plan.project_id;
                 let now = time::now();
-                let new_plan = plan.into_plan(plan_id, now);
+                let mut new_plan = plan.into_plan(plan_id, now);
+                // Материализация принимает УЖЕ решённый план вместе с его
+                // задачами — черновиковой фазы у неё нет. А `Draft` вдобавок
+                // недренируем: `NextTaskResolver::next` возвращает `None` при
+                // `status != Active`, поэтому план, родившийся черновиком, был
+                // бы нерабочим с первой секунды — задачи в нём копятся, а
+                // `plan_next_task` молча отдаёт «нечего брать». Черновики
+                // по-прежнему заводит `CreatePlan`.
+                new_plan.status = PlanStatus::Active;
                 let mut events = vec![Event::PlanCreated { plan: new_plan }];
 
                 for (position, mut task) in tasks.into_iter().enumerate() {
@@ -1799,6 +1807,13 @@ impl CommandHandler {
                         ));
                     }
                     task.title = t_title;
+                    // Та же причина: задача приехала внутри решённого плана, с
+                    // позицией и зависимостями — она уже разобрана. `Inbox` по
+                    // умолчанию ставил бы её в очередь на триаж, которого для
+                    // плановой задачи не бывает.
+                    if task.status.is_none() {
+                        task.status = Some(Status::Todo);
+                    }
                     let task_id = task.id.unwrap_or_else(TaskId::new);
                     task.id = Some(task_id);
                     // A materialised task is plan-owned (Q1): it inherits the
@@ -4293,7 +4308,16 @@ mod tests {
             let stored = tasks.get(tid).await.unwrap().unwrap();
             assert_eq!(stored.source_event_id, Some(plan_event_id));
             assert_eq!(stored.project_id, Some(project_id));
+            // Не `Inbox`: плановая задача приезжает уже разобранной.
+            assert_eq!(stored.status, Status::Todo);
         }
+
+        // Не `Draft`: черновиковый план недренируем, а материализация — вход
+        // для уже решённой работы.
+        assert_eq!(
+            plans.get(plan_id).await.unwrap().unwrap().status,
+            PlanStatus::Active
+        );
     }
 
     #[tokio::test]
