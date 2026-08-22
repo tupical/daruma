@@ -171,6 +171,17 @@ pub enum Command {
         patch: PlanPatch,
     },
 
+    /// Amend plan-owned fields (title/description/project_id) of a task that
+    /// is a member of the plan (ADR-0007 Q1). The task-level `UpdateTask`
+    /// gate rejects these fields; this plan-scoped command is the only way
+    /// to change them. The patch must be non-empty and carry *only*
+    /// plan-owned fields — execution-owned fields have their own commands.
+    AmendPlanTask {
+        plan_id: PlanId,
+        task_id: TaskId,
+        patch: TaskPatch,
+    },
+
     /// Archive the plan (no further runs allowed).  Atomically aborts all
     /// active runs.
     ArchivePlan {
@@ -497,6 +508,7 @@ impl Command {
             Command::CreatePlan { .. } => "create_plan",
             Command::MaterializePlan { .. } => "materialize_plan",
             Command::UpdatePlan { .. } => "update_plan",
+            Command::AmendPlanTask { .. } => "amend_plan_task",
             Command::ArchivePlan { .. } => "archive_plan",
             Command::AddPlanTask { .. } => "add_plan_task",
             Command::RemovePlanTask { .. } => "remove_plan_task",

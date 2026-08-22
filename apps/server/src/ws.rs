@@ -863,6 +863,7 @@ fn inline_plan_id(ev: &Event) -> Option<PlanId> {
         | Event::PlanStatusChanged { plan_id, .. }
         | Event::PlanGoalChanged { plan_id, .. }
         | Event::PlanTaskAdded { plan_id, .. }
+        | Event::PlanTaskAmended { plan_id, .. }
         | Event::PlanTaskRemoved { plan_id, .. }
         | Event::PlanReordered { plan_id, .. }
         | Event::PlanArchived { plan_id, .. }

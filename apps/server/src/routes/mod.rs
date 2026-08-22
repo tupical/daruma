@@ -267,7 +267,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/plans", post(create_plan).get(list_plans))
         .route("/plans/{id}", patch(update_plan).get(get_plan))
         .route("/plans/{id}/tasks", post(add_plan_task))
-        .route("/plans/{id}/tasks/{task_id}", delete(remove_plan_task))
+        .route("/plans/{id}/tasks/{task_id}", patch(amend_plan_task).delete(remove_plan_task))
         .route("/plans/{id}/reorder", post(reorder_plan))
         .route("/plans/{id}/archive", post(archive_plan))
         .route("/plans/{id}/status", post(set_plan_status))
@@ -4724,6 +4724,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         Command::CreatePlan { .. }
         | Command::MaterializePlan { .. }
         | Command::UpdatePlan { .. }
+        | Command::AmendPlanTask { .. }
         | Command::ArchivePlan { .. }
         | Command::AddPlanTask { .. }
         | Command::RemovePlanTask { .. }
@@ -5175,6 +5176,48 @@ async fn remove_plan_task(
         .commands
         .dispatch(
             Command::RemovePlanTask { plan_id, task_id },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "plan_id": plan_id, "task_id": task_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+/// `PATCH /v1/plans/{id}/tasks/{task_id}` — ADR-0007 Q1 amend path: patch the
+/// plan-owned fields (title/description/project_id) of a plan member. The
+/// patch must carry only plan-owned fields; execution-owned fields go through
+/// their own routes.
+#[derive(Deserialize)]
+struct AmendPlanTaskBody {
+    patch: TaskPatch,
+}
+
+async fn amend_plan_task(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path((id_str, task_id_str)): Path<(String, String)>,
+    Json(body): Json<AmendPlanTaskBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::PlanWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let plan_id = parse_id(id_str, "plan id")?;
+    let task_id = parse_id(&task_id_str, "task id")?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::AmendPlanTask {
+                plan_id,
+                task_id,
+                patch: body.patch,
+            },
             actor_from(&auth, None),
         )
         .await

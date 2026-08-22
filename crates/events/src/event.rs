@@ -264,6 +264,16 @@ pub enum Event {
         task_id: TaskId,
     },
 
+    /// ADR-0007 Q1 — a plan member's plan-owned fields (title / description /
+    /// project_id) were amended through the owning plan (`AmendPlanTask`).
+    /// Emitted alongside `TaskUpdated` so the plan-level audit trail records
+    /// that the change went through the plan amend path, not a bare update.
+    PlanTaskAmended {
+        plan_id: PlanId,
+        task_id: TaskId,
+        patch: TaskPatch,
+    },
+
     /// The task order within the plan was changed.
     PlanReordered {
         plan_id: PlanId,
@@ -887,6 +897,7 @@ impl Event {
             Event::PlanGoalChanged { .. } => "plan_goal_changed",
             Event::PlanTaskAdded { .. } => "plan_task_added",
             Event::PlanTaskRemoved { .. } => "plan_task_removed",
+            Event::PlanTaskAmended { .. } => "plan_task_amended",
             Event::PlanReordered { .. } => "plan_reordered",
             Event::PlanArchived { .. } => "plan_archived",
             // Runs
@@ -971,9 +982,9 @@ impl Event {
             | Event::TaskClosed { task_id, .. }
             | Event::TaskCommented { task_id, .. } => Some(*task_id),
             // Plan task events carry the task id.
-            Event::PlanTaskAdded { task_id, .. } | Event::PlanTaskRemoved { task_id, .. } => {
-                Some(*task_id)
-            }
+            Event::PlanTaskAdded { task_id, .. }
+            | Event::PlanTaskRemoved { task_id, .. }
+            | Event::PlanTaskAmended { task_id, .. } => Some(*task_id),
             // Step events carry the task being executed.
             Event::RunStepStarted { task_id, .. } | Event::RunStepFinished { task_id, .. } => {
                 Some(*task_id)
@@ -1065,6 +1076,7 @@ impl Event {
             | Event::PlanGoalChanged { .. }
             | Event::PlanTaskAdded { .. }
             | Event::PlanTaskRemoved { .. }
+            | Event::PlanTaskAmended { .. }
             | Event::PlanReordered { .. }
             | Event::PlanArchived { .. } => Channel::Plans,
 
@@ -1420,6 +1432,21 @@ mod tests {
                 task_id: TaskId::new(),
             },
             "plan_task_removed",
+        );
+    }
+
+    #[test]
+    fn plan_task_amended_round_trip() {
+        assert_round_trip(
+            Event::PlanTaskAmended {
+                plan_id: PlanId::new(),
+                task_id: TaskId::new(),
+                patch: TaskPatch {
+                    title: Some("New title".into()),
+                    ..Default::default()
+                },
+            },
+            "plan_task_amended",
         );
     }
 

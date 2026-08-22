@@ -1091,17 +1091,15 @@ impl CommandHandler {
                 if self.plan_only_intake {
                     let plan_owned = daruma_domain::plan_owned_patch_fields(&patch);
                     if !plan_owned.is_empty() {
-                        // Do NOT advise "amend the plan": ADR-0007 specified
-                        // that path but it was never built — there is no
-                        // amend command in the enum, no HTTP route, no MCP
-                        // tool. Pointing at it sent callers chasing something
-                        // that does not exist. Say what is actually true until
-                        // AmendPlanTask lands, then name it here.
+                        // ADR-0007 Q1: plan-owned fields change through the
+                        // owning plan's amend path — `AmendPlanTask`, reachable
+                        // as HTTP `PATCH /v1/plans/{id}/tasks/{task_id}` and as
+                        // the MCP tool `daruma_amend_plan_task`.
                         return Err(CoreError::validation(format!(
                             "plan_owned_immutable: field(s) {plan_owned:?} are plan-owned \
-                             (ADR-0007 Q1) and cannot be patched via update_task. \
-                             No amend path exists yet; recreate the plan with the \
-                             intended values. Execution-owned fields are unaffected: \
+                             (ADR-0007 Q1) and cannot be patched via update_task. Use \
+                             amend_plan_task against the owning plan instead. \
+                             Execution-owned fields are unaffected: \
                              status and priority have their own commands \
                              (set_status, set_priority), and due_at still \
                              patches through update_task"
@@ -1865,6 +1863,78 @@ impl CommandHandler {
 
                 events.push(Event::PlanUpdated { plan_id: id, patch });
                 Ok(events)
+            }
+
+            Command::AmendPlanTask {
+                plan_id,
+                task_id,
+                patch,
+            } => {
+                if patch.is_empty() {
+                    return Err(CoreError::validation("amend patch must not be empty"));
+                }
+                // ADR-0007 Q1: the amend path patches ONLY plan-owned fields.
+                // Execution-owned fields have their own commands (set_status,
+                // set_priority, update_task for due_at); a mixed patch would
+                // silently smuggle an execution change past the task-level
+                // gate's error message, so it is rejected outright.
+                if patch.status.is_some()
+                    || patch.priority.is_some()
+                    || patch.triage_state.is_some()
+                    || patch.due_at.is_some()
+                {
+                    return Err(CoreError::validation(
+                        "amend_patch_has_execution_fields: amend_plan_task patches only \
+                         plan-owned fields (title/description/project_id). Execution-owned \
+                         fields go through set_status / set_priority / update_task",
+                    ));
+                }
+                let plan_owned = daruma_domain::plan_owned_patch_fields(&patch);
+                if plan_owned.is_empty() {
+                    return Err(CoreError::validation(
+                        "amend patch must set at least one plan-owned field \
+                         (title/description/project_id)",
+                    ));
+                }
+
+                let plan_repo = self
+                    .plans
+                    .as_ref()
+                    .ok_or_else(|| CoreError::storage("plan repository not configured"))?;
+                plan_repo
+                    .get(plan_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("plan {plan_id}")))?;
+
+                self.tasks
+                    .get(task_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("task {task_id}")))?;
+
+                // Membership: only tasks materialised into (or attached to)
+                // this plan are amendable through it.
+                let members = plan_repo.list_plan_tasks_ordered(plan_id).await?;
+                if !members.iter().any(|m| m.task_id == task_id) {
+                    return Err(CoreError::validation(format!(
+                        "task_not_in_plan: task {task_id} is not a member of \
+                         plan {plan_id}"
+                    )));
+                }
+
+                let active_run_id = self.active_run_for_plan(plan_id).await;
+
+                Ok(vec![
+                    Event::PlanTaskAmended {
+                        plan_id,
+                        task_id,
+                        patch: patch.clone(),
+                    },
+                    Event::TaskUpdated { task_id, patch },
+                    Event::PlanModifiedByHuman {
+                        plan_id,
+                        during_run_id: active_run_id,
+                    },
+                ])
             }
 
             Command::ArchivePlan { id } => {
@@ -4373,11 +4443,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("plan_owned_immutable"), "{err}");
-        // The message must not send callers after an amend path that does not
-        // exist: there is no Amend* command, no HTTP route and no MCP tool.
-        // ADR-0007 specified one, it was never built, and the old wording cost
-        // a caller a round of chasing it. Delete this assert only together with
-        // the command that makes the advice true.
+        // The error names the reachable command (`amend_plan_task`), not a
+        // vague "amend the plan" prose advice.
         assert!(
             !err.to_string().contains("amend the plan"),
             "error advises a non-existent amend path: {err}"
@@ -4398,6 +4465,215 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tasks.get(task_id).await.unwrap().unwrap().priority, Priority::P0);
+    }
+
+    /// Q1, second half: `AmendPlanTask` patches plan-owned fields of a plan
+    /// member and records the amend at the plan level (`PlanTaskAmended`).
+    #[tokio::test]
+    async fn amend_plan_task_patches_member_and_records_amend() {
+        use daruma_domain::{NewPlan, Priority, TaskPatch};
+        let (mut handler, _plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        handler.plan_only_intake = true;
+        let project_id = ProjectId::new();
+
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("p", project_id, Actor::user()),
+                    tasks: vec![NewTask::new("t1")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let (plan_id, _) = plan_created_id(&envs);
+        let task_id = created_task_ids(&envs)[0];
+
+        let envs = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id,
+                    patch: TaskPatch {
+                        title: Some("renamed".into()),
+                        description: Some("amended why".into()),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        // Plan-level amend is recorded…
+        assert!(
+            envs.iter().any(|e| matches!(
+                &e.payload,
+                Event::PlanTaskAmended {
+                    plan_id: p,
+                    task_id: t,
+                    ..
+                } if *p == plan_id && *t == task_id
+            )),
+            "expected PlanTaskAmended for ({plan_id}, {task_id})"
+        );
+        // …alongside the task-level update that drives the projection.
+        assert!(envs.iter().any(|e| matches!(e.payload, Event::TaskUpdated { .. })));
+
+        let stored = tasks.get(task_id).await.unwrap().unwrap();
+        assert_eq!(stored.title, "renamed");
+        assert_eq!(stored.description, "amended why");
+
+        // Execution-owned fields do not ride the amend path.
+        let err = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id,
+                    patch: TaskPatch {
+                        priority: Some(Priority::P0),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("execution"),
+            "expected execution-field rejection: {err}"
+        );
+
+        // A non-existent task is not_found (checked before membership).
+        let err = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id: TaskId::new(),
+                    patch: TaskPatch {
+                        title: Some("ghost".into()),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "not_found");
+        assert!(err.to_string().contains("task"), "{err}");
+
+        // A real task from another plan exists but is not a member here.
+        let other_envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("other", project_id, Actor::user()),
+                    tasks: vec![NewTask::new("outsider")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let outsider = created_task_ids(&other_envs)[0];
+        let err = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id: outsider,
+                    patch: TaskPatch {
+                        title: Some("smuggled".into()),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("task_not_in_plan"), "{err}");
+
+        // An empty patch carries nothing to amend.
+        let err = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id,
+                    patch: TaskPatch::default(),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected empty-patch rejection: {err}"
+        );
+
+        // A mixed patch (title + priority) smuggles an execution field and
+        // must be rejected outright, not silently split.
+        let err = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id,
+                    patch: TaskPatch {
+                        title: Some("renamed again".into()),
+                        priority: Some(Priority::P0),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("execution"),
+            "expected execution-field rejection for mixed patch: {err}"
+        );
+
+        // A non-existent plan is not_found, not a membership error.
+        let ghost_plan = daruma_shared::PlanId::new();
+        let err = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id: ghost_plan,
+                    task_id,
+                    patch: TaskPatch {
+                        title: Some("renamed".into()),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "not_found");
+        assert!(err.to_string().contains("plan"), "{err}");
+
+        // Clearing the project (`project_id: Some(None)`) is a plan-owned
+        // change that applies and detaches the task from its project.
+        let envs = handler
+            .handle(
+                Command::AmendPlanTask {
+                    plan_id,
+                    task_id,
+                    patch: TaskPatch {
+                        project_id: Some(None),
+                        ..Default::default()
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            envs.iter().any(|e| matches!(e.payload, Event::TaskUpdated { .. })),
+            "expected TaskUpdated for project_id clear"
+        );
+        let stored = tasks.get(task_id).await.unwrap().unwrap();
+        assert!(
+            stored.project_id.is_none(),
+            "project_id must be cleared, got {:?}",
+            stored.project_id
+        );
     }
 
     /// Q4: the CreateTask bridge only fires under plan-only intake; the default

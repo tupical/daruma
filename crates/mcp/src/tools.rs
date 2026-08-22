@@ -263,9 +263,16 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, or due date. When plan-only intake is on, title and description are plan-owned and this tool rejects them — there is no amend path yet, so recreate the plan with the intended values. Status and priority are set by daruma_set_status and daruma_set_priority, not here. Recorded in the task event/activity log.",
+            "Update a task's title, description, or due date. When plan-only intake is on, title and description are plan-owned (ADR-0007 Q1) and this tool rejects them — amend them via daruma_amend_plan_task against the owning plan. Status and priority are set by daruma_set_status and daruma_set_priority, not here. Recorded in the task event/activity log.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
+        ),
+        tool(
+            "daruma_amend_plan_task",
+            "Amend plan task",
+            "Amend the plan-owned fields (title/description/project_id) of a task that is a member of a plan (ADR-0007 Q1). Required under plan-only intake; when plan-only intake is off, daruma_update can still change these fields directly. Pass plan_id, task_id and a patch with only plan-owned fields; execution-owned fields (status/priority/triage_state/due_at) go through their own commands — daruma_set_status, daruma_set_priority and daruma_update.",
+            schema_amend_plan_task(),
+            Dom::Plans, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_list",
@@ -1710,6 +1717,19 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let priority = required_string(&args, "priority")?;
             client
                 .post_command(json!({"type":"set_priority","id": id, "priority": priority}))
+                .await
+        }
+        "daruma_amend_plan_task" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            let task_id = required_string(&args, "task_id")?;
+            let patch = args
+                .get("patch")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("`patch` (object) is required"))?;
+            client
+                .post_command(
+                    json!({"type":"amend_plan_task","plan_id": plan_id,"task_id": task_id,"patch": patch}),
+                )
                 .await
         }
         "daruma_move_project" => {
@@ -3285,6 +3305,29 @@ fn schema_set_priority() -> Value {
             "priority": {"type":"string","enum":["p0","p1","p2","p3"]}
         },
         "required":["id","priority"]
+    })
+}
+
+fn schema_amend_plan_task() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string"},
+            "task_id": {"type":"string"},
+            "patch": {
+                "type":"object",
+                "description":"Sparse patch; only plan-owned fields are accepted (title/description/project_id).",
+                "properties": {
+                    "title": {"type":"string"},
+                    "description": {"type":"string"},
+                    "project_id": {
+                        "description":"Project id to set, or null to clear.",
+                        "anyOf": [{"type":"string"}, {"type":"null"}]
+                    }
+                }
+            }
+        },
+        "required":["plan_id","task_id","patch"]
     })
 }
 
@@ -6073,8 +6116,8 @@ mod profile_tests {
         // directions means removing a tool also forces the doc edit.
         assert_eq!(
             default.len(),
-            32,
-            "default profile is {} tools — PROFILES.md documents 32; changing \
+            33,
+            "default profile is {} tools — PROFILES.md documents 33; changing \
              the set needs a deliberate budget decision and a doc edit, not a \
              guard bump",
             default.len()
@@ -6095,6 +6138,7 @@ mod profile_tests {
             "daruma_run_start",
             "daruma_run_complete",
             "daruma_link",
+            "daruma_amend_plan_task",
         ] {
             assert!(default.contains(&required), "default must keep {required}");
         }

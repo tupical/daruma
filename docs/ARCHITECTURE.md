@@ -564,6 +564,7 @@ guard.
 |          | `POST /plans`, `PATCH /plans/{id}`, `GET /plans/{id}`,      |      | `plan:write` / `plan:read`. `GET` returns `Plan + PlanProgress`. |
 |          | `GET /plans?project_id=&status=`,                           |      | `plan:read`. List with optional status filter. |
 |          | `POST /plans/{id}/tasks`,                                   |      | `plan:write`. AddPlanTask. |
+|          | `PATCH /plans/{id}/tasks/{task_id}`,                        |      | `plan:write`. AmendPlanTask: amend plan-owned fields (ADR-0007 Q1). |
 |          | `DELETE /plans/{id}/tasks/{task_id}`,                       |      | `plan:write`. RemovePlanTask. |
 |          | `POST /plans/{id}/reorder`, `POST /plans/{id}/archive`,     |      | `plan:write`. |
 |          | `GET /plans/{id}/next-task?run_id=&claim_ttl_secs=`,        |      | `run:write`. NextTaskResolver entry. |
