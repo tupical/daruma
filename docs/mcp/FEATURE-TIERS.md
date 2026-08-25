@@ -10,7 +10,7 @@
 
 | domain | Core | Enhancing | Extending |
 |---|---:|---:|---:|
-| Plans | 9 | 6 | 2 |
+| Plans | 9 | 7 | 2 |
 | Tasks | 7 | 5 | 3 |
 | Projects | 3 | 4 | 2 |
 | Admin | 0 | 5 | 2 |
@@ -24,7 +24,7 @@
 | Relations | 0 | 3 | 0 |
 | Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 19 | 59 | 41 |
+| ИТОГО | 19 | 60 | 41 |
 
 ## Plans
 
@@ -40,6 +40,7 @@
 | `daruma_plan_remove_task` | Core / основные | `full` | Detach task from plan | write |
 | `daruma_plan_reorder` | Core / основные | `full` | Reorder plan tasks | write |
 | `daruma_plan_archive` | Enhancing / усиливающие | `full` | Archive plan | write,destructive |
+| `daruma_plan_delete` | Enhancing / усиливающие | `full` | Delete plan | write,destructive |
 | `daruma_plan_set_status` | Enhancing / усиливающие | `default` | Set plan status | write |
 | `daruma_plan_next_task` | Enhancing / усиливающие | `full` | Peek next eligible plan task | write |
 | `daruma_plan_progress` | Enhancing / усиливающие | `default` | Plan progress snapshot | read |

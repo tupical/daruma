@@ -121,6 +121,7 @@ fn plan_id_of(ev: &Event) -> Option<PlanId> {
         | Event::PlanTaskRemoved { plan_id, .. }
         | Event::PlanReordered { plan_id, .. }
         | Event::PlanArchived { plan_id, .. }
+        | Event::PlanDeleted { plan_id, .. }
         | Event::PlanModifiedByHuman { plan_id, .. }
         | Event::RunObsolescedByPlanEdit { plan_id, .. } => Some(*plan_id),
         _ => None,

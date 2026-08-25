@@ -364,6 +364,9 @@ impl WorkspaceGraphRepo {
                 )
                 .await?;
             }
+            Event::PlanDeleted { plan_id, .. } => {
+                self.delete_node(&plan_node_id(plan_id)).await?;
+            }
             Event::PlanTaskAdded {
                 plan_id,
                 task_id,
@@ -1753,7 +1756,10 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(node_rows.len(), 2);
-        assert_eq!(node_rows[0], ("RawItem".into(), "raw_1".into(), Some(project.into())));
+        assert_eq!(
+            node_rows[0],
+            ("RawItem".into(), "raw_1".into(), Some(project.into()))
+        );
         assert_eq!(
             node_rows[1],
             ("SensingItem".into(), "si_1".into(), Some(project.into()))

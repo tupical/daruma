@@ -286,6 +286,12 @@ pub enum Event {
         at: Timestamp,
     },
 
+    /// The empty plan was permanently deleted.
+    PlanDeleted {
+        plan_id: PlanId,
+        at: Timestamp,
+    },
+
     // ── Runs — mechanical (Wave 1 / W1.3) ─────────────────────────────────────
     /// An agent started executing a plan.
     RunStarted {
@@ -900,6 +906,7 @@ impl Event {
             Event::PlanTaskAmended { .. } => "plan_task_amended",
             Event::PlanReordered { .. } => "plan_reordered",
             Event::PlanArchived { .. } => "plan_archived",
+            Event::PlanDeleted { .. } => "plan_deleted",
             // Runs
             Event::RunStarted { .. } => "run_started",
             Event::RunStepStarted { .. } => "run_step_started",
@@ -1078,7 +1085,8 @@ impl Event {
             | Event::PlanTaskRemoved { .. }
             | Event::PlanTaskAmended { .. }
             | Event::PlanReordered { .. }
-            | Event::PlanArchived { .. } => Channel::Plans,
+            | Event::PlanArchived { .. }
+            | Event::PlanDeleted { .. } => Channel::Plans,
 
             // ── Runs channel ──────────────────────────────────────────────────
             // Mechanical run events.
@@ -1472,6 +1480,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn plan_deleted_round_trip() {
+        assert_round_trip(
+            Event::PlanDeleted {
+                plan_id: PlanId::new(),
+                at: time::now(),
+            },
+            "plan_deleted",
+        );
+    }
+
     // ── Run events ────────────────────────────────────────────────────────────
 
     #[test]
@@ -1822,6 +1841,10 @@ mod tests {
                 order: vec![],
             },
             Event::PlanArchived {
+                plan_id,
+                at: time::now(),
+            },
+            Event::PlanDeleted {
                 plan_id,
                 at: time::now(),
             },

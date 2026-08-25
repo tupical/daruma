@@ -450,7 +450,9 @@ impl PlanRepo {
                     let id: String = existing
                         .try_get("id")
                         .map_err(|e| CoreError::storage(e.to_string()))?;
-                    return id.parse::<PlanId>().map_err(|e| CoreError::serde(e.to_string()));
+                    return id
+                        .parse::<PlanId>()
+                        .map_err(|e| CoreError::serde(e.to_string()));
                 }
                 let plan_id = PlanId::new();
                 self.upsert_plan(&self.intake_plan(plan_id, pid, "Legacy intake"))
@@ -484,13 +486,13 @@ impl PlanRepo {
         }
 
         let plan_id = self.ensure_intake_plan(project_id).await?;
-        let position: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM plan_tasks WHERE plan_id = ?")
-                .bind(plan_id.to_string())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| CoreError::storage(e.to_string()))?;
-        self.add_task(plan_id, task_id, position as u32, &[]).await?;
+        let position: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plan_tasks WHERE plan_id = ?")
+            .bind(plan_id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        self.add_task(plan_id, task_id, position as u32, &[])
+            .await?;
         Ok(plan_id)
     }
 
@@ -510,7 +512,8 @@ impl PlanRepo {
                 let id: String = r
                     .try_get("id")
                     .map_err(|e| CoreError::storage(e.to_string()))?;
-                id.parse::<TaskId>().map_err(|e| CoreError::serde(e.to_string()))
+                id.parse::<TaskId>()
+                    .map_err(|e| CoreError::serde(e.to_string()))
             })
             .collect()
     }
@@ -593,6 +596,27 @@ impl PlanRepo {
 
             Event::PlanArchived { plan_id, at } => {
                 self.archive(*plan_id, *at).await?;
+            }
+
+            Event::PlanDeleted { plan_id, .. } => {
+                let mut tx = self
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                sqlx::query("DELETE FROM plan_tasks WHERE plan_id = ?")
+                    .bind(plan_id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                sqlx::query("DELETE FROM plans WHERE id = ?")
+                    .bind(plan_id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                tx.commit()
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             _ => {}
@@ -998,6 +1022,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_deleted_removes_plan_and_memberships() {
+        let (db, repo) = make_repo().await;
+        let plan = make_plan(PlanId::new(), ProjectId::new());
+        let plan_id = plan.id;
+        repo.insert(&plan).await.unwrap();
+        let task_id = TaskId::new();
+        insert_task(db.pool(), task_id, None).await;
+        repo.add_task(plan_id, task_id, 0, &[]).await.unwrap();
+
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::PlanDeleted {
+                plan_id,
+                at: time::now(),
+            },
+        ))
+        .await
+        .unwrap();
+
+        assert!(repo.get(plan_id).await.unwrap().is_none());
+        assert!(repo.list_tasks_ordered(plan_id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn add_task_does_not_overwrite_project_for_conflicting_plan() {
         let (db, repo) = make_repo().await;
         let project_a = ProjectId::new();
@@ -1086,12 +1134,21 @@ mod tests {
             Some(PlanRepo::INTAKE_MARKER)
         );
         assert_eq!(a_plans[0].goal, "legacy intake migration");
-        assert_eq!(repo.list_tasks_ordered(a_plans[0].id).await.unwrap().len(), 2);
+        assert_eq!(
+            repo.list_tasks_ordered(a_plans[0].id).await.unwrap().len(),
+            2
+        );
 
         let b_plans = repo.list_by_project(proj_b, None).await.unwrap();
         assert_eq!(b_plans.len(), 1);
-        assert_ne!(a_plans[0].id, b_plans[0].id, "each project gets its own plan");
-        assert_eq!(repo.list_tasks_ordered(b_plans[0].id).await.unwrap().len(), 1);
+        assert_ne!(
+            a_plans[0].id, b_plans[0].id,
+            "each project gets its own plan"
+        );
+        assert_eq!(
+            repo.list_tasks_ordered(b_plans[0].id).await.unwrap().len(),
+            1
+        );
 
         // Global intake plan holds the project-less tasks.
         let global_plan = PlanRepo::GLOBAL_INTAKE_PLAN_ID.parse::<PlanId>().unwrap();
@@ -1204,7 +1261,10 @@ mod tests {
         assert_eq!(repo.ensure_intake_plan(Some(pid)).await.unwrap(), plan);
 
         // attach is a no-op when the task already belongs to a plan.
-        assert_eq!(repo.attach_task_to_intake(t, Some(pid)).await.unwrap(), plan);
+        assert_eq!(
+            repo.attach_task_to_intake(t, Some(pid)).await.unwrap(),
+            plan
+        );
         assert_eq!(repo.list_tasks_ordered(plan).await.unwrap().len(), 1);
     }
 

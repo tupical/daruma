@@ -265,9 +265,15 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         )
         // ── Plan routes (W3.1) ──────────────────────────────────────────────
         .route("/plans", post(create_plan).get(list_plans))
-        .route("/plans/{id}", patch(update_plan).get(get_plan))
+        .route(
+            "/plans/{id}",
+            patch(update_plan).get(get_plan).delete(delete_plan),
+        )
         .route("/plans/{id}/tasks", post(add_plan_task))
-        .route("/plans/{id}/tasks/{task_id}", patch(amend_plan_task).delete(remove_plan_task))
+        .route(
+            "/plans/{id}/tasks/{task_id}",
+            patch(amend_plan_task).delete(remove_plan_task),
+        )
         .route("/plans/{id}/reorder", post(reorder_plan))
         .route("/plans/{id}/archive", post(archive_plan))
         .route("/plans/{id}/status", post(set_plan_status))
@@ -607,7 +613,11 @@ where
         None => 0,
     };
     let (page, has_more) = take_page(items, start, limit);
-    let next_cursor = if has_more { page.last().map(id_of) } else { None };
+    let next_cursor = if has_more {
+        page.last().map(id_of)
+    } else {
+        None
+    };
     json!({ "items": page, "next_cursor": next_cursor, "has_more": has_more })
 }
 
@@ -2109,8 +2119,15 @@ async fn provision_repo_scope(
         .map_err(ApiError::from_missing_cap)?;
     let scope_path = normalized_scope_path(&body.scope_path)?;
 
-    if let Some(project_id) = state.repo_scopes.get(&scope_path).await.map_err(ApiError::from)? {
-        return Ok(Json(json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false })));
+    if let Some(project_id) = state
+        .repo_scopes
+        .get(&scope_path)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Ok(Json(
+            json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false }),
+        ));
     }
     if !state.auto_provision_repo_project {
         return Ok(Json(
@@ -2120,8 +2137,15 @@ async fn provision_repo_scope(
 
     let _guard = PROVISION_LOCK.lock().await;
     // Re-check under the lock: a racing call may have provisioned already.
-    if let Some(project_id) = state.repo_scopes.get(&scope_path).await.map_err(ApiError::from)? {
-        return Ok(Json(json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false })));
+    if let Some(project_id) = state
+        .repo_scopes
+        .get(&scope_path)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Ok(Json(
+            json!({ "scope_path": scope_path, "project_id": project_id, "provisioned": false }),
+        ));
     }
 
     let title = std::path::Path::new(&scope_path)
@@ -2873,9 +2897,7 @@ async fn resolve_missing_findings(
     let seen = body
         .seen
         .iter()
-        .map(|s| {
-            parse_id(s, "finding id")
-        })
+        .map(|s| parse_id(s, "finding id"))
         .collect::<Result<Vec<_>, _>>()?;
     let actor = daruma_domain::ActorRef::from_actor(&actor_from(&auth, None));
     let resolved = state
@@ -4726,6 +4748,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::UpdatePlan { .. }
         | Command::AmendPlanTask { .. }
         | Command::ArchivePlan { .. }
+        | Command::DeletePlan { .. }
         | Command::AddPlanTask { .. }
         | Command::RemovePlanTask { .. }
         | Command::ReorderPlan { .. }
@@ -5296,6 +5319,30 @@ async fn archive_plan(
     }))
 }
 
+async fn delete_plan(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::PlanWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let plan_id = parse_id(id_str, "plan id")?;
+    let envs = state
+        .commands
+        .dispatch(Command::DeletePlan { id: plan_id }, actor_from(&auth, None))
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "plan_id": plan_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
 #[derive(Deserialize)]
 struct SetPlanStatusBody {
     status: PlanStatus,
@@ -5367,9 +5414,7 @@ async fn get_next_task(
     let run_id = q
         .run_id
         .as_deref()
-        .map(|s| {
-            parse_id(s, "run id")
-        })
+        .map(|s| parse_id(s, "run id"))
         .transpose()?
         .unwrap_or_else(RunId::new);
     let claim_ttl = q.claim_ttl_secs.map(std::time::Duration::from_secs);
@@ -6017,9 +6062,7 @@ async fn list_run_notes(
     let after = q
         .after
         .as_deref()
-        .map(|s| {
-            parse_id(s, "after cursor")
-        })
+        .map(|s| parse_id(s, "after cursor"))
         .transpose()?;
 
     let notes = state
@@ -6412,9 +6455,7 @@ async fn list_active_claims(
         .project_id
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(|s| {
-            parse_id(s, "project id")
-        })
+        .map(|s| parse_id(s, "project id"))
         .transpose()?;
     let claims = state
         .claims
@@ -6671,9 +6712,7 @@ async fn active_work(
         .project_id
         .as_deref()
         .filter(|s| !s.is_empty())
-        .map(|s| {
-            parse_id(s, "project id")
-        })
+        .map(|s| parse_id(s, "project id"))
         .transpose()?;
     let leases = state
         .work_leases

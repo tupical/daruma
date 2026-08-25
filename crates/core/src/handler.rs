@@ -355,7 +355,9 @@ impl CommandHandler {
                             Some(unblock) => format!(" | unblock: {unblock}"),
                             None => String::new(),
                         };
-                        return Err(CoreError::conflict(format!("rule_blocked: {message}{hint}")));
+                        return Err(CoreError::conflict(format!(
+                            "rule_blocked: {message}{hint}"
+                        )));
                     }
                 }
             }
@@ -1031,8 +1033,7 @@ impl CommandHandler {
                 // in the workspace-unique index.
                 if let Some(k) = task.external_key.as_ref() {
                     let trimmed = k.trim();
-                    task.external_key =
-                        (!trimmed.is_empty()).then(|| trimmed.to_string());
+                    task.external_key = (!trimmed.is_empty()).then(|| trimmed.to_string());
                 }
 
                 // Idempotent create via external_key (workspace-scoped upsert).
@@ -1430,9 +1431,10 @@ impl CommandHandler {
                 // plan's goal/criteria) and the operation is recorded as an
                 // amend. A split of a plan-less parent is rejected.
                 if self.plan_only_intake {
-                    let plans = self.plans.as_ref().ok_or_else(|| {
-                        CoreError::storage("plan repository not configured")
-                    })?;
+                    let plans = self
+                        .plans
+                        .as_ref()
+                        .ok_or_else(|| CoreError::storage("plan repository not configured"))?;
                     let parent_plans = plans.list_plans_for_task(parent).await?;
                     if parent_plans.is_empty() {
                         return Err(CoreError::validation(format!(
@@ -1964,6 +1966,48 @@ impl CommandHandler {
                         events.push(Event::RunAborted {
                             run_id: run.id,
                             reason: "plan_archived".to_string(),
+                            at: now,
+                        });
+                        events.push(Event::RunObsolescedByPlanEdit {
+                            run_id: run.id,
+                            plan_id: id,
+                            kind: ObsolescenceKind::Archived,
+                        });
+                    }
+                }
+
+                Ok(events)
+            }
+
+            Command::DeletePlan { id } => {
+                let plan_repo = self
+                    .plans
+                    .as_ref()
+                    .ok_or_else(|| CoreError::storage("plan repository not configured"))?;
+                plan_repo
+                    .get(id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("plan {id}")))?;
+
+                let attached = plan_repo.list_plan_tasks_ordered(id).await?.len();
+                if attached > 0 {
+                    return Err(CoreError::conflict(format!(
+                        "plan_not_empty: {attached} task(s) attached"
+                    )));
+                }
+
+                let now = time::now();
+                let mut events = vec![Event::PlanDeleted {
+                    plan_id: id,
+                    at: now,
+                }];
+
+                if let Some(run_repo) = &self.runs {
+                    let active_runs = run_repo.list_active_for_plan(id).await?;
+                    for run in active_runs {
+                        events.push(Event::RunAborted {
+                            run_id: run.id,
+                            reason: "plan_deleted".to_string(),
                             at: now,
                         });
                         events.push(Event::RunObsolescedByPlanEdit {
@@ -3196,6 +3240,10 @@ mod tests {
                         p.status = PS::Abandoned;
                     }
                 }
+                Event::PlanDeleted { plan_id, .. } => {
+                    self.plan_tasks.lock().unwrap().remove(plan_id);
+                    self.plans.lock().unwrap().remove(plan_id);
+                }
                 Event::PlanTaskAdded {
                     plan_id,
                     task_id,
@@ -4005,6 +4053,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_empty_plan_emits_event_and_removes_projection() {
+        let (handler, plans, ..) = build_plan_stack().await;
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+
+        let envs = handler
+            .handle(Command::DeletePlan { id: plan_id }, Actor::user())
+            .await
+            .unwrap();
+
+        assert_eq!(envs.len(), 1);
+        assert!(matches!(
+            &envs[0].payload,
+            Event::PlanDeleted { plan_id: id, .. } if *id == plan_id
+        ));
+        assert!(plans.get(plan_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_non_empty_plan_conflicts() {
+        let (handler, ..) = build_plan_stack().await;
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+        let task_envs = handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("Attached task"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let task_id = match &task_envs[0].payload {
+            Event::TaskCreated { task } => task.id.unwrap(),
+            _ => panic!("expected TaskCreated"),
+        };
+        handler
+            .handle(
+                Command::AddPlanTask {
+                    plan_id,
+                    task_id,
+                    position: None,
+                    depends_on: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let err = handler
+            .handle(Command::DeletePlan { id: plan_id }, Actor::user())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), "conflict");
+        assert!(err
+            .to_string()
+            .contains("plan_not_empty: 1 task(s) attached"));
+    }
+
+    #[tokio::test]
+    async fn delete_plan_with_active_run_aborts_it() {
+        let (handler, ..) = build_plan_stack().await;
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+        handler
+            .handle(
+                Command::StartRun {
+                    plan_id,
+                    agent_id: AgentId::new(),
+                    parent_run_id: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let envs = handler
+            .handle(Command::DeletePlan { id: plan_id }, Actor::user())
+            .await
+            .unwrap();
+
+        assert_eq!(envs.len(), 3);
+        assert!(matches!(&envs[0].payload, Event::PlanDeleted { .. }));
+        assert!(
+            matches!(&envs[1].payload, Event::RunAborted { reason, .. } if reason == "plan_deleted")
+        );
+        assert!(matches!(
+            &envs[2].payload,
+            Event::RunObsolescedByPlanEdit {
+                kind: ObsolescenceKind::Archived,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn repeated_delete_plan_returns_not_found() {
+        let (handler, ..) = build_plan_stack().await;
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+        handler
+            .handle(Command::DeletePlan { id: plan_id }, Actor::user())
+            .await
+            .unwrap();
+
+        let err = handler
+            .handle(Command::DeletePlan { id: plan_id }, Actor::user())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code(), "not_found");
+    }
+
+    #[tokio::test]
     async fn update_agent_session_plan_rejects_over_100_steps() {
         use daruma_domain::AgentSessionPlanStep;
         use daruma_domain::SessionStepStatus;
@@ -4464,7 +4623,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(tasks.get(task_id).await.unwrap().unwrap().priority, Priority::P0);
+        assert_eq!(
+            tasks.get(task_id).await.unwrap().unwrap().priority,
+            Priority::P0
+        );
     }
 
     /// Q1, second half: `AmendPlanTask` patches plan-owned fields of a plan
@@ -4518,7 +4680,9 @@ mod tests {
             "expected PlanTaskAmended for ({plan_id}, {task_id})"
         );
         // …alongside the task-level update that drives the projection.
-        assert!(envs.iter().any(|e| matches!(e.payload, Event::TaskUpdated { .. })));
+        assert!(envs
+            .iter()
+            .any(|e| matches!(e.payload, Event::TaskUpdated { .. })));
 
         let stored = tasks.get(task_id).await.unwrap().unwrap();
         assert_eq!(stored.title, "renamed");
@@ -4665,7 +4829,8 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            envs.iter().any(|e| matches!(e.payload, Event::TaskUpdated { .. })),
+            envs.iter()
+                .any(|e| matches!(e.payload, Event::TaskUpdated { .. })),
             "expected TaskUpdated for project_id clear"
         );
         let stored = tasks.get(task_id).await.unwrap().unwrap();
@@ -4692,7 +4857,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(ok.iter().any(|e| matches!(e.payload, Event::TaskCreated { .. })));
+        assert!(ok
+            .iter()
+            .any(|e| matches!(e.payload, Event::TaskCreated { .. })));
 
         // on: bridged to a structured error.
         handler.plan_only_intake = true;
@@ -4754,7 +4921,10 @@ mod tests {
             "both children attach to the parent's plan"
         );
         // parent + 2 children now in the plan.
-        assert_eq!(plans.list_plan_tasks_ordered(plan_id).await.unwrap().len(), 3);
+        assert_eq!(
+            plans.list_plan_tasks_ordered(plan_id).await.unwrap().len(),
+            3
+        );
     }
 
     /// Q3: a split of a plan-less parent is rejected under plan-only intake.

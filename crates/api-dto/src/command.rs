@@ -188,6 +188,11 @@ pub enum Command {
         id: PlanId,
     },
 
+    /// Permanently delete an empty plan. Atomically aborts all active runs.
+    DeletePlan {
+        id: PlanId,
+    },
+
     /// Attach a task to a plan at the given position (append at end if absent).
     AddPlanTask {
         plan_id: PlanId,
@@ -510,6 +515,7 @@ impl Command {
             Command::UpdatePlan { .. } => "update_plan",
             Command::AmendPlanTask { .. } => "amend_plan_task",
             Command::ArchivePlan { .. } => "archive_plan",
+            Command::DeletePlan { .. } => "delete_plan",
             Command::AddPlanTask { .. } => "add_plan_task",
             Command::RemovePlanTask { .. } => "remove_plan_task",
             Command::ReorderPlan { .. } => "reorder_plan",

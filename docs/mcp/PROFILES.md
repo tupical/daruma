@@ -1,7 +1,7 @@
 # MCP tool-surface profiles
 
-Daruma's MCP catalogue grew API-first to ~94 tools. Most agent sessions
-use a dozen of them, and a 94-tool `tools/list` burns context before the
+Daruma's MCP catalogue grew API-first to 120 tools. Most agent sessions
+use a dozen of them, and a 120-tool `tools/list` burns context before the
 user's request is even read. Profiles split the surface:
 
 | Profile | Tools | Audience |
@@ -60,7 +60,7 @@ job — competing/overlapping alternatives stay in `full`:
 |--------|--------------|----------------------------|
 | Tasks | get, update, list, search, comment, set_status, set_priority, complete, reopen, can_start | bulk_set_status (bulk = orchestration), split, move_project (rare), delete (destructive), lesson_recall |
 | Projects | project_list, project_use, workspace_info, healthz | project_create (rare), project_delete (destructive, two-step), workspace_resolve, workspace_list, project_move_workspace (registry ops) |
-| Plans | plan_materialize (the only task intake, ADR-0007), plan_create, plan_get, plan_list, plan_add_task (attach an existing task, not intake), amend_plan_task (plan-owned task fields, ADR-0007 Q1), plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
+| Plans | plan_materialize (the only task intake, ADR-0007), plan_create, plan_get, plan_list, plan_add_task (attach an existing task, not intake), amend_plan_task (plan-owned task fields, ADR-0007 Q1), plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_delete, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
 | Runs | run_start, run_complete, run_abort, run_note_append | run_start_step, run_finish_step, run_log, run_notes_list (step-level tracing) |
 | Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration), handoff_* (3; P5 gates), audit_* (4; advisory hygiene) |
 | Relations | link, relations | unlink (destructive) |
@@ -80,7 +80,7 @@ Why each excluded group is `full`-only:
 - **AI tools** — open-world (call an LLM provider), cost money, and the
   calling agent usually *is* the LLM; exposing them by default invites
   recursion an operator didn't ask for.
-- **Destructive tools** (`delete`, `project_delete`, `plan_archive`,
+- **Destructive tools** (`delete`, `project_delete`, `plan_archive`, `plan_delete`,
   `doc_archive`, `unlink`, `history_rollback`) — explicit opt-in via `full`.
 - **Multi-agent coordination** (leases, ready pool, doctor) — only
   meaningful in parallel-agent setups, which are configured deliberately.

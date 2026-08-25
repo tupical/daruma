@@ -624,6 +624,13 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::Plans, F, E, Ann::Destructive,
         ),
         tool(
+            "daruma_plan_delete",
+            "Delete plan",
+            "Permanently delete an empty plan and atomically abort all active runs. Delete or detach every task first.",
+            schema_with_id("plan_id"),
+            Dom::Plans, F, E, Ann::Destructive,
+        ),
+        tool(
             "daruma_plan_set_status",
             "Set plan status",
             "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
@@ -1304,7 +1311,10 @@ fn is_echo(value: &Value, sent: &[Value]) -> bool {
 /// separate budget; the field validates because schemas allow extra keys).
 pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyhow::Result<Value> {
     let args = arguments.as_object().cloned().unwrap_or_default();
-    let verbose = args.get("verbose").and_then(Value::as_bool).unwrap_or(false);
+    let verbose = args
+        .get("verbose")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let result = dispatch_tool(client, name, arguments).await?;
     // Errors never reach the projection: they are `Err` long before this.
     if verbose || !is_mutation_tool(name) {
@@ -2025,6 +2035,10 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client
                 .post_json(&format!("/v1/plans/{id}/archive"), json!({}))
                 .await
+        }
+        "daruma_plan_delete" => {
+            let plan_id = required_string(&args, "plan_id")?;
+            client.delete_json(&format!("/v1/plans/{plan_id}")).await
         }
         "daruma_plan_set_status" => {
             let id = required_string(&args, "plan_id")?;
@@ -5972,6 +5986,7 @@ mod tests {
             "daruma_plan_remove_task",
             "daruma_plan_reorder",
             "daruma_plan_archive",
+            "daruma_plan_delete",
             "daruma_plan_next_task",
             // Run tools
             "daruma_run_start",
@@ -6146,6 +6161,7 @@ mod profile_tests {
         for excluded in [
             "daruma_delete",
             "daruma_project_delete",
+            "daruma_plan_delete",
             "daruma_history_rollback",
             "daruma_workspacegraph_search",
             "daruma_session_start",
@@ -6188,6 +6204,7 @@ mod profile_tests {
             "daruma_delete",
             "daruma_project_delete",
             "daruma_plan_archive",
+            "daruma_plan_delete",
             "daruma_doc_archive",
             "daruma_unlink",
             "daruma_history_rollback",
