@@ -944,6 +944,121 @@ async fn targeted_read_artifact_satisfied_by_matching_target() {
         .expect("matching read-ack satisfies the requirement → approve allowed");
 }
 
+#[tokio::test]
+async fn required_fields_reject_incomplete_evidence_and_explain_why() {
+    let stack = stack().await;
+    install(&stack, impact_check_rule()).await;
+    let task = create_task(&stack, "Touch auth").await;
+    let mut evidence = new_evidence(
+        EvidenceKind::ImpactAssessment,
+        RuleScope::Task { id: task },
+        Some("auth-module"),
+    );
+    evidence.payload = serde_json::json!({"summary": "checked"});
+    record_evidence(&stack, evidence).await;
+
+    let check = GateCheck {
+        trigger: TriggerEvent::TaskBeforeStart,
+        project_id: None,
+        task_id: Some(task),
+        plan_id: None,
+        run_id: None,
+        document_id: None,
+        handoff_id: None,
+        status_from: Some(Status::Inbox),
+        status_to: Some(Status::InProgress),
+        plan_status_from: None,
+        plan_status_to: None,
+    };
+    let GateDecision::Blocked { details, .. } = stack
+        .gate
+        .check(&Actor::user(), &check, &GateOverride::default())
+        .await
+        .unwrap()
+    else {
+        panic!("missing required payload field must block");
+    };
+    assert!(details["reason"].as_str().unwrap().contains("risk_level"));
+    assert!(details["outcomes"][0]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("risk_level"));
+
+    let mut complete = new_evidence(
+        EvidenceKind::ImpactAssessment,
+        RuleScope::Task { id: task },
+        Some("auth-module"),
+    );
+    complete.payload = serde_json::json!({"risk_level": "low"});
+    record_evidence(&stack, complete).await;
+    start(&stack, task)
+        .await
+        .expect("a non-empty required field must satisfy the rule");
+}
+
+#[tokio::test]
+async fn read_artifact_min_version_is_enforced_numerically() {
+    for (version, expected) in [("1", false), ("3", true), ("v3", true)] {
+        let stack = stack().await;
+        install(
+            &stack,
+            new_rule(
+                "read-architecture-md",
+                RuleScope::Tenant,
+                RuleTrigger::TaskBeforeStart,
+                Requirement::ReadArtifact {
+                    doc_ref: "architecture.md".into(),
+                    min_version: "3".into(),
+                },
+                RuleMode::Required,
+                false,
+            ),
+        )
+        .await;
+        let task = create_task(&stack, "Implement architecture").await;
+        let mut evidence = new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Task { id: task },
+            Some("architecture.md"),
+        );
+        evidence.doc_version = Some(version.into());
+        record_evidence(&stack, evidence).await;
+
+        let check = GateCheck {
+            trigger: TriggerEvent::TaskBeforeStart,
+            project_id: None,
+            task_id: Some(task),
+            plan_id: None,
+            run_id: None,
+            document_id: None,
+            handoff_id: None,
+            status_from: Some(Status::Inbox),
+            status_to: Some(Status::InProgress),
+            plan_status_from: None,
+            plan_status_to: None,
+        };
+        let decision = stack
+            .gate
+            .check(&Actor::user(), &check, &GateOverride::default())
+            .await
+            .unwrap();
+        if expected {
+            assert!(
+                matches!(decision, GateDecision::Allowed),
+                "doc_version={version}"
+            );
+        } else {
+            let GateDecision::Blocked { details, .. } = decision else {
+                panic!("doc_version={version} must block");
+            };
+            assert!(details["reason"]
+                .as_str()
+                .unwrap()
+                .contains("older than required 3"));
+        }
+    }
+}
+
 // ── can_start agrees with the gate ──────────────────────────────────────────────
 //
 // `can_start` exists to answer "may I start this task". Before the gate was
@@ -1031,15 +1146,13 @@ async fn can_start_ready_implies_the_transition_passes_the_gate() {
     assert!(is_blocked(&err, "auth-impact-check message"), "got: {err}");
 
     // Satisfy the requirement the same way a real caller would.
-    record_evidence(
-        &stack,
-        new_evidence(
-            EvidenceKind::ImpactAssessment,
-            RuleScope::Task { id: task },
-            Some("auth-module"),
-        ),
-    )
-    .await;
+    let mut evidence = new_evidence(
+        EvidenceKind::ImpactAssessment,
+        RuleScope::Task { id: task },
+        Some("auth-module"),
+    );
+    evidence.payload = serde_json::json!({"risk_level": "low"});
+    record_evidence(&stack, evidence).await;
 
     // Ready → the transition must now succeed. If `can_start` built its gate
     // input differently from the real path, one of these two would disagree.

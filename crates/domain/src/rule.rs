@@ -10,6 +10,8 @@
 //! actually evaluate are carried. Reserved fields from the spec (`task_labels`,
 //! `affected_modules`, `artifact_kinds`) are intentionally absent until the
 //! core grows their carrier — a rule cannot give a false sense of protection.
+//! Version checks deliberately accept only an integer with an optional leading
+//! `v`/`V`; `latest` means no minimum-version check.
 
 use serde::{Deserialize, Serialize};
 

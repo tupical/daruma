@@ -19,6 +19,13 @@ pub struct EvidenceRepo {
     pool: SqlitePool,
 }
 
+/// Result of matching live evidence, including why candidates were rejected.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EvidenceCheck {
+    pub satisfied: bool,
+    pub reason: Option<String>,
+}
+
 impl EvidenceRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -87,24 +94,41 @@ impl EvidenceRepo {
     /// proof. Hence: the broader proof covers the narrower ask *within the
     /// kind's semantic reach*, and no further.
     ///
-    /// Returns on the first match; one indexed query per scope, short-circuiting,
-    /// so it stays cheap and deterministic.
+    /// Up to 20 live candidates per scope are checked for required non-empty
+    /// payload fields and a numeric minimum document version. The first valid
+    /// candidate satisfies the requirement; otherwise the rejection reason is
+    /// returned for the gate decision.
     pub async fn has_live_evidence(
         &self,
         chain: &[RuleScope],
         kind: EvidenceKind,
         target: Option<&str>,
-    ) -> Result<bool> {
+        required_fields: Option<&[String]>,
+        min_version: Option<&str>,
+    ) -> Result<EvidenceCheck> {
+        let mut reason = None;
         for scope in reachable(chain, kind.reach()) {
-            let matched = match scope.id_string() {
-                Some(id) => self.scope_has(scope.kind(), Some(id), kind, target).await?,
-                None => self.scope_has(scope.kind(), None, kind, target).await?,
-            };
-            if matched {
-                return Ok(true);
+            let check = self
+                .scope_has(
+                    scope.kind(),
+                    scope.id_string(),
+                    kind,
+                    target,
+                    required_fields,
+                    min_version,
+                )
+                .await?;
+            if check.satisfied {
+                return Ok(check);
+            }
+            if reason.is_none() {
+                reason = check.reason;
             }
         }
-        Ok(false)
+        Ok(EvidenceCheck {
+            satisfied: false,
+            reason,
+        })
     }
 
     async fn scope_has(
@@ -113,7 +137,9 @@ impl EvidenceRepo {
         scope_id: Option<String>,
         kind: EvidenceKind,
         target: Option<&str>,
-    ) -> Result<bool> {
+        required_fields: Option<&[String]>,
+        min_version: Option<&str>,
+    ) -> Result<EvidenceCheck> {
         // `target` filter: when the requirement names a target, accept evidence
         // that names the same target OR no target at all.
         let target_clause = match target {
@@ -126,9 +152,10 @@ impl EvidenceRepo {
             "scope_id IS NULL"
         };
         let sql = format!(
-            "SELECT 1 FROM evidence \
+            "SELECT doc_version, payload FROM evidence \
              WHERE scope_kind = ? AND {scope_clause} AND kind = ? \
-             AND superseded_by IS NULL {target_clause} LIMIT 1"
+             AND superseded_by IS NULL {target_clause} \
+             ORDER BY recorded_at DESC, id DESC LIMIT 20"
         );
         let mut q = sqlx::query(&sql).bind(scope_kind);
         if let Some(id) = scope_id {
@@ -138,11 +165,69 @@ impl EvidenceRepo {
         if let Some(t) = target {
             q = q.bind(t);
         }
-        let row = q
-            .fetch_optional(&self.pool)
+        let rows = q
+            .fetch_all(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        Ok(row.is_some())
+
+        let parsed_min_version = match min_version.filter(|version| *version != "latest") {
+            Some(version) => match parse_version(version) {
+                Some(version) => Some(version),
+                None => {
+                    return Ok(EvidenceCheck {
+                        satisfied: false,
+                        reason: Some(format!(
+                            "rule min_version `{version}` is invalid; expected an integer with optional v/V prefix"
+                        )),
+                    })
+                }
+            },
+            None => None,
+        };
+        let mut reason = None;
+        for row in rows {
+            if let Some(fields) = required_fields.filter(|fields| !fields.is_empty()) {
+                let payload_json: String = row.try_get("payload").map_err(map_row_err)?;
+                let payload: serde_json::Value = serde_json::from_str(&payload_json)
+                    .map_err(|e| CoreError::serde(e.to_string()))?;
+                if let Some(field) = fields.iter().find(|field| {
+                    !matches!(
+                        payload.get(field.as_str()),
+                        Some(value) if !value.is_null() && value.as_str() != Some("")
+                    )
+                }) {
+                    reason.get_or_insert_with(|| {
+                        format!("evidence payload field `{field}` is missing or empty")
+                    });
+                    continue;
+                }
+            }
+            if let Some(minimum) = parsed_min_version {
+                let version: Option<String> = row.try_get("doc_version").map_err(map_row_err)?;
+                let Some(actual) = version.as_deref().and_then(parse_version) else {
+                    reason.get_or_insert_with(|| {
+                        format!(
+                            "evidence doc_version is missing or invalid; expected an integer >= {minimum} with optional v/V prefix"
+                        )
+                    });
+                    continue;
+                };
+                if actual < minimum {
+                    reason.get_or_insert_with(|| {
+                        format!("evidence doc_version {actual} is older than required {minimum}")
+                    });
+                    continue;
+                }
+            }
+            return Ok(EvidenceCheck {
+                satisfied: true,
+                reason: None,
+            });
+        }
+        Ok(EvidenceCheck {
+            satisfied: false,
+            reason,
+        })
     }
 
     /// Apply a persisted evidence event to the projection.
@@ -204,6 +289,15 @@ impl EvidenceRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
     }
+}
+
+fn parse_version(version: &str) -> Option<u64> {
+    version
+        .strip_prefix('v')
+        .or_else(|| version.strip_prefix('V'))
+        .unwrap_or(version)
+        .parse()
+        .ok()
 }
 
 fn select_sql(tail: &str) -> String {
@@ -358,6 +452,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn required_fields_reject_empty_or_missing_payload_values() {
+        let fields = ["risk_level".to_string()];
+        for payload in [
+            serde_json::Value::Null,
+            serde_json::json!({"summary": "checked"}),
+            serde_json::json!({"risk_level": null}),
+            serde_json::json!({"risk_level": ""}),
+        ] {
+            let repo = repo().await;
+            let mut evidence = sample(RuleScope::Tenant, EvidenceKind::ImpactAssessment, None);
+            evidence.payload = payload;
+            apply(&repo, Event::EvidenceRecorded { evidence }).await;
+
+            let check = repo
+                .has_live_evidence(
+                    &[RuleScope::Tenant],
+                    EvidenceKind::ImpactAssessment,
+                    None,
+                    Some(&fields),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(!check.satisfied);
+            assert!(check.reason.unwrap().contains("risk_level"));
+        }
+    }
+
+    #[tokio::test]
+    async fn min_version_is_numeric_and_fail_closed() {
+        for (version, expected) in [
+            (None, false),
+            (Some("bad"), false),
+            (Some("1"), false),
+            (Some("3"), true),
+            (Some("v3"), true),
+            (Some("V3"), true),
+            (Some("10"), true),
+        ] {
+            let repo = repo().await;
+            let mut evidence = sample(
+                RuleScope::Tenant,
+                EvidenceKind::DocumentReadAck,
+                Some("architecture.md"),
+            );
+            evidence.doc_version = version.map(str::to_string);
+            apply(&repo, Event::EvidenceRecorded { evidence }).await;
+
+            assert_eq!(
+                repo.has_live_evidence(
+                    &[RuleScope::Tenant],
+                    EvidenceKind::DocumentReadAck,
+                    Some("architecture.md"),
+                    None,
+                    Some("3"),
+                )
+                .await
+                .unwrap()
+                .satisfied,
+                expected,
+                "doc_version={version:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_requirements_preserve_legacy_matching() {
+        let repo = repo().await;
+        apply(
+            &repo,
+            Event::EvidenceRecorded {
+                evidence: sample(RuleScope::Tenant, EvidenceKind::CompletionNote, None),
+            },
+        )
+        .await;
+
+        assert!(
+            repo.has_live_evidence(
+                &[RuleScope::Tenant],
+                EvidenceKind::CompletionNote,
+                None,
+                Some(&[]),
+                Some("latest"),
+            )
+            .await
+            .unwrap()
+            .satisfied
+        );
+    }
+
+    #[tokio::test]
     async fn has_live_evidence_matches_in_chain() {
         let repo = repo().await;
         let project = ProjectId::new();
@@ -371,10 +556,12 @@ mod tests {
         )
         .await;
         let chain = [RuleScope::Tenant, RuleScope::Project { id: project }];
-        assert!(repo
-            .has_live_evidence(&chain, EvidenceKind::DocumentReadAck, None)
-            .await
-            .unwrap());
+        assert!(
+            repo.has_live_evidence(&chain, EvidenceKind::DocumentReadAck, None, None, None)
+                .await
+                .unwrap()
+                .satisfied
+        );
         // Wrong kind → no match. The record has to sit somewhere the query can
         // actually reach, or the assertion passes for the wrong reason: with no
         // reachable rows at all it would hold even if the kind filter were gone.
@@ -389,15 +576,18 @@ mod tests {
             },
         )
         .await;
-        assert!(repo
-            .has_live_evidence(&chain, EvidenceKind::CompletionNote, None)
-            .await
-            .unwrap());
+        assert!(
+            repo.has_live_evidence(&chain, EvidenceKind::CompletionNote, None, None, None)
+                .await
+                .unwrap()
+                .satisfied
+        );
         assert!(
             !repo
-                .has_live_evidence(&chain, EvidenceKind::RiskCheckCompleted, None)
+                .has_live_evidence(&chain, EvidenceKind::RiskCheckCompleted, None, None, None,)
                 .await
-                .unwrap(),
+                .unwrap()
+                .satisfied,
             "same scope, different kind → no match"
         );
     }
@@ -494,9 +684,10 @@ mod tests {
         let chain = [RuleScope::Tenant, RuleScope::Project { id: project }];
         assert!(
             !repo
-                .has_live_evidence(&chain, EvidenceKind::CompletionNote, None)
+                .has_live_evidence(&chain, EvidenceKind::CompletionNote, None, None, None)
                 .await
-                .unwrap(),
+                .unwrap()
+                .satisfied,
             "tenant-wide completion_note must not satisfy a project's rule"
         );
 
@@ -512,10 +703,12 @@ mod tests {
             },
         )
         .await;
-        assert!(repo
-            .has_live_evidence(&chain, EvidenceKind::CompletionNote, None)
-            .await
-            .unwrap());
+        assert!(
+            repo.has_live_evidence(&chain, EvidenceKind::CompletionNote, None, None, None)
+                .await
+                .unwrap()
+                .satisfied
+        );
     }
 
     #[tokio::test]
@@ -542,10 +735,18 @@ mod tests {
             repo.get(id).await.unwrap().unwrap().superseded_by,
             Some(newer_id)
         );
-        assert!(repo
-            .has_live_evidence(&[RuleScope::Tenant], EvidenceKind::ImpactAssessment, None)
+        assert!(
+            repo.has_live_evidence(
+                &[RuleScope::Tenant],
+                EvidenceKind::ImpactAssessment,
+                None,
+                None,
+                None,
+            )
             .await
-            .unwrap());
+            .unwrap()
+            .satisfied
+        );
     }
 
     #[tokio::test]
@@ -564,19 +765,32 @@ mod tests {
         .await;
         let chain = [RuleScope::Tenant];
         // Exact target match.
-        assert!(repo
-            .has_live_evidence(
+        assert!(
+            repo.has_live_evidence(
                 &chain,
                 EvidenceKind::DocumentReadAck,
-                Some("architecture.md")
+                Some("architecture.md"),
+                None,
+                None,
             )
             .await
-            .unwrap());
+            .unwrap()
+            .satisfied
+        );
         // Different target → not satisfied.
-        assert!(!repo
-            .has_live_evidence(&chain, EvidenceKind::DocumentReadAck, Some("other.md"))
-            .await
-            .unwrap());
+        assert!(
+            !repo
+                .has_live_evidence(
+                    &chain,
+                    EvidenceKind::DocumentReadAck,
+                    Some("other.md"),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap()
+                .satisfied
+        );
     }
 }
 

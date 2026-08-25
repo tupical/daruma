@@ -39,7 +39,7 @@ use daruma_shared::Result;
 use serde_json::json;
 
 use crate::lifecycle_gate::{GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent};
-use daruma_storage::{EvidenceRepo, RuleRepo};
+use daruma_storage::{evidence_repo::EvidenceCheck, EvidenceRepo, RuleRepo};
 
 /// Rule engine over a [`RuleRepo`] and, optionally, an [`EvidenceRepo`]
 /// for requirement satisfaction.
@@ -68,14 +68,18 @@ impl RuleEngineGate {
     }
 
     /// Is `rule`'s requirement satisfied by recorded evidence in `chain`? With
-    /// no evidence repo wired, nothing is ever satisfied (returns `false`).
-    async fn requirement_satisfied(&self, rule: &Rule, chain: &[RuleScope]) -> Result<bool> {
+    /// no evidence repo wired, nothing is ever satisfied.
+    async fn requirement_satisfied(
+        &self,
+        rule: &Rule,
+        chain: &[RuleScope],
+    ) -> Result<EvidenceCheck> {
         let Some(evidence) = &self.evidence else {
-            return Ok(false);
+            return Ok(EvidenceCheck::default());
         };
-        let (kind, target) = requirement_evidence(&rule.requirement);
+        let (kind, target, required_fields, min_version) = requirement_evidence(&rule.requirement);
         evidence
-            .has_live_evidence(chain, kind, target.as_deref())
+            .has_live_evidence(chain, kind, target.as_deref(), required_fields, min_version)
             .await
     }
 
@@ -111,7 +115,7 @@ impl LifecycleGate for RuleEngineGate {
         let candidates = self.rules.effective_rules(&chain, trigger).await?;
 
         let mut warnings = Vec::new();
-        let mut blocked: Vec<&Rule> = Vec::new();
+        let mut blocked: Vec<(&Rule, Option<String>)> = Vec::new();
         // Any blocked rule that forbids override poisons the whole override.
         let mut override_forbidden = false;
 
@@ -122,9 +126,19 @@ impl LifecycleGate for RuleEngineGate {
             // Spec §1.3: a requirement backed by recorded evidence is satisfied,
             // so the rule neither blocks nor warns. Only consult the registry
             // for rules that would otherwise act (`off` is inert).
-            if rule.mode != RuleMode::Off && self.requirement_satisfied(rule, &chain).await? {
+            let evidence_check = if rule.mode == RuleMode::Off {
+                None
+            } else {
+                Some(self.requirement_satisfied(rule, &chain).await?)
+            };
+            if evidence_check
+                .as_ref()
+                .map(|check| check.satisfied)
+                .unwrap_or(false)
+            {
                 continue;
             }
+            let rejection_reason = evidence_check.and_then(|check| check.reason);
             match rule.mode {
                 RuleMode::Off => {}
                 RuleMode::Recommendation => warnings.push(rule_warning(rule)),
@@ -132,7 +146,7 @@ impl LifecycleGate for RuleEngineGate {
                     if !rule.override_allowed {
                         override_forbidden = true;
                     }
-                    blocked.push(rule);
+                    blocked.push((rule, rejection_reason));
                 }
             }
         }
@@ -160,7 +174,7 @@ impl LifecycleGate for RuleEngineGate {
             // yet, so the bypass is indistinguishable from a recommendation in
             // the event log, and `override_reason` is checked for emptiness and
             // then dropped.
-            for rule in blocked {
+            for (rule, _) in blocked {
                 warnings.push(rule_warning(rule));
             }
             return Ok(if warnings.is_empty() {
@@ -174,7 +188,7 @@ impl LifecycleGate for RuleEngineGate {
         // then warnings, so a client can show every requirement at once.
         let outcomes: Vec<serde_json::Value> = blocked
             .iter()
-            .map(|r| rule_outcome(r, "blocked"))
+            .map(|(rule, reason)| rule_outcome(rule, "blocked", reason.as_deref()))
             .chain(warnings.iter().map(|w| {
                 json!({
                     "rule_key": w.code.strip_prefix("rule_warning:").unwrap_or(&w.code),
@@ -189,15 +203,16 @@ impl LifecycleGate for RuleEngineGate {
         // the requirement type, let alone the evidence kind/scope).
         let unblock: Vec<serde_json::Value> = blocked
             .iter()
-            .map(|r| unblock_hint(r, &chain, check.trigger))
+            .map(|(rule, _)| unblock_hint(rule, &chain, check.trigger))
             .collect();
-        let first = blocked[0];
+        let (first, reason) = &blocked[0];
         Ok(GateDecision::Blocked {
             message: blocked_message(&blocked),
             details: json!({
                 "rule_id": first.id.to_string(),
                 "rule_key": first.rule_key,
                 "requirement": first.requirement,
+                "reason": reason,
                 "outcomes": outcomes,
                 "unblock": unblock,
             }),
@@ -209,25 +224,66 @@ impl LifecycleGate for RuleEngineGate {
 /// satisfies it. The kind strings match `EvidenceKind::as_str()`, so a rule and
 /// the evidence proving it line up without translation (spec §1.3). The target
 /// narrows the match (e.g. the document a `read_artifact` rule names); `None`
-/// means any evidence of that kind in scope satisfies the rule.
-fn requirement_evidence(req: &Requirement) -> (EvidenceKind, Option<String>) {
+/// means any evidence of that kind in scope satisfies the rule. Empty field
+/// lists and `latest` are normalized to no additional constraint.
+fn requirement_evidence(
+    req: &Requirement,
+) -> (
+    EvidenceKind,
+    Option<String>,
+    Option<&[String]>,
+    Option<&str>,
+) {
     match req {
-        Requirement::ReadArtifact { doc_ref, .. } => {
-            (EvidenceKind::DocumentReadAck, Some(doc_ref.clone()))
+        Requirement::ReadArtifact {
+            doc_ref,
+            min_version,
+        } => (
+            EvidenceKind::DocumentReadAck,
+            Some(doc_ref.clone()),
+            None,
+            (min_version != "latest").then_some(min_version.as_str()),
+        ),
+        Requirement::CreateArtifact { artifact_kind } => (
+            EvidenceKind::ArtifactCreated,
+            Some(artifact_kind.clone()),
+            None,
+            None,
+        ),
+        Requirement::ImpactCheck {
+            target,
+            required_fields,
+        } => (
+            EvidenceKind::ImpactAssessment,
+            Some(target.clone()),
+            (!required_fields.is_empty()).then_some(required_fields.as_slice()),
+            None,
+        ),
+        Requirement::DecisionRecord { required_fields } => (
+            EvidenceKind::DecisionRecord,
+            None,
+            (!required_fields.is_empty()).then_some(required_fields.as_slice()),
+            None,
+        ),
+        Requirement::CompletionNote { required_fields } => (
+            EvidenceKind::CompletionNote,
+            None,
+            (!required_fields.is_empty()).then_some(required_fields.as_slice()),
+            None,
+        ),
+        Requirement::OwnerRequired => (EvidenceKind::OwnerAssigned, None, None, None),
+        Requirement::AcceptanceCriteriaRequired => {
+            (EvidenceKind::AcceptanceCriteriaDefined, None, None, None)
         }
-        Requirement::CreateArtifact { artifact_kind } => {
-            (EvidenceKind::ArtifactCreated, Some(artifact_kind.clone()))
-        }
-        Requirement::ImpactCheck { target, .. } => {
-            (EvidenceKind::ImpactAssessment, Some(target.clone()))
-        }
-        Requirement::DecisionRecord { .. } => (EvidenceKind::DecisionRecord, None),
-        Requirement::CompletionNote { .. } => (EvidenceKind::CompletionNote, None),
-        Requirement::OwnerRequired => (EvidenceKind::OwnerAssigned, None),
-        Requirement::AcceptanceCriteriaRequired => (EvidenceKind::AcceptanceCriteriaDefined, None),
-        Requirement::RiskCheck { target, .. } => {
-            (EvidenceKind::RiskCheckCompleted, Some(target.clone()))
-        }
+        Requirement::RiskCheck {
+            target,
+            required_fields,
+        } => (
+            EvidenceKind::RiskCheckCompleted,
+            Some(target.clone()),
+            (!required_fields.is_empty()).then_some(required_fields.as_slice()),
+            None,
+        ),
     }
 }
 
@@ -293,14 +349,18 @@ fn rule_warning(rule: &Rule) -> MutationWarning {
     }
 }
 
-fn rule_outcome(rule: &Rule, decision: &str) -> serde_json::Value {
-    json!({
+fn rule_outcome(rule: &Rule, decision: &str, reason: Option<&str>) -> serde_json::Value {
+    let mut outcome = json!({
         "rule_id": rule.id.to_string(),
         "rule_key": rule.rule_key,
         "decision": decision,
         "message": warn_message(rule),
         "requirement": rule.requirement,
-    })
+    });
+    if let Some(reason) = reason {
+        outcome["reason"] = json!(reason);
+    }
+    outcome
 }
 
 /// "What unblocks me" for one blocked rule: the requirement type, the evidence
@@ -328,7 +388,7 @@ fn rule_outcome(rule: &Rule, decision: &str) -> serde_json::Value {
 /// hint then carries no `scope` (none would work) and an honest `note`
 /// instead of pretending otherwise.
 fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serde_json::Value {
-    let (kind, target) = requirement_evidence(&rule.requirement);
+    let (kind, target, _, _) = requirement_evidence(&rule.requirement);
     let reach = kind.reach();
     // Sanity on the FULL chain (before any slicing): `scope_chain` always
     // seeds the tenant root.
@@ -426,11 +486,14 @@ fn warn_message(rule: &Rule) -> String {
     }
 }
 
-fn blocked_message(blocked: &[&Rule]) -> String {
+fn blocked_message(blocked: &[(&Rule, Option<String>)]) -> String {
     if blocked.len() == 1 {
-        warn_message(blocked[0])
+        warn_message(blocked[0].0)
     } else {
-        let keys: Vec<&str> = blocked.iter().map(|r| r.rule_key.as_str()).collect();
+        let keys: Vec<&str> = blocked
+            .iter()
+            .map(|(rule, _)| rule.rule_key.as_str())
+            .collect();
         format!(
             "{} rules block this transition: {}",
             blocked.len(),
