@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use daruma_domain::{
     Actor, ActorRef, AgentSession, ArtifactRelation, Comment, DocumentKind, PlanPatch, PlanStatus,
-    Project, Relation, Run, RunOutcome, RunStatus, SessionArtifact, SignalKind, Status, Task,
+    Project, Relation, RuleScope, Run, RunOutcome, RunStatus, SessionArtifact, SignalKind, Status,
+    Task,
 };
 use daruma_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
 use daruma_shared::{
@@ -2821,6 +2822,30 @@ impl CommandHandler {
                 let repo = require_rules(&self.rules)?;
                 if rule.rule_key.trim().is_empty() {
                     return Err(CoreError::validation("rule_key must not be empty"));
+                }
+                // Keep this invariant at the command boundary so HTTP, MCP and
+                // future ingress paths cannot create rules with dangling scopes.
+                let scope_exists = match &rule.scope {
+                    RuleScope::Tenant => true,
+                    RuleScope::Project { id } => self.projects.get(*id).await?.is_some(),
+                    RuleScope::Plan { id } => self
+                        .plans
+                        .as_ref()
+                        .ok_or_else(|| CoreError::storage("plan repository not configured"))?
+                        .get(*id)
+                        .await?
+                        .is_some(),
+                    RuleScope::Task { id } => self.tasks.get(*id).await?.is_some(),
+                };
+                if !scope_exists {
+                    let id = rule
+                        .scope
+                        .id_string()
+                        .expect("non-tenant rule scopes always have an id");
+                    return Err(CoreError::validation(format!(
+                        "rule {} scope target {id} does not exist",
+                        rule.scope.kind()
+                    )));
                 }
                 // Spec §2: one rule_key per scope level (also enforced by the
                 // unique index; checked here for a clean error).
