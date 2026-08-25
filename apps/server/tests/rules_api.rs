@@ -1,5 +1,5 @@
-//! HTTP API tests for lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §4):
-//! create / get / list / patch / disable round-trip through `/v1/rules`.
+//! HTTP API tests for lifecycle rules and evidence (docs/LIFECYCLE_RULES_SPEC.md):
+//! write/read round-trips through `/v1/rules` and `/v1/evidence`.
 
 mod common;
 
@@ -11,10 +11,11 @@ use axum::{
 use common::{json_get, json_post, TestAppBuilder};
 use daruma_core::Command;
 use daruma_domain::{
-    Actor, NewPlan, NewRule, NewTask, Requirement, RuleMode, RuleScope, RuleTrigger,
+    Actor, ActorRef, EvidenceKind, NewEvidence, NewPlan, NewRule, NewTask, Requirement, RuleMode,
+    RuleScope, RuleTrigger,
 };
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{PlanId, ProjectId, RuleId, TaskId};
+use daruma_shared::{EvidenceId, PlanId, ProjectId, RuleId, TaskId};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -313,6 +314,115 @@ async fn get_rule_still_reads_a_legacy_dangling_scope() {
     assert_eq!(status, StatusCode::OK, "{response}");
     assert_eq!(
         response["rule"]["scope"]["id"],
+        missing_project.as_uuid().to_string()
+    );
+}
+
+fn scoped_evidence_body(kind: &str, id: impl ToString) -> String {
+    json!({
+        "evidence": {
+            "kind": "completion_note",
+            "scope": { "kind": kind, "id": id.to_string() },
+            "reason": "done"
+        }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn record_evidence_rejects_missing_scope_targets_with_their_ids() {
+    let app = TestAppBuilder::default().build().await;
+    let token = app.admin_token.clone();
+    let project = ProjectId::new();
+    let plan = PlanId::new();
+    let task = TaskId::new();
+
+    for (kind, wire_id, display_id) in [
+        (
+            "project",
+            project.as_uuid().to_string(),
+            project.to_string(),
+        ),
+        ("plan", plan.as_uuid().to_string(), plan.to_string()),
+        ("task", task.as_uuid().to_string(), task.to_string()),
+    ] {
+        let body = scoped_evidence_body(kind, wire_id);
+        let (status, response) = json_post(app.router.clone(), &token, "/v1/evidence", &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}: {response}");
+        assert_eq!(response["error"]["code"], "validation");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&display_id),
+            "{kind} validation must identify {display_id}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn record_evidence_accepts_existing_scope_targets() {
+    let app = TestAppBuilder::default().build().await;
+    let token = app.admin_token.clone();
+    let (project, plan, task) = seed_scoped_entities(&app).await;
+
+    for (kind, id) in [
+        ("project", project.as_uuid().to_string()),
+        ("plan", plan.as_uuid().to_string()),
+        ("task", task.as_uuid().to_string()),
+    ] {
+        let body = scoped_evidence_body(kind, &id);
+        let (status, response) = json_post(app.router.clone(), &token, "/v1/evidence", &body).await;
+        assert_eq!(status, StatusCode::OK, "{kind}: {response}");
+        assert_eq!(response["data"]["evidence"]["scope"]["id"], id);
+    }
+}
+
+#[tokio::test]
+async fn get_evidence_still_reads_a_legacy_dangling_scope() {
+    let app = TestAppBuilder::default().build().await;
+    let missing_project = ProjectId::new();
+    let evidence_id = EvidenceId::new();
+    let evidence = NewEvidence {
+        id: Some(evidence_id),
+        kind: EvidenceKind::CompletionNote,
+        scope: RuleScope::Project {
+            id: missing_project,
+        },
+        target: None,
+        doc_version: None,
+        reason: "legacy evidence".into(),
+        payload: Value::Null,
+        project_id: None,
+        plan_id: None,
+        task_id: None,
+        run_id: None,
+        artifact_id: None,
+        rule_id: None,
+        supersedes: None,
+    }
+    .into_evidence(
+        ActorRef::from_actor(&Actor::user()),
+        daruma_shared::time::now(),
+    );
+    app.state
+        .evidence
+        .apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::EvidenceRecorded { evidence },
+        ))
+        .await
+        .unwrap();
+
+    let (status, response) = json_get(
+        app.router,
+        &app.admin_token,
+        &format!("/v1/evidence/{evidence_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["evidence"]["scope"]["id"],
         missing_project.as_uuid().to_string()
     );
 }
