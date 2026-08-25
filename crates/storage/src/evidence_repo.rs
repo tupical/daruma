@@ -95,9 +95,11 @@ impl EvidenceRepo {
     /// kind's semantic reach*, and no further.
     ///
     /// Up to 20 live candidates per scope are checked for required non-empty
-    /// payload fields and a numeric minimum document version. The first valid
-    /// candidate satisfies the requirement; otherwise the rejection reason is
-    /// returned for the gate decision.
+    /// fields and a numeric minimum document version. Required fields are read
+    /// from `payload` first; only when a key is absent there, `reason`, `actor`,
+    /// `doc_version`, and `target` fall back to their top-level columns. The
+    /// first valid candidate satisfies the requirement; otherwise the rejection
+    /// reason is returned for the gate decision.
     pub async fn has_live_evidence(
         &self,
         chain: &[RuleScope],
@@ -152,7 +154,7 @@ impl EvidenceRepo {
             "scope_id IS NULL"
         };
         let sql = format!(
-            "SELECT doc_version, payload FROM evidence \
+            "SELECT target, doc_version, actor_id, actor_name, reason, payload FROM evidence \
              WHERE scope_kind = ? AND {scope_clause} AND kind = ? \
              AND superseded_by IS NULL {target_clause} \
              ORDER BY recorded_at DESC, id DESC LIMIT 20"
@@ -190,12 +192,30 @@ impl EvidenceRepo {
                 let payload_json: String = row.try_get("payload").map_err(map_row_err)?;
                 let payload: serde_json::Value = serde_json::from_str(&payload_json)
                     .map_err(|e| CoreError::serde(e.to_string()))?;
-                if let Some(field) = fields.iter().find(|field| {
-                    !matches!(
-                        payload.get(field.as_str()),
-                        Some(value) if !value.is_null() && value.as_str() != Some("")
-                    )
-                }) {
+                let reason_value: String = row.try_get("reason").map_err(map_row_err)?;
+                let actor_id: Option<String> = row.try_get("actor_id").map_err(map_row_err)?;
+                let actor_name: Option<String> = row.try_get("actor_name").map_err(map_row_err)?;
+                let doc_version: Option<String> =
+                    row.try_get("doc_version").map_err(map_row_err)?;
+                let target_value: Option<String> = row.try_get("target").map_err(map_row_err)?;
+                if let Some(field) = fields
+                    .iter()
+                    .find(|field| match payload.get(field.as_str()) {
+                        Some(value) => value.is_null() || value.as_str() == Some(""),
+                        None => match field.as_str() {
+                            "reason" => reason_value.is_empty(),
+                            "actor" => {
+                                !actor_id.as_deref().is_some_and(|value| !value.is_empty())
+                                    && !actor_name.as_deref().is_some_and(|value| !value.is_empty())
+                            }
+                            "doc_version" => !doc_version
+                                .as_deref()
+                                .is_some_and(|value| !value.is_empty()),
+                            "target" => target_value.is_none(),
+                            _ => true,
+                        },
+                    })
+                {
                     reason.get_or_insert_with(|| {
                         format!("evidence payload field `{field}` is missing or empty")
                     });
@@ -477,6 +497,84 @@ mod tests {
                 .unwrap();
             assert!(!check.satisfied);
             assert!(check.reason.unwrap().contains("risk_level"));
+        }
+    }
+
+    #[tokio::test]
+    async fn required_reason_falls_back_to_top_level_column() {
+        let fields = ["reason".to_string()];
+        for (reason, expected) in [("готово", true), ("", false)] {
+            let repo = repo().await;
+            let mut evidence = sample(RuleScope::Tenant, EvidenceKind::CompletionNote, None);
+            evidence.reason = reason.into();
+            evidence.payload = serde_json::json!({});
+            apply(&repo, Event::EvidenceRecorded { evidence }).await;
+
+            assert_eq!(
+                repo.has_live_evidence(
+                    &[RuleScope::Tenant],
+                    EvidenceKind::CompletionNote,
+                    None,
+                    Some(&fields),
+                    None,
+                )
+                .await
+                .unwrap()
+                .satisfied,
+                expected,
+                "reason={reason:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn required_actor_falls_back_to_identity_columns() {
+        let fields = ["actor".to_string()];
+        for (actor, expected) in [
+            (
+                ActorRef {
+                    kind: "user".into(),
+                    id: None,
+                    name: None,
+                },
+                false,
+            ),
+            (
+                ActorRef {
+                    kind: "agent".into(),
+                    id: None,
+                    name: Some("agent".into()),
+                },
+                true,
+            ),
+            (
+                ActorRef {
+                    kind: "agent".into(),
+                    id: Some(daruma_shared::AgentId::new()),
+                    name: None,
+                },
+                true,
+            ),
+        ] {
+            let repo = repo().await;
+            let mut evidence = sample(RuleScope::Tenant, EvidenceKind::CompletionNote, None);
+            evidence.actor = actor;
+            evidence.payload = serde_json::json!({});
+            apply(&repo, Event::EvidenceRecorded { evidence }).await;
+
+            assert_eq!(
+                repo.has_live_evidence(
+                    &[RuleScope::Tenant],
+                    EvidenceKind::CompletionNote,
+                    None,
+                    Some(&fields),
+                    None,
+                )
+                .await
+                .unwrap()
+                .satisfied,
+                expected
+            );
         }
     }
 
