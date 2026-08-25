@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use daruma_domain::{
-    Actor, ActorRef, AgentSession, Comment, DocumentKind, PlanPatch, PlanStatus, Project, Relation,
-    Run, RunOutcome, RunStatus, SessionArtifact, SignalKind, Status, Task,
+    Actor, ActorRef, AgentSession, ArtifactRelation, Comment, DocumentKind, PlanPatch, PlanStatus,
+    Project, Relation, Run, RunOutcome, RunStatus, SessionArtifact, SignalKind, Status, Task,
 };
 use daruma_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
 use daruma_shared::{
@@ -87,8 +87,7 @@ pub struct CommandHandler {
     pub evidence: Option<Arc<EvidenceRepo>>,
 
     // Artifact-registry projection (P4). `None` until wired; the artifact
-    // commands (`RegisterArtifact` / `AssignArtifactOwner` /
-    // `ChangeArtifactStatus`) return CoreError::Storage when absent.
+    // commands return CoreError::Storage when absent.
     pub artifacts: Option<Arc<ArtifactRepo>>,
 
     // ADR-0007 "plan-only intake" mode. `false` (default) preserves the legacy
@@ -2917,6 +2916,127 @@ impl CommandHandler {
                     record.id = daruma_shared::ArtifactId::new();
                 }
                 Ok(vec![Event::ArtifactRegistered { artifact: record }])
+            }
+
+            Command::UpdateArtifact {
+                artifact_id,
+                title,
+                description,
+            } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                if title.is_none() && description.is_none() {
+                    return Err(CoreError::validation("update must set at least one field"));
+                }
+                if title.as_ref().is_some_and(|title| title.trim().is_empty()) {
+                    return Err(CoreError::validation("artifact title must not be empty"));
+                }
+                repo.get(artifact_id).await?.ok_or_else(|| {
+                    CoreError::not_found(format!("artifact {artifact_id} not found"))
+                })?;
+                Ok(vec![Event::ArtifactChanged {
+                    artifact_id,
+                    title,
+                    description,
+                    at: time::now(),
+                }])
+            }
+
+            Command::CommitArtifactWrite {
+                artifact_id,
+                agent_id,
+                fencing_token,
+                version,
+            } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                repo.get(artifact_id).await?.ok_or_else(|| {
+                    CoreError::not_found(format!("artifact {artifact_id} not found"))
+                })?;
+                if !repo
+                    .write_fencing_token_is_live(artifact_id, agent_id, fencing_token)
+                    .await?
+                {
+                    return Err(CoreError::conflict(format!(
+                        "stale or foreign fencing token for artifact {artifact_id}"
+                    )));
+                }
+                Ok(vec![Event::ArtifactWriteCommitted {
+                    artifact_id,
+                    agent_id,
+                    fencing_token,
+                    version,
+                    at: time::now(),
+                }])
+            }
+
+            Command::DeprecateArtifact { artifact_id } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                let current = repo.get(artifact_id).await?.ok_or_else(|| {
+                    CoreError::not_found(format!("artifact {artifact_id} not found"))
+                })?;
+                if current.status == daruma_domain::ArtifactStatus::Deprecated {
+                    return Ok(vec![]);
+                }
+                Ok(vec![Event::ArtifactDeprecated {
+                    artifact_id,
+                    reason: None,
+                    at: time::now(),
+                }])
+            }
+
+            Command::AddArtifactRelation { from, to, kind } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                if from == to {
+                    return Err(CoreError::validation(
+                        "artifact relation endpoints must differ",
+                    ));
+                }
+                for artifact_id in [from, to] {
+                    repo.get(artifact_id).await?.ok_or_else(|| {
+                        CoreError::not_found(format!("artifact {artifact_id} not found"))
+                    })?;
+                }
+                if repo
+                    .relations_for(from)
+                    .await?
+                    .iter()
+                    .any(|relation| relation.to_id == to && relation.kind == kind)
+                {
+                    return Err(CoreError::conflict(format!(
+                        "artifact relation {from} -> {to} ({}) already exists",
+                        kind.as_str()
+                    )));
+                }
+                Ok(vec![Event::ArtifactRelationAdded {
+                    relation: ArtifactRelation {
+                        id: daruma_shared::ArtifactRelationId::new(),
+                        from_id: from,
+                        to_id: to,
+                        kind,
+                        created_at: time::now(),
+                    },
+                }])
+            }
+
+            Command::RemoveArtifactRelation { from, to, kind } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                let relation = repo
+                    .relations_for(from)
+                    .await?
+                    .into_iter()
+                    .find(|relation| relation.to_id == to && relation.kind == kind)
+                    .ok_or_else(|| {
+                        CoreError::not_found(format!(
+                            "artifact relation {from} -> {to} ({}) not found",
+                            kind.as_str()
+                        ))
+                    })?;
+                Ok(vec![Event::ArtifactRelationRemoved {
+                    relation_id: relation.id,
+                    from_id: from,
+                    to_id: to,
+                    kind,
+                    at: time::now(),
+                }])
             }
 
             Command::AssignArtifactOwner {

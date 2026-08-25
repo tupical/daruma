@@ -690,6 +690,41 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::WorkspaceGraph, F, X, Ann::Write,
         ),
         tool(
+            "daruma_artifact_update",
+            "Update artifact",
+            "Update an artifact's title and/or description.",
+            schema_artifact_update(),
+            Dom::WorkspaceGraph, F, X, Ann::Write,
+        ),
+        tool(
+            "daruma_artifact_commit_write",
+            "Commit artifact write",
+            "Commit an artifact write using the authenticated agent's live fencing token. Stale or foreign tokens are rejected.",
+            schema_artifact_commit_write(),
+            Dom::WorkspaceGraph, F, X, Ann::Write,
+        ),
+        tool(
+            "daruma_artifact_deprecate",
+            "Deprecate artifact",
+            "Soft-deprecate an artifact. Repeated deprecation is a successful no-op.",
+            schema_artifact_id(),
+            Dom::WorkspaceGraph, F, X, Ann::WriteIdem,
+        ),
+        tool(
+            "daruma_artifact_relation_add",
+            "Add artifact relation",
+            "Add a typed directional relation between two registered artifacts.",
+            schema_artifact_relation(),
+            Dom::WorkspaceGraph, F, X, Ann::Write,
+        ),
+        tool(
+            "daruma_artifact_relation_remove",
+            "Remove artifact relation",
+            "Remove a typed directional relation between two registered artifacts.",
+            schema_artifact_relation(),
+            Dom::WorkspaceGraph, F, X, Ann::Write,
+        ),
+        tool(
             "daruma_artifact_list",
             "List artifacts",
             "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
@@ -2954,6 +2989,48 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             client.post_json("/v1/artifacts", body).await
         }
+        "daruma_artifact_update" => {
+            let artifact_id = required_string(&args, "artifact_id")?;
+            let mut body = json!({});
+            for key in ["title", "description"] {
+                if let Some(value) = args.get(key).and_then(|value| value.as_str()) {
+                    body[key] = json!(value);
+                }
+            }
+            client
+                .post_json(&format!("/v1/artifacts/{artifact_id}/update"), body)
+                .await
+        }
+        "daruma_artifact_commit_write" => {
+            let artifact_id = required_string(&args, "artifact_id")?;
+            let fencing_token = required_i64(&args, "fencing_token")?;
+            let mut body = json!({"fencing_token": fencing_token});
+            if let Some(version) = args.get("version").and_then(|value| value.as_str()) {
+                body["version"] = json!(version);
+            }
+            client
+                .post_json(&format!("/v1/artifacts/{artifact_id}/commit-write"), body)
+                .await
+        }
+        "daruma_artifact_deprecate" => {
+            let artifact_id = required_string(&args, "artifact_id")?;
+            client
+                .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), json!({}))
+                .await
+        }
+        name @ ("daruma_artifact_relation_add" | "daruma_artifact_relation_remove") => {
+            let from = required_string(&args, "from")?;
+            let to = required_string(&args, "to")?;
+            let kind = required_string(&args, "kind")?;
+            let path = if name == "daruma_artifact_relation_add" {
+                "/v1/artifact-relations"
+            } else {
+                "/v1/artifact-relations/remove"
+            };
+            client
+                .post_json(path, json!({"from": from, "to": to, "kind": kind}))
+                .await
+        }
         "daruma_artifact_list" => {
             let mut params: Vec<(&str, String)> = vec![];
             if let Some(p) = args.get("project_id").and_then(|v| v.as_str()) {
@@ -2979,19 +3056,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_artifact_impact" => {
             let artifact_id = required_string(&args, "artifact_id")?;
-            let mut params: Vec<(&str, String)> =
-                vec![("node_id", urlencode(&format!("artifact:{artifact_id}")))];
-            if let Some(limit) = args.get("limit").and_then(|v| v.as_u64()) {
-                params.push(("limit", limit.to_string()));
-            }
-            let qs = params
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("&");
-            client
-                .get_json(&format!("/v1/workspacegraph/impact?{qs}"))
-                .await
+            let path = match args.get("limit").and_then(|value| value.as_u64()) {
+                Some(limit) => format!("/v1/artifacts/{artifact_id}/impact?limit={limit}"),
+                None => format!("/v1/artifacts/{artifact_id}/impact"),
+            };
+            client.get_json(&path).await
         }
 
         other => anyhow::bail!("unknown tool: {other}"),
@@ -4142,6 +4211,55 @@ fn schema_artifact_register() -> Value {
             "project_id":  {"type":"string","description":"Project scope (creates a Contains edge)."}
         },
         "required": ["uri","title"]
+    })
+}
+
+fn schema_artifact_id() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Artifact id."}
+        },
+        "required": ["artifact_id"]
+    })
+}
+
+fn schema_artifact_update() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Artifact id."},
+            "title":       {"type":"string","description":"New non-empty title."},
+            "description": {"type":"string","description":"New description; pass an empty string to clear it."}
+        },
+        "required": ["artifact_id"]
+    })
+}
+
+fn schema_artifact_commit_write() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id":  {"type":"string","description":"Artifact id."},
+            "fencing_token": {"type":"integer","description":"Current live lease fencing token for the artifact URI."},
+            "version":       {"type":"string","description":"Optional committed version."}
+        },
+        "required": ["artifact_id", "fencing_token"]
+    })
+}
+
+fn schema_artifact_relation() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "from": {"type":"string","description":"Source artifact id."},
+            "to":   {"type":"string","description":"Target artifact id."},
+            "kind": {
+                "type":"string",
+                "enum":["depends_on","implements","tests","documents","supersedes","conflicts_with"]
+            }
+        },
+        "required": ["from", "to", "kind"]
     })
 }
 
@@ -5960,6 +6078,11 @@ mod tests {
             "daruma_project_create",
             "daruma_project_use",
             "daruma_move_project",
+            "daruma_artifact_update",
+            "daruma_artifact_commit_write",
+            "daruma_artifact_deprecate",
+            "daruma_artifact_relation_add",
+            "daruma_artifact_relation_remove",
         ] {
             assert!(
                 names.contains(&required),

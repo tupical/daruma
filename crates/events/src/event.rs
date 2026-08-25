@@ -719,6 +719,7 @@ pub enum Event {
     },
 
     /// Metadata (title, description) of an artifact was updated.
+    /// Emitted by `Command::UpdateArtifact` in the core command handler.
     ArtifactChanged {
         artifact_id: ArtifactId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -730,9 +731,9 @@ pub enum Event {
 
     /// A write was committed to an artifact.
     ///
-    /// Validates that `fencing_token` matches the current live lease for the
-    /// artifact URI; rejects with `Err` if the token is stale (holder lost
-    /// the lease). On success, updates `last_write_token` and `version`.
+    /// Emitted by `Command::CommitArtifactWrite` after the handler validates
+    /// that `fencing_token` matches the artifact URI's current live lease.
+    /// On success, updates `last_write_token` and `version`.
     ArtifactWriteCommitted {
         artifact_id: ArtifactId,
         agent_id: AgentId,
@@ -744,6 +745,7 @@ pub enum Event {
     },
 
     /// An artifact was soft-deprecated (no new consumers should reference it).
+    /// Emitted by `Command::DeprecateArtifact`.
     ArtifactDeprecated {
         artifact_id: ArtifactId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -752,11 +754,13 @@ pub enum Event {
     },
 
     /// A typed relation between two artifacts was created.
+    /// Emitted by `Command::AddArtifactRelation`.
     ArtifactRelationAdded {
         relation: ArtifactRelation,
     },
 
     /// A typed relation between two artifacts was removed.
+    /// Emitted by `Command::RemoveArtifactRelation`.
     ArtifactRelationRemoved {
         relation_id: ArtifactRelationId,
         from_id: ArtifactId,

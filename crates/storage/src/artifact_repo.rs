@@ -4,10 +4,10 @@
 //! Validates fencing tokens on `ArtifactWriteCommitted` so a stale holder
 //! cannot commit writes after losing its lease.
 
-use crate::parse_ts;
+use crate::{parse_ts, WorkLeaseRepo};
 use daruma_domain::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{ArtifactId, CoreError, ProjectId, Result, TaskId};
+use daruma_shared::{AgentId, ArtifactId, CoreError, ProjectId, Result, TaskId};
 use sqlx::{Row, SqlitePool};
 
 pub struct ArtifactRepo {
@@ -98,6 +98,21 @@ impl ArtifactRepo {
         rows.iter().map(row_to_relation).collect()
     }
 
+    /// True only while `agent_id` holds the artifact URI's current fenced lease.
+    pub async fn write_fencing_token_is_live(
+        &self,
+        artifact_id: ArtifactId,
+        agent_id: AgentId,
+        fencing_token: i64,
+    ) -> Result<bool> {
+        let Some(artifact) = self.get(artifact_id).await? else {
+            return Ok(false);
+        };
+        WorkLeaseRepo::new(self.pool.clone())
+            .check_fencing_token(agent_id, &artifact.uri, fencing_token)
+            .await
+    }
+
     // ── event projection ───────────────────────────────────────────────────────
 
     pub async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
@@ -169,31 +184,13 @@ impl ArtifactRepo {
                 version,
                 ..
             } => {
-                // Validate fencing token before committing: the artifact's uri
-                // must have a live lease held by agent_id carrying this token.
-                // We look up the artifact uri first, then call check_fencing_token
-                // on the lease table.  A stale token → record the event but do NOT
-                // update last_write_token / version (the write is rejected).
-                let artifact = self.get(*artifact_id).await?;
-                let token_valid = if let Some(a) = &artifact {
-                    sqlx::query(
-                        "SELECT 1 FROM work_leases \
-                         WHERE agent_id = ? AND target_uri = ? \
-                           AND fencing_token = ? AND expires_at >= ?",
-                    )
-                    .bind(agent_id.to_string())
-                    .bind(&a.uri)
-                    .bind(fencing_token)
-                    .bind(chrono::Utc::now().to_rfc3339())
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?
-                    .is_some()
-                } else {
-                    false
-                };
-
-                if token_valid {
+                // Command handling rejects stale/foreign tokens before emit.
+                // Keep the same check here for replicated or manually supplied
+                // events so they cannot bypass the fencing protocol.
+                if self
+                    .write_fencing_token_is_live(*artifact_id, *agent_id, *fencing_token)
+                    .await?
+                {
                     sqlx::query(
                         "UPDATE artifacts \
                          SET last_write_token = ?, version = ?, status = 'committed', \

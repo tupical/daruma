@@ -7,16 +7,13 @@
 //! projection round-trip.
 
 use axum::http::StatusCode;
-use daruma_domain::{
-    Actor, Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus, LeaseMode, WorkLease,
-};
+use daruma_domain::{Actor, Artifact, ArtifactRelationKind, ArtifactStatus, LeaseMode, WorkLease};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{
-    AgentId, ArtifactId, ArtifactRelationId, ProjectId, TaskId, WorkLeaseId,
-};
+use daruma_shared::{AgentId, ArtifactId, ProjectId, TaskId, WorkLeaseId};
+use serde_json::{json, Value};
 
 mod common;
-use common::{json_get, json_post, test_app};
+use common::{json_get, json_post, spawn_server, test_app};
 
 fn artifact(uri: &str, project_id: Option<ProjectId>) -> Artifact {
     let now = chrono::Utc::now();
@@ -39,12 +36,60 @@ fn artifact(uri: &str, project_id: Option<ProjectId>) -> Artifact {
 async fn seed_artifact(app: &common::TestApp, a: &Artifact) {
     let env = EventEnvelope::new(
         Actor::user(),
-        Event::ArtifactRegistered { artifact: a.clone() },
+        Event::ArtifactRegistered {
+            artifact: a.clone(),
+        },
     );
     // Projection consumed by GET /v1/artifacts.
     app.state.artifacts.apply_event(&env).await.unwrap();
     // WorkspaceGraph consumed by the impact traversal.
     app.state.workspace_graph.apply_event(&env).await.unwrap();
+}
+
+async fn mcp_tool(addr: &std::net::SocketAddr, token: &str, name: &str, arguments: Value) -> Value {
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/mcp?profile=full"))
+        .bearer_auth(token)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "{name} HTTP failure");
+    let body: Value = response.json().await.unwrap();
+    assert!(body["error"].is_null(), "{name} failed: {body}");
+    serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+async fn wait_for_relation_edge(
+    addr: &std::net::SocketAddr,
+    token: &str,
+    artifact_id: ArtifactId,
+    present: bool,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..100 {
+        let impact = mcp_tool(
+            addr,
+            token,
+            "daruma_artifact_impact",
+            json!({ "artifact_id": artifact_id }),
+        )
+        .await;
+        let found = impact["edges"]
+            .as_array()
+            .is_some_and(|edges| edges.iter().any(|edge| edge["kind"] == "ArtDependsOn"));
+        if found == present {
+            return impact;
+        }
+        last = impact;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("artifact relation edge did not reach expected state: present={present}, last={last}")
 }
 
 #[tokio::test]
@@ -103,7 +148,10 @@ async fn list_filters_by_project_and_status() {
     let item = &items[0];
     // Ids serialize as bare UUIDs (`#[serde(transparent)]`), not the
     // prefixed Display form.
-    assert_eq!(item["id"].as_str().unwrap(), active.id.as_uuid().to_string());
+    assert_eq!(
+        item["id"].as_str().unwrap(),
+        active.id.as_uuid().to_string()
+    );
     assert_eq!(item["uri"].as_str().unwrap(), "artifact://api/users");
     assert_eq!(item["kind"].as_str().unwrap(), "artifact");
     assert_eq!(item["status"].as_str().unwrap(), "active");
@@ -130,8 +178,7 @@ async fn list_filters_by_project_and_status() {
     assert_eq!(body["artifacts"].as_array().unwrap().len(), 2);
 
     // kind filter derives from the URI scheme.
-    let (status, body) =
-        json_get(app.router.clone(), &token, "/v1/artifacts?kind=file").await;
+    let (status, body) = json_get(app.router.clone(), &token, "/v1/artifacts?kind=file").await;
     assert_eq!(status, StatusCode::OK);
     let items = body["artifacts"].as_array().unwrap();
     assert_eq!(items.len(), 1);
@@ -140,62 +187,62 @@ async fn list_filters_by_project_and_status() {
 }
 
 #[tokio::test]
-async fn impact_returns_neighborhood_for_known_artifact() {
+async fn relation_add_remove_flows_through_command_bus_and_mcp_impact() {
     let app = test_app().await;
     let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
 
     let from = artifact("artifact://svc/auth", None);
     let to = artifact("contract://auth@v1", None);
     seed_artifact(&app, &from).await;
     seed_artifact(&app, &to).await;
 
-    // from --DependsOn--> to, seeded into both projections.
-    let rel = ArtifactRelation {
-        id: ArtifactRelationId::new(),
-        from_id: from.id,
-        to_id: to.id,
-        kind: ArtifactRelationKind::DependsOn,
-        created_at: chrono::Utc::now(),
-    };
-    let rel_env = EventEnvelope::new(
-        Actor::user(),
-        Event::ArtifactRelationAdded {
-            relation: rel.clone(),
-        },
-    );
-    app.state.artifacts.apply_event(&rel_env).await.unwrap();
-    app.state
-        .workspace_graph
-        .apply_event(&rel_env)
-        .await
-        .unwrap();
-
-    let (status, body) = json_get(
+    let relation = json!({
+        "from": from.id,
+        "to": to.id,
+        "kind": "depends_on"
+    });
+    let (status, body) = json_post(
         app.router.clone(),
         &token,
-        &format!("/v1/artifacts/{}/impact", from.id),
+        "/v1/artifact-relations",
+        &relation.to_string(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "relation add failed: {body}");
+    let projected = app.state.artifacts.relations_for(from.id).await.unwrap();
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].kind, ArtifactRelationKind::DependsOn);
 
-    let nodes = body["nodes"].as_array().expect("nodes array");
-    let edges = body["edges"].as_array().expect("edges array");
+    let impact = wait_for_relation_edge(&addr, &token, from.id, true).await;
+    let nodes = impact["nodes"].as_array().expect("nodes array");
     let from_node = format!("artifact:{}", from.id);
     let to_node = format!("artifact:{}", to.id);
     assert!(
         nodes.iter().any(|n| n["id"].as_str() == Some(&from_node)),
-        "root artifact node present: {body}"
+        "root artifact node present: {impact}"
     );
     assert!(
         nodes.iter().any(|n| n["id"].as_str() == Some(&to_node)),
-        "downstream artifact node present: {body}"
+        "downstream artifact node present: {impact}"
     );
-    assert!(
-        edges
-            .iter()
-            .any(|e| e["kind"].as_str() == Some("ArtDependsOn")),
-        "dependency edge present: {body}"
-    );
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        "/v1/artifact-relations/remove",
+        &relation.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "relation remove failed: {body}");
+    assert!(app
+        .state
+        .artifacts
+        .relations_for(from.id)
+        .await
+        .unwrap()
+        .is_empty());
+    wait_for_relation_edge(&addr, &token, from.id, false).await;
 }
 
 #[tokio::test]
@@ -235,12 +282,113 @@ async fn register_via_http_then_list_sees_artifact() {
     let items = body["artifacts"].as_array().unwrap();
     assert_eq!(items.len(), 1, "expected registered artifact: {body}");
     assert_eq!(items[0]["id"].as_str().unwrap(), new_id);
-    assert_eq!(
-        items[0]["uri"].as_str().unwrap(),
-        "artifact://api/payments"
-    );
+    assert_eq!(items[0]["uri"].as_str().unwrap(), "artifact://api/payments");
     assert_eq!(items[0]["title"].as_str().unwrap(), "Payments API");
     assert_eq!(items[0]["status"].as_str().unwrap(), "pending");
+}
+
+#[tokio::test]
+async fn update_and_deprecate_via_http_are_projected() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let artifact = artifact("artifact://svc/catalog", None);
+    seed_artifact(&app, &artifact).await;
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/update", artifact.id),
+        r#"{"title":"Catalog v2","description":"updated"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "artifact update failed: {body}");
+    let projected = app.state.artifacts.get(artifact.id).await.unwrap().unwrap();
+    assert_eq!(projected.title, "Catalog v2");
+    assert_eq!(projected.description, "updated");
+
+    for _ in 0..2 {
+        let (status, body) = json_post(
+            app.router.clone(),
+            &token,
+            &format!("/v1/artifacts/{}/deprecate", artifact.id),
+            "{}",
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "artifact deprecation failed: {body}"
+        );
+    }
+    assert_eq!(
+        app.state
+            .artifacts
+            .get(artifact.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ArtifactStatus::Deprecated
+    );
+}
+
+#[tokio::test]
+async fn commit_write_rejects_stale_fencing_token() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let artifact = artifact("artifact://svc/fenced", None);
+    seed_artifact(&app, &artifact).await;
+
+    let fencing_token = match app
+        .state
+        .work_leases
+        .try_reserve_targets(
+            app.admin_agent_id,
+            TaskId::new(),
+            None,
+            vec![artifact.uri.clone()],
+            LeaseMode::Exclusive,
+            chrono::Duration::minutes(5),
+        )
+        .await
+        .unwrap()
+    {
+        daruma_storage::ReserveOutcome::Reserved { leases } => {
+            leases[0].fencing_token.expect("fencing token")
+        }
+        _ => panic!("artifact lease was not reserved"),
+    };
+
+    let (status, _) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/commit-write", artifact.id),
+        &json!({ "fencing_token": fencing_token - 1, "version": "v1" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(app
+        .state
+        .artifacts
+        .get(artifact.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .last_write_token
+        .is_none());
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/commit-write", artifact.id),
+        &json!({ "fencing_token": fencing_token, "version": "v1" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "valid commit failed: {body}");
+    let projected = app.state.artifacts.get(artifact.id).await.unwrap().unwrap();
+    assert_eq!(projected.last_write_token, Some(fencing_token));
+    assert_eq!(projected.version.as_deref(), Some("v1"));
+    assert_eq!(projected.status, ArtifactStatus::Committed);
 }
 
 #[tokio::test]

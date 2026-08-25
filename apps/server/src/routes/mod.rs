@@ -45,10 +45,10 @@ use daruma_core::{
     Command, CommandEnvelope,
 };
 use daruma_domain::{
-    slugify_title, Actor, AgentSessionPlanStep, ArtifactStatus, CommentKind, CommentPatch,
-    ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument, NewPlan, Plan,
-    PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch,
-    TriageState, Verb, WorkUnitStatus,
+    slugify_title, Actor, AgentSessionPlanStep, ArtifactRelationKind, ArtifactStatus, CommentKind,
+    CommentPatch, ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument,
+    NewPlan, Plan, PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status,
+    Task, TaskPatch, TriageState, Verb, WorkUnitStatus,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -185,10 +185,15 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         )
         .route("/evidence", get(list_evidence).post(record_evidence))
         .route("/evidence/{id}", get(get_evidence))
-        // ── Artifact Registry (P4) — read-only HTTP surface ─────────────────
+        // ── Artifact Registry (P4) ─────────────────────────────────────────
         .route("/artifacts", get(list_artifacts).post(register_artifact))
+        .route("/artifacts/{id}/update", post(update_artifact))
+        .route("/artifacts/{id}/commit-write", post(commit_artifact_write))
+        .route("/artifacts/{id}/deprecate", post(deprecate_artifact))
         .route("/artifacts/{id}/status", post(set_artifact_status))
         .route("/artifacts/{id}/impact", get(artifact_impact))
+        .route("/artifact-relations", post(add_artifact_relation))
+        .route("/artifact-relations/remove", post(remove_artifact_relation))
         // ── Audit primitives ────────────────────────────────────────────────
         .route(
             "/audit/findings",
@@ -2563,6 +2568,147 @@ async fn register_artifact(
     }))
 }
 
+async fn dispatch_artifact_mutation(
+    auth: &AuthContext,
+    state: &AppState,
+    command: Command,
+    data: Value,
+) -> Result<Json<MutationResponse>, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(command, actor_from(auth, None))
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|event| event.id),
+        event_seq: last.map(|event| event.seq),
+        data,
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct UpdateArtifactBody {
+    title: Option<String>,
+    description: Option<String>,
+}
+
+/// `POST /v1/artifacts/{id}/update` — update mutable artifact metadata.
+async fn update_artifact(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<UpdateArtifactBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let artifact_id = parse_id(id_str, "artifact id")?;
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::UpdateArtifact {
+            artifact_id,
+            title: body.title,
+            description: body.description,
+        },
+        json!({ "artifact_id": artifact_id }),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct CommitArtifactWriteBody {
+    fencing_token: i64,
+    version: Option<String>,
+}
+
+/// `POST /v1/artifacts/{id}/commit-write` — commit a write guarded by the
+/// authenticated agent's live artifact lease.
+async fn commit_artifact_write(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<CommitArtifactWriteBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let artifact_id = parse_id(id_str, "artifact id")?;
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::CommitArtifactWrite {
+            artifact_id,
+            agent_id: auth.agent_id,
+            fencing_token: body.fencing_token,
+            version: body.version,
+        },
+        json!({ "artifact_id": artifact_id }),
+    )
+    .await
+}
+
+/// `POST /v1/artifacts/{id}/deprecate` — soft-deprecate an artifact.
+async fn deprecate_artifact(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let artifact_id = parse_id(id_str, "artifact id")?;
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::DeprecateArtifact { artifact_id },
+        json!({ "artifact_id": artifact_id }),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct ArtifactRelationBody {
+    from: ArtifactId,
+    to: ArtifactId,
+    kind: ArtifactRelationKind,
+}
+
+/// `POST /v1/artifact-relations` — add a typed artifact relation.
+async fn add_artifact_relation(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ArtifactRelationBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::AddArtifactRelation {
+            from: body.from,
+            to: body.to,
+            kind: body.kind,
+        },
+        json!({ "from": body.from, "to": body.to, "kind": body.kind }),
+    )
+    .await
+}
+
+/// `POST /v1/artifact-relations/remove` — remove a typed artifact relation.
+async fn remove_artifact_relation(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ArtifactRelationBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::RemoveArtifactRelation {
+            from: body.from,
+            to: body.to,
+            kind: body.kind,
+        },
+        json!({ "from": body.from, "to": body.to, "kind": body.kind }),
+    )
+    .await
+}
+
 #[derive(Deserialize)]
 struct SetArtifactStatusBody {
     status: ArtifactStatus,
@@ -4736,6 +4882,11 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::RecordEvidence { .. }
         // Artifact registry (P4) — project-scoped write surface.
         | Command::RegisterArtifact { .. }
+        | Command::UpdateArtifact { .. }
+        | Command::CommitArtifactWrite { .. }
+        | Command::DeprecateArtifact { .. }
+        | Command::AddArtifactRelation { .. }
+        | Command::RemoveArtifactRelation { .. }
         | Command::AssignArtifactOwner { .. }
         | Command::ChangeArtifactStatus { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,

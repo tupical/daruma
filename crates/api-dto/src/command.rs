@@ -5,9 +5,10 @@
 //! in tokio / sqlx.
 
 use daruma_domain::{
-    AgentAction, AgentSessionPlanStep, ArtifactStatus, CommentPatch, CompletionNote, NewArtifact,
-    NewComment, NewDocument, NewPlan, NewTask, PlanPatch, PlanStatus, Priority, RelationKind,
-    RunOutcome, SessionArtifactKind, SignalKind, Status, TaskPatch, WorkLease,
+    AgentAction, AgentSessionPlanStep, ArtifactRelationKind, ArtifactStatus, CommentPatch,
+    CompletionNote, NewArtifact, NewComment, NewDocument, NewPlan, NewTask, PlanPatch, PlanStatus,
+    Priority, RelationKind, RunOutcome, SessionArtifactKind, SignalKind, Status, TaskPatch,
+    WorkLease,
 };
 use daruma_shared::{
     AgentId, AgentSessionId, ArtifactId, CommentId, DocumentId, HandoffId, PlanId, ProjectId,
@@ -470,6 +471,43 @@ pub enum Command {
         artifact: NewArtifact,
     },
 
+    /// Update mutable artifact metadata.
+    UpdateArtifact {
+        artifact_id: ArtifactId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+
+    /// Commit a fenced write held by `agent_id`.
+    CommitArtifactWrite {
+        artifact_id: ArtifactId,
+        agent_id: AgentId,
+        fencing_token: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+
+    /// Soft-deprecate an artifact. Repeated calls are no-ops.
+    DeprecateArtifact {
+        artifact_id: ArtifactId,
+    },
+
+    /// Add a typed directional relation between two artifacts.
+    AddArtifactRelation {
+        from: ArtifactId,
+        to: ArtifactId,
+        kind: ArtifactRelationKind,
+    },
+
+    /// Remove a typed directional relation between two artifacts.
+    RemoveArtifactRelation {
+        from: ArtifactId,
+        to: ArtifactId,
+        kind: ArtifactRelationKind,
+    },
+
     /// Assign the outcome owner (accountability) of an artifact. Decoupled
     /// from the transient work-lease holder.
     AssignArtifactOwner {
@@ -564,6 +602,11 @@ impl Command {
             Command::RecordEvidence { .. } => "record_evidence",
             // Artifact registry (P4)
             Command::RegisterArtifact { .. } => "register_artifact",
+            Command::UpdateArtifact { .. } => "update_artifact",
+            Command::CommitArtifactWrite { .. } => "commit_artifact_write",
+            Command::DeprecateArtifact { .. } => "deprecate_artifact",
+            Command::AddArtifactRelation { .. } => "add_artifact_relation",
+            Command::RemoveArtifactRelation { .. } => "remove_artifact_relation",
             Command::AssignArtifactOwner { .. } => "assign_artifact_owner",
             Command::ChangeArtifactStatus { .. } => "change_artifact_status",
         }

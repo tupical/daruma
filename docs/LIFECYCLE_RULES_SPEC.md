@@ -87,8 +87,8 @@ struct Rule {
 | `run.created`          | reserved: синоним before_execute в текущей модели      | — |
 | `run.before_execute`   | `StartRun`                                             | ✓ |
 | `run.before_complete`  | `CompleteRun` (также `FailRun`/`AbortRun` — без гейта, терминальные отказы не блокируются) | ✓ |
-| `artifact.created`     | reserved: события `ArtifactRegistered` и проекция (0036) есть, но Command-поверхности артефактов в ядре ещё нет — точка активируется вместе с Artifact Registry (план WorkUnit `019ead4b`, P4) | — |
-| `artifact.updated`     | reserved: аналогично — `ArtifactChanged`/`ArtifactWriteCommitted` без командного пути | — |
+| `artifact.created`     | `RegisterArtifact` → `ArtifactRegistered`               | ✓ |
+| `artifact.updated`     | `UpdateArtifact` / `CommitArtifactWrite`                 | ✓ |
 | `decision.created`     | reserved: сущности Decision в ядре нет; решения v1 живут как Evidence kind=`decision_record` | — |
 
 `reserved`-события входят в enum (валидны при создании правила), но до

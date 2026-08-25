@@ -17,14 +17,14 @@
 | Coordination | 0 | 24 | 1 |
 | Ai | 0 | 0 | 1 |
 | Events | 0 | 2 | 0 |
-| WorkspaceGraph | 0 | 0 | 8 |
+| WorkspaceGraph | 0 | 0 | 13 |
 | Runs | 0 | 8 | 0 |
 | Sessions | 0 | 0 | 7 |
 | Signals | 0 | 2 | 0 |
 | Relations | 0 | 3 | 0 |
 | Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 19 | 60 | 41 |
+| ИТОГО | 19 | 60 | 46 |
 
 ## Plans
 
@@ -143,6 +143,11 @@
 | tool | tier | profile | title | hints |
 |---|---|---|---|---|
 | `daruma_artifact_register` | Extending / расширяющие | `full` | Register artifact | write |
+| `daruma_artifact_update` | Extending / расширяющие | `full` | Update artifact | write |
+| `daruma_artifact_commit_write` | Extending / расширяющие | `full` | Commit artifact write | write |
+| `daruma_artifact_deprecate` | Extending / расширяющие | `full` | Deprecate artifact | write |
+| `daruma_artifact_relation_add` | Extending / расширяющие | `full` | Add artifact relation | write |
+| `daruma_artifact_relation_remove` | Extending / расширяющие | `full` | Remove artifact relation | write |
 | `daruma_artifact_list` | Extending / расширяющие | `full` | List artifacts | read |
 | `daruma_artifact_impact` | Extending / расширяющие | `full` | Artifact impact analysis | read |
 | `daruma_workspacegraph_status` | Extending / расширяющие | `full` | WorkspaceGraph index health | read |
