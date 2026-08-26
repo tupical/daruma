@@ -2898,30 +2898,6 @@ impl CommandHandler {
             // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ──────────
             Command::RecordEvidence { evidence } => {
                 let _repo = require_evidence(&self.evidence)?;
-                // Keep this invariant at the command boundary so HTTP, MCP and
-                // future ingress paths cannot record evidence with dangling scopes.
-                let scope_exists = match &evidence.scope {
-                    RuleScope::Tenant => true,
-                    RuleScope::Project { id } => self.projects.get(*id).await?.is_some(),
-                    RuleScope::Plan { id } => self
-                        .plans
-                        .as_ref()
-                        .ok_or_else(|| CoreError::storage("plan repository not configured"))?
-                        .get(*id)
-                        .await?
-                        .is_some(),
-                    RuleScope::Task { id } => self.tasks.get(*id).await?.is_some(),
-                };
-                if !scope_exists {
-                    let id = evidence
-                        .scope
-                        .id_string()
-                        .expect("non-tenant evidence scopes always have an id");
-                    return Err(CoreError::validation(format!(
-                        "evidence {} scope target {id} does not exist",
-                        evidence.scope.kind()
-                    )));
-                }
                 let supersedes = evidence.supersedes;
                 let mut record = evidence.into_evidence(ActorRef::from_actor(actor), time::now());
                 if record.id == daruma_shared::EvidenceId::default() {
