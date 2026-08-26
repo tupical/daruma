@@ -330,22 +330,33 @@ fn scoped_evidence_body(kind: &str, id: impl ToString) -> String {
 }
 
 #[tokio::test]
-async fn record_evidence_accepts_upper_layer_scope_targets() {
+async fn record_evidence_rejects_missing_scope_targets_with_their_ids() {
     let app = TestAppBuilder::default().build().await;
     let token = app.admin_token.clone();
     let project = ProjectId::new();
     let plan = PlanId::new();
     let task = TaskId::new();
 
-    for (kind, wire_id) in [
-        ("project", project.as_uuid().to_string()),
-        ("plan", plan.as_uuid().to_string()),
-        ("task", task.as_uuid().to_string()),
+    for (kind, wire_id, display_id) in [
+        (
+            "project",
+            project.as_uuid().to_string(),
+            project.to_string(),
+        ),
+        ("plan", plan.as_uuid().to_string(), plan.to_string()),
+        ("task", task.as_uuid().to_string(), task.to_string()),
     ] {
-        let body = scoped_evidence_body(kind, &wire_id);
+        let body = scoped_evidence_body(kind, wire_id);
         let (status, response) = json_post(app.router.clone(), &token, "/v1/evidence", &body).await;
-        assert_eq!(status, StatusCode::OK, "{kind}: {response}");
-        assert_eq!(response["data"]["evidence"]["scope"]["id"], wire_id);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}: {response}");
+        assert_eq!(response["error"]["code"], "validation");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&display_id),
+            "{kind} validation must identify {display_id}: {response}"
+        );
     }
 }
 
