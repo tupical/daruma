@@ -181,7 +181,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/rules", get(list_rules).post(create_rule))
         .route(
             "/rules/{id}",
-            get(get_rule).patch(patch_rule).delete(disable_rule),
+            get(get_rule).patch(patch_rule).delete(delete_rule),
         )
         .route("/evidence", get(list_evidence).post(record_evidence))
         .route("/evidence/{id}", get(get_evidence))
@@ -2344,8 +2344,9 @@ async fn patch_rule(
     }))
 }
 
-/// `DELETE /v1/rules/{id}` — disable a rule (`enabled=false`; not evaluated).
-async fn disable_rule(
+/// `DELETE /v1/rules/{id}` — permanently remove a rule from the active
+/// projection. Its event history remains available for audit and replay.
+async fn delete_rule(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Path(id_str): Path<String>,
@@ -2355,7 +2356,7 @@ async fn disable_rule(
     let id = parse_rule_id(&id_str)?;
     let envs = state
         .commands
-        .dispatch(Command::DisableRule { id }, actor_from(&auth, None))
+        .dispatch(Command::DeleteRule { id }, actor_from(&auth, None))
         .await
         .map_err(ApiError::from)?;
     let last = envs.last();
@@ -2363,7 +2364,7 @@ async fn disable_rule(
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
-        data: json!({ "disabled": id.to_string() }),
+        data: json!({ "deleted": id.to_string() }),
         warnings: vec![],
         client_command_id: None,
     }))
@@ -4879,6 +4880,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::CreateRule { .. }
         | Command::UpdateRule { .. }
         | Command::DisableRule { .. }
+        | Command::DeleteRule { .. }
         | Command::RecordEvidence { .. }
         // Artifact registry (P4) — project-scoped write surface.
         | Command::RegisterArtifact { .. }

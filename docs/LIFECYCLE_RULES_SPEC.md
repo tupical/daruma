@@ -328,7 +328,8 @@ Effective rules для сущности E:
 5. **Каждый warn/block/override оставляет след** (RuleFired/RuleOverridden) с
    actor из EventEnvelope.
 6. **Мутации правил и evidence — только event-sourced** через Command
-   (RuleCreated/RuleUpdated/RuleDisabled, EvidenceRecorded, EvidenceSuperseded);
+   (RuleCreated/RuleUpdated/RuleDisabled/RuleDeleted, EvidenceRecorded,
+   EvidenceSuperseded);
    прямой SQL запрещён (ADR).
 7. **Гейт стоит до persist** и покрывает ВСЕ пути перехода (SetStatus,
    CompleteTask, drain) через общую точку — нельзя «обойти» правило другим
@@ -346,9 +347,10 @@ Effective rules для сущности E:
   `lifecycle_rules` (колоночная, по образцу artifact registry; уникальный
   индекс `(scope_kind, scope_id, rule_key)`), `evidence`,
   `rule_firings` (проекция RuleFired/RuleOverridden).
-- События: `RuleCreated/RuleUpdated/RuleDisabled`, `EvidenceRecorded/
+- События: `RuleCreated/RuleUpdated/RuleDisabled/RuleDeleted`, `EvidenceRecorded/
   EvidenceSuperseded`, `RuleFired/RuleOverridden` — в общий event log.
-- HTTP: `GET/POST/PATCH /v1/rules` (tenant-scope),
+- HTTP: `GET/POST/PATCH /v1/rules` и `DELETE /v1/rules/{id}` (безвозвратное
+  удаление из активной проекции с сохранением event log; tenant-scope),
   `GET/POST/PATCH /v1/projects/{id}/rules` (+ plan/task scope через query
   или вложенные пути) — по образцу project_settings (Command-based).
 - MCP: чтение effective rules + запись evidence — в default-профиль

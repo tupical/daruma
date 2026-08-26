@@ -2486,7 +2486,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_rule_disable" => {
             let id = required_string(&args, "id")?;
-            client.delete_json(&format!("/v1/rules/{id}")).await
+            client
+                .patch_json(&format!("/v1/rules/{id}"), json!({ "enabled": false }))
+                .await
         }
         "daruma_evidence_submit" => {
             let evidence = args

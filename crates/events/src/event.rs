@@ -788,6 +788,12 @@ pub enum Event {
         at: Timestamp,
     },
 
+    /// A lifecycle rule was permanently removed from the active projection.
+    /// The event log keeps this tombstone and the preceding rule history.
+    RuleDeleted {
+        rule_id: RuleId,
+    },
+
     // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ─────────────────
     /// A piece of evidence was recorded. Carries the full record for replay.
     /// Evidence is immutable; corrections are a new record that supersedes the
@@ -966,6 +972,7 @@ impl Event {
             Event::RuleCreated { .. } => "rule_created",
             Event::RuleUpdated { .. } => "rule_updated",
             Event::RuleDisabled { .. } => "rule_disabled",
+            Event::RuleDeleted { .. } => "rule_deleted",
             // Evidence registry
             Event::EvidenceRecorded { .. } => "evidence_recorded",
             Event::EvidenceSuperseded { .. } => "evidence_superseded",
@@ -1166,6 +1173,7 @@ impl Event {
             Event::RuleCreated { .. }
             | Event::RuleUpdated { .. }
             | Event::RuleDisabled { .. }
+            | Event::RuleDeleted { .. }
             | Event::EvidenceRecorded { .. }
             | Event::EvidenceSuperseded { .. }
             | Event::RuleFired { .. } => Channel::Rules,

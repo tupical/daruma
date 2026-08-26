@@ -1,5 +1,5 @@
 //! Lifecycle rule repository — projection over `lifecycle_rules`
-//! (migration 0037), fed by `RuleCreated` / `RuleUpdated` / `RuleDisabled`
+//! (migration 0037), fed by lifecycle rule events
 //! events. The event log stays the source of truth (spec invariant 6).
 //!
 //! Reads serve two callers: CRUD listing (HTTP/MCP) and the lifecycle gate,
@@ -157,6 +157,14 @@ impl RuleRepo {
             Event::RuleDisabled { rule_id, at } => {
                 sqlx::query("UPDATE lifecycle_rules SET enabled = 0, updated_at = ? WHERE id = ?")
                     .bind(at.to_rfc3339())
+                    .bind(rule_id.to_string())
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                Ok(())
+            }
+            Event::RuleDeleted { rule_id } => {
+                sqlx::query("DELETE FROM lifecycle_rules WHERE id = ?")
                     .bind(rule_id.to_string())
                     .execute(&self.pool)
                     .await

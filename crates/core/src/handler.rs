@@ -2895,6 +2895,14 @@ impl CommandHandler {
                 }])
             }
 
+            Command::DeleteRule { id } => {
+                let repo = require_rules(&self.rules)?;
+                repo.get(id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("rule {id}")))?;
+                Ok(vec![Event::RuleDeleted { rule_id: id }])
+            }
+
             // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ──────────
             Command::RecordEvidence { evidence } => {
                 let _repo = require_evidence(&self.evidence)?;

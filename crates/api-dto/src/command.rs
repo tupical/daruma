@@ -455,6 +455,12 @@ pub enum Command {
         id: RuleId,
     },
 
+    /// Permanently delete a lifecycle rule from the active projection. The
+    /// deletion remains recorded in the event log.
+    DeleteRule {
+        id: RuleId,
+    },
+
     // ── Evidence registry (OSS task 019eb65a-3185; spec §1.3) ─────────────────
     /// Record a piece of evidence (immutable). When `supersedes` is set the
     /// older record is marked superseded (not edited). Evidence is what
@@ -598,6 +604,7 @@ impl Command {
             Command::CreateRule { .. } => "create_rule",
             Command::UpdateRule { .. } => "update_rule",
             Command::DisableRule { .. } => "disable_rule",
+            Command::DeleteRule { .. } => "delete_rule",
             // Evidence registry
             Command::RecordEvidence { .. } => "record_evidence",
             // Artifact registry (P4)

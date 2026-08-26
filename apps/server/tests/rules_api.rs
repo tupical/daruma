@@ -106,8 +106,9 @@ async fn rule_crud_roundtrip() {
     assert_eq!(status, StatusCode::OK, "patch: {patched}");
     assert_eq!(patched["data"]["rule"]["mode"], json!("recommendation"));
 
-    // Disable (DELETE).
-    let (status, disabled) = json_method(
+    // Delete permanently. The event remains in history, but the active
+    // projection no longer returns the rule.
+    let (status, deleted) = json_method(
         app.router.clone(),
         Method::DELETE,
         &token,
@@ -115,14 +116,12 @@ async fn rule_crud_roundtrip() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "disable: {disabled}");
+    assert_eq!(status, StatusCode::OK, "delete: {deleted}");
 
-    let (_, got) = json_get(app.router.clone(), &token, &format!("/v1/rules/{rule_id}")).await;
-    assert_eq!(
-        got["rule"]["enabled"],
-        json!(false),
-        "disabled after DELETE"
-    );
+    let (status, _) = json_get(app.router.clone(), &token, &format!("/v1/rules/{rule_id}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, list) = json_get(app.router.clone(), &token, "/v1/rules").await;
+    assert!(list["rules"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
