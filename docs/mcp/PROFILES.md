@@ -1,12 +1,12 @@
 # MCP tool-surface profiles
 
-Daruma's MCP catalogue grew API-first to 120 tools. Most agent sessions
-use a dozen of them, and a 120-tool `tools/list` burns context before the
+Daruma's MCP catalogue grew API-first to 125 tools. Most agent sessions
+use a dozen of them, and a 125-tool `tools/list` burns context before the
 user's request is even read. Profiles split the surface:
 
 | Profile | Tools | Audience |
 |---------|-------|----------|
-| `default` | 33 — compact, workflow-first | Everyday agent work: materialize (plan+tasks, ADR-0007) → execute → close |
+| `default` | 33 — compact, workflow-first | Everyday agent work: materialize (plan+tasks, plan-only intake) → execute → close |
 | `full` | complete catalogue | Power users, orchestrators, dashboards, backward compat |
 
 `full` is always a strict superset of `default`.
@@ -60,15 +60,15 @@ job — competing/overlapping alternatives stay in `full`:
 |--------|--------------|----------------------------|
 | Tasks | get, update, list, search, comment, set_status, set_priority, complete, reopen, can_start | bulk_set_status (bulk = orchestration), split, move_project (rare), delete (destructive), lesson_recall |
 | Projects | project_list, project_use, workspace_info, healthz | project_create (rare), project_delete (destructive, two-step), workspace_resolve, workspace_list, project_move_workspace (registry ops) |
-| Plans | plan_materialize (the only task intake, ADR-0007), plan_create, plan_get, plan_list, plan_add_task (attach an existing task, not intake), amend_plan_task (plan-owned task fields, ADR-0007 Q1), plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_delete, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
+| Plans | plan_materialize (the only task intake), plan_create, plan_get, plan_list, plan_add_task (attach an existing task, not intake), amend_plan_task (plan-owned task fields), plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_delete, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
 | Runs | run_start, run_complete, run_abort, run_note_append | run_start_step, run_finish_step, run_log, run_notes_list (step-level tracing) |
-| Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration), handoff_* (3; P5 gates), audit_* (4; advisory hygiene) |
+| Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration), handoff_* (3; dispatch gates), audit_* (4; advisory hygiene) |
 | Relations | link, relations | unlink (destructive) |
 | Lifecycle rules | evidence_submit, evidence_list | rule_create, rule_update, rule_disable, rule_list (defining rules is an admin act) |
 | Search/graph | — (plain `search` is in Tasks) | workspacegraph_* (5; competes with list/search for inventory questions) |
 | Documents | — | doc_* (7) |
 | History | — | history_* (6; incl. destructive rollback) |
-| AI | — | ai_decompose, ai_analyze_complexity (open-world, costed) |
+| AI | — | ai_analyze_complexity (open-world, costed) |
 | Events/admin | healthz | subscribe_project, events_since, sessions (7), signals (2) |
 
 Why each excluded group is `full`-only:

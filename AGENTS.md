@@ -134,16 +134,15 @@ Windsurf.
 
 ### 3. Token discovery order
 
-All daruma clients and the MCP shim resolve credentials in this order:
+All daruma clients and the `daruma` binary resolve credentials in this order:
 
 1. `DARUMA_TOKEN` environment variable — highest priority; set this in
    shell profiles or CI to override everything.
-2. `~/.agents/daruma/credentials.json` — written by `daruma-cursor pair`
-   or `daruma-claude pair`. Active profile: `credentials.profiles[active_profile]`.
+2. `~/.agents/daruma/credentials.json` — written by
+   `daruma install --mode local|self-host -y` or the client installers.
+   Active profile: `credentials.profiles[active_profile]`.
 3. Legacy `~/.config/daruma/credentials.json` — automatically migrated on
    first access; kept for backward compatibility.
-4. **Interactive prompt** — if no token is found and the CLI needs one,
-   the user is prompted and the result is saved to the credentials file.
 
 For service / headless use, set `DARUMA_TOKEN` and optionally
 `DARUMA_API_URL`. No credentials file is needed.
@@ -165,7 +164,8 @@ daruma_set_status { status: "done" }    close finished tasks
 daruma_comment { task_id, body }        attach artifacts / notes
 ```
 
-Full tool reference: `docs/guides/mcp-client.md`
+MCP client setup and credentials: `docs/guides/mcp-client.md`; tool
+profiles: `docs/mcp/PROFILES.md`.
 
 ---
 
@@ -183,7 +183,7 @@ Codex plugin manages this block; do not hand-edit between the markers.
 1. **All durable task/plan state lives in daruma.** Never persist
    tasks, plans, subtasks, or backlogs in markdown scratchpads,
    `TODO.md` files, or in-chat notes as the source of truth. Use
-   `daruma_plan_materialize` (plan-only intake, ADR-0007),
+   `daruma_plan_materialize` (plan-only intake),
    `daruma_set_status`, `daruma_comment`.
 
 2. **Do not create or modify `.omc/plans/`, `.omc/ultragoal/`, or
@@ -305,25 +305,10 @@ mention a different system (Linear, Jira, GitHub Issues, etc.).
 - `/daruma:plan` — active plan with progress bar.
 - `/daruma:next` — claim the next ready task.
 - `/daruma:mine` — tasks claimed by this session.
-- `/daruma:start "<task>"` — full parse → decompose → execute pipeline.
 <!-- daruma-codex:policy:end -->
 
 ## Документация — свод правил
 
-Ведение документации подчиняется общему своду правил семейства MeiSei/MCPBox.
-
-**Канон:** `meisei.ru/docs/docs-governance.md` (сайт: https://meisei.ru/docs/#/docs-governance).
-
-Кратко: каждая управляемая страница несёт обязательные metadata
-(`audience/intent/owner/status/source_of_truth/last_verified`); один факт — один
-`source_of_truth` (ссылки, не копии); один раздел — одно намерение (Diátaxis);
-изменение поведения продукта включает docs-правку в том же PR. Профиль (S–XL) и
-полный контракт — в каноне. Проверка: `docs_frontmatter.py check` (CI) или
-`mcpbox_docs_assess`.
-
-**Жёсткий маршрут решений:** proposed-решения живут в
-`meisei-research`/`mcpbox-research`; accepted MeiSei ADR — только в
-`meisei.ru/adr`; accepted MCPBox ADR — только в `mcpbox.ru/docs/adr`.
-Implementation-репозитории хранят ссылку, не копию нормативного текста. Перед
-правкой ADR найти его `decision_id` и входящие ссылки во всём workspace, затем
-выполнить `docs_frontmatter.py decisions`. Ошибка gate блокирует завершение.
+Ведение документации подчиняется общему канону семейства MeiSei:
+https://meisei.ru/docs/#/docs-governance (одна страница — одно намерение,
+один факт — один источник, изменение поведения — вместе с правкой docs).

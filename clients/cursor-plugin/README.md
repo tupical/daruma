@@ -28,7 +28,7 @@ deeplink, show an approval dialog, and write the server into
 `~/.cursor/mcp.json` for you.
 
 <p align="center">
-  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D">
+  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&slug=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHBzOi8vZGFydW1hLm1jcGJveC5ydS92MS9tY3AifQ%3D%3D">
     <img src="https://img.shields.io/badge/Add%20to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
   </a>
 </p>
@@ -36,11 +36,12 @@ deeplink, show an approval dialog, and write the server into
 Or copy the official Cursor deeplink:
 
 ```
-cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D
+cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&slug=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHBzOi8vZGFydW1hLm1jcGJveC5ydS92MS9tY3AifQ%3D%3D
 ```
 
-The default Cursor path uses Daruma's HTTP MCP endpoint. For local
-development, run the server first:
+The deeplink points at the hosted daruma HTTP MCP endpoint. To use a
+self-hosted server instead, pass `--base-url` (see below) or run the
+server locally:
 
 ```bash
 ./target/release/daruma-server   # data: ~/.agents/daruma/data

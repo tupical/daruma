@@ -66,8 +66,8 @@ cargo build --release -p daruma-server -p daruma-cli
 # 2. start the HTTP server (keep this running)
 ./target/release/daruma-server
 
-# 3. register the MCP stdio shim with Claude Code
-claude mcp add daruma -- /abs/path/daruma/target/release/daruma-mcp
+# 3. register the MCP stdio server with Claude Code
+claude mcp add daruma -- /abs/path/daruma/target/release/daruma mcp
 
 # 4. oh-my-claudecode (the `omc team` executor)
 npm i -g oh-my-claude-sisyphus@latest
@@ -108,7 +108,7 @@ That's the whole workflow. Inside Claude Code, the equivalent slash commands are
 ┌──────────────────────────────┐
 │ daruma-claude start <T>   │ shell
 └──────────────┬───────────────┘
-               │ spawn daruma-mcp (stdio JSON-RPC)
+               │ spawn daruma MCP (stdio JSON-RPC)
                ▼
 ┌──────────────────────────────────────────────────┐
 │ 1. parse        → derive {title, description}    │
@@ -150,7 +150,6 @@ Inside a Claude Code REPL session:
 | `/daruma-claude:doctor`             | Same as `daruma-claude doctor`   |
 | `/daruma-claude:setup`              | Same as `daruma-claude setup`    |
 | `/daruma-claude:branch-tasks`       | Show tasks linked to the current git branch |
-| `/daruma-claude:research <idea>`    | Save sourced research in the owning MeiSei/MCPBox repository |
 
 Bundled skills:
 
@@ -160,7 +159,6 @@ Bundled skills:
 | `branch-tasks` | Find tasks linked to the current git branch through `branch:` comments. |
 | `lesson-capture` | Save a durable reusable lesson as a `lesson:` task comment. |
 | `lesson-recall` | Search captured lessons through `daruma_lesson_recall`. |
-| `research` | Route an idea to MeiSei/MCPBox and save evidence-backed research. |
 
 ---
 
@@ -209,10 +207,10 @@ OPENAI_API_KEY=sk-... ./target/release/daruma-server
 ├── lib/
 │   ├── detect.mjs                      # cross-platform dependency detection
 │   ├── orchestrator.mjs                # daruma pipeline driver
-│   ├── mcp-client.mjs                  # stdio JSON-RPC client for daruma-mcp
+│   ├── mcp-client.mjs                  # stdio JSON-RPC client for the daruma MCP server
 │   ├── omc-team-runner.mjs             # spawns `omc team` per task
 │   └── update.mjs                      # self-update via npm registry
-├── commands/                           # /daruma-claude:{start,team-from-plan,doctor,setup}
+├── commands/                           # /daruma-claude:* slash commands
 └── skills/                             # the actual contracts
     ├── start/SKILL.md                  # parse → project → seed → [plan] → execute
     ├── team-from-plan/SKILL.md         # execute an existing plan by fanout waves
@@ -241,23 +239,6 @@ npm i -g oh-my-claude-sisyphus@latest                    # oh-my-claudecode (man
 Issues and PRs welcome. The whole point of this plugin is that it stays thin — patches that grow it into its own thing (extra reasoning steps, hardcoded heuristics, new agents) are likely to be declined. Patches that make the glue more robust (better detection, clearer error messages, cross-platform fixes) are very welcome.
 
 ---
-
-## Releasing
-
-Releases are automated via [GitHub Actions](.github/workflows/publish.yml). To cut a new version:
-
-```bash
-npm run release:patch   # 0.1.0 → 0.1.1
-# or release:minor / release:major
-```
-
-This bumps `package.json`, creates a `vX.Y.Z` git tag, and pushes both. The workflow then:
-
-1. Verifies the tag matches `package.json`.
-2. Publishes to npm with `--provenance` (signed attestation).
-3. Creates a GitHub Release with auto-generated notes.
-
-Auth uses npm **Trusted Publishing** (OIDC). One-time setup: on npmjs.com → `daruma-claude` → Settings → Trusted Publishers → add GitHub Actions with org=`tupical`, repo=`daruma-claude`, workflow=`publish.yml`. No secrets are stored in GitHub.
 
 ## License
 

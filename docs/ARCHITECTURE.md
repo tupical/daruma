@@ -44,7 +44,8 @@ output.
 ┌──────────────────────────────────────────────────────────────────┐
 │ apps/desktop (GPUI)  daruma-web↗  apps/server (Axum)  apps/cli │  UI / transports
 ├──────────────────────────────────────────────────────────────────┤
-│ daruma-ai-infra   daruma-sync   daruma-webhooks  daruma-mcp│  agent + realtime
+│ daruma-ai-infra  daruma-sync  daruma-webhooks  daruma-mcp     │  agent + realtime
+│ daruma-discovery (mDNS pairing)                              │
 ├──────────────────────────────────────────────────────────────────┤
 │ daruma-auth (bearer / capability / scope)                     │  authn / authz
 ├──────────────────────────────────────────────────────────────────┤
@@ -56,14 +57,14 @@ output.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Core and modules (§3.4)
+## Core and modules
 
 Daruma draws an explicit line between **core** (the part with the
 event log, the contract, the auth, the public REST/WS/MCP surface) and
 **modules** (clients, embed binaries, future integrations). The split
 is what lets independent teams ship without coordinating on every
-release — see [docs/MODULES.md](docs/MODULES.md) for the live registry
-and [docs/MODULE_CONTRACT.md](docs/MODULE_CONTRACT.md) for the formal
+release — see [MODULES.md](MODULES.md) for the live registry
+and [MODULE_CONTRACT.md](MODULE_CONTRACT.md) for the formal
 SLA.
 
 ### Core
@@ -87,7 +88,7 @@ The **core** is the set of crates and apps that own the contract:
 
 Core promises forward compatibility on `/v1/*`, the event schema, the
 WS protocol, and the MCP tool catalogue. Breaking changes follow the
-ritual in [docs/MODULE_CONTRACT.md](docs/MODULE_CONTRACT.md#versioning).
+ritual in [MODULE_CONTRACT.md](MODULE_CONTRACT.md#versioning).
 
 ### Modules
 
@@ -100,7 +101,7 @@ Every other tree is a **module**, classified by *kind*:
   (standalone repo), `apps/cli`.
 - **embed** — runs the core in-process. `apps/desktop` (GPUI) is the
   shipped example; it does not open a port and goes through
-  `crates/core/src/embed.rs` (W2.1) instead.
+  `crates/core/src/embed.rs` instead.
 - **integration** — speaks to a third-party system. Planned:
   `integrations/github/`, `integrations/slack/`.
 
@@ -142,7 +143,7 @@ A module never reaches across to another module — only to core.
 
 `apps/desktop` runs the same `daruma-core` runtime in its own
 process, with no network in the data path. The only public entry point
-is `crates/core/src/embed.rs` (W2.1), which re-exports
+is `crates/core/src/embed.rs`, which re-exports
 `{Db, EventBus, CommandBus}` with identical semantics to the network
 path. UI views subscribe to the in-process `EventBus`, dispatch
 commands through `CommandBus::dispatch`, and never touch storage
@@ -158,10 +159,12 @@ network by design.
 
 ### `daruma-shared`
 - `ids::{TaskId, ProjectId, EventId, AgentId, CommentId, ActivityId,
-         TokenId, WebhookId, WebhookDeliveryId,
-         PlanId, RunId, AgentSessionId, RelationId}`
+         TokenId, WebhookId, WebhookDeliveryId, PlanId, RunId,
+         AgentSessionId, RelationId, DocumentId, VersionId, DeviceId,
+         EvidenceId, RuleId, WorkUnitId, WorkLeaseId, ArtifactId, …}`
   — UUIDv7 newtypes with stable display prefixes (`tsk_`, `prj_`, `act_`,
-  `pln_`, `run_`, `ags_`, `rel_`, …).
+  `pln_`, `run_`, `ags_`, `rel_`, `doc_`, `ver_`, …); the full list lives
+  in `crates/shared/src/ids.rs`.
 - `time::Timestamp` — `chrono::DateTime<Utc>` alias; `time::now()`.
 - `error::CoreError` — top-level domain error with `code() -> &'static str`
   returning the stable machine code (`not_found`, `validation`,
@@ -179,7 +182,8 @@ network by design.
 - `Project { id, title, description, created_at, updated_at }`.
 - `Comment { id, task_id, author, body, parent_id?, created_at,
              edited_at?, deleted_at? }`, `NewComment`, `CommentPatch`.
-- `Status: Inbox | Todo | InProgress | Done` — `is_terminal()` only `Done`.
+- `Status: Inbox | Todo | InProgress | InReview | Done | Cancelled` —
+  `is_terminal()` is `Done | Cancelled`.
 - `Priority: P0 | P1 | P2 | P3`.
 - `Actor: User | Agent { id, name }`.
 - `AgentAction`, `AgentActionKind`.
@@ -196,13 +200,13 @@ network by design.
   run_started | run_completed | run_failed | run_aborted |
   task_attached | task_detached | task_claimed | task_released |
   linked | unlinked | unblocked`.
-  `linked` / `unlinked` / `unblocked` are emitted by `TaskLinked`,
-  `TaskUnlinked`, `TaskUnblocked` events respectively (§3.2).
+   `linked` / `unlinked` / `unblocked` are emitted by `TaskLinked`,
+   `TaskUnlinked`, `TaskUnblocked` events respectively.
   Pair-merging: semantic events (`TaskClosed`, `TaskReopened`,
   `TaskCommented`) update the preceding mechanical row's verb rather than
   inserting a new one; `event_id UNIQUE` guarantees idempotent backfill.
 
-#### Plans, Runs & Agent Sessions (Section §3.1)
+#### Plans, Runs & Agent Sessions
 
 - `Plan { id, project_id, parent_plan_id?, title, description, goal,
          success_criteria, status, owner, created_at, updated_at,
@@ -225,7 +229,7 @@ network by design.
   `SessionStepStatus: Pending | InProgress | Completed | Canceled`.
 - `SignalKind: Stop { reason? } | Elicit { prompt, choices } |
               AuthRequired { scope } | InterventionAccepted { choice }` —
-  typed agent ⇄ human signals (Linear B.5).
+  typed agent ⇄ human signals.
 - `ExternalRef { tenant, kind, external_id, internal_id, created_at }` —
   per-tenant idempotency key with composite PK
   `(tenant, kind, external_id)`.
@@ -238,7 +242,7 @@ network by design.
     `TaskDeleted`, `TaskSplitGenerated`.
   - **Tasks** (semantic, emitted *alongside* mechanical ones):
     `TaskReopened`, `TaskClosed`, `TaskCommented`.
-  - **Task relations** (§3.2): `TaskLinked { relation_id, from, to,
+  - **Task relations**: `TaskLinked { relation_id, from, to,
     kind, actor, occurred_at }`, `TaskUnlinked { relation_id, from, to,
     kind, occurred_at }`, `TaskUnblocked { task_id, unblocked_by,
     occurred_at }`. All three route to `Channel::Tasks`. `kind()` returns
@@ -262,7 +266,7 @@ network by design.
     `TaskContested { task_id, actors, field? }`,
     `RunObsolescedByPlanEdit { run_id, plan_id, kind }` with
     `ObsolescenceKind: Archived | TaskRemoved | GoalChanged`.
-  - **Run signals** (Linear B.5): `RunStopRequested`,
+  - **Run signals**: `RunStopRequested`,
     `RunElicitationRequested`, `RunAuthRequired`,
     `RunInterventionAccepted`.
 - Helpers: `kind() -> &'static str`, `target_task() -> Option<TaskId>`,
@@ -270,7 +274,8 @@ network by design.
   happens in the WS handler for events that only carry `task_id`), and
   `channel() -> Channel`.
 - `Channel: Tasks | Comments | AgentStatus | Presence | Webhooks |
-            Plans | Runs` — the filter currency used by `Subscribe`
+            Plans | Runs | Documents | AiOps | WorkUnits | Artifacts |
+            Rules` — the filter currency used by `Subscribe`
   messages. `Plan*` events route to `Plans`; `Run*`, `Agent*`, semantic,
   and signal variants route to `Runs`.
 - `EventEnvelope { id, seq, occurred_at, actor, payload }`.
@@ -280,24 +285,9 @@ network by design.
 
 ### `daruma-storage`
 - `Db::open(path)` / `Db::memory()` / `Db::migrate()`.
-- Migrations in `crates/storage/migrations/`:
-  - `0001_initial.sql` — events + tasks + projects.
-  - `0002_comments.sql` — comments projection.
-  - `0003_task_timestamps.sql` — `tasks.started_at` + `tasks.completed_at`.
-  - `0004_tokens.sql` — `tokens` row + indexed `prefix`.
-  - `0005_agent_acks.sql` — per-agent inbox cursor.
-  - `0006_webhooks.sql` — webhook config + delivery log.
-  - `0007_activity.sql` — `activity` projection (append-only audit rows;
-    `event_id UNIQUE` for idempotent backfill; indexes on
-    `(task_id, seq)`, `(project_id, seq)`, `seq`, and `verb`).
-  - `0008_plans_runs_sessions.sql` — 7 tables: `plans`, `plan_tasks`,
-    `runs`, `agent_sessions` (with `plan_steps_json`), `agent_claims`
-    (TTL via `expires_at`), `external_refs` (composite PK), and the
-    cross-cutting `processed_command_ids` (UUIDv4 → `(event_id, seq)`
-    idempotency table; 7-day TTL via background sweep).
-  - `0009_task_relations.sql` — `task_relations` table with
-    `UNIQUE (from_task, to_task, kind)` + indexes on `(from_task, kind)`
-    and `(to_task, kind)`. Enables §3.2 typed-relation storage.
+- Migrations live in `crates/storage/migrations/` as numbered `.sql`
+  files applied in order by `Db::migrate()`; that directory is the live
+  registry (the schema has long outgrown any enumerated list).
 - Repos: `SqliteEventStore`, `TaskRepo`, `ProjectRepo`, `CommentRepo`,
   `ActivityRepo`, `TokenRepo`, `AgentInboxRepo`, `WebhookRepo`,
   `PlanRepo`, `RunRepo`, `SessionRepo`, `AgentClaimRepo`,
@@ -311,7 +301,7 @@ network by design.
 - `ActivityRepo::backfill_from_events(store)` — idempotent replay from
   any `seq` checkpoint; called once after `Db::migrate()` at startup.
 
-#### Task Relations (Section §3.2)
+#### Task Relations
 
 - `RelationKind: Blocks | RelatesTo | Duplicates` — typed edge label.
   `Blocks` is direction-bearing and enforced: `from` blocks `to`.
@@ -346,11 +336,11 @@ for `from`; cap `MAX_DEPTH = 1000`; fails with
 is skipped for `RelatesTo` and `Duplicates`.
 
 **Idempotency.** `LinkTasks` / `UnlinkTasks` honour `client_command_id`
-via the shared `processed_command_ids` table (same §3.1 contract).
+via the shared `processed_command_ids` table (same idempotency contract).
 Storage also enforces `UNIQUE (from_task, to_task, kind)` as a second
 guard.
 
-#### Plan Tree (Section §3.1 extension)
+#### Plan Tree
 
 - **Model:** `Plan.parent_plan_id?: PlanId` — nullable FK to parent plan.
   Root plans have `parent_plan_id = None`. No mandatory "root" singleton;
@@ -367,8 +357,8 @@ guard.
   a new `parent_plan_id` (whether reparenting to a new parent, to None,
   or staying the same). Recorded in `activity` projection with verb
   `"plan_modified"`.
-- **MCP:** `daruma_plan_update { id, parent_plan_id: string | null | omit }`
-  (from §3.3 W3 commit c72c67d). Null value unparents to root; omit leaves
+- **MCP:** `daruma_plan_update { id, parent_plan_id: string | null | omit }`.
+  Null value unparents to root; omit leaves
   parent unchanged. Gated by `Capability::PlanWrite`.
 - **WS broadcast:** `PlanUpdated` diff in `Channel::Plans` includes
   `parent_plan_id` field. Web treeview subscribes and reorders the
@@ -389,10 +379,10 @@ guard.
   - **Runs**: `StartRun`, `RunStartStep`, `RunFinishStep`,
     `CompleteRun`, `FailRun`, `AbortRun`.
   - **Sessions**: `StartAgentSession`, `EndAgentSession`,
-    `UpdateAgentSessionPlan` (Linear B.1, max 100 steps).
-  - **Signals** (Linear B.5): `SendRunSignal`, `RespondRunSignal`.
+    `UpdateAgentSessionPlan` (max 100 steps).
+  - **Signals**: `SendRunSignal`, `RespondRunSignal`.
   - **Claims**: `AcquireClaim`, `ReleaseClaim`.
-  - **Relations** (§3.2): `LinkTasks { from, to, kind, client_command_id? }`,
+  - **Relations**: `LinkTasks { from, to, kind, client_command_id? }`,
     `UnlinkTasks { id, client_command_id? }`. Both gate on
     `Capability::TaskRelationWrite`. `LinkTasks` runs cycle DFS before
     emitting; `DeleteTask` cascades with `TaskUnlinked` per relation
@@ -426,7 +416,7 @@ guard.
 - `relation_enforcement::detect_cycle(repo, from, to, kind)`:
   iterative DFS across `Blocks` edges, `MAX_DEPTH = 1000`; rejects with
   `CoreError::validation("cycle_detected")`. No-op for non-`Blocks`
-  kinds. See §3.2 above.
+  kinds. See Task Relations above.
 - `relation_enforcement::block_check_and_unblock(state, task_id,
   done_events)`: checks active blockers before Done transition; appends
   `TaskUnblocked` events for newly unblocked downstreams.
@@ -434,8 +424,8 @@ guard.
 
 ### `daruma-auth`
 - `Capability` bit-flag enum (fine-grained + `Admin` wildcard) —
-  the 6 W3-era bits are `PlanRead`, `PlanWrite`, `RunRead`, `RunWrite`,
-  `SubscribePlans`, `SubscribeRuns`. §3.2 adds `TaskRelationRead`
+  includes `PlanRead`, `PlanWrite`, `RunRead`, `RunWrite`,
+  `SubscribePlans`, `SubscribeRuns`, `TaskRelationRead`
   (1 << 20) and `TaskRelationWrite` (1 << 21). `TaskRelationRead` gates
   `GET /v1/tasks/{id}/relations`; `TaskRelationWrite` gates `POST
   /v1/relations` and `DELETE /v1/relations/{id}`. WS streaming of
@@ -472,7 +462,7 @@ guard.
   - `X-Daruma-Signature: hex(hmac_sha256(secret, body))`
   Delivery is single-shot for the MVP; retries-with-backoff are a
   follow-up.
-- Webhook event kinds include (§3.2 additions): `task.linked`,
+- Webhook event kinds include: `task.linked`,
   `task.unlinked`, `task.unblocked`, plus `task.due` (due-date watchdog:
   an active task's `due_at` passed; emitted once per (task, due_at)
   value by a server tick, `DARUMA_DUE_TICK_SECS`, default 60, 0
@@ -480,26 +470,12 @@ guard.
   existing dispatcher; no new dispatcher code required.
 
 ### `daruma-mcp` (served via `daruma mcp` / `/v1/mcp`)
-- 44 MCP tools — original 20 from B.5/W2.x plus 21 new in W3.2 covering
-  the full plan/run/session/claim/signal surface, plus 3 new in §3.2
-  for typed task relations:
-  - **Tasks / projects / comments / agent / housekeeping** (19):
-    `daruma_{create, get, list, project_list, project_create,
-    project_use, workspace_info, set_status, set_priority, complete,
-    delete, split, ai_decompose, comment, reopen,
-    inbox_pull, subscribe_project, events_since, healthz}`.
-  - **Plans** (9): `daruma_plan_{create, update, get, list,
-    add_task, remove_task, reorder, next_task, archive}`.
-  - **Runs** (5): `daruma_run_{start, start_step, finish_step,
-    complete, abort}`.
-  - **Sessions** (3, Linear B.1): `daruma_session_{start, end,
-    set_plan}`.
-  - **Signals** (2, Linear B.5): `daruma_signal_{send, respond}`.
-  - **Claims** (2): `daruma_{claim, release}`.
-  - **Relations** (3, §3.2): `daruma_link { from, to, kind,
-    client_command_id? }`, `daruma_unlink { relation_id }`,
-    `daruma_relations { task_id }` (returns 5 groups: blocks,
-    blocked_by, relates_to, duplicates, duplicated_by).
+- The tool catalogue is profile-gated: the `default` profile advertises
+  a compact workflow-first surface; `full` keeps the complete catalogue
+  (tasks, plans, runs, sessions, documents, history, relations, claims,
+  leases, work units, artifacts, rules, evidence, workspacegraph, AI
+  ops). Composition and migration: [mcp/PROFILES.md](mcp/PROFILES.md);
+  the machine-generated tier matrix: [mcp/FEATURE-TIERS.md](mcp/FEATURE-TIERS.md).
 - Dependency-light: hand-rolled JSON-RPC 2.0 over stdio (no `rmcp` SDK),
   with `initialize`, `tools/list`, `tools/call`, `ping`.
 - Tool handlers funnel through `ApiClient` → bearer-authed HTTP to
@@ -525,14 +501,14 @@ guard.
   - `Resync { from_seq, dropped }` — on broadcast `Lagged`.
   - `Ping` / `Pong` — both directions; the server pings every 25 s.
   - `Ack { event_id }` (scaffold).
-- **Per-event capability gate** (W3.3): before forwarding each envelope,
+- **Per-event capability gate**: before forwarding each envelope,
   the WS loop resolves the channel via `payload.channel()` and silently
   drops envelopes whose channel-required capability is absent from the
   subscriber's token. `Tasks → SubscribeTasks`, `Comments →
   SubscribeComments`, `AgentStatus → SubscribeAgentStatus`, `Plans →
   SubscribePlans`, `Runs → SubscribeRuns`. Subscriber sees a clean
   feed of channels they're allowed to see — no info-leak across scopes.
-  §3.2 relation events (`TaskLinked`, `TaskUnlinked`, `TaskUnblocked`)
+  Task-relation events (`TaskLinked`, `TaskUnlinked`, `TaskUnblocked`)
   route to `Channel::Tasks` and are therefore gated by `SubscribeTasks`
   — not by `TaskRelationRead`, which only gates the REST GET endpoint.
 
@@ -540,7 +516,7 @@ guard.
 - `OpenAiClient` wraps the OpenAI Responses API. Returns `Command`
   values only — never touches storage. The deprecated
   `analyze_complexity` delegation-shim lives in
-  `apps/server/src/ai.rs` until the cloud cutover to `yatagarasu`.
+  `apps/server/src/ai.rs`.
 
 ### `apps/server` (Axum)
 
@@ -552,7 +528,7 @@ guard.
 | `/v1`    | `GET /healthz`, `GET /ws`                                   | —    | Public surface. WS bearer auth via `Sec-WebSocket-Protocol`; `?token=…` is legacy fallback. |
 | `/v1`    | `GET /tasks`, `GET /tasks/{id}`, `GET /projects`,           | ✔    | Bearer middleware + per-handler `require(Capability)`. |
 |          | `POST /commands`, `GET /events?since&limit`,                |      |  Each command kind maps to a `task:write`/`comment:write`/etc gate. |
-|          | `POST /ai/parse`, `POST /ai/decompose/{task_id}`,           |      | `agent:dispatch`. |
+|          | `POST /ai/analyze-complexity/{plan_id}`,                    |      | `agent:dispatch` (deprecated shim). |
 |          | `GET  /tasks/{task_id}/activity?cursor&limit&verbs`,        |      | `task:read`. Cursor-paginated audit log. Deleted-task fallback via audit rows. |
 |          | `POST /tasks/{task_id}/comments`,                           |      | `comment:write`. |
 |          | `GET  /tasks/{task_id}/comments`,                           |      | `comment:read`. |
@@ -564,7 +540,7 @@ guard.
 |          | `POST /plans`, `PATCH /plans/{id}`, `GET /plans/{id}`,      |      | `plan:write` / `plan:read`. `GET` returns `Plan + PlanProgress`. |
 |          | `GET /plans?project_id=&status=`,                           |      | `plan:read`. List with optional status filter. |
 |          | `POST /plans/{id}/tasks`,                                   |      | `plan:write`. AddPlanTask. |
-|          | `PATCH /plans/{id}/tasks/{task_id}`,                        |      | `plan:write`. AmendPlanTask: amend plan-owned fields (ADR-0007 Q1). |
+|          | `PATCH /plans/{id}/tasks/{task_id}`,                        |      | `plan:write`. AmendPlanTask: amend plan-owned fields. |
 |          | `DELETE /plans/{id}/tasks/{task_id}`,                       |      | `plan:write`. RemovePlanTask. |
 |          | `POST /plans/{id}/reorder`, `POST /plans/{id}/archive`,     |      | `plan:write`. |
 |          | `GET /plans/{id}/next-task?run_id=&claim_ttl_secs=`,        |      | `run:write`. NextTaskResolver entry. |
@@ -572,14 +548,19 @@ guard.
 |          | `POST /runs`, `POST /runs/{id}/step/start`,                 |      | `run:write`. |
 |          | `POST /runs/{id}/step/finish`,                              |      | `run:write`. |
 |          | `POST /runs/{id}/complete`, `POST /runs/{id}/abort`,        |      | `run:write`. |
-|          | `POST /runs/{id}/signal`, `POST /runs/{id}/signal/respond`, |      | `run:write`. Linear B.5 typed signals. |
+|          | `POST /runs/{id}/signal`, `POST /runs/{id}/signal/respond`, |      | `run:write`. Typed run signals. |
 |          | `POST /sessions`, `POST /sessions/{id}/end`,                |      | `agent:dispatch`. |
-|          | `PATCH /sessions/{id}/plan-steps`,                          |      | `agent:dispatch`. Linear B.1 plan replace. |
+|          | `PATCH /sessions/{id}/plan-steps`,                          |      | `agent:dispatch`. Plan-step replace. |
 |          | `POST /claims`, `DELETE /claims/{agent_id}/{task_id}`       |      | `run:write`. TTL claim acquire/release. |
 |          | `POST /relations`,                                          |      | `TaskRelationWrite`. Create typed relation; emits `TaskLinked`. |
 |          | `DELETE /relations/{relation_id}`,                          |      | `TaskRelationWrite`. Delete relation; emits `TaskUnlinked`. |
 |          | `GET /tasks/{task_id}/relations`                            |      | `TaskRelationRead`. Returns 5-group `TaskRelations` shape. |
 | (legacy) | every authed path **without** `/v1`                         | ✔    | Sunset aliases — emit `Deprecation: true` and `Sunset: <startup+30d>`. |
+
+The table covers the original surface. Documents, version history,
+rules/evidence, work units, leases, workspace registry, repo scopes,
+project settings, device pairing, and binary downloads also live under
+`/v1` — see `apps/server/src/routes/` for the live list.
 
 **Cross-cutting middleware**
 - `request_id`: every request gets `X-Request-Id: req_<uuidv7>` (echoes
@@ -599,14 +580,14 @@ guard.
 
 **Webhook dispatcher** is spawned at startup against `bus.subscribe()`.
 
-**Background sweeps** (W3.1):
+**Background sweeps**:
 - Claim TTL sweep — every 30 s: `claims.sweep_expired()` returns the
   released `(agent_id, task_id)` pairs and the server dispatches a
   `Command::ReleaseClaim` per pair so an `AgentReleased` event flows
   through projections + WS.
 - Idempotency cleanup — every hour: `idempotency.cleanup_older_than(7d)`.
 
-## Idempotency contract (W3.1, ROADMAP §4.5)
+## Idempotency contract
 
 Every mutation can carry an optional client-generated
 `client_command_id: Uuid` (UUIDv4) in the `CommandEnvelope`.
@@ -625,7 +606,7 @@ Every mutation can carry an optional client-generated
 session command idempotency now, applies to every Create-mutation
 going forward.
 
-## Mutation response shape (W3.1, ROADMAP §4.6)
+## Mutation response shape
 
 Every successful mutation response — `POST /v1/commands` plus the
 direct REST endpoints (`POST /v1/plans`, `POST /v1/runs`, …) — returns:

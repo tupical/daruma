@@ -1,14 +1,8 @@
 # Спецификация модели правил жизненного цикла (v1)
 
-- **Статус:** v1 — маппинг сверен с кодом ядра; двойное ревью пройдено
-  (code-consistency: approve-with-fixes; coverage: needs-rework → все 17
-  находок закрыты правками, 2026-06-11)
-- **Дата:** 2026-08-18
-- **Контекст:** план «Правила жизненного цикла задач и триггеры» (`019eb654-f391`),
-  задача Этапа 1 (`019eb655-92f7`); ADR — your-project/docs/adr-lifecycle-rules.md
-- **Источники:** tupical-personal/docs/{manifest,vision,architecture,plan}.md
-- **Реализация:** OSS rule engine (`019eb659-daf5`), pre-transition hooks (`019eb659-74e6`),
-  evidence registry (`019eb65a-3185`), inheritance (`019eb65a-e5cd`)
+- **Статус:** v1 — маппинг сверен с кодом ядра
+- **Реализация:** OSS rule engine, pre-transition hooks,
+  evidence registry, inheritance (см. `crates/core`, `crates/domain`)
 
 ## 0. Принцип и анти-цели
 
@@ -82,7 +76,7 @@ struct Rule {
 | `plan.before_approve`  | `SetPlanStatus` draft→active                           | ✓ |
 | `plan.before_start`    | reserved: в текущей модели совпадает с before_approve  | — |
 | `task.created`         | `CreateTask` (и capture-пути, проходящие через него)   | ✓ |
-| `task.before_start`    | переход status→`in_progress` ЛЮБЫМ путём: `SetStatus`, claim/drain — проверено: `plan_drain_next` диспатчит `Command::SetStatus` (routes/mod.rs:~3859), гейт в CommandHandler покрывает все пути | ✓ |
+| `task.before_start`    | переход status→`in_progress` ЛЮБЫМ путём: `SetStatus`, claim/drain — все пути диспатчат `Command::SetStatus`, гейт в CommandHandler покрывает их | ✓ |
 | `task.before_complete` | переход в терминальный статус: `SetStatus`(done) И `CompleteTask` — оба пути через один гейт | ✓ |
 | `run.created`          | reserved: синоним before_execute в текущей модели      | — |
 | `run.before_execute`   | `StartRun`                                             | ✓ |
@@ -126,7 +120,7 @@ struct Condition {
 ### 1.3 Requirement и Evidence
 
 `Requirement` — что должно быть доказано; `Evidence` — иммутабельная запись
-доказательства (OSS-задача `019eb65a-3185`). Соответствие типов 1:1:
+доказательства. Соответствие типов 1:1:
 
 | Requirement.type                | Evidence.kind                  | params (Requirement)                            |
 |---------------------------------|--------------------------------|-------------------------------------------------|
@@ -150,7 +144,7 @@ struct Evidence {
     rule_id: Option<RuleId>,        // None для evidence «впрок», вне правила
     document_version: Option<u64>,  // для document_read_ack (entity_versions)
     payload: Json,                  // required_fields → значения
-    reason: String,                 // «зачем» (vision.md, правило 5)
+    reason: String,                 // «зачем»
     actor: Actor, created_at: Timestamp,
     superseded_by: Option<EvidenceId>, // иммутабельность: только supersede
 }
@@ -171,10 +165,10 @@ Evidence с соответствующим `kind`, привязанный к п�
 
 ### 1.4 Completion note
 
-`required_fields` по умолчанию (plan.md, пример 3): `actor`, `completed_at`,
+`required_fields` по умолчанию: `actor`, `completed_at`,
 `reason`, `result_summary`, `acceptance_criteria_status`, `related_artifacts`.
-Транспорт: опциональное поле `completion_note` в `CompleteTask`/`SetStatus(done)`
-(OSS-задача `019eb65a-86d0`); ядро при наличии правила создаёт из него
+Транспорт: опциональное поле `completion_note` в `CompleteTask`/`SetStatus(done)`;
+ядро при наличии правила создаёт из него
 Evidence kind=`completion_note` атомарно с переходом.
 
 ### 1.5 EnforcementResult и wire-контракт
@@ -269,16 +263,16 @@ RuleOverridden { rule_id, actor, reason, entity_ref, occurred_at }
 viable slice целевой vision-таксономии
 (`draft/active/used/needs_review/accepted/outdated/replaced/archived`):
 
-| v1 (6 статусов) | vision-таксономия |
+| v1 (6 статусов) | исходная таксономия (design) |
 |---|---|
 | `draft`, `active`, `outdated`, `archived` | совпадают 1:1 |
-| `frozen` | добавлен вне vision-списка: терминальное состояние документа, чей anchor-task завершён (`Done`); отличен от `archived` (отменённый anchor / явная архивация) |
+| `frozen` | добавлен вне исходного списка: терминальное состояние документа, чей anchor-task завершён (`Done`); отличен от `archived` (отменённый anchor / явная архивация) |
 | `replaced` | зарезервирован («superseded by a newer document»); ядро пока не эмитит |
 | — | `used`, `needs_review`, `accepted` осознанно отложены (расширение аддитивно: статус хранится TEXT) |
 
 **Artifact registry** (`ArtifactStatus`, crates/domain/src/artifact.rs) —
-отдельная шкала из 4 статусов (`pending/active/committed/deprecated`) по
-решению WorkUnit-плана (`019ead4b`, P4): реестр версионирует ресурсы, а не
+отдельная шкала из 4 статусов (`pending/active/committed/deprecated`):
+реестр версионирует ресурсы, а не
 живые markdown-документы, поэтому унификации с `DocumentStatus` нет и не
 планируется.
 
@@ -333,9 +327,9 @@ Effective rules для сущности E:
    прямой SQL запрещён (ADR).
 7. **Гейт стоит до persist** и покрывает ВСЕ пути перехода (SetStatus,
    CompleteTask, drain) через общую точку — нельзя «обойти» правило другим
-   эндпойнтом. Нюанс drain: `AcquireClaim` диспатчится ДО `SetStatus`
-   (routes/mod.rs:3840-3860), а claim сам по себе не гейтится (claim — не
-   переход состояния). Требование к реализации (`019eb659-74e6`): при
+   эндпойнтом. Нюанс drain: `AcquireClaim` диспатчится ДО `SetStatus`,
+   а claim сам по себе не гейтится (claim — не
+   переход состояния). Требование к реализации: при
    blocked-переходе drain обязан компенсировать — освободить claim
    (`ReleaseClaim`), иначе задача останется заклеймленной без работы.
 8. **Детерминизм:** проверка не делает сетевых вызовов и не зависит от
@@ -355,19 +349,19 @@ Effective rules для сущности E:
   или вложенные пути) — по образцу project_settings (Command-based).
 - MCP: чтение effective rules + запись evidence — в default-профиль
   (агенту нужно видеть, что от него требуют, и оставлять след);
-  CRUD правил — full/admin (согласовать с планом `019ead63`).
-- RBAC мутаций правил — на стороне Cloud (`require_rules_manage()`, ADR §2.3).
+  CRUD правил — full/admin.
+- RBAC мутаций правил — на стороне Cloud (`require_rules_manage()`).
 - Cloud НЕ хранит копию правил в своей БД: кабинет читает и пишет их напрямую
   в workspace через `/v1` (ADR) — задачи «синхронизации Cloud↔OSS» не
   существует by design; self-hosted OSS управляет правилами тем же API.
 
-## 5. Примеры (правила 1–3 из plan.md в формате v1)
+## 5. Примеры (формат v1)
 
 ```json
 {
   "rule_key": "read-architecture-md",
   "title": "Перед утверждением плана прочитать architecture.md",
-  "scope": {"project": "your-project"},
+  "scope": {"project": "example-project"},
   "trigger": "plan.before_approve",
   "requirement": {"type": "read_artifact",
                   "doc_ref": "architecture.md", "min_version": "latest"},
@@ -380,7 +374,7 @@ Effective rules для сущности E:
 {
   "rule_key": "auth-impact-check",
   "title": "Проверка влияния задачи на модуль авторизации",
-  "scope": {"project": "your-project"},
+  "scope": {"project": "example-project"},
   "trigger": "task.before_start",
   "condition": {"changed_paths": ["crates/auth/**", "**/users/**", "**/permissions/**"]},
   "requirement": {"type": "impact_check", "target": "auth-module",
@@ -405,29 +399,28 @@ Effective rules для сущности E:
 ```
 
 Примечания к примерам:
-- пример 2: условие исходного примера (`affected_modules: [auth, users,
-  permissions]`) в v1 выражается через `changed_paths` — носителя «модулей»
-  в ядре нет (см. reserved-политику §1.2);
-- нормализация имён: в plan.md пример 1 называет requirement именем evidence
-  (`document_read_ack`); в v1 requirement.type = `read_artifact`, а
+- пример 2: условие `affected_modules: [auth, users, permissions]` в v1
+  выражается через `changed_paths` — носителя «модулей» в ядре нет
+  (см. reserved-политику §1.2);
+- нормализация имён: requirement.type = `read_artifact`, а
   `document_read_ack` — kind его evidence (таблица соответствия §1.3).
 
-## 6. Покрытие правил манифеста (vision.md 1–15)
+## 6. Покрытие исходных design-правил
 
-| vision-правило | механизм v1 |
+| design-правило | механизм v1 |
 |---|---|
 | 1 цель задачи | Cloud-валидация (UI/шаблон): непустая цель в description; отдельного requirement-типа в ядре v1 НЕТ (кандидат v2: `description_required`) |
 | 2 критерии завершения | `acceptance_criteria_required` на `task.before_start`/`before_complete` |
 | 3 контекст задачи | Cloud-шаблон: `task.before_start` + `read_artifact`/`impact_check` |
 | 4–5 исполнитель и причина действия | EventEnvelope.actor (есть всегда) + Evidence.reason |
-| 6 документ привязан к задаче | OSS doc↔task binding (`019eb65b-4cc2`) + правило на `artifact.created` |
-| 7–8 триггер и потребитель документа | носитель — метаданные документа (OSS-задача `019eb65b-4cc2`); проверка — Cloud-шаблон (Cloud-only в v1, ядро поля не валидирует) |
-| 9 ЖЦ артефакта | статусы документов/артефактов (`019eb65b-4cc2`, registry 0036) |
+| 6 документ привязан к задаче | OSS doc↔task binding + правило на `artifact.created` |
+| 7–8 триггер и потребитель документа | носитель — метаданные документа; проверка — Cloud-шаблон (Cloud-only в v1, ядро поля не валидирует) |
+| 9 ЖЦ артефакта | статусы документов/артефактов (registry, migration 0036) |
 | 10–11 завершение с результатом и who/when/why | `completion_note` (пример 3) |
 | 12 решения фиксируются | Evidence kind=`decision_record` (+ reserved `decision.created`) |
 | 13 допущения явные | Cloud-шаблоны задают `required_fields` с полем `assumptions` для `decision_record`/`impact_check`; ядро конкретный состав полей не фиксирует |
 | 14 блокер имеет владельца | `owner_required` + существующий Relation::Blocks |
-| 15 формализованная передача | Cloud-шаблон handoff на `task.before_start` после смены исполнителя; синергия с P5 Handoff contracts (`019ead4c-dc63`) — на общем гейте |
+| 15 формализованная передача | Cloud-шаблон handoff на `task.before_start` после смены исполнителя; синергия с Handoff contracts — на общем гейте |
 
 ## 7. Открытые вопросы (не блокируют v1)
 
@@ -435,5 +428,5 @@ Effective rules для сущности E:
   draft→approved→active у планов (продуктовое решение Cloud).
 - Decision как полноценная сущность ядра (сейчас — Evidence).
 - `task_labels`/`affected_modules` в Condition — ждут носителя в ядре.
-- Command-поверхность артефактов (план WorkUnit `019ead4b`, P4) — её
+- Command-поверхность артефактов (WorkUnit-слой) — её
   появление активирует триггеры `artifact.*`.

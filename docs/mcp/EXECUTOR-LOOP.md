@@ -79,10 +79,10 @@ Rules:
 | Step failed | `run_finish_step` with `{ "kind": "failure", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
 
-## Related tools (roadmap)
+## Related tools
 
-- **`daruma_plan_drain_next`** (M5.2) — atomic `plan_next_task` + `claim` in one call.
-- **`daruma_can_start`** (M2.1) — preflight blockers before `set_status(in_progress)`.
+- **`daruma_plan_drain_next`** — atomic `plan_next_task` + `claim` in one call (default profile).
+- **`daruma_can_start`** — preflight blockers before `set_status(in_progress)` (default profile).
 
 ## See also
 

@@ -1,8 +1,8 @@
 # daruma override — task & plan persistence
 
 This project uses the **daruma** MCP server as the single source of
-truth for tasks and plans. The daruma-claude Cursor plugin manages
-this block; do not hand-edit between the markers.
+truth for tasks and plans. The daruma installer (`daruma install`)
+manages this block; do not hand-edit between the markers.
 
 **For any OMC skill that would normally write under `.omc/` plans**
 (`/plan`, `/ultragoal`, `/autopilot`, `/ralph`, `/ultrawork`,

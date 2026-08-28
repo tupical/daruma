@@ -2,7 +2,7 @@
 description: Claim the next ready task from the active daruma plan and show its briefing.
 ---
 
-The user invoked `/daruma-claude:next`. This claims a task —
+The user invoked `/daruma:next`. This claims a task —
 afterward, control returns to the user/agent to actually execute it.
 
 ## Steps
@@ -17,7 +17,7 @@ afterward, control returns to the user/agent to actually execute it.
 
    ```
    No ready task. <reason from server, e.g. "3 tasks blocked by X">
-   → run /daruma-claude:plan to inspect dependencies.
+   → run /daruma:plan to inspect dependencies.
    ```
 
    Stop.

@@ -16,9 +16,6 @@ One binary — `daruma` — is the CLI, the launcher, and the MCP server your ag
 talk to. Point Claude, Cursor, or Codex at it and they share the same plans, work
 items, and live activity stream as you do.
 
-> The binary and crate ids keep the `daruma` name for now; the project, repo, and
-> brand are **Daruma** under the Meisei umbrella. A full id migration is tracked separately.
-
 <sub>
 torii · satori · enma · yatagarasu · fujin · <b>daruma</b>
 &nbsp;—&nbsp; intake · sensemaking · decisions · planning · actions · <b>execution (terminal)</b>
@@ -53,7 +50,7 @@ hyakki is out-of-band (clustering/observability) — not a pipeline hop; daruma 
 | Webhooks | HMAC-SHA256 signed outbound POST per match                          |
 | MCP      | JSON-RPC 2.0 over stdio **and** HTTP (`/v1/mcp`) — one `daruma` binary |
 | AI       | OpenAI Responses API, tool-calling only — emits commands, never writes DB |
-| Web      | Rust + [Leptos](https://leptos.dev) 0.7 CSR → WASM — standalone [`daruma-web`](../daruma-web) repo, talks to `/v1/*` + `/v1/ws` |
+| Web      | Rust + [Leptos](https://leptos.dev) 0.7 CSR → WASM — standalone [`daruma-web`](https://github.com/tupical/daruma-web) repo, talks to `/v1/*` + `/v1/ws` |
 
 ## Quick start
 
@@ -113,6 +110,7 @@ Optional local glue for popular agent environments, on top of the binary:
 | --- | --- |
 | [`daruma-cursor`](clients/cursor-plugin/) | Cursor MCP registration, deeplink install, rules/commands |
 | [`daruma-claude`](clients/claude-plugin/) | Claude Code + oh-my-claudecode orchestration (`start`, `doctor`, `setup`) |
+| [`daruma-codex-plugin`](clients/codex-plugin/) | Codex commands/skills for task and plan workflows |
 
 ## Docs
 

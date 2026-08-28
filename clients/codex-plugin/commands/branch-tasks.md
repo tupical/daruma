@@ -2,7 +2,7 @@
 description: Show daruma tasks linked to the current git branch.
 ---
 
-The user invoked `/daruma-claude:branch-tasks`. Read-only.
+The user invoked `/daruma:branch-tasks`. Read-only.
 
 ## Steps
 

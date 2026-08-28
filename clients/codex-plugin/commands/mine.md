@@ -1,8 +1,8 @@
 ---
-description: Show daruma tasks currently claimed by this Claude Code session.
+description: Show daruma tasks currently claimed by this Codex session.
 ---
 
-The user invoked `/daruma-claude:mine`. Read-only.
+The user invoked `/daruma:mine`. Read-only.
 
 ## Steps
 
@@ -29,7 +29,7 @@ The user invoked `/daruma-claude:mine`. Read-only.
 
    ```
    No tasks claimed by this session.
-   → run /daruma-claude:next to pick up the next ready task.
+   → run /daruma:next to pick up the next ready task.
    ```
 
 5. Do not transition any task here.

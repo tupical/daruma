@@ -27,7 +27,7 @@
 покажет диалог подтверждения и сам пропишет сервер в `~/.cursor/mcp.json`.
 
 <p align="center">
-  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D">
+  <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&slug=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHBzOi8vZGFydW1hLm1jcGJveC5ydS92MS9tY3AifQ%3D%3D">
     <img src="https://img.shields.io/badge/Add%20to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
   </a>
 </p>
@@ -35,11 +35,12 @@
 Или скопируй официальный Cursor deeplink:
 
 ```
-cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC92MS9tY3AifQ%3D%3D
+cursor://anysphere.cursor-deeplink/mcp/install?name=daruma&slug=daruma&config=eyJ0eXBlIjoiaHR0cCIsInVybCI6Imh0dHBzOi8vZGFydW1hLm1jcGJveC5ydS92MS9tY3AifQ%3D%3D
 ```
 
-Default-путь Cursor использует HTTP MCP endpoint Daruma. Для локальной
-разработки сначала запусти сервер:
+Deeplink указывает на хостинговый HTTP MCP endpoint Daruma. Чтобы
+использовать свой сервер, передай `--base-url` (ниже) или подними сервер
+локально:
 
 ```bash
 ./target/release/daruma-server   # данные: ~/.agents/daruma/data
@@ -166,7 +167,7 @@ clients/cursor-plugin/
 │       ├── daruma-policy.mdc          # alwaysApply policy (list-first / экономия токенов)
 │       ├── daruma.mdc                 # контракт + audit/close workflow
 │       └── workspacegraph.mdc            # граф-инструменты: связи/impact, не инвентарь
-├── .daruma/plugin.json                   # манифест маркетплейса daruma
+├── .daruma-plugin/plugin.json                   # манифест маркетплейса daruma
 └── tests/                                # node --test
 ```
 

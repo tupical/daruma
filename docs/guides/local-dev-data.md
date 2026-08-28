@@ -145,5 +145,5 @@ bootstrap.token
 
 ### Future work
 
-A `daruma export` CLI (portable JSON event-log dump) is tracked in the
-roadmap; until then the SQLite-level backup above is the supported path.
+A `daruma export` CLI (portable JSON event-log dump) is not yet
+implemented; until then the SQLite-level backup above is the supported path.

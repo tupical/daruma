@@ -2,7 +2,6 @@
 
 > Дополнение к полному контракту в [ARCHITECTURE.md](ARCHITECTURE.md).
 > Здесь — зафиксированные policy-решения (backfill, cascade, sequence_id).
-> Бэклог — Daruma tracker ([README.md](README.md)).
 
 ---
 
@@ -23,9 +22,8 @@
 
 | Вариант | Когда | Как выводится |
 |---|---|---|
-| `Actor::User { id }` | PAT | `AuthContext::actor()` + `TokenKind::Pat` |
-| `Actor::Agent { name }` | Bot (MCP/SDK/CLI) | `TokenKind::Bot` |
-| `Actor::System` | Служебные события | Явно в handler |
+| `Actor::User` | Человек (PAT-токен, desktop/web) | `AuthContext::actor()` + `TokenKind::Pat` |
+| `Actor::Agent { id, name }` | AI-агент (MCP/SDK/CLI) | `TokenKind::Bot` / `TokenKind::Svc` |
 
 ### 2.2 Backfill policy
 
@@ -47,20 +45,19 @@ Pre-cascade `plan_tasks` — ручной SQL при необходимости,
 
 ## 4. sequence_id policy
 
-Монотонный рост, **без переиспользования** номеров после delete. См. §3.7.11 в tracker.
+Монотонный рост, **без переиспользования** номеров после delete.
 
 ---
 
 ## 5. Миграции (краткий реестр)
 
-`0001`…`0010` — см. `crates/storage/migrations/`. Полная таблица в истории git.
+Нумерованные `.sql`-файлы — см. `crates/storage/migrations/` (живой
+реестр). Полная таблица в истории git.
 
 ---
 
 ## 6. WS Protocol v2
 
-`GET /v1/ws`, `Hello` + `Subscribe`, каналы `Tasks` / `Plans` / `Runs`.
-
----
-
-_Последнее обновление: 2026-05-20._
+`GET /v1/ws`, `Hello` + `Subscribe`; полный набор каналов — `Channel`
+в `crates/events/src/event.rs` (Tasks, Comments, AgentStatus, Presence,
+Webhooks, Plans, Runs, Documents, AiOps, WorkUnits, Artifacts, Rules).

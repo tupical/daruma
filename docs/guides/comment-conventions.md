@@ -2,7 +2,7 @@
 
 Daruma comments support two layers of semantics:
 
-1. **`kind`** — structured classification via `daruma_comment` (`intent`, `progress`, `outcome`, `blocker`, `research`). Stored in the `comments.kind` column (§3.8.8).
+1. **`kind`** — structured classification via `daruma_comment` (`intent`, `progress`, `outcome`, `blocker`, `research`). Stored in the `comments.kind` column.
 2. **Body prefixes** — lightweight, zero-migration conventions encoded in the comment `body` text itself. Agents and search tools filter on these prefixes with `LIKE`.
 
 ## Body prefix: `lesson:`
@@ -48,17 +48,17 @@ Fix: PRAGMA journal_mode=WAL in pool init.
 
 `kind` is optional. Prefer `outcome` when the lesson closes the task; `research` when documenting an investigation.
 
-**Recall:** future `daruma_lesson_recall` / `daruma_search` tools filter `comments.body LIKE 'lesson:%'`. No schema migration — prefix is the contract.
+**Recall:** `daruma_lesson_recall` (full profile) / `daruma_search` filter `comments.body LIKE 'lesson:%'`. No schema migration — prefix is the contract.
 
 ## Body prefix: `branch:` (planned)
 
-**Purpose:** tie a task or comment to a git branch for branch-scoped work (Plugin P1.5).
+**Purpose:** tie a task or comment to a git branch for branch-scoped work.
 
 **Format:** `branch: <branch-name>` optionally followed by free text.
 
 Example: `branch: feat/plan-progress\nStarted MCP tool + REST endpoint.`
 
-Depends on MCP M3.5 (`daruma_search` branch filter). Documented here so agents adopt the prefix early.
+Depends on a `daruma_search` branch filter (not implemented yet). Documented here so agents adopt the prefix early.
 
 ## Related
 

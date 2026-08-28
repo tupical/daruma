@@ -1,4 +1,4 @@
-# MCP client local data (`daruma-mcp`)
+# MCP client local data (`daruma mcp`)
 
 The stdio MCP binary keeps **no** state in the repository. All on-disk
 files for the client live under a single directory:
@@ -20,7 +20,7 @@ files for the client live under a single directory:
 | `DARUMA_PROJECT_ID` | Overrides the on-disk default for this session. |
 | `DARUMA_AGENT_DIR` | Override agent data root (default `~/.agents/daruma`). |
 | `DARUMA_WORKSPACES_FILE` | Override path to `workspaces.json` only. |
-| `DARUMA_API_URL` / `DARUMA_TOKEN` | Remote server (see [ai-agent.md](ai-agent.md)). When unset, `daruma-mcp` reads the active profile from `credentials.json`. |
+| `DARUMA_API_URL` / `DARUMA_TOKEN` | Remote server (see [ai-agent.md](ai-agent.md)). When unset, `daruma mcp` reads the active profile from `credentials.json`. |
 | `DARUMA_WORKSPACE_ID` | Optional workspace UUID sent as `X-Daruma-Workspace-Id`. If unset, uses `workspace_id` from the active profile in `credentials.json`, or a UUID-valued `DARUMA_WORKSPACE`. |
 
 Server SQLite and bootstrap tokens live under **`~/.agents/daruma/data/`**
@@ -32,7 +32,7 @@ For IDE chat traceability (`daruma_session_start` + `metadata`), see
 ## Tool profiles
 
 The advertised tool surface is profile-gated: `default` (compact,
-workflow-first, 31 tools) or `full` (the complete catalogue). Select with
+workflow-first, 33 tools) or `full` (the complete catalogue). Select with
 `daruma mcp --profile full`, `DARUMA_MCP_PROFILE=full`, or
 `/v1/mcp?profile=full`; unset means `default`. Hidden tools are not
 callable in `default` — the error names the fix. Composition, migration
@@ -58,7 +58,7 @@ user and wait for an explicit request before fetching more.
 ## Remote HTTP MCP
 
 `apps/server` exposes MCP over HTTP at `/v1/mcp`. Cursor can use a remote
-entry with URL + headers, so no long-running `daruma-mcp` stdio process is
+entry with URL + headers, so no long-running `daruma mcp` stdio process is
 needed:
 
 ```json
@@ -92,7 +92,7 @@ For local mode, `DARUMA_TOKEN` may be omitted when
 `$DARUMA_DATA_DIR/bootstrap.token` exists. If `DARUMA_DATA_DIR` is unset,
 the CLI checks `~/.agents/daruma/data/bootstrap.token`.
 
-`daruma-mcp` stdio remains available for clients that do not support remote
+`daruma mcp` stdio remains available for clients that do not support remote
 HTTP MCP.
 
 ## `workspaces.json` shape
@@ -100,8 +100,8 @@ HTTP MCP.
 ```json
 {
   "workspaces": {
-    "/home/you/projects/daruma": "019e3052-b262-72a0-8f37-9acac59e83a1",
-    "/home/you/projects/daruma-secondary": "019e5f3f-ab10-7451-8455-6f3807545eb9"
+    "/home/you/projects/daruma": "01900000-0000-7000-8000-000000000001",
+    "/home/you/projects/daruma-secondary": "01900000-0000-7000-8000-000000000002"
   }
 }
 ```

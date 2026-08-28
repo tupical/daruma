@@ -31,14 +31,13 @@
 
 ## Бэклог и планы
 
-Роадмап и pending work — **Daruma tracker** (проект Daruma):
-
-- Корневой plan: **Daruma ROADMAP** (`019e3c8b-ace8-7e31-acf0-bd24017084b9`)
-- MCP: `daruma_plan_list`, `daruma_list`, web UI
-- human_log: **Changelog**, **Research archive (Plane/Linear/CTM/TON)**
+Роадмап и pending work ведутся в трекере мейнтейнеров; публичные
+запросы и обсуждения — в
+[GitHub issues](https://github.com/tupical/daruma/issues).
 
 История: [CHANGELOG.ru.md](../CHANGELOG.ru.md) + `git log`.
 
 ## Feature requests
 
-Перед изменениями event schema, REST/WS или MCP — сверьтесь с открытыми задачами в tracker. Крупные фичи: issue или `.omc/plans/` + задача в Daruma.
+Перед изменениями event schema, REST/WS или MCP — откройте issue и
+обсудите. Крупные фичи: сначала issue, потом PR.

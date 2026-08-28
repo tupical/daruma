@@ -6,7 +6,7 @@ description: Show or set the intake strictness mode (off | lite | full).
 # /daruma-mode
 
 Show or set how aggressively raw input gets decomposed into a plan via
-`daruma_plan_materialize` (plan-only intake, ADR-0007) before becoming a
+`daruma_plan_materialize` (plan-only intake) before becoming a
 task.
 
 ## Steps

@@ -66,8 +66,8 @@ cargo build --release -p daruma-server -p daruma-cli
 # 2. поднимаем HTTP-сервер (оставляем висеть)
 ./target/release/daruma-server
 
-# 3. регистрируем MCP stdio-шим в Claude Code
-claude mcp add daruma -- /abs/path/daruma/target/release/daruma-mcp
+# 3. регистрируем MCP stdio-сервер в Claude Code
+claude mcp add daruma -- /abs/path/daruma/target/release/daruma mcp
 
 # 4. oh-my-claudecode (исполнитель через `omc team`)
 npm i -g oh-my-claude-sisyphus@latest
@@ -108,7 +108,7 @@ daruma-claude start "переписать модуль аутентификац�
 ┌──────────────────────────────┐
 │ daruma-claude start <T>   │ shell
 └──────────────┬───────────────┘
-               │ spawn daruma-mcp (stdio JSON-RPC)
+               │ spawn daruma MCP (stdio JSON-RPC)
                ▼
 ┌──────────────────────────────────────────────────┐
 │ 1. parse        → derive {title, description}    │
@@ -134,6 +134,7 @@ daruma-claude start "переписать модуль аутентификац�
 | Шелл                                              | Что делает                                                            |
 | ------------------------------------------------- | --------------------------------------------------------------------- |
 | `daruma-claude start "<задача>"`               | Полный пайплайн (parse → project → seed → [plan] → execute → отчёт)   |
+| `daruma-claude team-from-plan <plan_id>`       | Исполнить существующий план волнами по зависимостям через `omc team`  |
 | `daruma-claude doctor`                         | Детект обеих зависимостей + готовность MCP-инструментов и `omc team` |
 | `daruma-claude setup`                          | Подсказки по установке отсутствующего                                 |
 | `daruma-claude update`                         | Самообновление + обновление omc; подсказка для daruma              |
@@ -145,9 +146,10 @@ daruma-claude start "переписать модуль аутентификац�
 | Slash                                  | Что делает                              |
 | -------------------------------------- | --------------------------------------- |
 | `/daruma-claude:start <задача>`     | То же, что `daruma-claude start`     |
+| `/daruma-claude:team-from-plan <plan_id>` | То же, что `daruma-claude team-from-plan` |
 | `/daruma-claude:doctor`             | То же, что `daruma-claude doctor`    |
 | `/daruma-claude:setup`              | То же, что `daruma-claude setup`     |
-| `/daruma-claude:research <идея>`    | Исследование с источниками в репозитории-владельце MeiSei/MCPBox |
+| `/daruma-claude:branch-tasks`       | Задачи, привязанные к текущей git-ветке |
 
 ---
 
@@ -196,14 +198,11 @@ OPENAI_API_KEY=sk-... ./target/release/daruma-server
 ├── lib/
 │   ├── detect.mjs                      # кросс-платформенная детекция зависимостей
 │   ├── orchestrator.mjs                # драйвер пайплайна daruma
-│   ├── mcp-client.mjs                  # stdio JSON-RPC клиент к daruma-mcp
+│   ├── mcp-client.mjs                  # stdio JSON-RPC клиент к MCP-серверу daruma
 │   ├── omc-team-runner.mjs             # спавнит `omc team` под каждую задачу
 │   └── update.mjs                      # самообновление через npm registry
-├── commands/                           # /daruma-claude:{start,doctor,setup}
-└── skills/                             # сами контракты
-    ├── start/SKILL.md                  # parse → project → seed → [plan] → execute
-    ├── doctor/SKILL.md                 # контракт готовности
-    └── setup/SKILL.md                  # контракт подсказок установки
+├── commands/                           # slash-команды /daruma-claude:*
+└── skills/                             # сами контракты (SKILL.md на команду/скилл)
 ```
 
 ---
@@ -224,23 +223,6 @@ npm i -g oh-my-claude-sisyphus@latest                    # oh-my-claudecode (в�
 Issues и PR приветствуются. Идея плагина в том, чтобы он оставался тонким, поэтому патчи, превращающие его в самостоятельную сущность (дополнительные шаги «рассуждения», захардкоженные эвристики, новые агенты) скорее всего будут отклонены. Патчи, делающие склейку надёжнее (детекция, понятные ошибки, кросс-платформенные фиксы) — очень welcome.
 
 ---
-
-## Релизы
-
-Релизы автоматизированы через [GitHub Actions](.github/workflows/publish.yml). Чтобы выпустить новую версию:
-
-```bash
-npm run release:patch   # 0.1.0 → 0.1.1
-# либо release:minor / release:major
-```
-
-Скрипт бампает `package.json`, создаёт git-тег `vX.Y.Z` и пушит и то и другое. Workflow дальше:
-
-1. Проверяет совпадение тега и `package.json`.
-2. Публикует в npm с `--provenance` (подписанная attestation).
-3. Создаёт GitHub Release с auto-generated notes.
-
-Аутентификация — npm **Trusted Publishing** (OIDC). Однократная настройка: на npmjs.com → пакет `daruma-claude` → Settings → Trusted Publishers → добавить GitHub Actions с org=`tupical`, repo=`daruma-claude`, workflow=`publish.yml`. Никаких секретов в GitHub.
 
 ## Лицензия
 

@@ -24,10 +24,10 @@ git clone https://github.com/tupical/daruma
 cd daruma
 cargo build --release -p daruma-server -p daruma-cli
 ./target/release/daruma-server
-claude mcp add daruma -- ./target/release/daruma-mcp
+claude mcp add daruma -- ./target/release/daruma mcp
 ```
 
-Relevant env vars for `daruma-mcp`:
+Relevant env vars for `daruma mcp`:
 
 - `DARUMA_API_URL` — server base (default `http://localhost:8080` when no credentials).
 - `DARUMA_TOKEN` — bearer token.

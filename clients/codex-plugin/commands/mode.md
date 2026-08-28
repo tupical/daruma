@@ -2,7 +2,7 @@
 description: Show or set the daruma intake strictness mode.
 ---
 
-The user invoked `/daruma-codex:mode $ARGUMENTS`.
+The user invoked `/daruma:mode $ARGUMENTS`.
 
 ## Steps
 

@@ -2,7 +2,7 @@
 description: Show the active daruma plan as a checklist with a progress bar.
 ---
 
-The user invoked `/daruma-claude:plan`. Read-only — do not modify
+The user invoked `/daruma:plan`. Read-only — do not modify
 tasks or write to `.omc/plans/`.
 
 ## Steps
@@ -39,5 +39,5 @@ tasks or write to `.omc/plans/`.
 
 6. Suggest next action:
    - any `in_progress` → `→ continue: <title>`.
-   - else any ready `todo` → `→ next: run /daruma-claude:next`.
+   - else any ready `todo` → `→ next: run /daruma:next`.
    - else all done → `→ plan complete — daruma_plan_set_status status=done`.

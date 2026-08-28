@@ -2,11 +2,10 @@
 
 Thanks for considering a contribution. This document covers the
 mechanics: how to file an issue, how to open a pull request, the DCO
-sign-off requirement, and the commit-message style. The product
-direction and backlog live in the **Daruma** tracker project (plan
-**Daruma ROADMAP**, MCP `daruma_plan_list` / web UI); see
-[docs/README.md](docs/README.md). The architecture contract is in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+sign-off requirement, and the commit-message style. Product direction
+and backlog are tracked by the maintainers; public contributions start
+from [GitHub issues](https://github.com/tupical/daruma/issues). The
+architecture contract is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## License & scope
 
@@ -68,9 +67,8 @@ about a missing sign-off, rebase the offending commits with
   behaviour.
 - **Feature requests** — open a discussion before writing code if the
   change touches the event schema, public REST/WS contract, MCP tools,
-  or storage migrations. These have wide blast radius; the
-  Daruma tracker (catalogue plans §3.7 / §3.8 / MCP Roadmap) lists
-  what is open.
+  or storage migrations. These have wide blast radius and are best
+  agreed upfront in an issue.
 - **Security issues** — do not file in the public tracker. Email the
   maintainers (see README) so the fix can ship before disclosure.
 
@@ -78,10 +76,9 @@ about a missing sign-off, rebase the offending commits with
 
 Workflow:
 
-1. Open an issue or a `/plan` document under `.omc/plans/` if the
-   change is non-trivial (more than ~100 LOC, touches event schema, or
-   crosses crate boundaries). For small fixes, a PR is fine without a
-   prior plan.
+1. Open an issue first if the change is non-trivial (more than ~100 LOC,
+   touches event schema, or crosses crate boundaries). For small fixes,
+   a PR is fine without a prior issue.
 2. Fork or branch from `main`. Branch naming follows
    `feat/<topic>` / `fix/<topic>` / `docs/<topic>` / `chore/<topic>`.
 3. Keep changes surgical. A bug fix is a bug fix; cleanup belongs in a
@@ -109,32 +106,29 @@ Failures should be diagnosed (not bypassed); never skip hooks with
 
 ## Commit-message style
 
-We follow a simplified Conventional Commits flavour, scoped by tracker
-section (§3.x) where applicable. Examples (from `git log`):
+We follow a simplified Conventional Commits flavour. Examples:
 
 ```
-feat(§3.4 W2.1): crates/core/src/embed.rs + desktop migrates off internals
-feat(§3.9.4): WS Hub DashMap+mpsc fanout (closes §3.9.5) (#21)
+feat(mcp): profile-gated tools/list surface
+feat(ws): Hub DashMap+mpsc fanout (#21)
 fix(docker): switch apt mirror deb.debian.org → http.us.debian.org
-docs(§3.4 W1): MODULES.md + MODULE_CONTRACT.md + ARCHITECTURE Core/Modules
-chore(deslop): extract common test harness + handler status-transition helper (#18)
+docs(modules): MODULES.md + MODULE_CONTRACT.md + ARCHITECTURE Core/Modules
+chore(test): extract common test harness + handler status-transition helper (#18)
 ```
 
 Header rules:
 
 - `<type>(<scope>): <imperative summary>`, max ~70 chars.
 - `<type>`: `feat | fix | docs | chore | refactor | test | perf`.
-- `<scope>`: tracker section (`§3.4 W2.1`) when the change implements
-  a planned item; otherwise a meaningful subsystem (`docker`,
-  `auth`, `mcp`).
-- Body: explain *why*, link the closing task id, list anything
-  reviewers need to know about migrations or wire compat.
-- Trailers: `Closes §… (task <uuid>).`, `Signed-off-by:`, optional
+- `<scope>`: a meaningful subsystem (`mcp`, `ws`, `docker`, `auth`, …).
+- Body: explain *why*, link the closing issue, list anything reviewers
+  need to know about migrations or wire compat.
+- Trailers: `Closes #<issue>.`, `Signed-off-by:`, optional
   `Co-Authored-By:`.
 
 ## Code style
 
-- Rust 2024 edition, `rustfmt` defaults, `clippy -D warnings`.
+- Rust 2021 edition, `rustfmt` defaults, `clippy -D warnings`.
 - Keep modules under ~300 lines; split rather than nest deeply.
 - No god objects; prefer composition over inheritance.
 - No business logic in HTTP handlers, WS handlers, or UI views — that
@@ -165,7 +159,7 @@ If your change adds a new app, crate, or integration:
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — invariants and crate contracts.
 - [docs/architecture-policy.md](docs/architecture-policy.md) — fixed policy decisions.
 - [docs/guides/ai-agent.md](docs/guides/ai-agent.md) — AI layer rules and tools.
-- [docs/README.md](docs/README.md) — docs layout; backlog in Daruma tracker.
+- [docs/README.md](docs/README.md) — docs layout.
 
 Open a discussion or a draft PR if any of the above is unclear; the
 contract bits in particular benefit from being challenged early.

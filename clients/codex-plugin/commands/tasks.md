@@ -2,7 +2,7 @@
 description: Show open daruma tasks for the active project as a compact markdown table.
 ---
 
-The user invoked `/daruma-claude:tasks`.
+The user invoked `/daruma:tasks`.
 
 Drive the daruma MCP server (do not invent IDs, do not write to
 `.omc/plans/`).
@@ -36,7 +36,7 @@ Drive the daruma MCP server (do not invent IDs, do not write to
    - `Plan` shows last 8 chars of `plan_id` or `—` if none.
 
 4. If >30 rows: show first 30, footer `…and <N> more — narrow with
-   /daruma-claude:mine or filter by status`.
+   /daruma:mine or filter by status`.
 
 5. On `daruma_list` error: print the error verbatim and stop.
 

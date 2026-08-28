@@ -128,5 +128,4 @@ carries actor, timestamps, and case ids — task/work-unit/artifact):
   wins.
 - No generic workflow engine; gates are limited to dependencies, leases,
   and handoffs.
-- iOS/Android replicas and pure P2P coordination are out of scope (see
-  device-sync plan).
+- iOS/Android replicas and pure P2P coordination are out of scope.

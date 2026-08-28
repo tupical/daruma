@@ -10,7 +10,8 @@ server hops through). It exists for two callers:
    pipe `--json` (CI scripts, ralph loops, plain `bash`).
 
 The CLI does **not** replicate every MCP tool — only the verbs that hurt
-the most when typed by hand: `next`, `show`, `done`, `list`, `history`.
+the most when typed by hand: `next`, `show`, `done`, `list`, `history` —
+plus `install` (integration setup) and `mcp` (the stdio MCP server).
 
 ## Build & install
 
@@ -23,14 +24,14 @@ cargo build --release -p daruma-cli
 
 ```bash
 export DARUMA_API_URL=http://localhost:8080
-export DARUMA_TOKEN=ag_dev_xxxxxxxx
+export DARUMA_TOKEN=ta_svc_xxxxxxxx
 # Optional — scopes `next` / `list` to a single project:
-export DARUMA_PROJECT_ID=01939e35-...
+export DARUMA_PROJECT_ID=<project_id>
 # Optional — workspace key (MCP persists defaults; CLI uses env only):
 export DARUMA_WORKSPACE="$PWD"
 ```
 
-MCP client disk layout (`daruma-mcp`): [docs/guides/mcp-client.md](../../docs/guides/mcp-client.md).
+MCP client disk layout (`daruma mcp`): [docs/guides/mcp-client.md](../../docs/guides/mcp-client.md).
 
 You can also pass `--api-url` and `--token` per-invocation. They override
 the env.
@@ -70,10 +71,10 @@ daruma install --mode local -y
 daruma next
 
 # Show one task + its comments.
-daruma show 019e351b-3f3a-7850-a0bd-85135c0b24d0
+daruma show <task_id>
 
 # Mark a task done.
-daruma done 019e351b-3f3a-7850-a0bd-85135c0b24d0
+daruma done <task_id>
 
 # List open tasks in the current project (status filter is required).
 daruma list --status active
@@ -89,8 +90,8 @@ daruma list --status all
 daruma list --status active --project-id all
 
 # Show version history for a task or document.
-daruma history task 019e351b-3f3a-7850-a0bd-85135c0b24d0
-daruma history document doc_019e351b-3f3a-7850-a0bd-85135c0b24d0 --limit 20
+daruma history task <task_id>
+daruma history document doc_<doc_id> --limit 20
 ```
 
 ## `--json` for agents
@@ -111,8 +112,8 @@ This is the integration contract — feel free to script against it.
 
 ## Why this exists (and what it deliberately is not)
 
-Roadmap §3.8.11 / CTM B.5: "terse verbs, table output, `--json` flag for
-agents-through-shell". The CLI is a path-of-least-resistance entry point
+Design goal: terse verbs, table output, `--json` flag for
+agents-through-shell. The CLI is a path-of-least-resistance entry point
 for one-off ops; it is **not** trying to be a full TUI, and it does not
 duplicate workflow tools (planning, claims, run lifecycle) — those stay
 in MCP where the schemas already live.

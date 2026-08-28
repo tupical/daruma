@@ -15,14 +15,13 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 |---------|------|
 | `crates/ai-infra` | OpenAI Responses API client, provider abstraction, prompt engine, tool schemas |
 | `apps/server` | `POST /v1/ai/*` HTTP endpoints; the deprecated `analyze_complexity` shim lives in `apps/server/src/ai.rs` (prompts in `apps/server/prompts/*.toml`) |
-| `apps/server` | `POST /v1/ai/*` HTTP endpoints |
 | MCP (`daruma mcp`) | `daruma_ai_analyze_complexity` for external agents |
 | MCP agents (Cursor, Claude) | Primary consumers — use MCP tools, not raw SQL |
 
 ## HTTP / MCP tools (high level)
 
-- `ai_decompose`, `ai_analyze_complexity`
-- Intake (new tasks): `daruma_plan_materialize` — the only path (ADR-0007 plan-only intake); `daruma_create`/`daruma_capture`/`daruma_capture_batch` are removed from the catalogue and return a bridge error naming the replacement
+- `ai_analyze_complexity` (deprecated shim)
+- Intake (new tasks): `daruma_plan_materialize` — the only path (plan-only intake); `daruma_create`/`daruma_capture`/`daruma_capture_batch` are removed from the catalogue and return a bridge error naming the replacement
 - Task mutations (existing tasks): `set_status`, `complete`, `split`, `comment`, plans/runs/claims
 - Plan executor: `daruma_plan_progress`, `daruma_plan_next_task`, `daruma_run_*`
 
@@ -38,7 +37,7 @@ Canonical schemas live in code; when the wire format changes, update `crates/ai-
 Task titles/descriptions, comments, documents, and event payloads are
 **untrusted data**: anyone (or any agent) who can write a task body could
 otherwise smuggle instructions into a later AI call that grounds on it
-(for example `daruma_ai_decompose` and `daruma_ai_analyze_complexity`,
+(for example `daruma_ai_analyze_complexity`,
 and any tool that grounds on task bodies).
 
 Every place the AI layer interpolates external content into a prompt routes

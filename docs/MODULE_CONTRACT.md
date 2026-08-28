@@ -35,19 +35,20 @@ override.
    silently — removing a capability from an endpoint requires a `/v2`
    cut and a Sunset notice.
 5. **WS protocol stability.** Subscribe filters (`Channel::{Tasks,
-   Comments, AgentStatus, Presence, Webhooks, Plans, Runs}`) and the
+   Comments, AgentStatus, Presence, Webhooks, Plans, Runs, Documents,
+   AiOps, WorkUnits, Artifacts, Rules}`) and the
    `Resync` flow on `Lagged` are stable. `Hello` capabilities are
    additive — new fields appear, old fields persist until a `/v2` cut.
 6. **`/healthz` versioning.** `/healthz` returns
    `{status, version, core_version, api_version}` so probes can detect
-   drift without parsing build manifests (see §3.4 W2.2).
+   drift without parsing build manifests.
 
 ## What modules MUST NOT do
 
 1. **No `apps::*` imports.** A module never imports symbols from
    another `apps/*` crate. The only legal cross-crate dependency for an
    embed module is the public surface of
-   [`crates/core/src/embed.rs`](../crates/core/src/embed.rs) (W2.1) plus
+   [`crates/core/src/embed.rs`](../crates/core/src/embed.rs) plus
    `daruma-domain` types.
 2. **No direct DB access.** Modules go through the HTTP/WS/MCP API or
    the embed surface. SQL lives in `crates/storage/` only.
@@ -66,7 +67,7 @@ override.
 | WS `/v1/ws`      | Additive `Hello` fields    | New subproto `daruma.v2`; `daruma.v1` deprecated with a Sunset window |
 | MCP tools        | Tool names + JSON schema   | New tool name suffix `_v2`; old tool returns `"deprecated": true` for one minor cycle |
 | Webhooks         | Body = `EventEnvelope`     | Bumped `X-Daruma-Schema-Version` header; consumers pick |
-| Event schema     | Additive variants/fields   | New variant requires migration + ROADMAP entry |
+| Event schema     | Additive variants/fields   | New variant requires migration + changelog entry |
 
 `api_version` in `/healthz` reflects the *minimum-promise* version the
 running binary serves (today `"v1"`).
@@ -103,7 +104,7 @@ introduced via core PRs and documented in their respective sections of
 
 `apps/desktop` runs the core inside the same process — no HTTP, no
 loopback socket. The only legal entry point is
-`crates/core/src/embed.rs` (W2.1), which re-exports `{Db, EventBus,
+`crates/core/src/embed.rs`, which re-exports `{Db, EventBus,
 CommandBus}` with the same semantics as the network path. Embed
 clients receive `EventEnvelope`s via the in-process `EventBus`, same
 schema, same `seq` ordering.
@@ -122,12 +123,11 @@ upper layers through `vendor/oss/crates/ai-infra`.
 
 `daruma-ai` has been collapsed: consumers use `daruma-ai-infra` directly, and
 the one remaining core AI operation (`analyze_complexity`) lives in
-`apps/server/src/ai.rs` as a deprecated delegation-shim until the cloud
-cutover to the planning layer (`yatagarasu`).
+`apps/server/src/ai.rs` as a deprecated delegation-shim.
 
 AI operations that are **product** concerns — parse, decompose, scope,
-research — live in the upper-layer repos (`intake_oss`, `sensemaking_oss`,
-`planning_oss`). They depend on `ai-infra` through `vendor/oss`; the
+research — live in the upper-layer MeiSei repos (intake, sensemaking,
+planning). They depend on `ai-infra` through `vendor/oss`; the
 dependency arrow never reverses. Do not add parse/decompose/scope/research back
 to `daruma-ai-infra` or the server shim.
 
@@ -148,7 +148,7 @@ daruma's output.
 ## Lifecycle
 
 - **Planned** — listed in [docs/MODULES.md](MODULES.md), no source tree
-  yet. Anyone may claim ownership by opening a `/plan` and proposing a
+  yet. Anyone may claim ownership by opening an issue and proposing a
   scaffold PR.
 - **WIP** — scaffold merged; module exists but is not advertised. No
   contract guarantees the other direction.

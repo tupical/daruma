@@ -37,15 +37,16 @@ The runtime split is formalised in
 | `daruma-webhooks`   | `crates/webhooks/`         | `transport`   | Rust  | shipped    | core           | events        |
 | `daruma-mcp`        | `crates/mcp/`              | `transport`   | Rust  | shipped    | core           | server (HTTP) |
 | `daruma-ai-infra`   | `crates/ai-infra/`         | `transport`   | Rust  | shipped    | core           | shared        |
+| `daruma-discovery`  | `crates/discovery/`        | `transport`   | Rust  | shipped    | core           | mDNS pairing + TLS |
 | `daruma-web`        | `../daruma-web/` (repo) | `client`      | Rust/WASM | shipped | clients        | `/v1/*` + WS  |
 | `daruma-cli`        | `apps/cli/`                | `client`      | Rust  | shipped    | clients        | `/v1/*`       |
 | `daruma-desktop`    | `apps/desktop/`            | `embed`       | Rust (GPUI) | wip    | clients        | `daruma-core` in-process |
 | GitHub integration     | `integrations/github/`     | `integration` | — | planned    | integrations   | webhooks + `/v1/*` |
 | Slack integration      | `integrations/slack/`      | `integration` | — | planned    | integrations   | webhooks + `/v1/*` |
 
-Legacy: `apps/web/` (vanilla TS) and `apps/mcp-shim/` (Node shim) are
-retired — see `git log` for the cut-over commits. They remain in-tree
-only until their replacements ship a final feature parity check.
+The vanilla-TS `apps/web/` and the Node `apps/mcp-shim/` predecessors are
+retired and removed; `daruma-web` (separate repo) and the unified
+`daruma` binary are their replacements.
 
 ## Per-module manifest
 
@@ -75,9 +76,9 @@ dev_override = "vendor/oss -> ../daruma"
 
 The manifest is the source of truth for:
 
-- **CI audit-grep** (W4.1) — verifies `kind != "core"` modules do not
+- **CI audit-grep** — verifies `kind != "core"` modules do not
   import `apps::*` directly, only public types from `crates/*` or
-  `crates/core/src/embed.rs` (W2.1).
+  `crates/core/src/embed.rs`.
 - **Capability declaration** — modules must list capabilities they
   actually call; the test harness can mint tokens with exactly that
   scope and fail if a route reaches for more.
@@ -87,5 +88,5 @@ The manifest is the source of truth for:
 - **Docs generation** — the table in this file is intended to be
   generated from manifests once the toolchain is in place.
 
-`module.toml` files are optional for already-shipped modules — they will
-be backfilled as part of the W4 audit step.
+`module.toml` files are optional for already-shipped modules — they are
+backfilled incrementally.

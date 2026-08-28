@@ -9,7 +9,7 @@ Codex plugin manages this block; do not hand-edit between the markers.
 1. **All durable task/plan state lives in daruma.** Never persist
    tasks, plans, subtasks, or backlogs in markdown scratchpads,
    `TODO.md` files, or in-chat notes as the source of truth. Use
-   `daruma_plan_materialize` (plan-only intake, ADR-0007),
+   `daruma_plan_materialize` (plan-only intake),
    `daruma_set_status`, `daruma_comment`.
 
 2. **Do not create or modify `.omc/plans/`, `.omc/ultragoal/`, or
@@ -146,4 +146,3 @@ mention a different system (Linear, Jira, GitHub Issues, etc.).
 - `/daruma:plan` — active plan with progress bar.
 - `/daruma:next` — claim the next ready task.
 - `/daruma:mine` — tasks claimed by this session.
-- `/daruma:start "<task>"` — full parse → decompose → execute pipeline.
