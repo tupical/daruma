@@ -4,7 +4,11 @@ This file tracks public, user-visible changes for Daruma releases.
 
 For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
-## Unreleased
+## 0.4.0 — 2026-08-28
+
+Plan-only intake (ADR-0007), lifecycle rules with evidence-gated escapes,
+an Artifact Registry, and a month of hardening across MCP, AI infra and
+multi-agent coordination. 74 commits since 0.3.0.
 
 ### Blocked rules explain how to satisfy them
 

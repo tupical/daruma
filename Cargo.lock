@@ -493,14 +493,14 @@ dependencies = [
 
 [[package]]
 name = "daruma"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "daruma-auth",
 ]
 
 [[package]]
 name = "daruma-ai-infra"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "daruma-shared",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-api-dto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "daruma-domain",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-auth"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-desktop"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-discovery"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-domain"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "daruma-shared",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-events"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-shared"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-storage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -755,7 +755,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "daruma-api-dto",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "daruma-webhooks"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
