@@ -8,6 +8,9 @@ on:
     paths: ["**/*.md", "**/*.mdx"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   decisions:
     uses: tupical/meisei.ru/.github/workflows/docs-decision-governance.yml@main
