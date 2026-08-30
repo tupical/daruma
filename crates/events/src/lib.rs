@@ -16,6 +16,6 @@ pub mod store;
 #[cfg(feature = "runtime")]
 pub use bus::{EventBus, EventReceiver, EventSender};
 pub use envelope::EventEnvelope;
-pub use event::{Channel, Event};
+pub use event::{Channel, Event, EventClass};
 #[cfg(feature = "runtime")]
 pub use store::EventStore;
