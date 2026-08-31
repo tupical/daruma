@@ -250,6 +250,41 @@ impl PlanRepo {
         })
     }
 
+    /// Latest activity that can change this plan's detail/progress response.
+    ///
+    /// This is one fixed aggregate query: it does not load plan-task rows and
+    /// then issue one task read per member. Membership event timestamps remain
+    /// in the append-only log, so remove/reorder activity cannot disappear.
+    pub async fn latest_activity_at(&self, plan_id: PlanId) -> Result<Option<Timestamp>> {
+        let stored_plan_id = plan_id.to_string();
+        let event_plan_id = plan_id.as_uuid().to_string();
+        let latest: Option<String> = sqlx::query_scalar(
+            "SELECT MAX(activity_at) FROM ( \
+                 SELECT updated_at AS activity_at FROM plans WHERE id = ? \
+                 UNION ALL \
+                 SELECT t.updated_at AS activity_at \
+                   FROM plan_tasks pt JOIN tasks t ON t.id = pt.task_id \
+                  WHERE pt.plan_id = ? \
+                 UNION ALL \
+                 SELECT updated_at AS activity_at FROM plans WHERE parent_plan_id = ? \
+                 UNION ALL \
+                 SELECT occurred_at AS activity_at FROM events \
+                  WHERE kind IN ('plan_task_added', 'plan_task_removed', \
+                                 'plan_task_amended', 'plan_reordered') \
+                    AND json_extract(payload_json, '$.plan_id') = ? \
+             )",
+        )
+        .bind(&stored_plan_id)
+        .bind(&stored_plan_id)
+        .bind(&stored_plan_id)
+        .bind(&event_plan_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        latest.as_deref().map(parse_ts).transpose()
+    }
+
     /// Status breakdown for direct plan members — used by executor tooling.
     pub async fn get_progress_summary(&self, plan_id: PlanId) -> Result<PlanProgressSummary> {
         let row = sqlx::query(
@@ -551,7 +586,24 @@ impl PlanRepo {
 
             Event::PlanUpdated { plan_id, patch } => {
                 if let Some(mut plan) = self.get(*plan_id).await? {
+                    let former_parent = plan.parent_plan_id;
                     patch.clone().apply(&mut plan);
+                    if former_parent != plan.parent_plan_id {
+                        if let Some(former_parent) = former_parent {
+                            let occurred_at = occurred_at.to_rfc3339();
+                            sqlx::query(
+                                "UPDATE plans \
+                                 SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END \
+                                 WHERE id = ?",
+                            )
+                            .bind(&occurred_at)
+                            .bind(&occurred_at)
+                            .bind(former_parent.to_string())
+                            .execute(&self.pool)
+                            .await
+                            .map_err(|e| CoreError::storage(e.to_string()))?;
+                        }
+                    }
                     self.upsert_plan(&plan).await?;
                 }
             }
@@ -598,12 +650,24 @@ impl PlanRepo {
                 self.archive(*plan_id, *at).await?;
             }
 
-            Event::PlanDeleted { plan_id, .. } => {
+            Event::PlanDeleted { plan_id, at } => {
                 let mut tx = self
                     .pool
                     .begin()
                     .await
                     .map_err(|e| CoreError::storage(e.to_string()))?;
+                let at = at.to_rfc3339();
+                sqlx::query(
+                    "UPDATE plans \
+                     SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END \
+                     WHERE id = (SELECT parent_plan_id FROM plans WHERE id = ?)",
+                )
+                .bind(&at)
+                .bind(&at)
+                .bind(plan_id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
                 sqlx::query("DELETE FROM plan_tasks WHERE plan_id = ?")
                     .bind(plan_id.to_string())
                     .execute(&mut *tx)

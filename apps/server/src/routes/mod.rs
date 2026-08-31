@@ -5052,9 +5052,18 @@ async fn get_plan(
         .get_progress(plan_id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(
-        serde_json::json!({ "plan": plan, "progress": progress, "slug": plan_url_slug(&plan) }),
-    ))
+    let latest_activity_at = state
+        .plans
+        .latest_activity_at(plan_id)
+        .await
+        .map_err(ApiError::from)?
+        .unwrap_or(plan.updated_at);
+    Ok(Json(serde_json::json!({
+        "plan": plan,
+        "progress": progress,
+        "slug": plan_url_slug(&plan),
+        "latest_activity_at": latest_activity_at,
+    })))
 }
 
 fn parse_plan_ref(raw: &str) -> Result<PlanId, ApiError> {
