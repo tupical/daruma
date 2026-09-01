@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use daruma_domain::Actor;
 use daruma_events::EventEnvelope;
-use daruma_shared::Result;
+use daruma_shared::{AgentId, Result, TaskId};
+use daruma_storage::ClaimOutcome;
 
 use crate::{lifecycle_gate::DispatchOutcome, Command, CommandHandler};
 
@@ -44,5 +45,28 @@ impl CommandBus {
         actor: Actor,
     ) -> Result<DispatchOutcome> {
         self.handler.handle_with_warnings(cmd, actor).await
+    }
+
+    pub async fn try_acquire_claim(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+    ) -> Result<ClaimOutcome> {
+        self.handler
+            .try_acquire_claim(actor, agent_id, task_id, ttl)
+            .await
+    }
+
+    pub async fn sweep_expired_claims(&self, actor: Actor) -> Result<Vec<EventEnvelope>> {
+        self.handler.sweep_expired_claims(actor).await
+    }
+
+    pub async fn append_replica_claim_event(
+        &self,
+        envelope: EventEnvelope,
+    ) -> Result<EventEnvelope> {
+        self.handler.append_replica_claim_event(envelope).await
     }
 }

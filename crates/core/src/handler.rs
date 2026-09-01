@@ -1,7 +1,7 @@
 //! Command handler — validates commands, emits events, updates projections,
 //! publishes to the event bus.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use daruma_domain::{
     Actor, ActorRef, AgentSession, ArtifactRelation, Comment, DocumentKind, PlanPatch, PlanStatus,
@@ -14,8 +14,8 @@ use daruma_shared::{
     RunId, RunNoteId, SessionArtifactId, TaskId,
 };
 use daruma_storage::{
-    ActivityRepo, AgentClaimRepo, ArtifactRepo, CommentRepo, DocumentRepo, EvidenceRepo,
-    ProjectRepo, ProjectSettingsRepo, RelationRepo, RuleRepo, RunNoteRepo, TaskRepo,
+    ActivityRepo, AgentClaimRepo, ArtifactRepo, ClaimOutcome, CommentRepo, DocumentRepo,
+    EvidenceRepo, ProjectRepo, ProjectSettingsRepo, RelationRepo, RuleRepo, RunNoteRepo, TaskRepo,
     TenantQuotaRepo, WorkLeaseRepo, WorkUnitRepo,
 };
 
@@ -52,6 +52,7 @@ pub struct CommandHandler {
     pub run_notes: Option<Arc<RunNoteRepo>>,
     pub sessions: Option<Arc<dyn SessionRepository>>,
     pub claims: Option<Arc<AgentClaimRepo>>,
+    claim_lifecycle: tokio::sync::Mutex<()>,
     pub work_leases: Option<Arc<WorkLeaseRepo>>,
     /// Per-project settings projection (auto-append toggles). `None` only in
     /// minimal test harnesses; when absent, defaults apply and the settings
@@ -130,6 +131,7 @@ impl CommandHandler {
             run_notes: None,
             sessions: None,
             claims: None,
+            claim_lifecycle: tokio::sync::Mutex::new(()),
             work_leases: None,
             external_refs: None,
             tenant_quotas: None,
@@ -291,6 +293,60 @@ impl CommandHandler {
         cmd: Command,
         actor: Actor,
     ) -> Result<DispatchOutcome> {
+        match &cmd {
+            Command::AcquireClaim {
+                agent_id,
+                task_id,
+                claim_id,
+                expires_at,
+            } => {
+                let _claim_guard = self.claim_lifecycle.lock().await;
+                let claims = self
+                    .claims
+                    .as_ref()
+                    .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+                return match claims
+                    .try_acquire_exact(actor, *agent_id, *task_id, *claim_id, *expires_at)
+                    .await?
+                {
+                    ClaimOutcome::Acquired { event, .. } => {
+                        self.apply_persisted(std::slice::from_ref(&event)).await?;
+                        self.auto_append_logs(std::slice::from_ref(&event)).await;
+                        Ok(DispatchOutcome {
+                            events: vec![event],
+                            warnings: vec![],
+                        })
+                    }
+                    ClaimOutcome::Busy { holder, expires_at } => Err(CoreError::conflict(format!(
+                        "task already claimed by {holder} until {expires_at}"
+                    ))),
+                };
+            }
+            Command::ReleaseClaim {
+                agent_id,
+                task_id,
+                claim_id,
+            } => {
+                let _claim_guard = self.claim_lifecycle.lock().await;
+                let claims = self
+                    .claims
+                    .as_ref()
+                    .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+                let events = claims
+                    .release_recorded(actor, *agent_id, *task_id, *claim_id)
+                    .await?
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                self.apply_persisted(&events).await?;
+                self.auto_append_logs(&events).await;
+                return Ok(DispatchOutcome {
+                    events,
+                    warnings: vec![],
+                });
+            }
+            _ => {}
+        }
+
         let gate_override = self.lifecycle_gate.as_ref().map(|_| gate_override_of(&cmd));
         // ADR-0007 Q5: `MaterializePlan` needs each created task's
         // `source_event_id` to point at the real `PlanCreated` event id, which
@@ -377,7 +433,21 @@ impl CommandHandler {
 
         let persisted = self.store.append_batch(envelopes).await?;
 
-        for env in &persisted {
+        self.apply_persisted(&persisted).await?;
+
+        // Best-effort auto-append into the project's Interview / Human Log
+        // documents (toggleable per project, ON by default). Never fails the
+        // command; emits its own DocumentContentAppended events.
+        self.auto_append_logs(&persisted).await;
+
+        Ok(DispatchOutcome {
+            events: persisted,
+            warnings,
+        })
+    }
+
+    async fn apply_persisted(&self, persisted: &[EventEnvelope]) -> Result<()> {
+        for env in persisted {
             self.tasks.apply_event(env).await?;
             self.projects.apply_event(env).await?;
             self.comments.apply_event(env).await?;
@@ -397,8 +467,16 @@ impl CommandHandler {
             if let Some(sessions) = &self.sessions {
                 sessions.apply_event(env).await?;
             }
-            if let Some(claims) = &self.claims {
-                claims.apply_event(env).await?;
+            // Claim mutations and their audit events commit together in
+            // AgentClaimRepo. Replaying one here could resurrect a generation
+            // that a later release already removed.
+            if !matches!(
+                env.payload,
+                Event::AgentClaimed { .. } | Event::AgentReleased { .. }
+            ) {
+                if let Some(claims) = &self.claims {
+                    claims.apply_event(env).await?;
+                }
             }
             if let Some(work_leases) = &self.work_leases {
                 work_leases.apply_event(env).await?;
@@ -436,16 +514,71 @@ impl CommandHandler {
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
         }
+        Ok(())
+    }
 
-        // Best-effort auto-append into the project's Interview / Human Log
-        // documents (toggleable per project, ON by default). Never fails the
-        // command; emits its own DocumentContentAppended events.
-        self.auto_append_logs(&persisted).await;
+    pub async fn try_acquire_claim(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+    ) -> Result<ClaimOutcome> {
+        self.try_acquire_claim_after(actor, agent_id, task_id, ttl, || async {})
+            .await
+    }
 
-        Ok(DispatchOutcome {
-            events: persisted,
-            warnings,
-        })
+    async fn try_acquire_claim_after<F, Fut>(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+        after_commit: F,
+    ) -> Result<ClaimOutcome>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let _claim_guard = self.claim_lifecycle.lock().await;
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let outcome = claims.try_acquire(actor, agent_id, task_id, ttl).await?;
+        after_commit().await;
+        if let ClaimOutcome::Acquired { event, .. } = &outcome {
+            self.apply_persisted(std::slice::from_ref(event)).await?;
+            self.auto_append_logs(std::slice::from_ref(event)).await;
+        }
+        Ok(outcome)
+    }
+
+    pub async fn sweep_expired_claims(&self, actor: Actor) -> Result<Vec<EventEnvelope>> {
+        let _claim_guard = self.claim_lifecycle.lock().await;
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let events = claims.sweep_expired(actor).await?;
+        self.apply_persisted(&events).await?;
+        self.auto_append_logs(&events).await;
+        Ok(events)
+    }
+
+    pub async fn append_replica_claim_event(
+        &self,
+        envelope: EventEnvelope,
+    ) -> Result<EventEnvelope> {
+        let _claim_guard = self.claim_lifecycle.lock().await;
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let event = claims.append_replica_event(envelope).await?;
+        self.apply_persisted(std::slice::from_ref(&event)).await?;
+        self.auto_append_logs(std::slice::from_ref(&event)).await;
+        Ok(event)
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -2568,9 +2701,15 @@ impl CommandHandler {
                 expires_at,
             }]),
 
-            Command::ReleaseClaim { agent_id, task_id } => {
-                Ok(vec![Event::AgentReleased { agent_id, task_id }])
-            }
+            Command::ReleaseClaim {
+                agent_id,
+                task_id,
+                claim_id,
+            } => Ok(vec![Event::AgentReleased {
+                agent_id,
+                task_id,
+                claim_id,
+            }]),
 
             // ── Work-lease commands ───────────────────────────────────────────
             // The atomic reservation already happened in the repo; these commands
@@ -3342,7 +3481,8 @@ mod tests {
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
         let projects = Arc::new(ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
-        let activity = Arc::new(ActivityRepo::new(pool));
+        let activity = Arc::new(ActivityRepo::new(pool.clone()));
+        let claims = Arc::new(AgentClaimRepo::new(pool));
         let bus = EventBus::default();
         let handler = CommandHandler::new(
             store.clone(),
@@ -3351,7 +3491,8 @@ mod tests {
             comments,
             activity,
             bus,
-        );
+        )
+        .with_claims(claims);
         (handler, store, tasks)
     }
 
@@ -3629,7 +3770,8 @@ mod tests {
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
         let projects = Arc::new(ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
-        let activity = Arc::new(ActivityRepo::new(pool));
+        let activity = Arc::new(ActivityRepo::new(pool.clone()));
+        let claims = Arc::new(AgentClaimRepo::new(pool));
         let bus = EventBus::default();
 
         let plans = Arc::new(MemPlanRepo::default());
@@ -3641,6 +3783,7 @@ mod tests {
             .with_plans(plans.clone() as Arc<dyn PlanRepository>)
             .with_runs(runs.clone() as Arc<dyn RunRepository>)
             .with_sessions(sessions.clone() as Arc<dyn SessionRepository>)
+            .with_claims(claims)
             .with_external_refs(ext_refs.clone() as Arc<dyn ExternalRefRepository>);
 
         (handler, plans, runs, sessions, ext_refs, tasks)
@@ -4434,7 +4577,7 @@ mod tests {
         let agent_id = AgentId::new();
         let task_id = TaskId::new();
         let claim_id = daruma_shared::ClaimId::new();
-        let expires_at = time::now();
+        let expires_at = time::now() + chrono::Duration::seconds(60);
 
         let claim_envs = handler
             .handle(
@@ -4463,14 +4606,91 @@ mod tests {
         ));
 
         let release_envs = handler
-            .handle(Command::ReleaseClaim { agent_id, task_id }, Actor::user())
+            .handle(
+                Command::ReleaseClaim {
+                    agent_id,
+                    task_id,
+                    claim_id: Some(claim_id),
+                },
+                Actor::user(),
+            )
             .await
             .unwrap();
         assert_eq!(release_envs.len(), 1);
         assert!(matches!(
             &release_envs[0].payload,
-            Event::AgentReleased { agent_id: a, task_id: t } if *a == agent_id && *t == task_id
+            Event::AgentReleased {
+                agent_id: a,
+                task_id: t,
+                claim_id: Some(released_generation),
+            } if *a == agent_id && *t == task_id && *released_generation == claim_id
         ));
+    }
+
+    #[tokio::test]
+    async fn claim_publication_stays_ordered_across_release_after_commit() {
+        use tokio::sync::Barrier;
+
+        let (handler, _store, _tasks) = build_stack().await;
+        let handler = Arc::new(handler);
+        let claims = handler.claims.as_ref().unwrap().clone();
+        let mut events = handler.bus.subscribe();
+        let agent_id = AgentId::new();
+        let task_id = TaskId::new();
+        let committed = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let acquire = tokio::spawn({
+            let handler = handler.clone();
+            let committed = committed.clone();
+            let resume = resume.clone();
+            async move {
+                handler
+                    .try_acquire_claim_after(
+                        Actor::user(),
+                        agent_id,
+                        task_id,
+                        chrono::Duration::seconds(60),
+                        move || async move {
+                            committed.wait().await;
+                            resume.wait().await;
+                        },
+                    )
+                    .await
+            }
+        });
+        committed.wait().await;
+        let claim_id = claims.list_active(None).await.unwrap()[0].claim_id;
+
+        let mut release = tokio::spawn({
+            let handler = handler.clone();
+            async move {
+                handler
+                    .handle(
+                        Command::ReleaseClaim {
+                            agent_id,
+                            task_id,
+                            claim_id: Some(claim_id),
+                        },
+                        Actor::user(),
+                    )
+                    .await
+            }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut release)
+                .await
+                .is_err()
+        );
+        resume.wait().await;
+        acquire.await.unwrap().unwrap();
+        release.await.unwrap().unwrap();
+
+        assert_eq!(claims.is_claimed(task_id).await.unwrap(), None);
+        let claimed = events.recv().await.unwrap();
+        let released = events.recv().await.unwrap();
+        assert!(matches!(claimed.payload, Event::AgentClaimed { .. }));
+        assert!(matches!(released.payload, Event::AgentReleased { .. }));
+        assert!(claimed.seq < released.seq);
     }
 
     #[tokio::test]

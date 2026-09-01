@@ -394,6 +394,8 @@ pub enum Event {
     AgentReleased {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claim_id: Option<ClaimId>,
     },
 
     /// An agent reserved one or more file/path leases for a task.
@@ -1712,9 +1714,21 @@ mod tests {
             Event::AgentReleased {
                 agent_id: AgentId::new(),
                 task_id: TaskId::new(),
+                claim_id: Some(ClaimId::new()),
             },
             "agent_released",
         );
+    }
+
+    #[test]
+    fn legacy_agent_released_event_defaults_to_unknown_generation() {
+        let event: Event = serde_json::from_value(serde_json::json!({
+            "type": "agent_released",
+            "agent_id": AgentId::new(),
+            "task_id": TaskId::new(),
+        }))
+        .unwrap();
+        assert!(matches!(event, Event::AgentReleased { claim_id: None, .. }));
     }
 
     // ── Semantic events ───────────────────────────────────────────────────────
@@ -1938,6 +1952,7 @@ mod tests {
             Event::AgentReleased {
                 agent_id: AgentId::new(),
                 task_id,
+                claim_id: Some(ClaimId::new()),
             },
             Event::PlanModifiedByHuman {
                 plan_id,

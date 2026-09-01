@@ -352,6 +352,8 @@ pub enum Command {
     ReleaseClaim {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claim_id: Option<ClaimId>,
     },
 
     /// Record file/path leases reserved for a task (audit + WS projection).

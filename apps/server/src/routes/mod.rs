@@ -3977,9 +3977,21 @@ async fn append_replica_events(
             continue;
         }
 
-        let persisted = state.store.append(envelope).await.map_err(ApiError::from)?;
-        apply_persisted_event(&state, &persisted).await?;
-        state.hub.bus.publish(persisted.clone());
+        let persisted = if matches!(
+            &envelope.payload,
+            Event::AgentClaimed { .. } | Event::AgentReleased { .. }
+        ) {
+            state
+                .commands
+                .append_replica_claim_event(envelope)
+                .await
+                .map_err(ApiError::from)?
+        } else {
+            let persisted = state.store.append(envelope).await.map_err(ApiError::from)?;
+            apply_persisted_event(&state, &persisted).await?;
+            state.hub.bus.publish(persisted.clone());
+            persisted
+        };
         accepted.push(persisted);
     }
 
@@ -5634,9 +5646,10 @@ async fn drain_one_plan(
 
         // Atomic compare-and-set: if a competitor grabbed it between resolve and
         // here, retry; the resolver excludes their claim on the next iteration.
-        let (expires_at, claim_id) = match state
-            .claims
-            .try_acquire(
+        let (expires_at, claim_id, claim_event) = match state
+            .commands
+            .try_acquire_claim(
+                actor_from(auth, None),
                 auth.agent_id,
                 next.task_id,
                 chrono::Duration::seconds(ttl_secs as i64),
@@ -5648,24 +5661,10 @@ async fn drain_one_plan(
             ClaimOutcome::Acquired {
                 expires_at,
                 claim_id,
-            } => (expires_at, claim_id),
+                event,
+            } => (expires_at, claim_id, event),
         };
-
-        // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
-        let envs = state
-            .commands
-            .dispatch(
-                Command::AcquireClaim {
-                    agent_id: auth.agent_id,
-                    task_id: next.task_id,
-                    claim_id,
-                    expires_at,
-                },
-                actor_from(auth, None),
-            )
-            .await
-            .map_err(ApiError::from)?;
-        let last = envs.last();
+        let last = Some(&claim_event);
 
         // Couple the claim with a status transition (beads-style): move a ready
         // task into `in_progress` so the resolver's status filter and dashboards
@@ -5705,6 +5704,7 @@ async fn drain_one_plan(
                             Command::ReleaseClaim {
                                 agent_id: auth.agent_id,
                                 task_id: next.task_id,
+                                claim_id: Some(claim_id),
                             },
                             actor_from(auth, None),
                         )
@@ -6633,8 +6633,9 @@ async fn acquire_claim(
 
     // Atomic exclusive acquire: another agent's live claim blocks us.
     match state
-        .claims
-        .try_acquire(
+        .commands
+        .try_acquire_claim(
+            actor_from(&auth, None),
             body.agent_id,
             body.task_id,
             chrono::Duration::seconds(body.ttl_secs as i64),
@@ -6659,37 +6660,21 @@ async fn acquire_claim(
         ClaimOutcome::Acquired {
             expires_at,
             claim_id,
-        } => {
-            // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
-            let envs = state
-                .commands
-                .dispatch(
-                    Command::AcquireClaim {
-                        agent_id: body.agent_id,
-                        task_id: body.task_id,
-                        claim_id,
-                        expires_at,
-                    },
-                    actor_from(&auth, None),
-                )
-                .await
-                .map_err(ApiError::from)?;
-            let last = envs.last();
-            Ok(Json(MutationResponse {
-                success: true,
-                event_id: last.map(|e| e.id),
-                event_seq: last.map(|e| e.seq),
-                data: serde_json::json!({
-                    "acquired": true,
-                    "agent_id": body.agent_id,
-                    "task_id": body.task_id,
-                    "claim_id": claim_id,
-                    "claim_expires_at": expires_at,
-                }),
-                warnings: vec![],
-                client_command_id: None,
-            }))
-        }
+            event,
+        } => Ok(Json(MutationResponse {
+            success: true,
+            event_id: Some(event.id),
+            event_seq: Some(event.seq),
+            data: serde_json::json!({
+                "acquired": true,
+                "agent_id": body.agent_id,
+                "task_id": body.task_id,
+                "claim_id": claim_id,
+                "claim_expires_at": expires_at,
+            }),
+            warnings: vec![],
+            client_command_id: None,
+        })),
     }
 }
 
@@ -6705,7 +6690,11 @@ async fn release_claim(
     let envs = state
         .commands
         .dispatch(
-            Command::ReleaseClaim { agent_id, task_id },
+            Command::ReleaseClaim {
+                agent_id,
+                task_id,
+                claim_id: None,
+            },
             actor_from(&auth, None),
         )
         .await
