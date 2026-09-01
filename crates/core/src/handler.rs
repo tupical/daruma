@@ -2559,16 +2559,14 @@ impl CommandHandler {
             Command::AcquireClaim {
                 agent_id,
                 task_id,
-                ttl_secs,
-            } => {
-                let now = time::now();
-                let expires_at = now + chrono::Duration::seconds(ttl_secs as i64);
-                Ok(vec![Event::AgentClaimed {
-                    agent_id,
-                    task_id,
-                    expires_at,
-                }])
-            }
+                claim_id,
+                expires_at,
+            } => Ok(vec![Event::AgentClaimed {
+                agent_id,
+                task_id,
+                claim_id: Some(claim_id),
+                expires_at,
+            }]),
 
             Command::ReleaseClaim { agent_id, task_id } => {
                 Ok(vec![Event::AgentReleased { agent_id, task_id }])
@@ -4435,13 +4433,16 @@ mod tests {
         let (handler, ..) = build_plan_stack().await;
         let agent_id = AgentId::new();
         let task_id = TaskId::new();
+        let claim_id = daruma_shared::ClaimId::new();
+        let expires_at = time::now();
 
         let claim_envs = handler
             .handle(
                 Command::AcquireClaim {
                     agent_id,
                     task_id,
-                    ttl_secs: 60,
+                    claim_id,
+                    expires_at,
                 },
                 Actor::user(),
             )
@@ -4450,7 +4451,15 @@ mod tests {
         assert_eq!(claim_envs.len(), 1);
         assert!(matches!(
             &claim_envs[0].payload,
-            Event::AgentClaimed { agent_id: a, task_id: t, .. } if *a == agent_id && *t == task_id
+            Event::AgentClaimed {
+                agent_id: a,
+                task_id: t,
+                claim_id: Some(generation),
+                expires_at: event_expiry,
+            } if *a == agent_id
+                && *t == task_id
+                && *generation == claim_id
+                && *event_expiry == expires_at
         ));
 
         let release_envs = handler

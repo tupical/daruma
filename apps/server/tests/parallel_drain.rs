@@ -150,6 +150,9 @@ async fn concurrent_drain_assigns_distinct_tasks() {
         }
     });
     let results = futures::future::join_all(futures).await;
+    let (s, active) = get_json(&h.router, admin, &format!("/v1/claims?project_id={pid}")).await;
+    assert_eq!(s, StatusCode::OK, "list claims failed: {active}");
+    let active = active["claims"].as_array().expect("claims array");
 
     // Exactly M agents get a task, each distinct; one agent gets null.
     let mut claimed = HashSet::new();
@@ -159,6 +162,11 @@ async fn concurrent_drain_assigns_distinct_tasks() {
             nulls += 1;
         } else {
             let tid = resp["task_id"].as_str().expect("task_id").to_owned();
+            let persisted = active
+                .iter()
+                .find(|claim| claim["task_id"] == tid)
+                .expect("drained task has a persisted claim");
+            assert_eq!(resp["claim"]["claim_id"], persisted["claim_id"]);
             assert!(claimed.insert(tid), "task handed to two agents: {resp}");
         }
     }

@@ -5634,7 +5634,7 @@ async fn drain_one_plan(
 
         // Atomic compare-and-set: if a competitor grabbed it between resolve and
         // here, retry; the resolver excludes their claim on the next iteration.
-        let expires_at = match state
+        let (expires_at, claim_id) = match state
             .claims
             .try_acquire(
                 auth.agent_id,
@@ -5645,7 +5645,10 @@ async fn drain_one_plan(
             .map_err(ApiError::from)?
         {
             ClaimOutcome::Busy { .. } => continue,
-            ClaimOutcome::Acquired { expires_at } => expires_at,
+            ClaimOutcome::Acquired {
+                expires_at,
+                claim_id,
+            } => (expires_at, claim_id),
         };
 
         // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
@@ -5655,7 +5658,8 @@ async fn drain_one_plan(
                 Command::AcquireClaim {
                     agent_id: auth.agent_id,
                     task_id: next.task_id,
-                    ttl_secs,
+                    claim_id,
+                    expires_at,
                 },
                 actor_from(auth, None),
             )
@@ -5717,6 +5721,7 @@ async fn drain_one_plan(
             "claim_expires_at": expires_at,
             "claim": {
                 "agent_id": auth.agent_id,
+                "claim_id": claim_id,
                 "event_id": last.map(|e| e.id),
                 "event_seq": last.map(|e| e.seq),
             }
@@ -6651,7 +6656,10 @@ async fn acquire_claim(
             warnings: vec![],
             client_command_id: None,
         })),
-        ClaimOutcome::Acquired { expires_at } => {
+        ClaimOutcome::Acquired {
+            expires_at,
+            claim_id,
+        } => {
             // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
             let envs = state
                 .commands
@@ -6659,7 +6667,8 @@ async fn acquire_claim(
                     Command::AcquireClaim {
                         agent_id: body.agent_id,
                         task_id: body.task_id,
-                        ttl_secs: body.ttl_secs,
+                        claim_id,
+                        expires_at,
                     },
                     actor_from(&auth, None),
                 )
@@ -6674,6 +6683,7 @@ async fn acquire_claim(
                     "acquired": true,
                     "agent_id": body.agent_id,
                     "task_id": body.task_id,
+                    "claim_id": claim_id,
                     "claim_expires_at": expires_at,
                 }),
                 warnings: vec![],

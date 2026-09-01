@@ -208,7 +208,7 @@ async fn seed_plan_with_task(
 async fn seed_claim(claims: &Arc<AgentClaimRepo>, task_id: TaskId, agent_id: AgentId) {
     let expires_at = Utc::now() + chrono::Duration::seconds(300);
     claims
-        .acquire_until(agent_id, task_id, expires_at)
+        .acquire_until(agent_id, task_id, daruma_shared::ClaimId::new(), expires_at)
         .await
         .unwrap();
 }

@@ -10,6 +10,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use daruma_auth::{Capability, ProjectFilter};
+use daruma_events::Event;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -89,6 +90,19 @@ async fn claims_acquire_returns_mutation_response() {
         resp["event_id"].is_string(),
         "event_id must be present: {resp}"
     );
+    let claim_id = resp["data"]["claim_id"]
+        .as_str()
+        .expect("claim response must expose its generation")
+        .parse::<daruma_shared::ClaimId>()
+        .expect("claim response generation must be a UUID");
+    let events = h.state.store.load_since(0, 100).await.unwrap();
+    assert!(events.iter().any(|env| matches!(
+        &env.payload,
+        Event::AgentClaimed {
+            claim_id: Some(event_claim_id),
+            ..
+        } if *event_claim_id == claim_id
+    )));
 }
 
 #[tokio::test]

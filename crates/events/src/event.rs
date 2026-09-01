@@ -6,7 +6,7 @@ use daruma_domain::{
     WorkUnit,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, CommentId, DeviceId,
+    AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, ClaimId, CommentId, DeviceId,
     DocumentId, EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId,
     RunNoteId, TaskId, Timestamp, WorkUnitId,
 };
@@ -385,6 +385,8 @@ pub enum Event {
     AgentClaimed {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claim_id: Option<ClaimId>,
         expires_at: Timestamp,
     },
 
@@ -1685,10 +1687,23 @@ mod tests {
             Event::AgentClaimed {
                 agent_id: AgentId::new(),
                 task_id: TaskId::new(),
+                claim_id: Some(ClaimId::new()),
                 expires_at: time::now(),
             },
             "agent_claimed",
         );
+    }
+
+    #[test]
+    fn legacy_agent_claimed_event_defaults_to_unknown_generation() {
+        let event: Event = serde_json::from_value(serde_json::json!({
+            "type": "agent_claimed",
+            "agent_id": AgentId::new(),
+            "task_id": TaskId::new(),
+            "expires_at": time::now(),
+        }))
+        .unwrap();
+        assert!(matches!(event, Event::AgentClaimed { claim_id: None, .. }));
     }
 
     #[test]
@@ -1917,6 +1932,7 @@ mod tests {
             Event::AgentClaimed {
                 agent_id: AgentId::new(),
                 task_id,
+                claim_id: Some(ClaimId::new()),
                 expires_at: time::now(),
             },
             Event::AgentReleased {
