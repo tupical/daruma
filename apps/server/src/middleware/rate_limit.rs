@@ -27,6 +27,11 @@ pub struct RateLimiter {
     buckets: Arc<Mutex<HashMap<RateLimitKey, Bucket>>>,
 }
 
+/// In-process marker for a request whose token bucket was already charged.
+/// HTTP clients cannot set request extensions.
+#[derive(Clone, Copy, Debug)]
+pub struct RateLimitAlreadyCharged;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum RateLimitKey {
     Token { tenant_id: String, token_id: String },
@@ -93,6 +98,9 @@ pub async fn enforce_rate_limit(
     req: Request,
     next: Next,
 ) -> Response {
+    if req.extensions().get::<RateLimitAlreadyCharged>().is_some() {
+        return next.run(req).await;
+    }
     let Some(ctx) = req.extensions().get::<AuthContext>() else {
         return next.run(req).await;
     };
