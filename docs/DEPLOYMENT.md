@@ -58,3 +58,21 @@ server {
 Open `443/tcp` publicly. Keep `8080/tcp` and `8443/tcp` bound to localhost or a
 private network. For pairing, issue the ticket over the public API and use the
 advertised `host`/`tls_fingerprint` values from `/v1/devices/pair/ticket`.
+
+## Manual telemetry retention
+
+Domain rows in a tenant SQLite `events` table are the event-sourced source of
+truth and must not be deleted. Operational metrics share that table but carry
+`event_class = 'telemetry'`; rotate them manually by age in one transaction:
+
+```sql
+BEGIN IMMEDIATE;
+DELETE FROM events
+WHERE event_class = 'telemetry'
+  AND occurred_at < '2026-08-01T00:00:00+00:00';
+COMMIT;
+```
+
+Back up the tenant database and replace the example UTC cutoff first. Sequence
+gaps are intentional (`seq > cursor`), deleted numbers are never reused, and
+the cabinet continues reading retained telemetry.

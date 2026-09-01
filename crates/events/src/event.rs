@@ -59,6 +59,26 @@ pub struct OperationalMetric {
     pub attrs: serde_json::Value,
 }
 
+/// Persistence class for event-log retention policies.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventClass {
+    /// Product state and audit history; retained by telemetry purges.
+    Domain,
+    /// Operational measurements eligible for time-based retention.
+    Telemetry,
+}
+
+impl EventClass {
+    /// Stable database representation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Domain => "domain",
+            Self::Telemetry => "telemetry",
+        }
+    }
+}
+
 /// One directed edge to (re)assert alongside an [`Event::GraphNodeUpserted`].
 /// Both endpoints are graph node ids; `kind` is the edge label (e.g.
 /// `derived_from` for pipeline lineage).
@@ -870,6 +890,14 @@ impl RuleDecision {
 }
 
 impl Event {
+    /// Retention class persisted alongside the event payload.
+    pub const fn class(&self) -> EventClass {
+        match self {
+            Event::OperationalMetricRecorded { .. } => EventClass::Telemetry,
+            _ => EventClass::Domain,
+        }
+    }
+
     /// Stable kind string for indexing and logging.
     pub fn kind(&self) -> &'static str {
         match self {

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use daruma_domain::Actor;
-use daruma_events::{Event, EventEnvelope, EventStore};
+use daruma_events::{Event, EventClass, EventEnvelope, EventStore};
 use daruma_shared::{CoreError, DeviceId, EventId, Result};
 use sqlx::{QueryBuilder, Row, SqlitePool};
 
@@ -18,6 +18,17 @@ pub struct SqliteEventStore {
 impl SqliteEventStore {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// Deletes telemetry older than `cutoff` without renumbering the event log.
+    pub async fn purge_telemetry_before(&self, cutoff: DateTime<Utc>) -> Result<u64> {
+        sqlx::query("DELETE FROM events WHERE event_class = ? AND occurred_at < ?")
+            .bind(EventClass::Telemetry.as_str())
+            .bind(cutoff.to_rfc3339())
+            .execute(&self.pool)
+            .await
+            .map(|result| result.rows_affected())
+            .map_err(|e| CoreError::storage(e.to_string()))
     }
 }
 
@@ -192,7 +203,11 @@ impl EventStore for SqliteEventStore {
     }
 
     async fn latest_seq(&self) -> Result<u64> {
-        let row = sqlx::query("SELECT COALESCE(MAX(seq), 0) AS max_seq FROM events")
+        // A telemetry purge may remove the greatest retained row. SQLite's
+        // AUTOINCREMENT high-water remains monotonic across deletes.
+        let row = sqlx::query(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'events'), 0) AS max_seq",
+        )
             .fetch_one(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -261,6 +276,7 @@ mod tests {
     use super::*;
     use crate::Db;
     use daruma_domain::{Actor, NewTask};
+    use daruma_events::event::{OperationalEventType, OperationalMetric, OperationalOutcome};
     use daruma_events::Event;
     use daruma_shared::DeviceId;
 
@@ -335,6 +351,196 @@ mod tests {
         // seqs are strictly monotonic
         assert!(saved[0].seq < saved[1].seq);
         assert!(saved[1].seq < saved[2].seq);
+    }
+
+    #[tokio::test]
+    async fn purge_telemetry_before_preserves_domain_events_and_seq_gaps() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let store = SqliteEventStore::new(db.pool().clone());
+        let now = Utc::now();
+        let old = now - chrono::Duration::days(2);
+
+        let mut old_domain = EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: NewTask::new("old domain"),
+            },
+        );
+        old_domain.occurred_at = old;
+        let saved_domain = store.append(old_domain).await.unwrap();
+
+        let mut old_telemetry = EventEnvelope::new(
+            Actor::agent("telemetry-test"),
+            Event::OperationalMetricRecorded {
+                metric: operational_metric(old),
+            },
+        );
+        old_telemetry.occurred_at = old;
+        let saved_old_telemetry = store.append(old_telemetry).await.unwrap();
+
+        let batch = store
+            .append_batch(vec![
+                EventEnvelope::new(
+                    Actor::user(),
+                    Event::TaskCreated {
+                        task: NewTask::new("recent domain"),
+                    },
+                ),
+                EventEnvelope::new(
+                    Actor::agent("telemetry-test"),
+                    Event::OperationalMetricRecorded {
+                        metric: operational_metric(now),
+                    },
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let mut trailing_old_telemetry = EventEnvelope::new(
+            Actor::agent("telemetry-test"),
+            Event::OperationalMetricRecorded {
+                metric: operational_metric(old),
+            },
+        );
+        trailing_old_telemetry.occurred_at = old;
+        let saved_trailing_telemetry = store.append(trailing_old_telemetry).await.unwrap();
+
+        let classes: Vec<(i64, String)> =
+            sqlx::query_as("SELECT seq, event_class FROM events ORDER BY seq")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            classes,
+            vec![
+                (saved_domain.seq as i64, "domain".into()),
+                (saved_old_telemetry.seq as i64, "telemetry".into()),
+                (batch[0].seq as i64, "domain".into()),
+                (batch[1].seq as i64, "telemetry".into()),
+                (saved_trailing_telemetry.seq as i64, "telemetry".into()),
+            ]
+        );
+
+        assert_eq!(
+            store
+                .purge_telemetry_before(now - chrono::Duration::days(1))
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .load_since(saved_domain.seq, 100)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            vec![batch[0].seq, batch[1].seq]
+        );
+        assert_eq!(
+            store.latest_seq().await.unwrap(),
+            saved_trailing_telemetry.seq
+        );
+
+        let after_purge = store
+            .append(EventEnvelope::new(
+                Actor::user(),
+                Event::TaskCreated {
+                    task: NewTask::new("after purge"),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(after_purge.seq, saved_trailing_telemetry.seq + 1);
+        assert_eq!(
+            store
+                .load_since(saved_trailing_telemetry.seq, 100)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            vec![after_purge.seq]
+        );
+    }
+
+    #[tokio::test]
+    async fn event_class_migration_derives_safe_classes_for_all_writers() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            INSERT INTO events (occurred_at, kind, payload_json) VALUES
+                ('2026-01-01T00:00:00+00:00', 'task_created', '{\"type\":\"task_created\"}'),
+                ('2026-01-01T00:00:00+00:00', 'operational_metric_recorded', '{\"type\":\"operational_metric_recorded\"}'),
+                ('2026-01-01T00:00:00+00:00', 'operational_metric_recorded', '{\"type\":\"task_created\"}'),
+                ('2026-01-01T00:00:00+00:00', 'task_created', '{\"type\":\"operational_metric_recorded\"}');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!("../migrations/0053_event_class.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let classes: Vec<String> =
+            sqlx::query_scalar("SELECT event_class FROM events ORDER BY seq")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(classes, vec!["domain", "telemetry", "domain", "domain"]);
+
+        sqlx::query("INSERT INTO events (occurred_at, kind, payload_json) VALUES (?, ?, ?)")
+            .bind("2026-01-02T00:00:00+00:00")
+            .bind("operational_metric_recorded")
+            .bind(r#"{"type":"operational_metric_recorded"}"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let legacy_payload: String = sqlx::query_scalar(
+            "SELECT payload_json FROM events WHERE event_class = 'telemetry' ORDER BY seq DESC LIMIT 1",
+        )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(legacy_payload, r#"{"type":"operational_metric_recorded"}"#);
+
+        let invalid = sqlx::query(
+            "INSERT INTO events (occurred_at, kind, payload_json, event_class) VALUES (?, ?, ?, ?)",
+        )
+        .bind("2026-01-03T00:00:00+00:00")
+        .bind("task_created")
+        .bind(r#"{"type":"task_created"}"#)
+        .bind("telemetry")
+        .execute(&pool)
+        .await;
+        assert!(invalid.is_err());
+    }
+
+    fn operational_metric(ts: DateTime<Utc>) -> OperationalMetric {
+        OperationalMetric {
+            ts,
+            event_type: OperationalEventType::Step,
+            run_id: "run".into(),
+            node_id: None,
+            layer: "mcp".into(),
+            name: "test".into(),
+            outcome: OperationalOutcome::Ok,
+            latency_ms: 1,
+            tokens: None,
+            retry_count: 0,
+            error_class: None,
+            stuck_reason: None,
+            attrs: serde_json::json!({}),
+        }
     }
 
     #[tokio::test]

@@ -3,10 +3,12 @@ use daruma_shared::{EventId, Result};
 
 use crate::envelope::EventEnvelope;
 
-/// The append-only event log.
+/// Event log with append-only domain history.
 ///
 /// Implementations MUST assign a strictly-monotonic `seq` on append and
-/// return it on the produced envelope.
+/// return it on the produced envelope. Explicitly classified operational
+/// telemetry may be removed by a retention action; its sequence numbers remain
+/// assigned high-water marks and are never reused.
 #[async_trait]
 pub trait EventStore: Send + Sync + 'static {
     /// Append a single envelope. Returns it with `seq` populated.
