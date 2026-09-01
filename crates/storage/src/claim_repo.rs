@@ -1,11 +1,13 @@
 //! AgentClaim repository — optimistic task locking with TTL.
 
-use crate::parse_ts;
+use crate::{event_store::append_on, parse_ts};
 use chrono::{Duration, Utc};
+use daruma_domain::Actor;
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, ClaimId, CoreError, ProjectId, Result, RunId, TaskId, Timestamp};
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
+use std::future::Future;
 
 /// A live task claim (agent → task lock) as surfaced by the Agent Operations
 /// read layer. Mirrors an `agent_claims` row that has not yet expired.
@@ -28,6 +30,20 @@ pub enum ClaimOutcome {
         claim_id: ClaimId,
     },
     /// Another agent holds a live claim — the task is taken.
+    Busy {
+        holder: AgentId,
+        expires_at: Timestamp,
+    },
+}
+
+/// Outcome of a claim CAS whose mutation and audit event share one transaction.
+#[derive(Debug, Clone)]
+pub enum RecordedClaimOutcome {
+    Acquired {
+        expires_at: Timestamp,
+        claim_id: ClaimId,
+        event: EventEnvelope,
+    },
     Busy {
         holder: AgentId,
         expires_at: Timestamp,
@@ -321,6 +337,119 @@ impl AgentClaimRepo {
         }
     }
 
+    /// Acquire or refresh a claim and persist its generation-bearing audit
+    /// event in the same SQLite transaction.
+    pub async fn try_acquire_recorded(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: Duration,
+    ) -> Result<RecordedClaimOutcome> {
+        let now = Utc::now();
+        self.try_acquire_exact_recorded(actor, agent_id, task_id, ClaimId::new(), now + ttl)
+            .await
+    }
+
+    /// Recorded acquire with caller-provided generation and expiry, used by
+    /// the command seam after it has built the exact claim contract.
+    pub async fn try_acquire_exact_recorded(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
+    ) -> Result<RecordedClaimOutcome> {
+        let now_s = Utc::now().to_rfc3339();
+        let expires_s = expires_at.to_rfc3339();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        let changed = sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at, claim_id) \
+             SELECT ?, ?, ?, ?, ? \
+             WHERE NOT EXISTS ( \
+                 SELECT 1 FROM agent_claims \
+                 WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
+             ) \
+             ON CONFLICT(agent_id, task_id) DO UPDATE SET \
+                 acquired_at = excluded.acquired_at, \
+                 expires_at  = excluded.expires_at, \
+                 claim_id    = excluded.claim_id",
+        )
+        .bind(agent_id.to_string())
+        .bind(task_id.to_string())
+        .bind(&now_s)
+        .bind(&expires_s)
+        .bind(claim_id.to_string())
+        .bind(task_id.to_string())
+        .bind(&now_s)
+        .bind(agent_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        if changed.rows_affected() == 1 {
+            let event = append_on(
+                &mut *tx,
+                EventEnvelope::new(
+                    actor,
+                    Event::AgentClaimed {
+                        agent_id,
+                        task_id,
+                        claim_id: Some(claim_id),
+                        expires_at,
+                    },
+                ),
+            )
+            .await?;
+            tx.commit()
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            return Ok(RecordedClaimOutcome::Acquired {
+                expires_at,
+                claim_id,
+                event,
+            });
+        }
+
+        let row = sqlx::query(
+            "SELECT agent_id, expires_at FROM agent_claims \
+             WHERE task_id = ? AND expires_at >= ? ORDER BY expires_at DESC LIMIT 1",
+        )
+        .bind(task_id.to_string())
+        .bind(&now_s)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        match row {
+            Some(row) => {
+                let holder = row
+                    .try_get::<String, _>("agent_id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?
+                    .parse::<AgentId>()
+                    .map_err(|e| CoreError::serde(e.to_string()))?;
+                let expires_at = parse_ts(
+                    &row.try_get::<String, _>("expires_at")
+                        .map_err(|e| CoreError::storage(e.to_string()))?,
+                )?;
+                Ok(RecordedClaimOutcome::Busy { holder, expires_at })
+            }
+            None => Ok(RecordedClaimOutcome::Busy {
+                holder: agent_id,
+                expires_at,
+            }),
+        }
+    }
+
     /// Release **all** claims on a task, regardless of holder. Used to
     /// auto-clean claims when a task closes.
     pub async fn release_all_for_task(&self, task_id: TaskId) -> Result<()> {
@@ -343,6 +472,55 @@ impl AgentClaimRepo {
         Ok(())
     }
 
+    /// Release exactly one claim generation and append `AgentReleased` in the
+    /// same transaction. A stale generation is a truthful no-op.
+    pub async fn release_recorded(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+    ) -> Result<Option<EventEnvelope>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let deleted = sqlx::query(
+            "DELETE FROM agent_claims WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
+        )
+        .bind(agent_id.to_string())
+        .bind(task_id.to_string())
+        .bind(claim_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        if deleted.rows_affected() == 0 {
+            tx.commit()
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            return Ok(None);
+        }
+
+        let event = append_on(
+            &mut *tx,
+            EventEnvelope::new(
+                actor,
+                Event::AgentReleased {
+                    agent_id,
+                    task_id,
+                    claim_id: Some(claim_id),
+                },
+            ),
+        )
+        .await?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(Some(event))
+    }
+
     /// Apply a persisted event to the projection.
     pub async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
         match &env.payload {
@@ -356,7 +534,27 @@ impl AgentClaimRepo {
                     .await
             }
             Event::AgentClaimed { claim_id: None, .. } => Ok(()),
-            Event::AgentReleased { agent_id, task_id } => self.release(*agent_id, *task_id).await,
+            Event::AgentReleased {
+                agent_id,
+                task_id,
+                claim_id: Some(claim_id),
+            } => {
+                sqlx::query(
+                    "DELETE FROM agent_claims WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
+                )
+                .bind(agent_id.to_string())
+                .bind(task_id.to_string())
+                .bind(claim_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+                Ok(())
+            }
+            Event::AgentReleased {
+                agent_id,
+                task_id,
+                claim_id: None,
+            } => self.release(*agent_id, *task_id).await,
             // Auto-release every claim when the task closes.
             Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
             _ => Ok(()),
@@ -402,6 +600,87 @@ impl AgentClaimRepo {
         }
 
         Ok(pairs)
+    }
+
+    /// Sweep expired generations with conditional delete and audit append in
+    /// one transaction per batch.
+    pub async fn sweep_expired_recorded(&self, actor: Actor) -> Result<Vec<EventEnvelope>> {
+        self.sweep_expired_recorded_after(actor, || async {}).await
+    }
+
+    async fn sweep_expired_recorded_after<F, Fut>(
+        &self,
+        actor: Actor,
+        after_select: F,
+    ) -> Result<Vec<EventEnvelope>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let now = Utc::now().to_rfc3339();
+        let rows = sqlx::query(
+            "SELECT agent_id, task_id, claim_id FROM agent_claims WHERE expires_at < ?",
+        )
+        .bind(&now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        after_select().await;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            let agent_id = row
+                .try_get::<String, _>("agent_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?
+                .parse::<AgentId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            let task_id = row
+                .try_get::<String, _>("task_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?
+                .parse::<TaskId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            let claim_id = row
+                .try_get::<String, _>("claim_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?
+                .parse::<ClaimId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            let deleted = sqlx::query(
+                "DELETE FROM agent_claims \
+                 WHERE agent_id = ? AND task_id = ? AND claim_id = ? AND expires_at < ?",
+            )
+            .bind(agent_id.to_string())
+            .bind(task_id.to_string())
+            .bind(claim_id.to_string())
+            .bind(&now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+            if deleted.rows_affected() == 1 {
+                events.push(
+                    append_on(
+                        &mut *tx,
+                        EventEnvelope::new(
+                            actor.clone(),
+                            Event::AgentReleased {
+                                agent_id,
+                                task_id,
+                                claim_id: Some(claim_id),
+                            },
+                        ),
+                    )
+                    .await?,
+                );
+            }
+        }
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(events)
     }
 }
 
@@ -453,7 +732,10 @@ fn row_to_active_claim(r: &sqlx::sqlite::SqliteRow) -> Result<ActiveClaim> {
 mod tests {
     use super::*;
     use crate::Db;
+    use daruma_domain::Actor;
     use daruma_shared::{AgentId, TaskId};
+    use std::sync::Arc;
+    use tokio::sync::Notify;
 
     async fn make_repo() -> (Db, AgentClaimRepo) {
         let db = Db::memory().await.unwrap();
@@ -556,6 +838,161 @@ mod tests {
             ClaimOutcome::Busy { holder, .. } => assert_eq!(holder, a1),
             other => panic!("expected Busy, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn failed_audit_after_acquire_leaves_neither_row_nor_event() {
+        let (db, repo) = make_repo().await;
+        let agent_id = AgentId::new();
+        let task_id = TaskId::new();
+
+        sqlx::query(
+            "CREATE TRIGGER fail_claim_audit BEFORE INSERT ON events \
+             WHEN NEW.kind = 'agent_claimed' BEGIN \
+             SELECT RAISE(ABORT, 'forced claim audit failure'); END",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        assert!(repo
+            .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60),)
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM agent_claims WHERE agent_id = ? AND task_id = ?",
+            )
+            .bind(agent_id.to_string())
+            .bind(task_id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_release_audit_preserves_exact_claim_and_emits_nothing() {
+        let (db, repo) = make_repo().await;
+        let agent_id = AgentId::new();
+        let task_id = TaskId::new();
+        let claim_id = match repo
+            .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60))
+            .await
+            .unwrap()
+        {
+            RecordedClaimOutcome::Acquired { claim_id, .. } => claim_id,
+            other => panic!("expected acquired claim, got {other:?}"),
+        };
+
+        sqlx::query(
+            "CREATE TRIGGER fail_release_audit BEFORE INSERT ON events \
+             WHEN NEW.kind = 'agent_released' BEGIN \
+             SELECT RAISE(ABORT, 'forced release audit failure'); END",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        assert!(repo
+            .release_recorded(Actor::user(), agent_id, task_id, claim_id)
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT claim_id FROM agent_claims WHERE agent_id = ? AND task_id = ?",
+            )
+            .bind(agent_id.to_string())
+            .bind(task_id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            claim_id.to_string()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE kind = 'agent_released'",
+            )
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_selection_cannot_delete_concurrent_refresh_or_emit_release() {
+        let (db, repo) = make_repo().await;
+        let agent_id = AgentId::new();
+        let task_id = TaskId::new();
+        let stale_claim_id = ClaimId::new();
+
+        sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at, claim_id) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(agent_id.to_string())
+        .bind(task_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind("2000-01-01T00:00:00+00:00")
+        .bind(stale_claim_id.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let selected = Arc::new(Notify::new());
+        let resume = Arc::new(Notify::new());
+        let sweep_selected = selected.clone();
+        let sweep_resume = resume.clone();
+        let sweep = tokio::spawn(async move {
+            repo.sweep_expired_recorded_after(Actor::user(), || async move {
+                sweep_selected.notify_one();
+                sweep_resume.notified().await;
+            })
+            .await
+        });
+
+        selected.notified().await;
+        let refresh_repo = AgentClaimRepo::new(db.pool().clone());
+        let refreshed = refresh_repo
+            .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60))
+            .await
+            .unwrap();
+        let refreshed_claim_id = match refreshed {
+            RecordedClaimOutcome::Acquired { claim_id, .. } => claim_id,
+            other => panic!("expected refreshed claim, got {other:?}"),
+        };
+        resume.notify_one();
+
+        assert!(sweep.await.unwrap().unwrap().is_empty());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT claim_id FROM agent_claims WHERE agent_id = ? AND task_id = ?",
+            )
+            .bind(agent_id.to_string())
+            .bind(task_id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            refreshed_claim_id.to_string()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE kind = 'agent_released'",
+            )
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
