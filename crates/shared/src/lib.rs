@@ -12,9 +12,9 @@ pub mod time;
 pub use error::CoreError;
 pub use ids::{
     ActivityId, AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, AuditFindingId,
-    CommentId, DeviceId, DocumentId, EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId,
-    RuleId, RunId, RunNoteId, SessionArtifactId, TaskId, TokenId, VersionId, WebhookDeliveryId,
-    WebhookId, WorkLeaseId, WorkUnitId,
+    ClaimId, CommentId, DeviceId, DocumentId, EventId, EvidenceId, HandoffId, PlanId, ProjectId,
+    RelationId, RuleId, RunId, RunNoteId, SessionArtifactId, TaskId, TokenId, VersionId,
+    WebhookDeliveryId, WebhookId, WorkLeaseId, WorkUnitId,
 };
 pub use path_lease::{normalize_lease_path, paths_overlap};
 pub use scope_path::{is_absolute_scope_path, normalize_scope_path};

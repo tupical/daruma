@@ -11,7 +11,7 @@ pub use daruma_api_dto::command::{Command, CommandEnvelope};
 mod tests {
     use super::*;
     use daruma_domain::NewTask;
-    use daruma_shared::{AgentId, PlanId, ProjectId, RunId, TaskId};
+    use daruma_shared::{time, AgentId, ClaimId, PlanId, ProjectId, RunId, TaskId};
     use serde_json::json;
 
     #[test]
@@ -74,7 +74,8 @@ mod tests {
         let cmd = Command::AcquireClaim {
             agent_id: AgentId::new(),
             task_id: TaskId::new(),
-            ttl_secs: 60,
+            claim_id: ClaimId::new(),
+            expires_at: time::now(),
         };
         let v = serde_json::to_value(&cmd).unwrap();
         assert_eq!(v["type"], "acquire_claim");
@@ -100,7 +101,8 @@ mod tests {
             Command::AcquireClaim {
                 agent_id: AgentId::new(),
                 task_id: TaskId::new(),
-                ttl_secs: 30,
+                claim_id: ClaimId::new(),
+                expires_at: time::now(),
             },
             Command::CreatePlan {
                 plan: daruma_domain::NewPlan::new("t", ProjectId::new(), Actor::user()),

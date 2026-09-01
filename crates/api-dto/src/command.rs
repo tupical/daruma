@@ -11,8 +11,8 @@ use daruma_domain::{
     WorkLease,
 };
 use daruma_shared::{
-    AgentId, AgentSessionId, ArtifactId, CommentId, DocumentId, HandoffId, PlanId, ProjectId,
-    RelationId, RuleId, RunId, TaskId, WorkUnitId,
+    AgentId, AgentSessionId, ArtifactId, ClaimId, CommentId, DocumentId, HandoffId, PlanId,
+    ProjectId, RelationId, RuleId, RunId, TaskId, Timestamp, WorkUnitId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -340,11 +340,12 @@ pub enum Command {
     },
 
     // ── Claim commands (W2.2) ─────────────────────────────────────────────────
-    /// Acquire an optimistic claim on a task (TTL in seconds).
+    /// Persist the exact generation returned by the atomic claim CAS.
     AcquireClaim {
         agent_id: AgentId,
         task_id: TaskId,
-        ttl_secs: u32,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
     },
 
     /// Release a previously-acquired claim.

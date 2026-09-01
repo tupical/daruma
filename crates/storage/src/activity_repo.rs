@@ -1671,6 +1671,7 @@ mod tests {
             Event::AgentClaimed {
                 agent_id,
                 task_id,
+                claim_id: Some(daruma_shared::ClaimId::new()),
                 expires_at: time::now(),
             },
             1,

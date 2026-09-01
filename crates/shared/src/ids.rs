@@ -64,6 +64,7 @@ newtype_id!(WorkUnitId, "wu");
 newtype_id!(ProjectId, "prj");
 newtype_id!(EventId, "evt");
 newtype_id!(AgentId, "agt");
+newtype_id!(ClaimId, "clm");
 newtype_id!(DeviceId, "dev");
 newtype_id!(ActivityId, "act");
 newtype_id!(CommentId, "cmt");
