@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::Actor;
 use daruma_events::{Event, EventClass, EventEnvelope, EventStore};
 use daruma_shared::{CoreError, DeviceId, EventId, Result};
-use sqlx::{QueryBuilder, Row, SqlitePool};
+use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool};
 
 /// SQLite-backed event log.
 ///
@@ -32,36 +32,45 @@ impl SqliteEventStore {
     }
 }
 
+pub(crate) async fn append_on<'e, E>(executor: E, envelope: EventEnvelope) -> Result<EventEnvelope>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let event_id = envelope.id.to_string();
+    let occurred_at = envelope.occurred_at.to_rfc3339();
+    let kind = envelope.kind();
+    let actor_json =
+        serde_json::to_string(&envelope.actor).map_err(|e| CoreError::serde(e.to_string()))?;
+    let payload_json =
+        serde_json::to_string(&envelope.payload).map_err(|e| CoreError::serde(e.to_string()))?;
+    let origin_device_id = envelope.origin_device_id.map(|id| id.to_string());
+
+    let result = sqlx::query(
+        "INSERT INTO events \
+         (event_id, occurred_at, kind, actor_json, payload_json, origin_device_id, origin_seq) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(event_id)
+    .bind(occurred_at)
+    .bind(kind)
+    .bind(actor_json)
+    .bind(payload_json)
+    .bind(origin_device_id)
+    .bind(envelope.origin_seq as i64)
+    .execute(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    Ok(EventEnvelope {
+        seq: result.last_insert_rowid() as u64,
+        ..envelope
+    })
+}
+
 #[async_trait]
 impl EventStore for SqliteEventStore {
     async fn append(&self, envelope: EventEnvelope) -> Result<EventEnvelope> {
-        let event_id = envelope.id.to_string();
-        let occurred_at = envelope.occurred_at.to_rfc3339();
-        let kind = envelope.kind();
-        let actor_json =
-            serde_json::to_string(&envelope.actor).map_err(|e| CoreError::serde(e.to_string()))?;
-        let payload_json = serde_json::to_string(&envelope.payload)
-            .map_err(|e| CoreError::serde(e.to_string()))?;
-        let origin_device_id = envelope.origin_device_id.map(|id| id.to_string());
-
-        let result = sqlx::query(
-            "INSERT INTO events \
-             (event_id, occurred_at, kind, actor_json, payload_json, origin_device_id, origin_seq) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&event_id)
-        .bind(&occurred_at)
-        .bind(kind)
-        .bind(&actor_json)
-        .bind(&payload_json)
-        .bind(origin_device_id)
-        .bind(envelope.origin_seq as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-
-        let seq = result.last_insert_rowid() as u64;
-        Ok(EventEnvelope { seq, ..envelope })
+        append_on(&self.pool, envelope).await
     }
 
     async fn append_batch(&self, envelopes: Vec<EventEnvelope>) -> Result<Vec<EventEnvelope>> {

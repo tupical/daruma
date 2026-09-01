@@ -414,6 +414,8 @@ pub enum Event {
     AgentReleased {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claim_id: Option<ClaimId>,
     },
 
     /// An agent reserved one or more file/path leases for a task.
@@ -1740,6 +1742,7 @@ mod tests {
             Event::AgentReleased {
                 agent_id: AgentId::new(),
                 task_id: TaskId::new(),
+                claim_id: Some(ClaimId::new()),
             },
             "agent_released",
         );
@@ -1966,6 +1969,7 @@ mod tests {
             Event::AgentReleased {
                 agent_id: AgentId::new(),
                 task_id,
+                claim_id: Some(ClaimId::new()),
             },
             Event::PlanModifiedByHuman {
                 plan_id,
