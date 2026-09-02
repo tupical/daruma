@@ -140,10 +140,10 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_event_id: Option<EventId>,
     /// Opaque idempotency key from an external source (webhook / importer).
-    /// When set, it is unique within the workspace: a repeat `CreateTask`
-    /// carrying the same `external_key` upserts onto the existing task
-    /// instead of spawning a duplicate. `None` for tasks with no external
-    /// origin. Serialised as omitted (not `null`) when absent.
+    /// When set, it is unique within the workspace: a repeat `CreateTask` or
+    /// plan materialisation carrying the same `external_key` reuses the
+    /// existing task instead of spawning a duplicate. `None` for tasks with
+    /// no external origin. Serialised as omitted (not `null`) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_key: Option<String>,
 }
@@ -195,9 +195,10 @@ pub struct NewTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<Timestamp>,
     /// Optional external idempotency key (see [`Task::external_key`]). When
-    /// present on `CreateTask`, a task already carrying the same key in this
-    /// workspace is upserted (context appended as a comment) rather than
-    /// duplicated. Fully optional — omitting it preserves legacy behaviour.
+    /// present on `CreateTask` or a task in `MaterializePlan`, a task already
+    /// carrying the same key in this workspace is reused (context appended as
+    /// a comment) rather than duplicated. Fully optional — omitting it
+    /// preserves legacy behaviour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_key: Option<String>,
     /// §3.8.10 provenance (ADR-0007 Q5): the upstream event that produced this

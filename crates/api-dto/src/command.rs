@@ -159,8 +159,10 @@ pub enum Command {
     /// `NewPlan` plus its `NewTask`s (the shape of `fujin::NewPlanWithTasks`)
     /// and, in one batch, emits `PlanCreated` + one `TaskCreated` per task
     /// (each stamped with the `PlanCreated` event id as `source_event_id`) +
-    /// one `PlanTaskAdded` per task, ordered by position in `tasks`. daruma
-    /// does not decompose — it receives the finished structure and executes.
+    /// one `PlanTaskAdded` per task, ordered by position in `tasks`. A task
+    /// whose `external_key` already exists is reused, receives the incoming
+    /// context as a comment, and is attached to the new plan. daruma does not
+    /// decompose — it receives the finished structure and executes.
     MaterializePlan {
         plan: NewPlan,
         tasks: Vec<NewTask>,

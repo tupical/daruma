@@ -1198,10 +1198,7 @@ impl CommandHandler {
                 // Normalise the optional external idempotency key: trim, and
                 // collapse an empty/whitespace key to `None` so it never lands
                 // in the workspace-unique index.
-                if let Some(k) = task.external_key.as_ref() {
-                    let trimmed = k.trim();
-                    task.external_key = (!trimmed.is_empty()).then(|| trimmed.to_string());
-                }
+                normalize_external_key(&mut task);
 
                 // Idempotent create via external_key (workspace-scoped upsert).
                 // A re-delivered create from an external source (webhook /
@@ -1210,31 +1207,12 @@ impl CommandHandler {
                 // context as a comment instead of overwriting its fields.
                 if let Some(ext_key) = task.external_key.clone() {
                     if let Some(existing) = self.tasks.find_by_external_key(&ext_key).await? {
-                        let now = time::now();
-                        let body = redelivered_create_comment_body(&ext_key, &task);
-                        let preview: String = body.chars().take(80).collect();
-                        let comment = Comment::from_new(
-                            daruma_domain::NewComment {
-                                id: None,
-                                task_id: existing.id,
-                                body,
-                                parent_id: None,
-                                kind: Some(daruma_domain::CommentKind::Research),
-                            },
-                            actor.clone(),
-                            now,
-                        );
-                        let task_id = comment.task_id;
-                        let comment_id = comment.id;
-                        return Ok(vec![
-                            Event::CommentAdded { comment },
-                            Event::TaskCommented {
-                                task_id,
-                                comment_id,
-                                author: actor.clone(),
-                                preview,
-                            },
-                        ]);
+                        return Ok(redelivered_create_events(
+                            existing.id,
+                            &ext_key,
+                            &task,
+                            actor,
+                        ));
                     }
                 }
 
@@ -1974,6 +1952,7 @@ impl CommandHandler {
                         ));
                     }
                     task.title = t_title;
+                    normalize_external_key(&mut task);
                     // Та же причина: задача приехала внутри решённого плана, с
                     // позицией и зависимостями — она уже разобрана. `Inbox` по
                     // умолчанию ставил бы её в очередь на триаж, которого для
@@ -1981,14 +1960,33 @@ impl CommandHandler {
                     if task.status.is_none() {
                         task.status = Some(Status::Todo);
                     }
-                    let task_id = task.id.unwrap_or_else(TaskId::new);
-                    task.id = Some(task_id);
-                    // A materialised task is plan-owned (Q1): it inherits the
-                    // plan's project so membership and scope stay consistent.
-                    if task.project_id.is_none() {
-                        task.project_id = Some(project_id);
-                    }
-                    events.push(Event::TaskCreated { task });
+                    let existing = match task.external_key.clone() {
+                        Some(key) => self
+                            .tasks
+                            .find_by_external_key(&key)
+                            .await?
+                            .map(|task| (key, task)),
+                        None => None,
+                    };
+                    let task_id = if let Some((ext_key, existing)) = existing {
+                        events.extend(redelivered_create_events(
+                            existing.id,
+                            &ext_key,
+                            &task,
+                            actor,
+                        ));
+                        existing.id
+                    } else {
+                        let task_id = task.id.unwrap_or_else(TaskId::new);
+                        task.id = Some(task_id);
+                        // A materialised task is plan-owned (Q1): it inherits the
+                        // plan's project so membership and scope stay consistent.
+                        if task.project_id.is_none() {
+                            task.project_id = Some(project_id);
+                        }
+                        events.push(Event::TaskCreated { task });
+                        task_id
+                    };
                     events.push(Event::PlanTaskAdded {
                         plan_id,
                         task_id,
@@ -3480,6 +3478,46 @@ fn redelivered_create_comment_body(external_key: &str, task: &daruma_domain::New
         }
     }
     body
+}
+
+fn normalize_external_key(task: &mut daruma_domain::NewTask) {
+    task.external_key = task
+        .external_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
+}
+
+fn redelivered_create_events(
+    task_id: TaskId,
+    external_key: &str,
+    task: &daruma_domain::NewTask,
+    actor: &Actor,
+) -> Vec<Event> {
+    let body = redelivered_create_comment_body(external_key, task);
+    let preview: String = body.chars().take(80).collect();
+    let comment = Comment::from_new(
+        daruma_domain::NewComment {
+            id: None,
+            task_id,
+            body,
+            parent_id: None,
+            kind: Some(daruma_domain::CommentKind::Research),
+        },
+        actor.clone(),
+        time::now(),
+    );
+    let comment_id = comment.id;
+    vec![
+        Event::CommentAdded { comment },
+        Event::TaskCommented {
+            task_id,
+            comment_id,
+            author: actor.clone(),
+            preview,
+        },
+    ]
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -5011,6 +5049,56 @@ mod tests {
             plans.get(plan_id).await.unwrap().unwrap().status,
             PlanStatus::Active
         );
+    }
+
+    /// A repeated task `external_key` reuses the existing task, records the
+    /// incoming context as a comment, and attaches it to the new plan.
+    #[tokio::test]
+    async fn materialize_plan_with_existing_external_key_is_idempotent() {
+        use daruma_domain::NewPlan;
+        let (mut handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        handler.plan_only_intake = true;
+        let project_id = ProjectId::new();
+        let make = |plan_title: &str, task_title: &str| Command::MaterializePlan {
+            plan: NewPlan::new(plan_title, project_id, Actor::user()),
+            tasks: vec![NewTask {
+                external_key: Some("delivery-1".into()),
+                description: Some(format!("payload for {task_title}")),
+                ..NewTask::new(task_title)
+            }],
+        };
+
+        let first = handler
+            .handle(make("First plan", "Original task"), Actor::user())
+            .await
+            .unwrap();
+        let task_id = created_task_ids(&first)[0];
+
+        let second = handler
+            .handle(make("Redelivery", "Changed task"), Actor::user())
+            .await
+            .expect("re-delivery must not expose the unique-index error");
+        assert!(
+            second
+                .iter()
+                .all(|e| !matches!(e.payload, Event::TaskCreated { .. })),
+            "re-delivery must not create a second task"
+        );
+        assert!(second.iter().any(|e| matches!(
+            &e.payload,
+            Event::CommentAdded { comment } if comment.task_id == task_id
+        )));
+        let (second_plan_id, _) = plan_created_id(&second);
+        assert_eq!(
+            plans.list_plan_tasks_ordered(second_plan_id).await.unwrap()[0].task_id,
+            task_id
+        );
+
+        let all = tasks.list_all().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, task_id);
+        assert_eq!(all[0].title, "Original task");
+        assert_eq!(all[0].external_key.as_deref(), Some("delivery-1"));
     }
 
     #[tokio::test]
