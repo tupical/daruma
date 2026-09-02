@@ -361,17 +361,109 @@ impl AgentClaimRepo {
         claim_id: ClaimId,
         expires_at: Timestamp,
     ) -> Result<RecordedClaimOutcome> {
+        self.try_acquire_bound_recorded(actor, agent_id, task_id, claim_id, expires_at, None)
+            .await
+    }
+
+    /// Acquire a claim for an authenticated active run. Run existence, plan,
+    /// active state, owner and claim CAS are checked by the same transaction.
+    pub async fn try_acquire_for_run_recorded(
+        &self,
+        actor: Actor,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+        plan_id: daruma_shared::PlanId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
+    ) -> Result<RecordedClaimOutcome> {
+        self.try_acquire_bound_recorded(
+            actor,
+            owner_agent_id,
+            task_id,
+            claim_id,
+            expires_at,
+            Some((run_id, plan_id)),
+        )
+        .await
+    }
+
+    /// Fail before readiness resolution when a supplied run cannot authorize
+    /// this plan drain. Claim acquisition repeats the check transactionally.
+    pub async fn validate_run_assignment(
+        &self,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+        plan_id: daruma_shared::PlanId,
+    ) -> Result<()> {
+        let actual_plan_id = self.resolve_run_assignment(owner_agent_id, run_id).await?;
+        if actual_plan_id != plan_id {
+            return Err(CoreError::conflict("run belongs to a different plan"));
+        }
+        Ok(())
+    }
+
+    /// Resolve an authenticated active run to its active plan.
+    pub async fn resolve_run_assignment(
+        &self,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+    ) -> Result<daruma_shared::PlanId> {
+        let row = sqlx::query(
+            "SELECT r.plan_id, r.status, p.status AS plan_status, \
+                    o.agent_id AS owner_agent_id \
+             FROM runs r JOIN plans p ON p.id = r.plan_id \
+             LEFT JOIN run_claim_owners o ON o.run_id = r.id WHERE r.id = ?",
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        validated_run_plan_id(row, &run_id.to_string(), &owner_agent_id.to_string())?
+            .parse()
+            .map_err(|e| CoreError::storage(format!("invalid persisted plan id: {e}")))
+    }
+
+    async fn try_acquire_bound_recorded(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
+        run: Option<(RunId, daruma_shared::PlanId)>,
+    ) -> Result<RecordedClaimOutcome> {
         let now_s = Utc::now().to_rfc3339();
         let expires_s = expires_at.to_rfc3339();
+        let run_id = run.map(|(run_id, _)| run_id.to_string());
+        let plan_id = run.map(|(_, plan_id)| plan_id.to_string());
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
 
+        if let Some(run_id) = run_id.as_deref() {
+            let row = sqlx::query(
+                "SELECT r.plan_id, r.status, p.status AS plan_status, \
+                        o.agent_id AS owner_agent_id \
+                 FROM runs r JOIN plans p ON p.id = r.plan_id \
+                 LEFT JOIN run_claim_owners o ON o.run_id = r.id WHERE r.id = ?",
+            )
+            .bind(run_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+            let actual_plan_id = validated_run_plan_id(row, run_id, &agent_id.to_string())?;
+            if actual_plan_id != plan_id.as_deref().unwrap() {
+                return Err(CoreError::conflict("run belongs to a different plan"));
+            }
+        }
+
         let changed = sqlx::query(
-            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at, claim_id) \
-             SELECT ?, ?, ?, ?, ? \
+            "INSERT INTO agent_claims \
+                (agent_id, task_id, acquired_at, expires_at, run_id, claim_id) \
+             SELECT ?, ?, ?, ?, ?, ? \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM agent_claims \
                  WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
@@ -379,12 +471,14 @@ impl AgentClaimRepo {
              ON CONFLICT(agent_id, task_id) DO UPDATE SET \
                  acquired_at = excluded.acquired_at, \
                  expires_at  = excluded.expires_at, \
+                 run_id      = excluded.run_id, \
                  claim_id    = excluded.claim_id",
         )
         .bind(agent_id.to_string())
         .bind(task_id.to_string())
         .bind(&now_s)
         .bind(&expires_s)
+        .bind(run_id.as_deref())
         .bind(claim_id.to_string())
         .bind(task_id.to_string())
         .bind(&now_s)
@@ -448,6 +542,40 @@ impl AgentClaimRepo {
                 expires_at,
             }),
         }
+    }
+
+    /// Persist `RunStarted` and its authenticated owner atomically.
+    pub async fn record_run_started(
+        &self,
+        owner_agent_id: AgentId,
+        envelopes: Vec<EventEnvelope>,
+    ) -> Result<Vec<EventEnvelope>> {
+        let run_id = envelopes
+            .iter()
+            .find_map(|envelope| match &envelope.payload {
+                Event::RunStarted { run } => Some(run.id),
+                _ => None,
+            })
+            .ok_or_else(|| CoreError::validation("expected RunStarted event"))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        sqlx::query("INSERT INTO run_claim_owners (run_id, agent_id) VALUES (?, ?)")
+            .bind(run_id.to_string())
+            .bind(owner_agent_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut persisted = Vec::with_capacity(envelopes.len());
+        for envelope in envelopes {
+            persisted.push(append_on(&mut *tx, envelope).await?);
+        }
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(persisted)
     }
 
     /// Release **all** claims on a task, regardless of holder. Used to
@@ -685,6 +813,42 @@ impl AgentClaimRepo {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+fn validated_run_plan_id(
+    row: Option<sqlx::sqlite::SqliteRow>,
+    run_id: &str,
+    owner_agent_id: &str,
+) -> Result<String> {
+    let row = row.ok_or_else(|| CoreError::not_found(format!("run {run_id}")))?;
+    let plan_id = row
+        .try_get::<String, _>("plan_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    if row
+        .try_get::<String, _>("status")
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        != "active"
+    {
+        return Err(CoreError::conflict("run is not active"));
+    }
+    if row
+        .try_get::<String, _>("plan_status")
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        != "active"
+    {
+        return Err(CoreError::conflict("run plan is not active"));
+    }
+    if row
+        .try_get::<Option<String>, _>("owner_agent_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        .as_deref()
+        != Some(owner_agent_id)
+    {
+        return Err(CoreError::forbidden(
+            "run has no matching authenticated owner",
+        ));
+    }
+    Ok(plan_id)
+}
 
 fn row_to_active_claim(r: &sqlx::sqlite::SqliteRow) -> Result<ActiveClaim> {
     let agent_id: String = r
@@ -1247,7 +1411,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0053_preserves_live_claims_and_backfills_unique_generations() {
+    async fn migration_0054_preserves_live_claims_and_backfills_unique_generations() {
         let db = Db::memory().await.unwrap();
         let pool = db.pool();
         sqlx::query(
@@ -1288,7 +1452,7 @@ mod tests {
             .unwrap();
         }
 
-        sqlx::raw_sql(include_str!("../migrations/0053_claim_run_ownership.sql"))
+        sqlx::raw_sql(include_str!("../migrations/0054_claim_run_ownership.sql"))
             .execute(pool)
             .await
             .unwrap();
@@ -1306,7 +1470,7 @@ mod tests {
             assert_eq!(row.1, expected.1);
             assert_eq!(row.2, expected.2);
             assert_eq!(row.3, expected.3);
-            assert!(row.4.is_none(), "pre-0053 claims have no safe run binding");
+            assert!(row.4.is_none(), "pre-0054 claims have no safe run binding");
             uuid::Uuid::parse_str(
                 row.5
                     .strip_prefix("clm_")

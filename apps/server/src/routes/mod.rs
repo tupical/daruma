@@ -57,7 +57,7 @@ use daruma_mcp::{
 use daruma_shared::{
     AgentId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId, RunId, TaskId,
 };
-use daruma_storage::{ClaimOutcome, ReserveOutcome};
+use daruma_storage::{ClaimOutcome, RecordedClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -3433,7 +3433,7 @@ async fn dispatch_command(
     // ("rule_blocked: …") from dispatch itself.
     let outcome = state
         .commands
-        .dispatch_with_warnings(envelope.command, envelope.actor)
+        .dispatch_authenticated_with_warnings(envelope.command, envelope.actor, auth.agent_id)
         .await
         .map_err(ApiError::from)?;
     warnings.extend(outcome.warnings);
@@ -5643,38 +5643,27 @@ async fn drain_one_plan(
 
         // Atomic compare-and-set: if a competitor grabbed it between resolve and
         // here, retry; the resolver excludes their claim on the next iteration.
-        let (expires_at, claim_id) = match state
-            .claims
-            .try_acquire(
+        let (expires_at, claim_id, claim_event) = match state
+            .commands
+            .try_acquire_claim_for_run(
+                actor_from(auth, None),
                 auth.agent_id,
+                run_id,
+                plan_id,
                 next.task_id,
                 chrono::Duration::seconds(ttl_secs as i64),
             )
             .await
             .map_err(ApiError::from)?
         {
-            ClaimOutcome::Busy { .. } => continue,
-            ClaimOutcome::Acquired {
+            RecordedClaimOutcome::Busy { .. } => continue,
+            RecordedClaimOutcome::Acquired {
                 expires_at,
                 claim_id,
-            } => (expires_at, claim_id),
+                event,
+            } => (expires_at, claim_id, event),
         };
-
-        // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
-        let envs = state
-            .commands
-            .dispatch(
-                Command::AcquireClaim {
-                    agent_id: auth.agent_id,
-                    task_id: next.task_id,
-                    claim_id,
-                    expires_at,
-                },
-                actor_from(auth, None),
-            )
-            .await
-            .map_err(ApiError::from)?;
-        let last = envs.last();
+        let last = Some(&claim_event);
 
         // Couple the claim with a status transition (beads-style): move a ready
         // task into `in_progress` so the resolver's status filter and dashboards
@@ -5726,6 +5715,7 @@ async fn drain_one_plan(
         return Ok(Some(serde_json::json!({
             "task_id": next.task_id,
             "plan_id": plan_id,
+            "run_id": run_id,
             "position": next.position,
             "claim_expires_at": expires_at,
             "claim": {
@@ -5741,6 +5731,32 @@ async fn drain_one_plan(
     Ok(None)
 }
 
+async fn start_drain_run(
+    state: &AppState,
+    auth: &AuthContext,
+    plan_id: PlanId,
+) -> Result<RunId, ApiError> {
+    state
+        .commands
+        .dispatch_authenticated(
+            Command::StartRun {
+                plan_id,
+                agent_id: auth.agent_id,
+                parent_run_id: None,
+            },
+            actor_from(auth, None),
+            auth.agent_id,
+        )
+        .await
+        .map_err(ApiError::from)?
+        .into_iter()
+        .find_map(|envelope| match envelope.payload {
+            Event::RunStarted { run } => Some(run.id),
+            _ => None,
+        })
+        .ok_or_else(|| ApiError::from(CoreError::storage("expected RunStarted event")))
+}
+
 async fn drain_next_task(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -5752,7 +5768,17 @@ async fn drain_next_task(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
-    let run_id = body.run_id.unwrap_or_else(RunId::new);
+    let run_id = match body.run_id {
+        Some(run_id) => {
+            state
+                .claims
+                .validate_run_assignment(auth.agent_id, run_id, plan_id)
+                .await
+                .map_err(ApiError::from)?;
+            run_id
+        }
+        None => start_drain_run(&state, &auth, plan_id).await?,
+    };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
     let task = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await?;
@@ -5821,8 +5847,19 @@ async fn project_ready_drain(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_id(q.project_id, "project id")?;
-    let run_id = body.run_id.unwrap_or_else(RunId::new);
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
+
+    let supplied_run = match body.run_id {
+        Some(run_id) => Some((
+            run_id,
+            state
+                .claims
+                .resolve_run_assignment(auth.agent_id, run_id)
+                .await
+                .map_err(ApiError::from)?,
+        )),
+        None => None,
+    };
 
     let plans = state
         .plans
@@ -5830,7 +5867,20 @@ async fn project_ready_drain(
         .await
         .map_err(ApiError::from)?;
 
+    if let Some((_, plan_id)) = supplied_run {
+        if !plans.iter().any(|plan| plan.id == plan_id) {
+            return Err(ApiError::from(CoreError::conflict(
+                "run plan does not belong to the requested project",
+            )));
+        }
+    }
+
     for plan in &plans {
+        let run_id = match supplied_run {
+            Some((run_id, run_plan_id)) if run_plan_id == plan.id => run_id,
+            Some(_) => continue,
+            None => start_drain_run(&state, &auth, plan.id).await?,
+        };
         if let Some(task) = drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await? {
             return Ok(Json(task));
         }
@@ -5952,13 +6002,14 @@ async fn start_run(
         .map_err(ApiError::from_missing_cap)?;
     let envs = state
         .commands
-        .dispatch(
+        .dispatch_authenticated(
             Command::StartRun {
                 plan_id: body.plan_id,
                 agent_id: body.agent_id,
                 parent_run_id: body.parent_run_id,
             },
             actor_from(&auth, None),
+            auth.agent_id,
         )
         .await
         .map_err(ApiError::from)?;

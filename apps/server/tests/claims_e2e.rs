@@ -9,8 +9,11 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use daruma_auth::{Capability, ProjectFilter};
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
+use daruma_core::Command;
+use daruma_domain::Actor;
 use daruma_events::Event;
+use daruma_shared::{AgentId, PlanId, RunId, TaskId};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -71,6 +74,128 @@ async fn create_task(app: &axum::Router, token: &str) -> String {
             }
         })
         .expect("task_created event with task.id")
+}
+
+async fn create_project(app: &axum::Router, token: &str) -> String {
+    let (status, response) = post_json(
+        app,
+        token,
+        "/v1/commands",
+        r#"{"command":{"type":"create_project","title":"Run owner project"}}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create project failed: {response}");
+    response["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|event| {
+            let payload = event.get("payload")?;
+            (payload.get("type")?.as_str()? == "project_created")
+                .then(|| payload["project"]["id"].as_str().unwrap().to_owned())
+        })
+        .unwrap()
+}
+
+async fn create_active_plan_in_project(
+    app: &axum::Router,
+    token: &str,
+    project_id: &str,
+) -> String {
+    let (status, response) = post_json(
+        app,
+        token,
+        "/v1/commands",
+        &format!(
+            r#"{{"command":{{"type":"create_plan","plan":{{"project_id":"{project_id}","title":"Run owner plan","owner":{{"kind":"user"}}}}}}}}"#
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create plan failed: {response}");
+    let plan_id = response["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|event| {
+            let payload = event.get("payload")?;
+            (payload.get("type")?.as_str()? == "plan_created")
+                .then(|| payload["plan"]["id"].as_str().unwrap().to_owned())
+        })
+        .unwrap();
+    let (status, response) = post_json(
+        app,
+        token,
+        &format!("/v1/plans/{plan_id}/status"),
+        r#"{"status":"active"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "activate plan failed: {response}");
+    plan_id
+}
+
+async fn create_active_plan(app: &axum::Router, token: &str) -> String {
+    let project_id = create_project(app, token).await;
+    create_active_plan_in_project(app, token, &project_id).await
+}
+
+async fn attach_task(app: &axum::Router, token: &str, plan_id: &str, task_id: &str) {
+    let (status, response) = post_json(
+        app,
+        token,
+        &format!("/v1/plans/{plan_id}/tasks"),
+        &format!(r#"{{"task_id":"{task_id}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "add task failed: {response}");
+}
+
+async fn start_run(
+    app: &axum::Router,
+    token: &str,
+    plan_id: &str,
+    body_agent_id: AgentId,
+) -> RunId {
+    let (status, response) = post_json(
+        app,
+        token,
+        "/v1/runs",
+        &format!(
+            r#"{{"plan_id":"{plan_id}","agent_id":"{}"}}"#,
+            body_agent_id.as_uuid()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "start run failed: {response}");
+    response["data"]["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+async fn assert_no_claim(h: &common::TestApp, task_id: &str) {
+    assert!(h
+        .state
+        .claims
+        .get_agents_claiming_task(task_id.parse::<TaskId>().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+async fn drain_project(
+    app: &axum::Router,
+    token: &str,
+    project_id: &str,
+    run_id: RunId,
+) -> (StatusCode, Value) {
+    post_json(
+        app,
+        token,
+        &format!("/v1/ready/drain?project_id={project_id}"),
+        &format!(r#"{{"run_id":"{}"}}"#, run_id.as_uuid()),
+    )
+    .await
 }
 
 // ── AC: Claim acquire / release ───────────────────────────────────────────────
@@ -187,4 +312,295 @@ async fn claims_release_requires_run_write_capability() {
         StatusCode::FORBIDDEN,
         "token without run:write must be forbidden on release: {resp}"
     );
+}
+
+#[tokio::test]
+async fn drain_rejects_ownerless_and_foreign_runs_without_claim() {
+    let h = test_app().await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, foreign_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let ownerless_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan_id, &ownerless_task).await;
+    let ownerless = h
+        .state
+        .commands
+        .dispatch(
+            Command::StartRun {
+                plan_id: plan_id.parse::<PlanId>().unwrap(),
+                agent_id: owner_id,
+                parent_run_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            Event::RunStarted { run } => Some(run.id),
+            _ => None,
+        })
+        .unwrap();
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, ownerless.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "ownerless run: {response}");
+    assert_no_claim(&h, &ownerless_task).await;
+
+    let foreign_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan_id, &foreign_task).await;
+    let owned = start_run(&h.router, &owner_token, &plan_id, foreign_id).await;
+    let (status, _) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, owned.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_no_claim(&h, &foreign_task).await;
+
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, owned.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner drain failed: {response}");
+    assert_eq!(response["task_id"], ownerless_task);
+    assert_eq!(response["run_id"], owned.as_uuid().to_string());
+    assert_ne!(owner_id, foreign_id);
+}
+
+#[tokio::test]
+async fn supplied_and_generated_drain_success_return_persisted_run_id() {
+    let h = test_app().await;
+
+    let supplied_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let supplied_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &supplied_plan, &supplied_task).await;
+    let supplied_run = start_run(&h.router, &h.admin_token, &supplied_plan, AgentId::new()).await;
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{supplied_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, supplied_run.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "supplied drain failed: {response}");
+    assert_eq!(response["run_id"], supplied_run.as_uuid().to_string());
+
+    let generated_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let generated_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &generated_plan, &generated_task).await;
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{generated_plan}/drain-next"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "generated drain failed: {response}");
+    let generated_run = response["run_id"]
+        .as_str()
+        .expect("generated drain must return run_id")
+        .parse::<RunId>()
+        .unwrap();
+    assert_eq!(
+        h.state
+            .runs
+            .get(generated_run)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        daruma_domain::RunStatus::Active
+    );
+}
+
+#[tokio::test]
+async fn drain_rejects_missing_wrong_plan_inactive_plan_and_terminal_runs_without_claims() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let missing_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let missing_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &missing_plan, &missing_task).await;
+    let (status, _) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{missing_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, RunId::new().as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_no_claim(&h, &missing_task).await;
+
+    let wrong_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let wrong_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &wrong_plan, &wrong_task).await;
+    let other_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let other_run = start_run(&h.router, &owner_token, &other_plan, owner_id).await;
+    let (status, _) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{wrong_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, other_run.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_no_claim(&h, &wrong_task).await;
+
+    let inactive_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let inactive_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &inactive_plan, &inactive_task).await;
+    let inactive_run = start_run(&h.router, &owner_token, &inactive_plan, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{inactive_plan}/status"),
+        r#"{"status":"abandoned"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abandon plan failed: {response}");
+    let (status, _) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{inactive_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, inactive_run.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_no_claim(&h, &inactive_task).await;
+
+    let terminal_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let terminal_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &terminal_plan, &terminal_task).await;
+    let terminal_run = start_run(&h.router, &owner_token, &terminal_plan, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{terminal_run}/abort"),
+        r#"{"reason":"test"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abort run failed: {response}");
+    let (status, _) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{terminal_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, terminal_run.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_no_claim(&h, &terminal_task).await;
+}
+
+#[tokio::test]
+async fn project_drain_accepts_supplied_run_for_later_active_plan() {
+    let h = test_app().await;
+    let project_id = create_project(&h.router, &h.admin_token).await;
+    let first_plan = create_active_plan_in_project(&h.router, &h.admin_token, &project_id).await;
+    let first_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &first_plan, &first_task).await;
+    let later_plan = create_active_plan_in_project(&h.router, &h.admin_token, &project_id).await;
+    let later_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &later_plan, &later_task).await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let run_id = start_run(&h.router, &owner_token, &later_plan, owner_id).await;
+
+    let (status, response) = drain_project(&h.router, &owner_token, &project_id, run_id).await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "later-plan drain failed: {response}"
+    );
+    assert_eq!(response["task_id"], later_task);
+    assert_eq!(response["plan_id"], later_plan);
+    assert_eq!(response["run_id"], run_id.as_uuid().to_string());
+    assert_no_claim(&h, &first_task).await;
+}
+
+#[tokio::test]
+async fn project_drain_rejects_invalid_supplied_runs_before_plan_iteration() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let empty_project = create_project(&h.router, &h.admin_token).await;
+    let (status, _) = drain_project(&h.router, &owner_token, &empty_project, RunId::new()).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "missing run must be rejected"
+    );
+
+    let foreign_project = create_project(&h.router, &h.admin_token).await;
+    let foreign_plan =
+        create_active_plan_in_project(&h.router, &h.admin_token, &foreign_project).await;
+    let foreign_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &foreign_plan, &foreign_task).await;
+    let foreign_run = start_run(&h.router, &owner_token, &foreign_plan, owner_id).await;
+    let requested_project = create_project(&h.router, &h.admin_token).await;
+    let (status, _) = drain_project(&h.router, &owner_token, &requested_project, foreign_run).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "wrong-project run must be rejected"
+    );
+    assert_no_claim(&h, &foreign_task).await;
+
+    let inactive_project = create_project(&h.router, &h.admin_token).await;
+    let inactive_plan =
+        create_active_plan_in_project(&h.router, &h.admin_token, &inactive_project).await;
+    let inactive_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &inactive_plan, &inactive_task).await;
+    let inactive_run = start_run(&h.router, &owner_token, &inactive_plan, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{inactive_plan}/status"),
+        r#"{"status":"abandoned"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abandon plan failed: {response}");
+    let (status, _) = drain_project(&h.router, &owner_token, &inactive_project, inactive_run).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "inactive-plan run must be rejected"
+    );
+    assert_no_claim(&h, &inactive_task).await;
+
+    let terminal_project = create_project(&h.router, &h.admin_token).await;
+    let terminal_plan =
+        create_active_plan_in_project(&h.router, &h.admin_token, &terminal_project).await;
+    let terminal_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &terminal_plan, &terminal_task).await;
+    let terminal_run = start_run(&h.router, &owner_token, &terminal_plan, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{terminal_run}/abort"),
+        r#"{"reason":"test"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abort run failed: {response}");
+    let (status, _) = drain_project(&h.router, &owner_token, &terminal_project, terminal_run).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "terminal run must be rejected"
+    );
+    assert_no_claim(&h, &terminal_task).await;
 }

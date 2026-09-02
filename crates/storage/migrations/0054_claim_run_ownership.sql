@@ -1,7 +1,7 @@
--- Preserve pre-0053 claims while adding an immutable generation. Legacy rows
+-- Preserve pre-0054 claims while adding an immutable generation. Legacy rows
 -- cannot be attributed to a run safely: Run.agent_id is caller-provided and is
 -- distinct from the authenticated claim holder, so their run_id remains NULL.
-CREATE TABLE agent_claims_v0053 (
+CREATE TABLE agent_claims_v0054 (
     agent_id    TEXT NOT NULL,
     task_id     TEXT NOT NULL,
     acquired_at TEXT NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE agent_claims_v0053 (
     PRIMARY KEY (agent_id, task_id)
 );
 
-INSERT INTO agent_claims_v0053
+INSERT INTO agent_claims_v0054
     (agent_id, task_id, acquired_at, expires_at, run_id, claim_id)
 SELECT agent_id, task_id, acquired_at, expires_at, NULL,
        'clm_' || lower(
@@ -22,7 +22,7 @@ SELECT agent_id, task_id, acquired_at, expires_at, NULL,
 FROM agent_claims;
 
 DROP TABLE agent_claims;
-ALTER TABLE agent_claims_v0053 RENAME TO agent_claims;
+ALTER TABLE agent_claims_v0054 RENAME TO agent_claims;
 
 CREATE INDEX idx_claims_task    ON agent_claims (task_id);
 CREATE INDEX idx_claims_expires ON agent_claims (expires_at);
