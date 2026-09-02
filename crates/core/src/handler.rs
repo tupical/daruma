@@ -10,13 +10,13 @@ use daruma_domain::{
 };
 use daruma_events::{event::ObsolescenceKind, Event, EventBus, EventEnvelope, EventStore};
 use daruma_shared::{
-    time, AgentId, AgentSessionId, CoreError, DocumentId, PlanId, ProjectId, RelationId, Result,
-    RunId, RunNoteId, SessionArtifactId, TaskId,
+    time, AgentId, AgentSessionId, ClaimId, CoreError, DocumentId, PlanId, ProjectId, RelationId,
+    Result, RunId, RunNoteId, SessionArtifactId, TaskId,
 };
 use daruma_storage::{
     ActivityRepo, AgentClaimRepo, ArtifactRepo, CommentRepo, DocumentRepo, EvidenceRepo,
-    ProjectRepo, ProjectSettingsRepo, RelationRepo, RuleRepo, RunNoteRepo, TaskRepo,
-    TenantQuotaRepo, WorkLeaseRepo, WorkUnitRepo,
+    ProjectRepo, ProjectSettingsRepo, RecordedClaimOutcome, RelationRepo, RuleRepo, RunNoteRepo,
+    TaskRepo, TenantQuotaRepo, WorkLeaseRepo, WorkUnitRepo,
 };
 
 use crate::{
@@ -279,6 +279,106 @@ impl CommandHandler {
             .map(|outcome| outcome.events)
     }
 
+    /// Claim CAS + audit persistence entry point for transports. The storage
+    /// repo commits both before this method publishes the resulting event.
+    pub async fn try_acquire_claim(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+    ) -> Result<RecordedClaimOutcome> {
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let outcome = claims
+            .try_acquire_recorded(actor, agent_id, task_id, ttl)
+            .await?;
+        if let RecordedClaimOutcome::Acquired { event, .. } = &outcome {
+            self.publish_recorded_claim_events(std::slice::from_ref(event))
+                .await?;
+        }
+        Ok(outcome)
+    }
+
+    /// Release one exact generation and publish only when the conditional
+    /// delete committed.
+    pub async fn release_claim(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+    ) -> Result<Option<EventEnvelope>> {
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let event = claims
+            .release_recorded(actor, agent_id, task_id, claim_id)
+            .await?;
+        if let Some(event) = &event {
+            self.publish_recorded_claim_events(std::slice::from_ref(event))
+                .await?;
+        }
+        Ok(event)
+    }
+
+    /// Sweep expired generations through the same mutation/audit boundary.
+    pub async fn sweep_expired_claims(&self, actor: Actor) -> Result<Vec<EventEnvelope>> {
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let events = claims.sweep_expired_recorded(actor).await?;
+        self.publish_recorded_claim_events(&events).await?;
+        Ok(events)
+    }
+
+    async fn publish_recorded_claim_events(&self, events: &[EventEnvelope]) -> Result<()> {
+        for event in events {
+            self.activity.apply_event(event).await?;
+            self.spawn_search_index(event.clone());
+            self.bus.publish(event.clone());
+        }
+        self.auto_append_logs(events).await;
+        Ok(())
+    }
+
+    /// Run-bound claim CAS. Storage validates the authenticated run owner and
+    /// active run/plan before assigning the exact claim generation.
+    pub async fn try_acquire_claim_for_run(
+        &self,
+        actor: Actor,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+        plan_id: PlanId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+    ) -> Result<RecordedClaimOutcome> {
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let outcome = claims
+            .try_acquire_for_run_recorded(
+                actor,
+                owner_agent_id,
+                run_id,
+                plan_id,
+                task_id,
+                ClaimId::new(),
+                time::now() + ttl,
+            )
+            .await?;
+        if let RecordedClaimOutcome::Acquired { event, .. } = &outcome {
+            self.publish_recorded_claim_events(std::slice::from_ref(event))
+                .await?;
+        }
+        Ok(outcome)
+    }
+
     /// Like [`Self::handle`], but also returns lifecycle-gate warnings so
     /// transports can surface them in `MutationResponse.warnings`
     /// (docs/LIFECYCLE_RULES_SPEC.md §1.5). Blocked checks abort BEFORE
@@ -291,6 +391,29 @@ impl CommandHandler {
         cmd: Command,
         actor: Actor,
     ) -> Result<DispatchOutcome> {
+        self.handle_with_run_owner(cmd, actor, None).await
+    }
+
+    /// Server entry point that binds StartRun ownership to the authenticated
+    /// token identity rather than the caller-supplied run agent.
+    pub async fn handle_authenticated_with_warnings(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+    ) -> Result<DispatchOutcome> {
+        self.handle_with_run_owner(cmd, actor, Some(authenticated_agent_id))
+            .await
+    }
+
+    async fn handle_with_run_owner(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: Option<AgentId>,
+    ) -> Result<DispatchOutcome> {
+        let owned_start =
+            authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let gate_override = self.lifecycle_gate.as_ref().map(|_| gate_override_of(&cmd));
         // ADR-0007 Q5: `MaterializePlan` needs each created task's
         // `source_event_id` to point at the real `PlanCreated` event id, which
@@ -375,7 +498,15 @@ impl CommandHandler {
             relink_materialised_provenance(&mut envelopes);
         }
 
-        let persisted = self.store.append_batch(envelopes).await?;
+        let persisted = if owned_start {
+            self.claims
+                .as_ref()
+                .ok_or_else(|| CoreError::storage("claim repository not configured"))?
+                .record_run_started(authenticated_agent_id.unwrap(), envelopes)
+                .await?
+        } else {
+            self.store.append_batch(envelopes).await?
+        };
 
         for env in &persisted {
             self.tasks.apply_event(env).await?;
@@ -2559,20 +2690,20 @@ impl CommandHandler {
             Command::AcquireClaim {
                 agent_id,
                 task_id,
-                ttl_secs,
-            } => {
-                let now = time::now();
-                let expires_at = now + chrono::Duration::seconds(ttl_secs as i64);
-                Ok(vec![Event::AgentClaimed {
-                    agent_id,
-                    task_id,
-                    expires_at,
-                }])
-            }
+                claim_id,
+                expires_at,
+            } => Ok(vec![Event::AgentClaimed {
+                agent_id,
+                task_id,
+                claim_id: Some(claim_id),
+                expires_at,
+            }]),
 
-            Command::ReleaseClaim { agent_id, task_id } => {
-                Ok(vec![Event::AgentReleased { agent_id, task_id }])
-            }
+            Command::ReleaseClaim { agent_id, task_id } => Ok(vec![Event::AgentReleased {
+                agent_id,
+                task_id,
+                claim_id: None,
+            }]),
 
             // ── Work-lease commands ───────────────────────────────────────────
             // The atomic reservation already happened in the repo; these commands
@@ -3326,7 +3457,9 @@ mod tests {
     };
     use daruma_events::{Event, EventStore};
     use daruma_shared::{ProjectId, RunId, TaskId};
-    use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
+    use daruma_storage::{
+        ActivityRepo, AgentClaimRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo,
+    };
     use std::{collections::HashMap, sync::Mutex};
 
     use crate::{
@@ -3344,7 +3477,7 @@ mod tests {
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
         let projects = Arc::new(ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
-        let activity = Arc::new(ActivityRepo::new(pool));
+        let activity = Arc::new(ActivityRepo::new(pool.clone()));
         let bus = EventBus::default();
         let handler = CommandHandler::new(
             store.clone(),
@@ -3631,7 +3764,7 @@ mod tests {
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
         let projects = Arc::new(ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
-        let activity = Arc::new(ActivityRepo::new(pool));
+        let activity = Arc::new(ActivityRepo::new(pool.clone()));
         let bus = EventBus::default();
 
         let plans = Arc::new(MemPlanRepo::default());
@@ -3643,7 +3776,8 @@ mod tests {
             .with_plans(plans.clone() as Arc<dyn PlanRepository>)
             .with_runs(runs.clone() as Arc<dyn RunRepository>)
             .with_sessions(sessions.clone() as Arc<dyn SessionRepository>)
-            .with_external_refs(ext_refs.clone() as Arc<dyn ExternalRefRepository>);
+            .with_external_refs(ext_refs.clone() as Arc<dyn ExternalRefRepository>)
+            .with_claims(Arc::new(AgentClaimRepo::new(pool)));
 
         (handler, plans, runs, sessions, ext_refs, tasks)
     }
@@ -4436,31 +4570,73 @@ mod tests {
         let agent_id = AgentId::new();
         let task_id = TaskId::new();
 
-        let claim_envs = handler
-            .handle(
-                Command::AcquireClaim {
-                    agent_id,
-                    task_id,
-                    ttl_secs: 60,
-                },
+        let claim = handler
+            .try_acquire_claim(
                 Actor::user(),
+                agent_id,
+                task_id,
+                chrono::Duration::seconds(60),
             )
             .await
             .unwrap();
-        assert_eq!(claim_envs.len(), 1);
+        let (claim_id, claim_event) = match claim {
+            RecordedClaimOutcome::Acquired {
+                claim_id, event, ..
+            } => (claim_id, event),
+            other => panic!("expected acquired claim, got {other:?}"),
+        };
         assert!(matches!(
-            &claim_envs[0].payload,
-            Event::AgentClaimed { agent_id: a, task_id: t, .. } if *a == agent_id && *t == task_id
+            claim_event.payload,
+            Event::AgentClaimed {
+                agent_id: a,
+                task_id: t,
+                claim_id: Some(generation),
+                ..
+            } if a == agent_id && t == task_id && generation == claim_id
         ));
+        assert_eq!(
+            handler
+                .claims
+                .as_ref()
+                .unwrap()
+                .list_active(None)
+                .await
+                .unwrap()[0]
+                .claim_id,
+            claim_id,
+            "returned, audited, and stored generation must match"
+        );
 
-        let release_envs = handler
-            .handle(Command::ReleaseClaim { agent_id, task_id }, Actor::user())
+        assert!(handler
+            .release_claim(Actor::user(), agent_id, task_id, ClaimId::new())
             .await
-            .unwrap();
-        assert_eq!(release_envs.len(), 1);
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            handler
+                .claims
+                .as_ref()
+                .unwrap()
+                .list_active(None)
+                .await
+                .unwrap()[0]
+                .claim_id,
+            claim_id,
+            "a stale generation cannot release the live claim"
+        );
+
+        let release_event = handler
+            .release_claim(Actor::user(), agent_id, task_id, claim_id)
+            .await
+            .unwrap()
+            .expect("matching generation releases");
         assert!(matches!(
-            &release_envs[0].payload,
-            Event::AgentReleased { agent_id: a, task_id: t } if *a == agent_id && *t == task_id
+            release_event.payload,
+            Event::AgentReleased {
+                agent_id: a,
+                task_id: t,
+                claim_id: Some(generation),
+            } if a == agent_id && t == task_id && generation == claim_id
         ));
     }
 
