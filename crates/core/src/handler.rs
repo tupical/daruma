@@ -104,6 +104,10 @@ pub struct CommandHandler {
     // default remains for the desktop offline executor (until the terminality
     // task migrates its UI) and in-process tests.
     pub plan_only_intake: bool,
+
+    // ponytail: one process-wide boundary is enough; shard per plan only if
+    // run/plan lifecycle contention becomes measurable.
+    plan_run_lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl CommandHandler {
@@ -144,6 +148,7 @@ impl CommandHandler {
             evidence: None,
             artifacts: None,
             plan_only_intake: false,
+            plan_run_lifecycle: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -414,6 +419,16 @@ impl CommandHandler {
         authenticated_agent_id: Option<AgentId>,
         is_admin: bool,
     ) -> Result<DispatchOutcome> {
+        let plan_terminal = matches!(
+            &cmd,
+            Command::ArchivePlan { .. } | Command::DeletePlan { .. }
+        );
+        let serial_plan_run = plan_terminal || matches!(&cmd, Command::StartRun { .. });
+        let _plan_run_guard = if serial_plan_run {
+            Some(self.plan_run_lifecycle.lock().await)
+        } else {
+            None
+        };
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let owned_terminal = authenticated_agent_id.is_some()
@@ -518,6 +533,12 @@ impl CommandHandler {
                     is_admin,
                     envelopes,
                 )
+                .await?
+        } else if plan_terminal && self.claims.is_some() {
+            self.claims
+                .as_ref()
+                .unwrap()
+                .record_plan_terminal(actor.clone(), envelopes)
                 .await?
         } else {
             self.store.append_batch(envelopes).await?
@@ -2360,7 +2381,7 @@ impl CommandHandler {
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("plan {plan_id}")))?;
 
-                if plan.status != PlanStatus::Active {
+                if plan.status != PlanStatus::Active || plan.archived_at.is_some() {
                     return Err(CoreError::validation("plan must be Active to start a run"));
                 }
 
@@ -3473,7 +3494,8 @@ mod tests {
     use daruma_events::{Event, EventStore};
     use daruma_shared::{ProjectId, RunId, TaskId};
     use daruma_storage::{
-        ActivityRepo, AgentClaimRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo,
+        ActivityRepo, AgentClaimRepo, CommentRepo, Db, PlanRepo, ProjectRepo, RunRepo,
+        SqliteEventStore, TaskRepo,
     };
     use std::{collections::HashMap, sync::Mutex};
 
@@ -4376,6 +4398,80 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn plan_terminal_barrier_makes_concurrent_start_lose_cleanly() {
+        for delete in [false, true] {
+            let db = Db::memory().await.unwrap();
+            db.migrate().await.unwrap();
+            let pool = db.pool().clone();
+            let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(pool.clone()));
+            let tasks = Arc::new(TaskRepo::new(pool.clone()));
+            let plans = Arc::new(PlanRepo::new(pool.clone()));
+            let runs = Arc::new(RunRepo::new(pool.clone()));
+            let handler = Arc::new(
+                CommandHandler::new(
+                    store,
+                    tasks,
+                    Arc::new(ProjectRepo::new(pool.clone())),
+                    Arc::new(CommentRepo::new(pool.clone())),
+                    Arc::new(ActivityRepo::new(pool.clone())),
+                    EventBus::default(),
+                )
+                .with_plans(plans as Arc<dyn PlanRepository>)
+                .with_runs(runs.clone() as Arc<dyn RunRepository>)
+                .with_claims(Arc::new(AgentClaimRepo::new(pool))),
+            );
+            let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+
+            let barrier = handler.plan_run_lifecycle.lock().await;
+            let terminal = tokio::spawn({
+                let handler = handler.clone();
+                async move {
+                    let command = if delete {
+                        Command::DeletePlan { id: plan_id }
+                    } else {
+                        Command::ArchivePlan { id: plan_id }
+                    };
+                    handler.handle(command, Actor::user()).await
+                }
+            });
+            tokio::task::yield_now().await;
+            let owner = AgentId::new();
+            let start = tokio::spawn({
+                let handler = handler.clone();
+                async move {
+                    handler
+                        .handle_authenticated_with_warnings(
+                            Command::StartRun {
+                                plan_id,
+                                agent_id: owner,
+                                parent_run_id: None,
+                            },
+                            Actor::agent(owner.to_string()),
+                            owner,
+                            false,
+                        )
+                        .await
+                }
+            });
+            tokio::task::yield_now().await;
+            drop(barrier);
+
+            terminal.await.unwrap().unwrap();
+            let error = start.await.unwrap().unwrap_err();
+            assert!(matches!(error.code(), "validation" | "not_found"));
+            assert!(runs.list_active_for_plan(plan_id).await.unwrap().is_empty());
+            assert!(handler
+                .claims
+                .as_ref()
+                .unwrap()
+                .list_active(None)
+                .await
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[tokio::test]
