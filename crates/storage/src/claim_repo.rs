@@ -361,8 +361,46 @@ impl AgentClaimRepo {
         claim_id: ClaimId,
         expires_at: Timestamp,
     ) -> Result<RecordedClaimOutcome> {
+        self.try_acquire_bound_recorded(actor, agent_id, task_id, claim_id, expires_at, None)
+            .await
+    }
+
+    /// Acquire a claim for an authenticated active run. Run existence, plan,
+    /// active state, owner and claim CAS are checked by the same transaction.
+    pub async fn try_acquire_for_run_recorded(
+        &self,
+        actor: Actor,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+        plan_id: daruma_shared::PlanId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
+    ) -> Result<RecordedClaimOutcome> {
+        self.try_acquire_bound_recorded(
+            actor,
+            owner_agent_id,
+            task_id,
+            claim_id,
+            expires_at,
+            Some((run_id, plan_id)),
+        )
+        .await
+    }
+
+    async fn try_acquire_bound_recorded(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
+        run: Option<(RunId, daruma_shared::PlanId)>,
+    ) -> Result<RecordedClaimOutcome> {
         let now_s = Utc::now().to_rfc3339();
         let expires_s = expires_at.to_rfc3339();
+        let run_id = run.map(|(run_id, _)| run_id.to_string());
+        let plan_id = run.map(|(_, plan_id)| plan_id.to_string());
         let mut tx = self
             .pool
             .begin()
@@ -370,22 +408,34 @@ impl AgentClaimRepo {
             .map_err(|e| CoreError::storage(e.to_string()))?;
 
         let changed = sqlx::query(
-            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at, claim_id) \
-             SELECT ?, ?, ?, ?, ? \
-             WHERE NOT EXISTS ( \
+            "INSERT INTO agent_claims \
+                (agent_id, task_id, acquired_at, expires_at, run_id, claim_id) \
+             SELECT ?, ?, ?, ?, ?, ? \
+             WHERE (? IS NULL OR EXISTS ( \
+                 SELECT 1 FROM runs r \
+                 JOIN run_claim_owners o ON o.run_id = r.id \
+                 WHERE r.id = ? AND r.plan_id = ? AND r.status = 'active' \
+                   AND o.agent_id = ? \
+             )) AND NOT EXISTS ( \
                  SELECT 1 FROM agent_claims \
                  WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
              ) \
              ON CONFLICT(agent_id, task_id) DO UPDATE SET \
                  acquired_at = excluded.acquired_at, \
                  expires_at  = excluded.expires_at, \
+                 run_id      = excluded.run_id, \
                  claim_id    = excluded.claim_id",
         )
         .bind(agent_id.to_string())
         .bind(task_id.to_string())
         .bind(&now_s)
         .bind(&expires_s)
+        .bind(run_id.as_deref())
         .bind(claim_id.to_string())
+        .bind(run_id.as_deref())
+        .bind(run_id.as_deref())
+        .bind(plan_id.as_deref())
+        .bind(agent_id.to_string())
         .bind(task_id.to_string())
         .bind(&now_s)
         .bind(agent_id.to_string())
@@ -415,6 +465,42 @@ impl AgentClaimRepo {
                 claim_id,
                 event,
             });
+        }
+
+        if let Some(run_id) = run_id.as_deref() {
+            let row = sqlx::query(
+                "SELECT r.plan_id, r.status, o.agent_id AS owner_agent_id \
+                 FROM runs r LEFT JOIN run_claim_owners o ON o.run_id = r.id \
+                 WHERE r.id = ?",
+            )
+            .bind(run_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+            match row {
+                None => return Err(CoreError::not_found(format!("run {run_id}"))),
+                Some(row)
+                    if row.try_get::<String, _>("plan_id").ok().as_deref()
+                        != plan_id.as_deref() =>
+                {
+                    return Err(CoreError::conflict("run belongs to a different plan"));
+                }
+                Some(row)
+                    if row.try_get::<String, _>("status").ok().as_deref() != Some("active") =>
+                {
+                    return Err(CoreError::conflict("run is not active"));
+                }
+                Some(row)
+                    if row
+                        .try_get::<Option<String>, _>("owner_agent_id")
+                        .ok()
+                        .flatten()
+                        != Some(agent_id.to_string()) =>
+                {
+                    return Err(CoreError::forbidden("run is owned by another agent"));
+                }
+                Some(_) => {}
+            }
         }
 
         let row = sqlx::query(
@@ -448,6 +534,228 @@ impl AgentClaimRepo {
                 expires_at,
             }),
         }
+    }
+
+    /// Persist `RunStarted` and its authenticated owner atomically.
+    pub async fn record_run_started(
+        &self,
+        owner_agent_id: AgentId,
+        envelopes: Vec<EventEnvelope>,
+    ) -> Result<Vec<EventEnvelope>> {
+        let run_id = envelopes
+            .iter()
+            .find_map(|envelope| match &envelope.payload {
+                Event::RunStarted { run } => Some(run.id),
+                _ => None,
+            })
+            .ok_or_else(|| CoreError::validation("expected RunStarted event"))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        sqlx::query("INSERT INTO run_claim_owners (run_id, agent_id) VALUES (?, ?)")
+            .bind(run_id.to_string())
+            .bind(owner_agent_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut persisted = Vec::with_capacity(envelopes.len());
+        for envelope in envelopes {
+            persisted.push(append_on(&mut *tx, envelope).await?);
+        }
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(persisted)
+    }
+
+    /// Owner/admin-guarded terminal boundary. Exact claim generations, owner
+    /// rows, terminal events and truthful release audits commit together.
+    pub async fn record_run_terminal(
+        &self,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+        is_admin: bool,
+        envelopes: Vec<EventEnvelope>,
+    ) -> Result<Vec<EventEnvelope>> {
+        self.record_run_terminal_after(
+            actor,
+            authenticated_agent_id,
+            is_admin,
+            envelopes,
+            || async {},
+        )
+        .await
+    }
+
+    async fn record_run_terminal_after<F, Fut>(
+        &self,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+        is_admin: bool,
+        envelopes: Vec<EventEnvelope>,
+        after_cleanup: F,
+    ) -> Result<Vec<EventEnvelope>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let mut terminal_runs = Vec::new();
+        for envelope in &envelopes {
+            let terminal_run = match &envelope.payload {
+                Event::RunCompleted { run_id, .. } => Some((*run_id, "completed")),
+                Event::RunFailed { run_id, .. } => Some((*run_id, "failed")),
+                Event::RunAborted { run_id, .. } => Some((*run_id, "aborted")),
+                _ => None,
+            };
+            if let Some(terminal_run) = terminal_run {
+                if !terminal_runs
+                    .iter()
+                    .any(|(run_id, _)| *run_id == terminal_run.0)
+                {
+                    terminal_runs.push(terminal_run);
+                }
+            }
+        }
+        if terminal_runs.is_empty() {
+            return Err(CoreError::validation("expected terminal run event"));
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut claims = Vec::new();
+        for (run_id, terminal_status) in &terminal_runs {
+            let row = sqlx::query(
+                "SELECT r.status, r.agent_id AS run_agent_id, \
+                        o.agent_id AS owner_agent_id FROM runs r \
+                 LEFT JOIN run_claim_owners o ON o.run_id = r.id WHERE r.id = ?",
+            )
+            .bind(run_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?
+            .ok_or_else(|| CoreError::not_found(format!("run {run_id}")))?;
+            if row
+                .try_get::<String, _>("status")
+                .map_err(|e| CoreError::storage(e.to_string()))?
+                != "active"
+            {
+                return Err(CoreError::conflict("run is not active"));
+            }
+            let owner = row
+                .try_get::<Option<String>, _>("owner_agent_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            let owner = match owner {
+                Some(owner) => {
+                    if !is_admin && owner != authenticated_agent_id.to_string() {
+                        return Err(CoreError::forbidden("run is owned by another agent"));
+                    }
+                    owner
+                }
+                None if is_admin => row
+                    .try_get::<String, _>("run_agent_id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?,
+                None => {
+                    return Err(CoreError::forbidden("run has no authenticated owner"));
+                }
+            };
+
+            let guarded =
+                sqlx::query("UPDATE runs SET status = ? WHERE id = ? AND status = 'active'")
+                    .bind(terminal_status)
+                    .bind(run_id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+            if guarded.rows_affected() != 1 {
+                return Err(CoreError::conflict("run is not active"));
+            }
+
+            let rows = sqlx::query(
+                "SELECT agent_id, task_id, claim_id FROM agent_claims ac \
+                 WHERE ac.run_id = ? OR (ac.run_id IS NULL AND ac.agent_id = ? AND EXISTS ( \
+                     SELECT 1 FROM run_steps rs WHERE rs.run_id = ? \
+                       AND rs.task_id = ac.task_id AND rs.finished_at IS NULL \
+                 ))",
+            )
+            .bind(run_id.to_string())
+            .bind(&owner)
+            .bind(run_id.to_string())
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+            for row in rows {
+                claims.push((
+                    row.try_get::<String, _>("agent_id")
+                        .map_err(|e| CoreError::storage(e.to_string()))?,
+                    row.try_get::<String, _>("task_id")
+                        .map_err(|e| CoreError::storage(e.to_string()))?,
+                    row.try_get::<String, _>("claim_id")
+                        .map_err(|e| CoreError::storage(e.to_string()))?,
+                ));
+            }
+        }
+
+        let mut released_claims = Vec::with_capacity(claims.len());
+        for (agent_id, task_id, claim_id) in claims {
+            let deleted = sqlx::query(
+                "DELETE FROM agent_claims WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
+            )
+            .bind(&agent_id)
+            .bind(&task_id)
+            .bind(&claim_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+            if deleted.rows_affected() == 1 {
+                released_claims.push((agent_id, task_id, claim_id));
+            }
+        }
+        for (run_id, _) in &terminal_runs {
+            sqlx::query("DELETE FROM run_claim_owners WHERE run_id = ?")
+                .bind(run_id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
+        after_cleanup().await;
+
+        let mut persisted = Vec::with_capacity(envelopes.len() + released_claims.len());
+        for envelope in envelopes {
+            persisted.push(append_on(&mut *tx, envelope).await?);
+        }
+        for (agent_id, task_id, claim_id) in released_claims {
+            persisted.push(
+                append_on(
+                    &mut *tx,
+                    EventEnvelope::new(
+                        actor.clone(),
+                        Event::AgentReleased {
+                            agent_id: agent_id
+                                .parse()
+                                .map_err(|e| CoreError::serde(format!("{e}")))?,
+                            task_id: task_id
+                                .parse()
+                                .map_err(|e| CoreError::serde(format!("{e}")))?,
+                            claim_id: Some(
+                                claim_id
+                                    .parse()
+                                    .map_err(|e| CoreError::serde(format!("{e}")))?,
+                            ),
+                        },
+                    ),
+                )
+                .await?,
+            );
+        }
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(persisted)
     }
 
     /// Release **all** claims on a task, regardless of holder. Used to
@@ -1247,7 +1555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0053_preserves_live_claims_and_backfills_unique_generations() {
+    async fn migration_0054_preserves_live_claims_and_backfills_unique_generations() {
         let db = Db::memory().await.unwrap();
         let pool = db.pool();
         sqlx::query(
@@ -1288,7 +1596,7 @@ mod tests {
             .unwrap();
         }
 
-        sqlx::raw_sql(include_str!("../migrations/0053_claim_run_ownership.sql"))
+        sqlx::raw_sql(include_str!("../migrations/0054_claim_run_ownership.sql"))
             .execute(pool)
             .await
             .unwrap();
@@ -1306,7 +1614,7 @@ mod tests {
             assert_eq!(row.1, expected.1);
             assert_eq!(row.2, expected.2);
             assert_eq!(row.3, expected.3);
-            assert!(row.4.is_none(), "pre-0053 claims have no safe run binding");
+            assert!(row.4.is_none(), "pre-0054 claims have no safe run binding");
             uuid::Uuid::parse_str(
                 row.5
                     .strip_prefix("clm_")
@@ -1315,5 +1623,323 @@ mod tests {
             .expect("claim generation must contain a UUID");
         }
         assert_ne!(rows[0].5, rows[1].5);
+    }
+
+    async fn insert_active_run(
+        db: &Db,
+        run_id: RunId,
+        plan_id: daruma_shared::PlanId,
+        agent_id: AgentId,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, plan_id, agent_id, started_at, status, last_activity_at) \
+             VALUES (?, ?, ?, ?, 'active', ?)",
+        )
+        .bind(run_id.to_string())
+        .bind(plan_id.to_string())
+        .bind(agent_id.to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+
+    fn abort_event(run_id: RunId) -> Vec<EventEnvelope> {
+        vec![EventEnvelope::new(
+            Actor::user(),
+            Event::RunAborted {
+                run_id,
+                reason: "test".into(),
+                at: Utc::now(),
+            },
+        )]
+    }
+
+    #[tokio::test]
+    async fn run_terminal_without_owner_never_authorizes_mutation() {
+        let (db, repo) = make_repo().await;
+        let run_id = RunId::new();
+        insert_active_run(&db, run_id, daruma_shared::PlanId::new(), AgentId::new()).await;
+
+        let err = repo
+            .record_run_terminal(Actor::user(), AgentId::new(), false, abort_event(run_id))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "forbidden");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_aborts_migrated_ownerless_run_once_and_cleans_legacy_claim() {
+        let (db, repo) = make_repo().await;
+        let run_id = RunId::new();
+        let plan_id = daruma_shared::PlanId::new();
+        let legacy_agent = AgentId::new();
+        let task_id = TaskId::new();
+        let claim_id = ClaimId::new();
+        insert_active_run(&db, run_id, plan_id, legacy_agent).await;
+        sqlx::query(
+            "INSERT INTO agent_claims \
+             (agent_id, task_id, acquired_at, expires_at, run_id, claim_id) \
+             VALUES (?, ?, ?, ?, NULL, ?)",
+        )
+        .bind(legacy_agent.to_string())
+        .bind(task_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind((Utc::now() + Duration::minutes(5)).to_rfc3339())
+        .bind(claim_id.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO run_steps (run_id, task_id, started_at) VALUES (?, ?, ?)")
+            .bind(run_id.to_string())
+            .bind(task_id.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let events = repo
+            .record_run_terminal(Actor::user(), AgentId::new(), true, abort_event(run_id))
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            Event::AgentReleased {
+                claim_id: Some(id), ..
+            } if *id == claim_id
+        )));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_claims")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM runs WHERE id = ?")
+                .bind(run_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            "aborted"
+        );
+
+        let error = repo
+            .record_run_terminal(Actor::user(), AgentId::new(), true, abort_event(run_id))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "conflict");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE kind = 'run_aborted'",)
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_terminal_append_rolls_back_owner_and_exact_claim_cleanup() {
+        let (db, repo) = make_repo().await;
+        let run_id = RunId::new();
+        let plan_id = daruma_shared::PlanId::new();
+        let owner = AgentId::new();
+        let task_id = TaskId::new();
+        let claim_id = ClaimId::new();
+        insert_active_run(&db, run_id, plan_id, owner).await;
+        sqlx::query("INSERT INTO run_claim_owners (run_id, agent_id) VALUES (?, ?)")
+            .bind(run_id.to_string())
+            .bind(owner.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_claims \
+             (agent_id, task_id, acquired_at, expires_at, run_id, claim_id) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(owner.to_string())
+        .bind(task_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind((Utc::now() + Duration::minutes(5)).to_rfc3339())
+        .bind(run_id.to_string())
+        .bind(claim_id.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_terminal_event BEFORE INSERT ON events \
+             WHEN NEW.kind = 'run_aborted' BEGIN \
+             SELECT RAISE(ABORT, 'forced terminal failure'); END",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        assert!(repo
+            .record_run_terminal(Actor::user(), owner, false, abort_event(run_id))
+            .await
+            .is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM run_claim_owners WHERE run_id = ?",)
+                .bind(run_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT claim_id FROM agent_claims WHERE agent_id = ? AND task_id = ?",
+            )
+            .bind(owner.to_string())
+            .bind(task_id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+            claim_id.to_string()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM runs WHERE id = ?")
+                .bind(run_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            "active"
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_clears_pre_upgrade_owner_claim_on_open_run_step() {
+        let (db, repo) = make_repo().await;
+        let run_id = RunId::new();
+        let plan_id = daruma_shared::PlanId::new();
+        let owner = AgentId::new();
+        let task_id = TaskId::new();
+        let claim_id = ClaimId::new();
+        insert_active_run(&db, run_id, plan_id, owner).await;
+        sqlx::query("INSERT INTO run_claim_owners (run_id, agent_id) VALUES (?, ?)")
+            .bind(run_id.to_string())
+            .bind(owner.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_claims \
+             (agent_id, task_id, acquired_at, expires_at, run_id, claim_id) \
+             VALUES (?, ?, ?, ?, NULL, ?)",
+        )
+        .bind(owner.to_string())
+        .bind(task_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind((Utc::now() + Duration::minutes(5)).to_rfc3339())
+        .bind(claim_id.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO run_steps (run_id, task_id, started_at) VALUES (?, ?, ?)")
+            .bind(run_id.to_string())
+            .bind(task_id.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let events = repo
+            .record_run_terminal(Actor::user(), owner, false, abort_event(run_id))
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            Event::AgentReleased {
+                claim_id: Some(id), ..
+            } if *id == claim_id
+        )));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_claims")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_cleanup_barrier_prevents_post_terminal_run_claim() {
+        let (db, repo) = make_repo().await;
+        let repo = Arc::new(repo);
+        let run_id = RunId::new();
+        let plan_id = daruma_shared::PlanId::new();
+        let owner = AgentId::new();
+        let task_id = TaskId::new();
+        insert_active_run(&db, run_id, plan_id, owner).await;
+        sqlx::query("INSERT INTO run_claim_owners (run_id, agent_id) VALUES (?, ?)")
+            .bind(run_id.to_string())
+            .bind(owner.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let cleaned = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let terminal = tokio::spawn({
+            let repo = repo.clone();
+            let cleaned = cleaned.clone();
+            let release = release.clone();
+            async move {
+                repo.record_run_terminal_after(
+                    Actor::user(),
+                    owner,
+                    false,
+                    abort_event(run_id),
+                    || async move {
+                        cleaned.notify_one();
+                        release.notified().await;
+                    },
+                )
+                .await
+            }
+        });
+        cleaned.notified().await;
+        let attempted = Arc::new(Notify::new());
+        let drain = tokio::spawn({
+            let repo = repo.clone();
+            let attempted = attempted.clone();
+            async move {
+                attempted.notify_one();
+                repo.try_acquire_for_run_recorded(
+                    Actor::user(),
+                    owner,
+                    run_id,
+                    plan_id,
+                    task_id,
+                    ClaimId::new(),
+                    Utc::now() + Duration::minutes(5),
+                )
+                .await
+            }
+        });
+        attempted.notified().await;
+        tokio::task::yield_now().await;
+        release.notify_one();
+        terminal.await.unwrap().unwrap();
+        assert!(drain.await.unwrap().is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_claims")
+                .fetch_one(db.pool())
+                .await
+                .unwrap(),
+            0
+        );
     }
 }

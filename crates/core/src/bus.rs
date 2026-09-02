@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use daruma_domain::Actor;
 use daruma_events::EventEnvelope;
-use daruma_shared::Result;
+use daruma_shared::{AgentId, PlanId, Result, RunId, TaskId};
+use daruma_storage::RecordedClaimOutcome;
 
 use crate::{lifecycle_gate::DispatchOutcome, Command, CommandHandler};
 
@@ -44,5 +45,43 @@ impl CommandBus {
         actor: Actor,
     ) -> Result<DispatchOutcome> {
         self.handler.handle_with_warnings(cmd, actor).await
+    }
+
+    pub async fn dispatch_authenticated(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+        is_admin: bool,
+    ) -> Result<Vec<EventEnvelope>> {
+        self.dispatch_authenticated_with_warnings(cmd, actor, authenticated_agent_id, is_admin)
+            .await
+            .map(|outcome| outcome.events)
+    }
+
+    pub async fn dispatch_authenticated_with_warnings(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+        is_admin: bool,
+    ) -> Result<DispatchOutcome> {
+        self.handler
+            .handle_authenticated_with_warnings(cmd, actor, authenticated_agent_id, is_admin)
+            .await
+    }
+
+    pub async fn try_acquire_claim_for_run(
+        &self,
+        actor: Actor,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+        plan_id: PlanId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+    ) -> Result<RecordedClaimOutcome> {
+        self.handler
+            .try_acquire_claim_for_run(actor, owner_agent_id, run_id, plan_id, task_id, ttl)
+            .await
     }
 }

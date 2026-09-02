@@ -302,6 +302,39 @@ impl CommandHandler {
         Ok(outcome)
     }
 
+    /// Run-bound claim CAS. Storage validates the authenticated run owner and
+    /// active run/plan before assigning the exact claim generation.
+    pub async fn try_acquire_claim_for_run(
+        &self,
+        actor: Actor,
+        owner_agent_id: AgentId,
+        run_id: RunId,
+        plan_id: PlanId,
+        task_id: TaskId,
+        ttl: chrono::Duration,
+    ) -> Result<RecordedClaimOutcome> {
+        let claims = self
+            .claims
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let outcome = claims
+            .try_acquire_for_run_recorded(
+                actor,
+                owner_agent_id,
+                run_id,
+                plan_id,
+                task_id,
+                ClaimId::new(),
+                time::now() + ttl,
+            )
+            .await?;
+        if let RecordedClaimOutcome::Acquired { event, .. } = &outcome {
+            self.publish_recorded_claim_events(std::slice::from_ref(event))
+                .await?;
+        }
+        Ok(outcome)
+    }
+
     /// Release one exact generation and publish only when the conditional
     /// delete committed.
     pub async fn release_claim(
@@ -358,6 +391,40 @@ impl CommandHandler {
         cmd: Command,
         actor: Actor,
     ) -> Result<DispatchOutcome> {
+        self.handle_with_run_owner(cmd, actor, None, false).await
+    }
+
+    /// Server entry point for run lifecycle commands. The authenticated token
+    /// identity, not the caller-supplied run agent or event actor, owns runs.
+    pub async fn handle_authenticated_with_warnings(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+        is_admin: bool,
+    ) -> Result<DispatchOutcome> {
+        self.handle_with_run_owner(cmd, actor, Some(authenticated_agent_id), is_admin)
+            .await
+    }
+
+    async fn handle_with_run_owner(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: Option<AgentId>,
+        is_admin: bool,
+    ) -> Result<DispatchOutcome> {
+        let owned_start =
+            authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
+        let owned_terminal = authenticated_agent_id.is_some()
+            && matches!(
+                &cmd,
+                Command::CompleteRun { .. }
+                    | Command::FailRun { .. }
+                    | Command::AbortRun { .. }
+                    | Command::ArchivePlan { .. }
+                    | Command::DeletePlan { .. }
+            );
         let gate_override = self.lifecycle_gate.as_ref().map(|_| gate_override_of(&cmd));
         // ADR-0007 Q5: `MaterializePlan` needs each created task's
         // `source_event_id` to point at the real `PlanCreated` event id, which
@@ -442,9 +509,48 @@ impl CommandHandler {
             relink_materialised_provenance(&mut envelopes);
         }
 
-        let persisted = self.store.append_batch(envelopes).await?;
+        let has_terminal_run = envelopes.iter().any(|envelope| {
+            matches!(
+                envelope.payload,
+                Event::RunCompleted { .. } | Event::RunFailed { .. } | Event::RunAborted { .. }
+            )
+        });
+        let persisted = if owned_start {
+            self.claims
+                .as_ref()
+                .ok_or_else(|| CoreError::storage("claim repository not configured"))?
+                .record_run_started(authenticated_agent_id.unwrap(), envelopes)
+                .await?
+        } else if owned_terminal && has_terminal_run {
+            self.claims
+                .as_ref()
+                .ok_or_else(|| CoreError::storage("claim repository not configured"))?
+                .record_run_terminal(
+                    actor.clone(),
+                    authenticated_agent_id.unwrap(),
+                    is_admin,
+                    envelopes,
+                )
+                .await?
+        } else {
+            self.store.append_batch(envelopes).await?
+        };
 
-        for env in &persisted {
+        self.apply_persisted(&persisted).await?;
+
+        // Best-effort auto-append into the project's Interview / Human Log
+        // documents (toggleable per project, ON by default). Never fails the
+        // command; emits its own DocumentContentAppended events.
+        self.auto_append_logs(&persisted).await;
+
+        Ok(DispatchOutcome {
+            events: persisted,
+            warnings,
+        })
+    }
+
+    async fn apply_persisted(&self, persisted: &[EventEnvelope]) -> Result<()> {
+        for env in persisted {
             self.tasks.apply_event(env).await?;
             self.projects.apply_event(env).await?;
             self.comments.apply_event(env).await?;
@@ -503,16 +609,7 @@ impl CommandHandler {
             self.spawn_search_index(env.clone());
             self.bus.publish(env.clone());
         }
-
-        // Best-effort auto-append into the project's Interview / Human Log
-        // documents (toggleable per project, ON by default). Never fails the
-        // command; emits its own DocumentContentAppended events.
-        self.auto_append_logs(&persisted).await;
-
-        Ok(DispatchOutcome {
-            events: persisted,
-            warnings,
-        })
+        Ok(())
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

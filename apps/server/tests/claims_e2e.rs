@@ -9,8 +9,9 @@ use axum::{
     body::{to_bytes, Body},
     http::{Method, Request, StatusCode},
 };
-use daruma_auth::{Capability, ProjectFilter};
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
 use daruma_events::Event;
+use daruma_shared::RunId;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -71,6 +72,56 @@ async fn create_task(app: &axum::Router, token: &str) -> String {
             }
         })
         .expect("task_created event with task.id")
+}
+
+async fn create_active_plan(app: &axum::Router, token: &str) -> String {
+    let (status, response) = post_json(
+        app,
+        token,
+        "/v1/commands",
+        r#"{"command":{"type":"create_project","title":"Run owner project"}}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create project failed: {response}");
+    let project_id = response["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|event| {
+            let payload = event.get("payload")?;
+            (payload.get("type")?.as_str()? == "project_created")
+                .then(|| payload["project"]["id"].as_str().unwrap().to_owned())
+        })
+        .unwrap();
+    let (status, response) = post_json(
+        app,
+        token,
+        "/v1/commands",
+        &format!(
+            r#"{{"command":{{"type":"create_plan","plan":{{"project_id":"{project_id}","title":"Run owner plan","owner":{{"kind":"user"}}}}}}}}"#
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create plan failed: {response}");
+    let plan_id = response["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|event| {
+            let payload = event.get("payload")?;
+            (payload.get("type")?.as_str()? == "plan_created")
+                .then(|| payload["plan"]["id"].as_str().unwrap().to_owned())
+        })
+        .unwrap();
+    let (status, response) = post_json(
+        app,
+        token,
+        &format!("/v1/plans/{plan_id}/status"),
+        r#"{"status":"active"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "activate plan failed: {response}");
+    plan_id
 }
 
 // ── AC: Claim acquire / release ───────────────────────────────────────────────
@@ -186,5 +237,159 @@ async fn claims_release_requires_run_write_capability() {
         s,
         StatusCode::FORBIDDEN,
         "token without run:write must be forbidden on release: {resp}"
+    );
+}
+
+#[tokio::test]
+async fn authenticated_run_owner_guards_every_terminal_http_ingress() {
+    let h = test_app().await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let caps: Capabilities = [Capability::RunWrite, Capability::PlanWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, foreign_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    // The body agent is deliberately foreign: authenticated token identity
+    // must still own the run.
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        "/v1/runs",
+        &format!(
+            r#"{{"plan_id":"{plan_id}","agent_id":"{}"}}"#,
+            foreign_id.as_uuid()
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "start run failed: {response}");
+    let run_id = response["data"]["run_id"].as_str().unwrap();
+
+    let (status, _) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/runs/{run_id}/abort"),
+        r#"{"reason":"foreign"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = post_json(
+        &h.router,
+        &foreign_token,
+        "/v1/commands",
+        &format!(r#"{{"command":{{"type":"fail_run","run_id":"{run_id}","reason":"foreign"}}}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/plans/{plan_id}/archive"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = delete_json(&h.router, &foreign_token, &format!("/v1/plans/{plan_id}")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let run = h
+        .state
+        .runs
+        .get(run_id.parse::<RunId>().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, daruma_domain::RunStatus::Active);
+
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{run_id}/abort"),
+        r#"{"reason":"owner"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner abort failed: {response}");
+    let run = h
+        .state
+        .runs
+        .get(run_id.parse::<RunId>().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, daruma_domain::RunStatus::Aborted);
+    assert_ne!(owner_id, foreign_id);
+}
+
+#[tokio::test]
+async fn generated_drain_run_is_returned_and_finishable() {
+    let h = test_app().await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan_id}/tasks"),
+        &format!(r#"{{"task_id":"{task_id}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "add task failed: {response}");
+
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "drain failed: {response}");
+    assert_eq!(response["task_id"], task_id);
+    let run_id = response["run_id"]
+        .as_str()
+        .expect("generated drain must return run_id")
+        .parse::<RunId>()
+        .unwrap();
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/runs/{run_id}/abort"),
+        r#"{"reason":"done"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abort failed: {response}");
+}
+
+#[tokio::test]
+async fn empty_drain_aborts_its_unreturned_generated_run() {
+    let h = test_app().await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "empty drain failed: {response}");
+    assert!(response.is_null());
+
+    let events = h.state.store.load_since(0, 100).await.unwrap();
+    let run_id = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            Event::RunStarted { run } => Some(run.id),
+            _ => None,
+        })
+        .expect("generated run must be recorded");
+    assert!(events.iter().any(|event| matches!(
+        &event.payload,
+        Event::RunAborted { run_id: aborted, .. } if *aborted == run_id
+    )));
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Aborted
     );
 }
