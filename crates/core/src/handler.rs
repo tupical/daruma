@@ -391,18 +391,19 @@ impl CommandHandler {
         cmd: Command,
         actor: Actor,
     ) -> Result<DispatchOutcome> {
-        self.handle_with_run_owner(cmd, actor, None).await
+        self.handle_with_run_owner(cmd, actor, None, false).await
     }
 
-    /// Server entry point that binds StartRun ownership to the authenticated
-    /// token identity rather than the caller-supplied run agent.
+    /// Server entry point that binds run ownership to the authenticated token
+    /// identity and carries its admin capability into terminal cleanup.
     pub async fn handle_authenticated_with_warnings(
         &self,
         cmd: Command,
         actor: Actor,
         authenticated_agent_id: AgentId,
+        is_admin: bool,
     ) -> Result<DispatchOutcome> {
-        self.handle_with_run_owner(cmd, actor, Some(authenticated_agent_id))
+        self.handle_with_run_owner(cmd, actor, Some(authenticated_agent_id), is_admin)
             .await
     }
 
@@ -411,9 +412,12 @@ impl CommandHandler {
         cmd: Command,
         actor: Actor,
         authenticated_agent_id: Option<AgentId>,
+        is_admin: bool,
     ) -> Result<DispatchOutcome> {
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
+        let owned_terminal = authenticated_agent_id.is_some()
+            && matches!(&cmd, Command::FailRun { .. } | Command::AbortRun { .. });
         let gate_override = self.lifecycle_gate.as_ref().map(|_| gate_override_of(&cmd));
         // ADR-0007 Q5: `MaterializePlan` needs each created task's
         // `source_event_id` to point at the real `PlanCreated` event id, which
@@ -503,6 +507,17 @@ impl CommandHandler {
                 .as_ref()
                 .ok_or_else(|| CoreError::storage("claim repository not configured"))?
                 .record_run_started(authenticated_agent_id.unwrap(), envelopes)
+                .await?
+        } else if owned_terminal {
+            self.claims
+                .as_ref()
+                .ok_or_else(|| CoreError::storage("claim repository not configured"))?
+                .record_run_terminal(
+                    actor.clone(),
+                    authenticated_agent_id.unwrap(),
+                    is_admin,
+                    envelopes,
+                )
                 .await?
         } else {
             self.store.append_batch(envelopes).await?

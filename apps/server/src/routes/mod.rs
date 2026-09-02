@@ -3433,7 +3433,12 @@ async fn dispatch_command(
     // ("rule_blocked: …") from dispatch itself.
     let outcome = state
         .commands
-        .dispatch_authenticated_with_warnings(envelope.command, envelope.actor, auth.agent_id)
+        .dispatch_authenticated_with_warnings(
+            envelope.command,
+            envelope.actor,
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
         .await
         .map_err(ApiError::from)?;
     warnings.extend(outcome.warnings);
@@ -5746,6 +5751,7 @@ async fn start_drain_run(
             },
             actor_from(auth, None),
             auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?
@@ -6010,6 +6016,7 @@ async fn start_run(
             },
             actor_from(&auth, None),
             auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?;
@@ -6148,12 +6155,14 @@ async fn abort_run(
     let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
-        .dispatch(
+        .dispatch_authenticated(
             Command::AbortRun {
                 run_id,
                 reason: body.reason,
             },
             actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?;

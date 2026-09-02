@@ -383,6 +383,94 @@ async fn drain_rejects_ownerless_and_foreign_runs_without_claim() {
 }
 
 #[tokio::test]
+async fn abort_and_fail_share_owner_guard_and_release_run_claims() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, _) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let abort_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let abort_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &abort_plan, &abort_task).await;
+    let abort_run = start_run(&h.router, &owner_token, &abort_plan, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{abort_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, abort_run.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abort drain failed: {response}");
+
+    let (status, _) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/runs/{abort_run}/abort"),
+        r#"{"reason":"foreign"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{abort_run}/abort"),
+        r#"{"reason":"owner"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner abort failed: {response}");
+    assert_no_claim(&h, &abort_task).await;
+    assert_eq!(
+        h.state.runs.get(abort_run).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Aborted
+    );
+
+    let fail_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let fail_task = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &fail_plan, &fail_task).await;
+    let fail_run = start_run(&h.router, &owner_token, &fail_plan, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{fail_plan}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, fail_run.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "fail drain failed: {response}");
+
+    let fail_command = |reason: &str| {
+        format!(
+            r#"{{"command":{{"type":"fail_run","run_id":"{}","reason":"{reason}"}}}}"#,
+            fail_run.as_uuid(),
+        )
+    };
+    let (status, response) = post_json(
+        &h.router,
+        &foreign_token,
+        "/v1/commands",
+        &fail_command("foreign"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "foreign fail must be forbidden: {response}"
+    );
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        "/v1/commands",
+        &fail_command("owner"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner fail failed: {response}");
+    assert_no_claim(&h, &fail_task).await;
+    assert_eq!(
+        h.state.runs.get(fail_run).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Failed
+    );
+}
+
+#[tokio::test]
 async fn supplied_and_generated_drain_success_return_persisted_run_id() {
     let h = test_app().await;
 
