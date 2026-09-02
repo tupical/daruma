@@ -14,11 +14,14 @@ use daruma_core::Command;
 use daruma_domain::Actor;
 use daruma_events::Event;
 use daruma_shared::{AgentId, PlanId, RunId, TaskId};
-use serde_json::Value;
+use futures::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use std::time::Duration;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tower::ServiceExt;
 
 mod common;
-use common::{mint_pat, test_app};
+use common::{mint_pat, spawn_server, test_app};
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -603,4 +606,70 @@ async fn project_drain_rejects_invalid_supplied_runs_before_plan_iteration() {
         "terminal run must be rejected"
     );
     assert_no_claim(&h, &terminal_task).await;
+}
+
+#[tokio::test]
+async fn websocket_start_run_persists_authenticated_owner_for_drain() {
+    let h = test_app().await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan_id, &task_id).await;
+    let addr = spawn_server(&h).await;
+    let body_agent_id = AgentId::new();
+    assert_ne!(body_agent_id, h.admin_agent_id);
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/v1/ws?token={}", h.admin_token))
+        .await
+        .unwrap();
+    ws.next().await.unwrap().unwrap(); // hello
+    ws.send(Message::Text(
+        json!({
+            "type": "dispatch",
+            "command": {
+                "type": "start_run",
+                "plan_id": plan_id,
+                "agent_id": body_agent_id,
+                "parent_run_id": null
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timed out waiting for StartRun ack")
+            .unwrap()
+            .unwrap();
+        let Message::Text(text) = frame else { continue };
+        let frame: Value = serde_json::from_str(&text).unwrap();
+        match frame["type"].as_str() {
+            Some("ack") => break,
+            Some("error") => panic!("StartRun failed: {frame}"),
+            _ => {}
+        }
+    }
+
+    let run = h
+        .state
+        .runs
+        .list_active_for_plan(plan_id.parse().unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let (status, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, run.id.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner drain failed: {response}");
+    assert_eq!(response["task_id"], task_id);
+    assert_eq!(response["run_id"], run.id.as_uuid().to_string());
 }

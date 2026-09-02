@@ -611,7 +611,11 @@ async fn handle_dispatch(
         }
     }
 
-    match state.hub.handle_command(command, resolved_actor).await {
+    match state
+        .hub
+        .handle_command(command, resolved_actor, auth.agent_id)
+        .await
+    {
         Ok(envelopes) => {
             if let (Some(client_event_id), Some(last)) =
                 (reserved_client_event_id, envelopes.last())

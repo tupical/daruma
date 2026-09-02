@@ -30,7 +30,7 @@ use std::sync::Arc;
 use daruma_core::{Command, CommandBus};
 use daruma_domain::Actor;
 use daruma_events::{EventBus, EventEnvelope, EventReceiver};
-use daruma_shared::{DeviceId, Result};
+use daruma_shared::{AgentId, DeviceId, Result};
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -138,8 +138,15 @@ impl Hub {
 
     /// Dispatch a command through the [`CommandBus`] and return the
     /// persisted envelopes.
-    pub async fn handle_command(&self, cmd: Command, actor: Actor) -> Result<Vec<EventEnvelope>> {
-        self.commands.dispatch(cmd, actor).await
+    pub async fn handle_command(
+        &self,
+        cmd: Command,
+        actor: Actor,
+        authenticated_agent_id: AgentId,
+    ) -> Result<Vec<EventEnvelope>> {
+        self.commands
+            .dispatch_authenticated(cmd, actor, authenticated_agent_id)
+            .await
     }
 
     pub fn device_connected(&self, id: DeviceId) {
