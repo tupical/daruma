@@ -5704,12 +5704,12 @@ async fn drain_one_plan(
                     // claim TTL remains the fallback.
                     let _ = state
                         .commands
-                        .dispatch(
-                            Command::ReleaseClaim {
-                                agent_id: auth.agent_id,
-                                task_id: next.task_id,
-                            },
+                        .handler()
+                        .release_claim(
                             actor_from(auth, None),
+                            auth.agent_id,
+                            next.task_id,
+                            claim_id,
                         )
                         .await;
                     return Err(ApiError::from(err));
