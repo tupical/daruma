@@ -143,9 +143,10 @@ impl Hub {
         cmd: Command,
         actor: Actor,
         authenticated_agent_id: AgentId,
+        is_admin: bool,
     ) -> Result<Vec<EventEnvelope>> {
         self.commands
-            .dispatch_authenticated(cmd, actor, authenticated_agent_id)
+            .dispatch_authenticated(cmd, actor, authenticated_agent_id, is_admin)
             .await
     }
 

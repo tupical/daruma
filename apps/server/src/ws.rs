@@ -613,7 +613,12 @@ async fn handle_dispatch(
 
     match state
         .hub
-        .handle_command(command, resolved_actor, auth.agent_id)
+        .handle_command(
+            command,
+            resolved_actor,
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
         .await
     {
         Ok(envelopes) => {

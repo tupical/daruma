@@ -52,8 +52,9 @@ impl CommandBus {
         cmd: Command,
         actor: Actor,
         authenticated_agent_id: AgentId,
+        is_admin: bool,
     ) -> Result<Vec<EventEnvelope>> {
-        self.dispatch_authenticated_with_warnings(cmd, actor, authenticated_agent_id)
+        self.dispatch_authenticated_with_warnings(cmd, actor, authenticated_agent_id, is_admin)
             .await
             .map(|outcome| outcome.events)
     }
@@ -63,9 +64,10 @@ impl CommandBus {
         cmd: Command,
         actor: Actor,
         authenticated_agent_id: AgentId,
+        is_admin: bool,
     ) -> Result<DispatchOutcome> {
         self.handler
-            .handle_authenticated_with_warnings(cmd, actor, authenticated_agent_id)
+            .handle_authenticated_with_warnings(cmd, actor, authenticated_agent_id, is_admin)
             .await
     }
 
