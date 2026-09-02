@@ -517,6 +517,13 @@ impl CommandHandler {
             relink_materialised_provenance(&mut envelopes);
         }
 
+        let task_lifecycle = envelopes.iter().any(|envelope| {
+            matches!(
+                envelope.payload,
+                Event::TaskClosed { .. } | Event::TaskReopened { .. } | Event::TaskDeleted { .. }
+            )
+        });
+
         let persisted = if owned_start {
             self.claims
                 .as_ref()
@@ -533,6 +540,12 @@ impl CommandHandler {
                     is_admin,
                     envelopes,
                 )
+                .await?
+        } else if task_lifecycle && self.claims.is_some() {
+            self.claims
+                .as_ref()
+                .unwrap()
+                .record_task_lifecycle(actor.clone(), envelopes)
                 .await?
         } else if plan_terminal && self.claims.is_some() {
             self.claims
@@ -4749,6 +4762,69 @@ mod tests {
                 claim_id: Some(generation),
             } if a == agent_id && t == task_id && generation == claim_id
         ));
+    }
+
+    #[tokio::test]
+    async fn closing_task_releases_exact_claim_generation() {
+        let (handler, ..) = build_plan_stack().await;
+        let task_id = match handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("claim lifecycle target"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap()[0]
+            .payload
+        {
+            Event::TaskCreated { ref task } => task.id.unwrap(),
+            ref other => panic!("expected task_created, got {other:?}"),
+        };
+        let agent_id = AgentId::new();
+        let claim_id = match handler
+            .try_acquire_claim(
+                Actor::user(),
+                agent_id,
+                task_id,
+                chrono::Duration::seconds(60),
+            )
+            .await
+            .unwrap()
+        {
+            RecordedClaimOutcome::Acquired { claim_id, .. } => claim_id,
+            other => panic!("expected acquired claim, got {other:?}"),
+        };
+
+        let events = handler
+            .handle(
+                Command::SetStatus {
+                    id: task_id,
+                    status: Status::Done,
+                    force: false,
+                    override_reason: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        assert!(events.iter().any(|event| matches!(
+            event.payload,
+            Event::AgentReleased {
+                agent_id: a,
+                task_id: t,
+                claim_id: Some(generation),
+            } if a == agent_id && t == task_id && generation == claim_id
+        )));
+        assert!(handler
+            .claims
+            .as_ref()
+            .unwrap()
+            .list_active(None)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

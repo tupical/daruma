@@ -261,6 +261,58 @@ async fn claims_acquire_and_release() {
     assert_eq!(rel_resp["success"], true);
 }
 
+#[tokio::test]
+async fn delete_task_releases_claim_generation_and_leaves_no_ghost() {
+    let h = test_app().await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    let agent_id = uuid::Uuid::new_v4().to_string();
+    let acquire_body =
+        format!(r#"{{"agent_id":"{agent_id}","task_id":"{task_id}","ttl_secs":60}}"#);
+    let (status, acquired) =
+        post_json(&h.router, &h.admin_token, "/v1/claims", &acquire_body).await;
+    assert_eq!(status, StatusCode::OK, "acquire failed: {acquired}");
+    let claim_id = acquired["data"]["claim_id"]
+        .as_str()
+        .unwrap()
+        .parse::<daruma_shared::ClaimId>()
+        .unwrap();
+
+    let (status, deleted) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/commands",
+        &format!(r#"{{"command":{{"type":"delete_task","id":"{task_id}"}}}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete failed: {deleted}");
+    assert_no_claim(&h, &task_id).await;
+
+    let typed_task_id = task_id.parse::<TaskId>().unwrap();
+    let events = h.state.store.load_since(0, 100).await.unwrap();
+    let deleted_pos = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.payload,
+                Event::TaskDeleted { task_id: id } if id == typed_task_id
+            )
+        })
+        .expect("delete must persist TaskDeleted");
+    let released_pos = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.payload,
+                Event::AgentReleased {
+                    claim_id: Some(generation),
+                    ..
+                } if generation == claim_id
+            )
+        })
+        .expect("delete must persist the exact generation release");
+    assert!(deleted_pos < released_pos);
+}
+
 // ── AC: Capability gating ─────────────────────────────────────────────────────
 
 #[tokio::test]
