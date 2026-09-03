@@ -57,7 +57,7 @@ use daruma_mcp::{
 use daruma_shared::{
     AgentId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId, RunId, TaskId,
 };
-use daruma_storage::{ClaimOutcome, RecordedClaimOutcome, ReserveOutcome};
+use daruma_storage::{ActiveClaim, ClaimOutcome, RecordedClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -295,6 +295,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/runs/{id}/step/start", post(run_start_step))
         .route("/runs/{id}/step/finish", post(run_finish_step))
         .route("/runs/{id}/complete", post(complete_run))
+        .route("/runs/{id}/fail", post(fail_run))
         .route("/runs/{id}/abort", post(abort_run))
         .route("/runs/{id}/signal", post(send_run_signal))
         .route("/runs/{id}/signal/respond", post(respond_run_signal))
@@ -747,7 +748,30 @@ async fn get_task(
     let task_id = parse_id(&id, "task id")?;
     let task = state.tasks.get(task_id).await.map_err(ApiError::from)?;
     let t = task.ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
-    Ok(Json(t))
+    let current_claim = state
+        .claims
+        .get_active_for_task(task_id)
+        .await
+        .map_err(ApiError::from)?;
+    let mut response =
+        serde_json::to_value(t).map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    response["current_claim"] = requester_claim_projection(current_claim, auth.agent_id);
+    Ok(Json(response))
+}
+
+fn requester_claim_projection(claim: Option<ActiveClaim>, requester: AgentId) -> Value {
+    let Some(claim) = claim else {
+        return Value::Null;
+    };
+    json!({
+        "agent_id": claim.agent_id,
+        "task_id": claim.task_id,
+        "acquired_at": claim.acquired_at,
+        "expires_at": claim.expires_at,
+        "run_id": claim.run_id,
+        "claim_id": claim.claim_id,
+        "is_mine": claim.agent_id == requester,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -3398,6 +3422,9 @@ async fn dispatch_command(
     State(state): State<AppState>,
     Json(envelope): Json<CommandEnvelope>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if let Some(reason) = guarded_command_reason(&envelope.command) {
+        return Err(ApiError::from(CoreError::forbidden(reason)));
+    }
     // Map the command to its required capability and gate before dispatch.
     let needed = capability_for_command(&envelope.command);
     auth.require(needed).map_err(ApiError::from_missing_cap)?;
@@ -3467,6 +3494,32 @@ async fn dispatch_command(
     }))
 }
 
+/// Commands whose invariants depend on requester identity or transactional
+/// cleanup must only enter through their typed, authenticated endpoint.
+pub(crate) fn guarded_command_reason(command: &Command) -> Option<&'static str> {
+    let guarded = matches!(
+        command,
+        Command::StartRun { .. }
+            | Command::RunStartStep { .. }
+            | Command::RunFinishStep { .. }
+            | Command::CompleteRun { .. }
+            | Command::FailRun { .. }
+            | Command::AbortRun { .. }
+            | Command::AppendRunNote { .. }
+            | Command::SendRunSignal { .. }
+            | Command::RespondRunSignal { .. }
+            | Command::AcquireClaim { .. }
+            | Command::ReleaseClaim { .. }
+            | Command::ArchivePlan { .. }
+            | Command::DeletePlan { .. }
+            | Command::SetPlanStatus {
+                status: PlanStatus::Completed | PlanStatus::Abandoned,
+                ..
+            }
+    );
+    guarded.then_some("command requires its guarded canonical endpoint")
+}
+
 #[derive(serde::Deserialize, Default)]
 struct McpHttpQuery {
     /// Tool surface profile override: `default` or `full`.
@@ -3475,6 +3528,7 @@ struct McpHttpQuery {
 }
 
 async fn mcp_http(
+    auth: axum::Extension<AuthContext>,
     headers: HeaderMap,
     Query(query): Query<McpHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
@@ -3495,7 +3549,8 @@ async fn mcp_http(
         .user_agent(format!("daruma-server-mcp/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| ApiError::from(CoreError::validation(e.to_string())))?;
-    let mut client = ApiClient::with_http(mcp_base_url(&headers)?, token, http);
+    let mut client =
+        ApiClient::with_http(mcp_base_url(&headers)?, token, http).with_agent_id(auth.agent_id);
     if let Some(workspace_id) = header_string(&headers, "x-daruma-workspace-id") {
         client = client.with_workspace_id(workspace_id);
     }
@@ -3966,6 +4021,15 @@ async fn append_replica_events(
             "events batch must contain at most 1000 events",
         )));
     }
+    if body
+        .events
+        .iter()
+        .any(|envelope| guarded_replica_event(&envelope.payload))
+    {
+        return Err(ApiError::from(CoreError::forbidden(
+            "run, claim, and plan-terminal events require a guarded canonical endpoint",
+        )));
+    }
 
     let mut accepted = Vec::with_capacity(body.events.len());
     let mut duplicate_count = 0usize;
@@ -4000,6 +4064,29 @@ async fn append_replica_events(
         warnings: vec![],
         client_command_id: None,
     }))
+}
+
+fn guarded_replica_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::RunStarted { .. }
+            | Event::RunStepStarted { .. }
+            | Event::RunStepFinished { .. }
+            | Event::RunCompleted { .. }
+            | Event::RunFailed { .. }
+            | Event::RunAborted { .. }
+            | Event::RunUnresponsive { .. }
+            | Event::RunStale { .. }
+            | Event::RunNoteAppended { .. }
+            | Event::AgentClaimed { .. }
+            | Event::AgentReleased { .. }
+            | Event::PlanArchived { .. }
+            | Event::PlanDeleted { .. }
+            | Event::PlanStatusChanged {
+                to: PlanStatus::Completed | PlanStatus::Abandoned,
+                ..
+            }
+    )
 }
 
 async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<(), ApiError> {
@@ -5179,7 +5266,22 @@ async fn get_can_start(
     let readiness = plan_readiness::can_start(&state.tasks, &state.relations, gate, task_id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(readiness))
+    let current_claim = state
+        .claims
+        .get_active_for_task(task_id)
+        .await
+        .map_err(ApiError::from)?;
+    let claimed_by_other = current_claim
+        .as_ref()
+        .is_some_and(|claim| claim.agent_id != auth.agent_id);
+    let mut response = serde_json::to_value(readiness)
+        .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    response["current_claim"] = requester_claim_projection(current_claim, auth.agent_id);
+    if claimed_by_other {
+        response["ready"] = json!(false);
+        response["reason"] = json!("claimed_by_other");
+    }
+    Ok(Json(response))
 }
 
 /// `GET /v1/tasks/{id}/plans` — every plan that contains this task.
@@ -5469,9 +5571,11 @@ async fn archive_plan(
     let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
-        .dispatch(
+        .dispatch_authenticated(
             Command::ArchivePlan { id: plan_id },
             actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?;
@@ -5496,7 +5600,12 @@ async fn delete_plan(
     let plan_id = parse_id(id_str, "plan id")?;
     let envs = state
         .commands
-        .dispatch(Command::DeletePlan { id: plan_id }, actor_from(&auth, None))
+        .dispatch_authenticated(
+            Command::DeletePlan { id: plan_id },
+            actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
         .await
         .map_err(ApiError::from)?;
     let last = envs.last();
@@ -5584,7 +5693,10 @@ async fn get_next_task(
         .map(|s| parse_id(s, "run id"))
         .transpose()?
         .unwrap_or_else(RunId::new);
-    let claim_ttl = q.claim_ttl_secs.map(std::time::Duration::from_secs);
+    let claim_ttl = q
+        .claim_ttl_secs
+        .filter(|ttl| *ttl > 0)
+        .map(std::time::Duration::from_secs);
 
     let resolver = NextTaskResolver {
         plans: state.plans.as_ref() as &dyn PlanRepository,
@@ -6140,6 +6252,44 @@ async fn complete_run(
 }
 
 #[derive(Deserialize)]
+struct FailRunBody {
+    reason: String,
+}
+
+async fn fail_run(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<FailRunBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::RunWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let run_id = parse_id(id_str, "run id")?;
+    let envs = state
+        .commands
+        .dispatch_authenticated(
+            Command::FailRun {
+                run_id,
+                reason: body.reason,
+            },
+            actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: serde_json::json!({ "run_id": run_id }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
 struct AbortRunBody {
     reason: String,
 }
@@ -6657,7 +6807,8 @@ async fn list_session_artifacts(
 
 #[derive(Deserialize)]
 struct AcquireClaimBody {
-    agent_id: AgentId,
+    #[serde(default, rename = "agent_id")]
+    _agent_id: Option<AgentId>,
     task_id: TaskId,
     ttl_secs: u32,
 }
@@ -6704,7 +6855,7 @@ async fn acquire_claim(
     match state
         .claims
         .try_acquire(
-            body.agent_id,
+            auth.agent_id,
             body.task_id,
             chrono::Duration::seconds(body.ttl_secs as i64),
         )
@@ -6734,7 +6885,7 @@ async fn acquire_claim(
                 .commands
                 .dispatch(
                     Command::AcquireClaim {
-                        agent_id: body.agent_id,
+                        agent_id: auth.agent_id,
                         task_id: body.task_id,
                         claim_id,
                         expires_at,
@@ -6750,7 +6901,7 @@ async fn acquire_claim(
                 event_seq: last.map(|e| e.seq),
                 data: serde_json::json!({
                     "acquired": true,
-                    "agent_id": body.agent_id,
+                    "agent_id": auth.agent_id,
                     "task_id": body.task_id,
                     "claim_id": claim_id,
                     "claim_expires_at": expires_at,
@@ -6771,6 +6922,11 @@ async fn release_claim(
         .map_err(ApiError::from_missing_cap)?;
     let agent_id = parse_id(agent_id_str, "agent id")?;
     let task_id = parse_id(&task_id_str, "task id")?;
+    if agent_id != auth.agent_id {
+        return Err(ApiError::from(CoreError::forbidden(
+            "claim release must be performed by the authenticated holder",
+        )));
+    }
     let envs = state
         .commands
         .dispatch(

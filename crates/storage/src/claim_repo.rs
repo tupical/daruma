@@ -98,6 +98,24 @@ impl AgentClaimRepo {
         }
     }
 
+    /// Return the single live claim generation that currently owns `task_id`.
+    /// This is the read-side counterpart of the task-level claim CAS.
+    pub async fn get_active_for_task(&self, task_id: TaskId) -> Result<Option<ActiveClaim>> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id \
+             FROM agent_claims WHERE task_id = ? AND expires_at >= ? \
+             ORDER BY expires_at DESC LIMIT 1",
+        )
+        .bind(task_id.to_string())
+        .bind(&now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        row.as_ref().map(row_to_active_claim).transpose()
+    }
+
     /// Return the agent holding a live claim on `task_id` that is **not**
     /// `agent_id`, if any. Used by the claim-aware next-task resolver to skip
     /// tasks already taken by a different agent.
@@ -771,6 +789,8 @@ impl AgentClaimRepo {
     pub async fn record_plan_terminal(
         &self,
         actor: Actor,
+        authenticated_agent_id: Option<AgentId>,
+        is_admin: bool,
         envelopes: Vec<EventEnvelope>,
     ) -> Result<Vec<EventEnvelope>> {
         let (plan_id, status, reason, ended_at) = envelopes
@@ -797,11 +817,28 @@ impl AgentClaimRepo {
             .execute(&mut *tx)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        let runs = sqlx::query("SELECT id FROM runs WHERE plan_id = ? AND status = 'active'")
-            .bind(plan_id.to_string())
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let runs = sqlx::query(
+            "SELECT r.id, o.agent_id AS owner_agent_id FROM runs r \
+             LEFT JOIN run_claim_owners o ON o.run_id = r.id \
+             WHERE r.plan_id = ? AND r.status = 'active'",
+        )
+        .bind(plan_id.to_string())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        if let Some(requester) = authenticated_agent_id.filter(|_| !is_admin) {
+            let requester = requester.to_string();
+            for run in &runs {
+                let owner = run
+                    .try_get::<Option<String>, _>("owner_agent_id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                if owner.as_deref() != Some(requester.as_str()) {
+                    return Err(CoreError::forbidden(
+                        "plan termination requires ownership of every active run",
+                    ));
+                }
+            }
+        }
         let mut released = Vec::new();
 
         for run in runs {
@@ -2226,7 +2263,7 @@ mod tests {
         ];
 
         let persisted = repo
-            .record_plan_terminal(Actor::user(), events)
+            .record_plan_terminal(Actor::user(), None, false, events)
             .await
             .unwrap();
 

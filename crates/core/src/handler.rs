@@ -551,7 +551,7 @@ impl CommandHandler {
             self.claims
                 .as_ref()
                 .unwrap()
-                .record_plan_terminal(actor.clone(), envelopes)
+                .record_plan_terminal(actor.clone(), authenticated_agent_id, is_admin, envelopes)
                 .await?
         } else {
             self.store.append_batch(envelopes).await?

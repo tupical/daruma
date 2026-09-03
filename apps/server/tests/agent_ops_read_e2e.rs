@@ -131,9 +131,10 @@ async fn active_claims_scope_to_project_and_drop_on_release() {
     let admin = &h.admin_token;
     let pid = create_project(&h.router, admin).await;
     let task = create_task(&h.router, admin, &pid).await;
-    let agent = uuid::Uuid::new_v4().to_string();
+    let agent = h.admin_agent_id.as_uuid().to_string();
+    let spoofed_agent = uuid::Uuid::new_v4().to_string();
 
-    let body = json!({ "agent_id": agent, "task_id": task, "ttl_secs": 300 }).to_string();
+    let body = json!({ "agent_id": spoofed_agent, "task_id": task, "ttl_secs": 300 }).to_string();
     let (s, resp) = post_json(&h.router, admin, "/v1/claims", &body).await;
     assert_eq!(s, StatusCode::OK, "acquire: {resp}");
 

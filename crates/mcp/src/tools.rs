@@ -1425,17 +1425,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_get" => {
             let id = required_string(&args, "id")?;
             let resp = client.get_json(&format!("/v1/tasks/{id}")).await?;
-            let updated_at = resp
-                .get("updated_at")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let version_stamp = task_dedup_version(&resp);
             Ok(maybe_dedup(
                 client,
                 resp,
                 &args,
                 &id,
                 "task description",
-                updated_at.as_deref(),
+                version_stamp.as_deref(),
             ))
         }
         "daruma_update" => {
@@ -4997,6 +4994,27 @@ fn maybe_bounded(value: Value, args: &Map<String, Value>, pointer: &str, what: &
 /// the `unchanged`/`ref` contract keep getting full objects.
 fn dedup_requested(args: &Map<String, Value>) -> bool {
     args.get("dedup").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// A task's read version includes its mutable claim generation. Claim CAS does
+/// not edit `tasks.updated_at`, so using that timestamp alone can incorrectly
+/// collapse acquire, refresh, and release reads into an `unchanged` marker.
+fn task_dedup_version(task: &Value) -> Option<String> {
+    let updated_at = task.get("updated_at")?.as_str()?;
+    let claim = task.get("current_claim");
+    let claim_id = claim
+        .and_then(|claim| claim.get("claim_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let relation = match claim
+        .and_then(|claim| claim.get("is_mine"))
+        .and_then(Value::as_bool)
+    {
+        Some(true) => "mine",
+        Some(false) => "other",
+        None => "none",
+    };
+    Some(format!("{updated_at}|claim:{claim_id}|{relation}"))
 }
 
 /// The object body carrying the protected fields: tasks/documents hold `id`

@@ -59,6 +59,14 @@ impl ApiClient {
         self
     }
 
+    /// Pin this MCP client's session identity to an authenticated principal.
+    /// Hosted transports use this so rebuilding a client per HTTP request does
+    /// not manufacture a new claim/run identity.
+    pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
+        self.agent_id = agent_id.as_uuid().to_string();
+        self
+    }
+
     /// Build from a pre-existing `reqwest::Client` (lets the binary
     /// configure a user-agent / pool once).
     pub fn with_http(
@@ -134,7 +142,10 @@ impl ApiClient {
     /// error degrades to `None` so callers fall back to their normal error.
     pub async fn provision_repo_scope(&self, scope_path: &str) -> Option<String> {
         let resp = self
-            .post_json("/v1/repo-scopes/provision", json!({ "scope_path": scope_path }))
+            .post_json(
+                "/v1/repo-scopes/provision",
+                json!({ "scope_path": scope_path }),
+            )
             .await
             .ok()?;
         resp.get("project_id")
@@ -350,4 +361,20 @@ fn dedupe_ids(ids: Vec<(&'static str, String)>) -> Vec<(&'static str, String)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_client_identity_is_stable_for_the_process_and_its_clones() {
+        let client = ApiClient::new("http://localhost", "token");
+        let clone = client.clone();
+        assert_eq!(client.agent_id(), clone.agent_id());
+        assert!(client.agent_id().parse::<AgentId>().is_ok());
+
+        let next_process = ApiClient::new("http://localhost", "token");
+        assert_ne!(client.agent_id(), next_process.agent_id());
+    }
 }

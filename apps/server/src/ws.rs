@@ -557,6 +557,18 @@ async fn handle_dispatch(
     _actor: Option<daruma_domain::Actor>,
     client_event_id: Option<EventId>,
 ) {
+    if let Some(reason) = crate::routes::guarded_command_reason(&command) {
+        send_json(
+            out_tx,
+            &WsServerMessage::Error {
+                code: "forbidden".to_string(),
+                message: reason.to_string(),
+                request_id: None,
+            },
+        );
+        return;
+    }
+
     // Mirror the HTTP-side capability check.
     let needed = match &command {
         daruma_core::Command::CreateTask { .. }

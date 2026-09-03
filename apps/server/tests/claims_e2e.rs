@@ -54,6 +54,20 @@ async fn delete_json(app: &axum::Router, token: &str, uri: &str) -> (StatusCode,
     (status, json)
 }
 
+async fn get_json(app: &axum::Router, token: &str, uri: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
 /// Create a task and return its UUID string (raw UUID, no `tsk_` prefix).
 async fn create_task(app: &axum::Router, token: &str) -> String {
     let (s, ev) = post_json(
@@ -237,11 +251,12 @@ async fn claims_acquire_returns_mutation_response() {
 async fn claims_acquire_and_release() {
     let h = test_app().await;
     let task_id = create_task(&h.router, &h.admin_token).await;
-    let agent_id = uuid::Uuid::new_v4().to_string();
+    let agent_id = h.admin_agent_id.as_uuid().to_string();
+    let spoofed_agent_id = uuid::Uuid::new_v4().to_string();
 
     // Acquire.
     let acquire_body =
-        format!(r#"{{"agent_id":"{agent_id}","task_id":"{task_id}","ttl_secs":60}}"#);
+        format!(r#"{{"agent_id":"{spoofed_agent_id}","task_id":"{task_id}","ttl_secs":60}}"#);
     let (s, resp) = post_json(&h.router, &h.admin_token, "/v1/claims", &acquire_body).await;
     assert_eq!(s, StatusCode::OK, "acquire failed: {resp}");
     assert_eq!(resp["success"], true);
@@ -259,6 +274,132 @@ async fn claims_acquire_and_release() {
         "release claim must return 200: {rel_resp}"
     );
     assert_eq!(rel_resp["success"], true);
+}
+
+#[tokio::test]
+async fn task_and_can_start_project_the_cas_holder_relative_to_the_requester() {
+    let h = test_app().await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    let caps: Capabilities = [Capability::TaskRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (viewer_token, viewer_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    // The authenticated principal is the claim owner; a caller-controlled body
+    // id must not create a holder that the token cannot later release.
+    let body = json!({
+        "agent_id": viewer_id,
+        "task_id": task_id,
+        "ttl_secs": 60
+    })
+    .to_string();
+    let (status, acquired) = post_json(&h.router, &owner_token, "/v1/claims", &body).await;
+    assert_eq!(status, StatusCode::OK, "acquire failed: {acquired}");
+    assert_eq!(acquired["data"]["agent_id"], owner_id.as_uuid().to_string());
+
+    let (status, owner_task) =
+        get_json(&h.router, &owner_token, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "owner task read failed: {owner_task}"
+    );
+    assert_eq!(
+        owner_task["current_claim"]["agent_id"],
+        owner_id.as_uuid().to_string()
+    );
+    assert_eq!(owner_task["current_claim"]["is_mine"], true);
+
+    let (status, viewer_task) =
+        get_json(&h.router, &viewer_token, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "viewer task read failed: {viewer_task}"
+    );
+    assert_eq!(
+        viewer_task["current_claim"]["agent_id"],
+        owner_id.as_uuid().to_string()
+    );
+    assert_eq!(viewer_task["current_claim"]["is_mine"], false);
+
+    let (status, owner_ready) = get_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/tasks/{task_id}/can_start"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "owner readiness failed: {owner_ready}"
+    );
+    assert_eq!(owner_ready["ready"], true);
+    assert_eq!(owner_ready["current_claim"]["is_mine"], true);
+
+    let (status, viewer_ready) = get_json(
+        &h.router,
+        &viewer_token,
+        &format!("/v1/tasks/{task_id}/can_start"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "viewer readiness failed: {viewer_ready}"
+    );
+    assert_eq!(viewer_ready["ready"], false);
+    assert_eq!(viewer_ready["reason"], "claimed_by_other");
+    assert_eq!(
+        viewer_ready["current_claim"]["agent_id"],
+        owner_id.as_uuid().to_string()
+    );
+    assert_eq!(viewer_ready["current_claim"]["is_mine"], false);
+
+    let other_body = json!({
+        "agent_id": owner_id,
+        "task_id": task_id,
+        "ttl_secs": 60
+    })
+    .to_string();
+    let (status, busy) = post_json(&h.router, &viewer_token, "/v1/claims", &other_body).await;
+    assert_eq!(status, StatusCode::OK, "busy claim failed: {busy}");
+    assert_eq!(busy["success"], false);
+    assert_eq!(busy["data"]["holder"], owner_id.as_uuid().to_string());
+}
+
+#[tokio::test]
+async fn foreign_release_is_forbidden_and_preserves_the_claim_generation() {
+    let h = test_app().await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    let caps: Capabilities = [Capability::TaskRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, _) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let body = json!({
+        "agent_id": owner_id,
+        "task_id": task_id,
+        "ttl_secs": 60
+    })
+    .to_string();
+    let (status, acquired) = post_json(&h.router, &owner_token, "/v1/claims", &body).await;
+    assert_eq!(status, StatusCode::OK, "acquire failed: {acquired}");
+    let generation = acquired["data"]["claim_id"].clone();
+
+    let (status, response) = delete_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/claims/{owner_id}/{task_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "foreign release: {response}");
+
+    let (status, task) = get_json(&h.router, &foreign_token, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(status, StatusCode::OK, "task read failed: {task}");
+    assert_eq!(
+        task["current_claim"]["agent_id"],
+        owner_id.as_uuid().to_string()
+    );
+    assert_eq!(task["current_claim"]["claim_id"], generation);
 }
 
 #[tokio::test]
@@ -489,17 +630,11 @@ async fn abort_and_fail_share_owner_guard_and_release_run_claims() {
     .await;
     assert_eq!(status, StatusCode::OK, "fail drain failed: {response}");
 
-    let fail_command = |reason: &str| {
-        format!(
-            r#"{{"command":{{"type":"fail_run","run_id":"{}","reason":"{reason}"}}}}"#,
-            fail_run.as_uuid(),
-        )
-    };
     let (status, response) = post_json(
         &h.router,
         &foreign_token,
-        "/v1/commands",
-        &fail_command("foreign"),
+        &format!("/v1/runs/{fail_run}/fail"),
+        r#"{"reason":"foreign"}"#,
     )
     .await;
     assert_eq!(
@@ -510,8 +645,8 @@ async fn abort_and_fail_share_owner_guard_and_release_run_claims() {
     let (status, response) = post_json(
         &h.router,
         &owner_token,
-        "/v1/commands",
-        &fail_command("owner"),
+        &format!("/v1/runs/{fail_run}/fail"),
+        r#"{"reason":"owner"}"#,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "owner fail failed: {response}");
@@ -520,6 +655,159 @@ async fn abort_and_fail_share_owner_guard_and_release_run_claims() {
         h.state.runs.get(fail_run).await.unwrap().unwrap().status,
         daruma_domain::RunStatus::Failed
     );
+}
+
+#[tokio::test]
+async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutation() {
+    let h = test_app().await;
+    let caps: Capabilities = [
+        Capability::TaskRead,
+        Capability::PlanRead,
+        Capability::PlanWrite,
+        Capability::RunWrite,
+    ]
+    .into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan_id, &task_id).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let (status, drained) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, run_id.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "drain failed: {drained}");
+    let generation = drained["claim"]["claim_id"].clone();
+
+    let bypasses = [
+        json!({"type": "fail_run", "run_id": run_id, "reason": "bypass"}),
+        json!({"type": "release_claim", "agent_id": owner_id, "task_id": task_id}),
+        json!({"type": "archive_plan", "id": plan_id}),
+        json!({"type": "delete_plan", "id": plan_id}),
+        json!({
+            "type": "start_run",
+            "plan_id": plan_id,
+            "agent_id": owner_id,
+            "parent_run_id": null
+        }),
+    ];
+    for command in bypasses {
+        let body = json!({"command": command}).to_string();
+        let (status, response) = post_json(&h.router, &owner_token, "/v1/commands", &body).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "unguarded command accepted: {response}"
+        );
+        assert_eq!(response["error"]["code"], "forbidden");
+    }
+
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+    let claim = h
+        .state
+        .claims
+        .get_active_for_task(task_id.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("claim must survive every rejected bypass");
+    assert_eq!(json!(claim.claim_id), generation);
+    let (status, plan) = get_json(&h.router, &owner_token, &format!("/v1/plans/{plan_id}")).await;
+    assert_eq!(status, StatusCode::OK, "plan read failed: {plan}");
+    assert_eq!(plan["plan"]["status"], "active");
+}
+
+#[tokio::test]
+async fn foreign_fail_archive_and_delete_are_forbidden_without_projection_changes() {
+    let h = test_app().await;
+    let caps: Capabilities = [
+        Capability::TaskRead,
+        Capability::PlanRead,
+        Capability::PlanWrite,
+        Capability::RunWrite,
+    ]
+    .into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, _) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan_id, &task_id).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let (status, drained) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        &format!(r#"{{"run_id":"{}"}}"#, run_id.as_uuid()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "drain failed: {drained}");
+    let generation = drained["claim"]["claim_id"].clone();
+
+    let (status, response) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/runs/{run_id}/fail"),
+        r#"{"reason":"foreign"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "foreign fail: {response}");
+
+    let (status, response) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/plans/{plan_id}/archive"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "foreign archive: {response}");
+
+    let empty_plan = create_active_plan(&h.router, &h.admin_token).await;
+    let empty_run = start_run(&h.router, &owner_token, &empty_plan, owner_id).await;
+    let (status, response) = delete_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/plans/{empty_plan}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "foreign delete: {response}");
+
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+    assert_eq!(
+        h.state.runs.get(empty_run).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+    let claim = h
+        .state
+        .claims
+        .get_active_for_task(task_id.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("foreign terminal attempts must preserve the claim");
+    assert_eq!(json!(claim.claim_id), generation);
+    for id in [&plan_id, &empty_plan] {
+        let (status, plan) = get_json(&h.router, &owner_token, &format!("/v1/plans/{id}")).await;
+        assert_eq!(status, StatusCode::OK, "plan changed or vanished: {plan}");
+        assert_eq!(plan["plan"]["status"], "active");
+    }
+
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{run_id}/fail"),
+        r#"{"reason":"owner"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "owner fail failed: {response}");
+    assert_no_claim(&h, &task_id).await;
 }
 
 #[tokio::test]
@@ -749,7 +1037,7 @@ async fn project_drain_rejects_invalid_supplied_runs_before_plan_iteration() {
 }
 
 #[tokio::test]
-async fn websocket_start_run_persists_authenticated_owner_for_drain() {
+async fn websocket_rejects_raw_start_run_without_mutation() {
     let h = test_app().await;
     let plan_id = create_active_plan(&h.router, &h.admin_token).await;
     let task_id = create_task(&h.router, &h.admin_token).await;
@@ -781,35 +1069,29 @@ async fn websocket_start_run_persists_authenticated_owner_for_drain() {
     loop {
         let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
             .await
-            .expect("timed out waiting for StartRun ack")
+            .expect("timed out waiting for StartRun rejection")
             .unwrap()
             .unwrap();
         let Message::Text(text) = frame else { continue };
         let frame: Value = serde_json::from_str(&text).unwrap();
         match frame["type"].as_str() {
-            Some("ack") => break,
-            Some("error") => panic!("StartRun failed: {frame}"),
+            Some("ack") => panic!("raw StartRun bypass was accepted: {frame}"),
+            Some("error") => {
+                assert_eq!(frame["code"], "forbidden", "unexpected rejection: {frame}");
+                break;
+            }
             _ => {}
         }
     }
 
-    let run = h
-        .state
-        .runs
-        .list_active_for_plan(plan_id.parse().unwrap())
-        .await
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
-    let (status, response) = post_json(
-        &h.router,
-        &h.admin_token,
-        &format!("/v1/plans/{plan_id}/drain-next"),
-        &format!(r#"{{"run_id":"{}"}}"#, run.id.as_uuid()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "owner drain failed: {response}");
-    assert_eq!(response["task_id"], task_id);
-    assert_eq!(response["run_id"], run.id.as_uuid().to_string());
+    assert!(
+        h.state
+            .runs
+            .list_active_for_plan(plan_id.parse().unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
+        "rejected WS command must not create a run"
+    );
+    assert_no_claim(&h, &task_id).await;
 }
