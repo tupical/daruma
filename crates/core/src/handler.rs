@@ -108,6 +108,10 @@ pub struct CommandHandler {
     // ponytail: one process-wide boundary is enough; shard per plan only if
     // run/plan lifecycle contention becomes measurable.
     plan_run_lifecycle: tokio::sync::Mutex<()>,
+    // `external_key` is workspace-unique. Keep the read-before-append decision
+    // and the resulting projection update in one process-wide critical section
+    // so concurrent deliveries cannot both emit `TaskCreated`.
+    external_key_intake: tokio::sync::Mutex<()>,
 }
 
 impl CommandHandler {
@@ -149,6 +153,7 @@ impl CommandHandler {
             artifacts: None,
             plan_only_intake: false,
             plan_run_lifecycle: tokio::sync::Mutex::new(()),
+            external_key_intake: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -419,6 +424,25 @@ impl CommandHandler {
         authenticated_agent_id: Option<AgentId>,
         is_admin: bool,
     ) -> Result<DispatchOutcome> {
+        let serial_external_key_intake = match &cmd {
+            Command::CreateTask { task } => task
+                .external_key
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|key| !key.is_empty()),
+            Command::MaterializePlan { tasks, .. } => tasks.iter().any(|task| {
+                task.external_key
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|key| !key.is_empty())
+            }),
+            _ => false,
+        };
+        let _external_key_guard = if serial_external_key_intake {
+            Some(self.external_key_intake.lock().await)
+        } else {
+            None
+        };
         let plan_terminal = matches!(
             &cmd,
             Command::ArchivePlan { .. } | Command::DeletePlan { .. }
@@ -1954,6 +1978,7 @@ impl CommandHandler {
                 new_plan.status = PlanStatus::Active;
                 let mut events = vec![Event::PlanCreated { plan: new_plan }];
 
+                let mut batch_external_keys = std::collections::HashSet::new();
                 for (position, mut task) in tasks.into_iter().enumerate() {
                     let t_title = task.title.trim().to_string();
                     if t_title.is_empty() {
@@ -1966,6 +1991,13 @@ impl CommandHandler {
                     }
                     task.title = t_title;
                     normalize_external_key(&mut task);
+                    if let Some(external_key) = task.external_key.as_ref() {
+                        if !batch_external_keys.insert(external_key.clone()) {
+                            return Err(CoreError::validation(format!(
+                                "duplicate_external_key_in_materialize_plan: `{external_key}`"
+                            )));
+                        }
+                    }
                     // Та же причина: задача приехала внутри решённого плана, с
                     // позицией и зависимостями — она уже разобрана. `Inbox` по
                     // умолчанию ставил бы её в очередь на триаж, которого для
@@ -1973,6 +2005,9 @@ impl CommandHandler {
                     if task.status.is_none() {
                         task.status = Some(Status::Todo);
                     }
+                    // A materialised task is plan-owned (Q1): its project is
+                    // always the plan project, regardless of caller input.
+                    task.project_id = Some(project_id);
                     let existing = match task.external_key.clone() {
                         Some(key) => self
                             .tasks
@@ -1982,6 +2017,12 @@ impl CommandHandler {
                         None => None,
                     };
                     let task_id = if let Some((ext_key, existing)) = existing {
+                        if existing.project_id != Some(project_id) {
+                            return Err(CoreError::validation(format!(
+                                "external_key_project_mismatch: external_key `{ext_key}` belongs to project {:?}, not plan project {project_id}",
+                                existing.project_id
+                            )));
+                        }
                         events.extend(redelivered_create_events(
                             existing.id,
                             &ext_key,
@@ -1992,11 +2033,6 @@ impl CommandHandler {
                     } else {
                         let task_id = task.id.unwrap_or_else(TaskId::new);
                         task.id = Some(task_id);
-                        // A materialised task is plan-owned (Q1): it inherits the
-                        // plan's project so membership and scope stay consistent.
-                        if task.project_id.is_none() {
-                            task.project_id = Some(project_id);
-                        }
                         events.push(Event::TaskCreated { task });
                         task_id
                     };
@@ -5175,6 +5211,122 @@ mod tests {
         assert_eq!(all[0].id, task_id);
         assert_eq!(all[0].title, "Original task");
         assert_eq!(all[0].external_key.as_deref(), Some("delivery-1"));
+    }
+
+    /// Concurrent deliveries of the same key must converge on one task. The
+    /// second command observes the first command's completed projection and
+    /// records a re-delivery instead of emitting another `TaskCreated`.
+    #[tokio::test]
+    async fn concurrent_materialize_plan_with_same_external_key_is_idempotent() {
+        use daruma_domain::NewPlan;
+        let (handler, _plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let handler = std::sync::Arc::new(handler);
+        let project_id = ProjectId::new();
+        let make = |plan_title: &str| Command::MaterializePlan {
+            plan: NewPlan::new(plan_title, project_id, Actor::user()),
+            tasks: vec![NewTask {
+                external_key: Some("concurrent-delivery".into()),
+                ..NewTask::new("Imported task")
+            }],
+        };
+
+        let (first, second) = tokio::join!(
+            handler.handle(make("First plan"), Actor::user()),
+            handler.handle(make("Second plan"), Actor::user()),
+        );
+        let first = first.expect("first delivery must succeed");
+        let second = second.expect("concurrent re-delivery must succeed");
+        let created = first
+            .iter()
+            .chain(second.iter())
+            .filter(|event| matches!(event.payload, Event::TaskCreated { .. }))
+            .count();
+        let redelivered = first
+            .iter()
+            .chain(second.iter())
+            .filter(|event| matches!(event.payload, Event::CommentAdded { .. }))
+            .count();
+
+        assert_eq!(created, 1, "exactly one delivery may create the task");
+        assert_eq!(redelivered, 1, "the losing delivery must be recorded");
+        assert_eq!(tasks.list_all().await.unwrap().len(), 1);
+    }
+
+    /// A workspace-unique key cannot silently attach a task owned by one
+    /// project to a plan owned by another project.
+    #[tokio::test]
+    async fn materialize_plan_rejects_external_key_from_another_project() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let first_project = ProjectId::new();
+        let second_project = ProjectId::new();
+        let task = || NewTask {
+            external_key: Some("workspace-delivery".into()),
+            ..NewTask::new("Imported task")
+        };
+
+        handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("First plan", first_project, Actor::user()),
+                    tasks: vec![task()],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let err = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("Foreign plan", second_project, Actor::user()),
+                    tasks: vec![task()],
+                },
+                Actor::user(),
+            )
+            .await
+            .expect_err("cross-project key reuse must fail closed");
+
+        assert!(
+            err.to_string().contains("external_key_project_mismatch"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(plans.plans.lock().unwrap().len(), 1);
+        let stored = tasks.list_all().await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].project_id, Some(first_project));
+    }
+
+    /// A single materialisation batch cannot contain the same external key
+    /// twice: one task cannot occupy two plan positions.
+    #[tokio::test]
+    async fn materialize_plan_rejects_duplicate_external_keys_in_one_batch() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let project_id = ProjectId::new();
+        let keyed = |title: &str| NewTask {
+            external_key: Some("duplicate-in-batch".into()),
+            ..NewTask::new(title)
+        };
+
+        let err = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("Invalid batch", project_id, Actor::user()),
+                    tasks: vec![keyed("First"), keyed("Second")],
+                },
+                Actor::user(),
+            )
+            .await
+            .expect_err("duplicate keys in one batch must fail before persistence");
+
+        assert!(
+            err.to_string()
+                .contains("duplicate_external_key_in_materialize_plan"),
+            "unexpected error: {err}"
+        );
+        assert!(plans.plans.lock().unwrap().is_empty());
+        assert!(tasks.list_all().await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -601,12 +601,26 @@ impl TaskRepo {
         let source_event_id = task.source_event_id.map(|id| id.to_string());
 
         sqlx::query(
-            "INSERT OR REPLACE INTO tasks \
+            "INSERT INTO tasks \
              (id, project_id, title, description, status, priority, due_at, \
               created_at, updated_at, started_at, completed_at, \
               created_by_json, completed_by_json, updated_by_json, updated_event_id, \
               updated_event_seq, source_event_id, triage_state, external_key) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+              project_id = excluded.project_id, title = excluded.title, \
+              description = excluded.description, status = excluded.status, \
+              priority = excluded.priority, due_at = excluded.due_at, \
+              created_at = excluded.created_at, updated_at = excluded.updated_at, \
+              started_at = excluded.started_at, completed_at = excluded.completed_at, \
+              created_by_json = excluded.created_by_json, \
+              completed_by_json = excluded.completed_by_json, \
+              updated_by_json = excluded.updated_by_json, \
+              updated_event_id = excluded.updated_event_id, \
+              updated_event_seq = excluded.updated_event_seq, \
+              source_event_id = excluded.source_event_id, \
+              triage_state = excluded.triage_state, \
+              external_key = excluded.external_key",
         )
         .bind(task.id.to_string())
         .bind(project_id)
@@ -899,6 +913,52 @@ mod tests {
 
         let all = repo.list_all().await.unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    /// A conflicting external key on another task id must fail closed. SQLite
+    /// `INSERT OR REPLACE` would delete the original row before inserting the
+    /// new one, orphaning every reference to the stable task id.
+    #[tokio::test]
+    async fn external_key_conflict_never_replaces_the_existing_task() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = TaskRepo::new(db.pool().clone());
+        let first_id = TaskId::new();
+        let second_id = TaskId::new();
+        let make = |id, title: &str| daruma_domain::NewTask {
+            id: Some(id),
+            external_key: Some("stable-delivery".into()),
+            ..daruma_domain::NewTask::new(title)
+        };
+
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: make(first_id, "Original"),
+            },
+        ))
+        .await
+        .unwrap();
+
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: make(second_id, "Conflicting"),
+            },
+        ))
+        .await
+        .expect_err("external-key collision must not replace the original row");
+
+        assert_eq!(repo.get(first_id).await.unwrap().unwrap().title, "Original");
+        assert!(repo.get(second_id).await.unwrap().is_none());
+        assert_eq!(
+            repo.find_by_external_key("stable-delivery")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            first_id
+        );
     }
 
     #[tokio::test]
