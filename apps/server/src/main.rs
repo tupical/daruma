@@ -320,24 +320,17 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Background: claim + work-lease TTL sweep (every 30 s) ─────────────────
     {
-        let claims_bg = claims;
         let leases_bg = work_leases;
         let bus_bg = command_bus;
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                match claims_bg.sweep_expired().await {
-                    Ok(released) => {
-                        for (agent_id, task_id) in released {
-                            let _ = bus_bg
-                                .dispatch(
-                                    daruma_core::Command::ReleaseClaim { agent_id, task_id },
-                                    daruma_domain::Actor::user(),
-                                )
-                                .await;
-                        }
-                    }
-                    Err(e) => tracing::warn!(err = %e, "claim TTL sweep failed"),
+                if let Err(e) = bus_bg
+                    .handler()
+                    .sweep_expired_claims(daruma_domain::Actor::user())
+                    .await
+                {
+                    tracing::warn!(err = %e, "claim TTL sweep failed");
                 }
                 match leases_bg.sweep_expired().await {
                     Ok(released) => {
