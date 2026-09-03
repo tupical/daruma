@@ -784,7 +784,7 @@ impl AgentClaimRepo {
         Ok(persisted)
     }
 
-    /// Persist plan archive/delete run cleanup with the plan event batch.
+    /// Persist plan-terminal run cleanup with the plan event batch.
     /// The command handler serializes this boundary against `StartRun`.
     pub async fn record_plan_terminal(
         &self,
@@ -802,9 +802,29 @@ impl AgentClaimRepo {
                 Event::PlanDeleted { plan_id, at } => {
                     Some((*plan_id, "aborted", "plan_deleted", at.to_rfc3339()))
                 }
+                Event::PlanStatusChanged {
+                    plan_id,
+                    to: daruma_domain::PlanStatus::Completed,
+                    ..
+                } => Some((
+                    *plan_id,
+                    "completed",
+                    "plan_completed",
+                    Utc::now().to_rfc3339(),
+                )),
+                Event::PlanStatusChanged {
+                    plan_id,
+                    to: daruma_domain::PlanStatus::Abandoned,
+                    ..
+                } => Some((
+                    *plan_id,
+                    "aborted",
+                    "plan_abandoned",
+                    Utc::now().to_rfc3339(),
+                )),
                 _ => None,
             })
-            .ok_or_else(|| CoreError::validation("expected archived or deleted plan event"))?;
+            .ok_or_else(|| CoreError::validation("expected terminal plan event"))?;
         let mut tx = self
             .pool
             .begin()

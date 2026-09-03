@@ -86,6 +86,49 @@ async fn hosted_mcp_identity_is_stable_and_bound_to_the_authenticated_principal(
 }
 
 #[tokio::test]
+async fn stdio_workspace_identity_can_claim_and_release_its_own_task() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let response: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/commands"))
+        .bearer_auth(&app.admin_token)
+        .json(&json!({"command": {"type": "create_task", "task": {"title": "stdio claim"}}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let task_id = response["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|event| event["payload"]["task"]["id"].as_str())
+        .unwrap()
+        .to_string();
+    let api = ApiClient::new(format!("http://{addr}"), app.admin_token.clone());
+    let workspace = call_tool(&api, "daruma_workspace_info", json!({}))
+        .await
+        .unwrap();
+    let agent_id = workspace["mcp_agent_id"].as_str().unwrap();
+
+    call_tool(
+        &api,
+        "daruma_claim",
+        json!({"agent_id": agent_id, "task_id": task_id, "ttl_secs": 60}),
+    )
+    .await
+    .unwrap();
+    call_tool(
+        &api,
+        "daruma_release",
+        json!({"agent_id": agent_id, "task_id": task_id}),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn stdio_dedup_refreshes_on_each_claim_generation_and_release() {
     let app = test_app().await;
     let addr = spawn_server(&app).await;

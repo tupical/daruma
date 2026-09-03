@@ -5644,7 +5644,7 @@ async fn set_plan_status(
     let plan_id = parse_id(id_str, "plan id")?;
     let outcome = state
         .commands
-        .dispatch_with_warnings(
+        .dispatch_authenticated_with_warnings(
             Command::SetPlanStatus {
                 plan_id,
                 status: body.status,
@@ -5652,6 +5652,8 @@ async fn set_plan_status(
                 override_reason: body.override_reason,
             },
             actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?;

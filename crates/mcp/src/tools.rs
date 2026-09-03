@@ -1713,13 +1713,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_workspace_info" => {
             let view = workspace::ScopeView::fetch_or_empty(client).await;
+            let mcp_agent_id = client.authenticated_agent_id().await?;
             let (inferred_project, inferred_project_error) = match view.inferred_project() {
                 Ok(project_id) => (project_id, None),
                 Err(err) => (None, Some(err.to_string())),
             };
             Ok(json!({
                 "workspace": view.key(),
-                "mcp_agent_id": client.agent_id(),
+                "mcp_agent_id": mcp_agent_id,
                 "default_project": inferred_project.clone(),
                 "inferred_project": inferred_project,
                 "inferred_project_error": inferred_project_error,

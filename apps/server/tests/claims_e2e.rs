@@ -767,6 +767,19 @@ async fn foreign_fail_archive_and_delete_are_forbidden_without_projection_change
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "foreign archive: {response}");
 
+    let (status, response) = post_json(
+        &h.router,
+        &foreign_token,
+        &format!("/v1/plans/{plan_id}/status"),
+        r#"{"status":"abandoned"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "foreign typed terminal status: {response}"
+    );
+
     let empty_plan = create_active_plan(&h.router, &h.admin_token).await;
     let empty_run = start_run(&h.router, &owner_token, &empty_plan, owner_id).await;
     let (status, response) = delete_json(

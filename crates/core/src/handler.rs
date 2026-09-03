@@ -421,7 +421,12 @@ impl CommandHandler {
     ) -> Result<DispatchOutcome> {
         let plan_terminal = matches!(
             &cmd,
-            Command::ArchivePlan { .. } | Command::DeletePlan { .. }
+            Command::ArchivePlan { .. }
+                | Command::DeletePlan { .. }
+                | Command::SetPlanStatus {
+                    status: PlanStatus::Completed | PlanStatus::Abandoned,
+                    ..
+                }
         );
         let serial_plan_run = plan_terminal || matches!(&cmd, Command::StartRun { .. });
         let _plan_run_guard = if serial_plan_run {
