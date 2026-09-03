@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks (ADR-0007 plan-only intake): atomically create a plan together with its tasks in one transaction. Pass `plan` (title required; project resolved from the repo scope when unambiguous) and `tasks` (each title required). Tasks inherit the plan's project and carry provenance to the PlanCreated event. Raw ideas that are not yet a structured plan belong in the upstream layers (intake/sensemaking), not here.",
+            "The ONLY intake path for new tasks (ADR-0007 plan-only intake): atomically create a plan together with its tasks in one transaction. Pass `plan` (title required; project resolved from the repo scope when unambiguous) and `tasks` (each title required). Tasks inherit the plan's project and carry provenance to the PlanCreated event. Optional task `external_key` makes repeated delivery reuse the existing task, append the incoming context as a comment, and attach it to the new plan. Raw ideas that are not yet a structured plan belong in the upstream layers (intake/sensemaking), not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -3324,7 +3324,8 @@ fn schema_plan_materialize() -> Value {
                         "title": {"type":"string"},
                         "description": {"type":"string"},
                         "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
-                        "due_at": {"type":"string","description":"RFC3339 timestamp."}
+                        "due_at": {"type":"string","description":"RFC3339 timestamp."},
+                        "external_key": {"type":"string","description":"Workspace-unique idempotency key. Repeated delivery reuses the existing task, appends the incoming context as a comment, and attaches it to the new plan."}
                     },
                     "required":["title"]
                 },
