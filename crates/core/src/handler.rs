@@ -447,7 +447,16 @@ impl CommandHandler {
             &cmd,
             Command::ArchivePlan { .. } | Command::DeletePlan { .. }
         );
-        let serial_plan_run = plan_terminal || matches!(&cmd, Command::StartRun { .. });
+        let task_may_complete_plan = match &cmd {
+            Command::CompleteTask { .. } => true,
+            Command::SetStatus { status, .. } | Command::BulkSetStatus { status, .. } => {
+                status.is_terminal()
+            }
+            _ => false,
+        };
+        let serial_plan_run = plan_terminal
+            || task_may_complete_plan
+            || matches!(&cmd, Command::StartRun { .. });
         let _plan_run_guard = if serial_plan_run {
             Some(self.plan_run_lifecycle.lock().await)
         } else {
@@ -462,7 +471,8 @@ impl CommandHandler {
         // `source_event_id` to point at the real `PlanCreated` event id, which
         // only exists once envelopes are built below. Note the command now.
         let materialising = matches!(cmd, Command::MaterializePlan { .. });
-        let events = self.build_events(cmd, &actor).await?;
+        let mut events = self.build_events(cmd, &actor).await?;
+        self.append_completed_plans(&mut events).await?;
         if events.is_empty() {
             return Ok(DispatchOutcome {
                 events: vec![],
@@ -653,6 +663,78 @@ impl CommandHandler {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Append one completion event for each active plan whose final open task
+    /// becomes terminal in this command. Pending task status events override
+    /// the not-yet-updated task projection, which also makes bulk closure a
+    /// single reconciliation pass.
+    async fn append_completed_plans(&self, events: &mut Vec<Event>) -> Result<()> {
+        let Some(plans) = &self.plans else {
+            return Ok(());
+        };
+
+        let closing_tasks: Vec<TaskId> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TaskClosed { task_id, .. } => Some(*task_id),
+                _ => None,
+            })
+            .collect();
+        if closing_tasks.is_empty() {
+            return Ok(());
+        }
+
+        let pending_statuses: Vec<(TaskId, Status)> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::TaskStatusChanged { task_id, to, .. } => Some((*task_id, *to)),
+                _ => None,
+            })
+            .collect();
+        let mut candidate_plans = Vec::new();
+        for task_id in closing_tasks {
+            for plan_id in plans.list_plans_for_task(task_id).await? {
+                if !candidate_plans.contains(&plan_id) {
+                    candidate_plans.push(plan_id);
+                }
+            }
+        }
+
+        for plan_id in candidate_plans {
+            let Some(plan) = plans.get(plan_id).await? else {
+                continue;
+            };
+            if plan.status != PlanStatus::Active {
+                continue;
+            }
+
+            let mut all_terminal = true;
+            for plan_task in plans.list_plan_tasks_ordered(plan_id).await? {
+                let pending = pending_statuses
+                    .iter()
+                    .rev()
+                    .find_map(|(task_id, status)| (*task_id == plan_task.task_id).then_some(*status));
+                let status = match pending {
+                    Some(status) => Some(status),
+                    None => self.tasks.get(plan_task.task_id).await?.map(|task| task.status),
+                };
+                if !status.is_some_and(Status::is_terminal) {
+                    all_terminal = false;
+                    break;
+                }
+            }
+
+            if all_terminal {
+                events.push(Event::PlanStatusChanged {
+                    plan_id,
+                    from: PlanStatus::Active,
+                    to: PlanStatus::Completed,
+                });
+            }
+        }
+
+        Ok(())
+    }
 
     /// Build the events for transitioning a single task to `to`, including
     /// the side-effects: blocker rejection, `TaskReopened`/`TaskClosed`,
@@ -3707,6 +3789,45 @@ mod tests {
         }
     }
 
+    struct BarrierPlanRepo {
+        inner: Arc<MemPlanRepo>,
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait]
+    impl PlanRepository for BarrierPlanRepo {
+        async fn get(&self, id: PlanId) -> daruma_shared::Result<Option<Plan>> {
+            self.inner.get(id).await
+        }
+
+        async fn list_plan_tasks_ordered(
+            &self,
+            plan_id: PlanId,
+        ) -> daruma_shared::Result<Vec<PlanTask>> {
+            // Without the lifecycle serialization boundary both closes reach
+            // this read together and deterministically observe the stale peer.
+            // With the boundary, the timeout lets the first close proceed and
+            // project before the second close enters reconciliation.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                self.barrier.wait(),
+            )
+            .await;
+            self.inner.list_plan_tasks_ordered(plan_id).await
+        }
+
+        async fn list_plans_for_task(
+            &self,
+            task_id: TaskId,
+        ) -> daruma_shared::Result<Vec<PlanId>> {
+            self.inner.list_plans_for_task(task_id).await
+        }
+
+        async fn apply_event(&self, env: &EventEnvelope) -> daruma_shared::Result<()> {
+            self.inner.apply_event(env).await
+        }
+    }
+
     #[derive(Default)]
     struct MemRunRepo {
         runs: Mutex<HashMap<RunId, Run>>,
@@ -4940,6 +5061,131 @@ mod tests {
             Event::RunStopRequested { run_id: r, reason: Some(msg), .. }
             if *r == run_id && msg == "user request"
         ));
+    }
+
+    #[tokio::test]
+    async fn set_status_last_terminal_task_completes_active_plan() {
+        let (handler, plans, ..) = build_plan_stack().await;
+        let task_envs = handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("Last open task"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let task_id = match &task_envs[0].payload {
+            Event::TaskCreated { task } => task.id.unwrap(),
+            other => panic!("expected TaskCreated, got {other:?}"),
+        };
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+        handler
+            .handle(
+                Command::AddPlanTask {
+                    plan_id,
+                    task_id,
+                    position: Some(0),
+                    depends_on: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let events = handler
+            .handle(
+                Command::SetStatus {
+                    id: task_id,
+                    status: Status::Done,
+                    force: false,
+                    override_reason: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        assert!(events.iter().any(|event| matches!(
+            event.payload,
+            Event::PlanStatusChanged {
+                plan_id: id,
+                from: PS::Active,
+                to: PS::Completed,
+            } if id == plan_id
+        )));
+        assert_eq!(plans.get(plan_id).await.unwrap().unwrap().status, PS::Completed);
+    }
+
+    #[tokio::test]
+    async fn parallel_terminal_transitions_complete_plan_once() {
+        let (mut handler, plans, ..) = build_plan_stack().await;
+        let mut task_ids = Vec::new();
+        for title in ["Parallel A", "Parallel B"] {
+            let events = handler
+                .handle(
+                    Command::CreateTask {
+                        task: NewTask::new(title),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            let task_id = match &events[0].payload {
+                Event::TaskCreated { task } => task.id.unwrap(),
+                other => panic!("expected TaskCreated, got {other:?}"),
+            };
+            task_ids.push(task_id);
+        }
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+        for (position, task_id) in task_ids.iter().copied().enumerate() {
+            handler
+                .handle(
+                    Command::AddPlanTask {
+                        plan_id,
+                        task_id,
+                        position: Some(position as u32),
+                        depends_on: None,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+        }
+
+        handler.plans = Some(Arc::new(BarrierPlanRepo {
+            inner: plans.clone(),
+            barrier: Arc::new(tokio::sync::Barrier::new(2)),
+        }));
+        let handler = Arc::new(handler);
+        let close = |task_id| Command::SetStatus {
+            id: task_id,
+            status: Status::Done,
+            force: false,
+            override_reason: None,
+        };
+        let (first, second) = tokio::join!(
+            handler.handle(close(task_ids[0]), Actor::user()),
+            handler.handle(close(task_ids[1]), Actor::user()),
+        );
+        let completion_events = first
+            .unwrap()
+            .into_iter()
+            .chain(second.unwrap())
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    Event::PlanStatusChanged {
+                        plan_id: id,
+                        from: PS::Active,
+                        to: PS::Completed,
+                    } if id == plan_id
+                )
+            })
+            .count();
+
+        assert_eq!(completion_events, 1);
+        assert_eq!(plans.get(plan_id).await.unwrap().unwrap().status, PS::Completed);
     }
 
     #[tokio::test]
