@@ -21,6 +21,10 @@ pub struct ApiClient {
     /// can be grouped under a single `Actor::Agent`. Generated once when the
     /// client is built; the server stores it on every emitted event.
     agent_id: String,
+    /// Whether `agent_id` came from the authenticated server principal. Hosted
+    /// MCP clients are pinned at construction; stdio clients resolve it through
+    /// the hosted MCP surface when workspace info is requested.
+    agent_id_is_authenticated: bool,
     /// Session-scoped dedup cache (task D): object id → the `updated_at` this
     /// session was last handed the object *in full*. Shared across `.clone()`s
     /// via `Arc<Mutex<_>>` so every clone of this client sees the same session
@@ -46,6 +50,7 @@ impl ApiClient {
             workspace_id: None,
             http: reqwest::Client::new(),
             agent_id: fresh_agent_id(),
+            agent_id_is_authenticated: false,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -56,6 +61,15 @@ impl ApiClient {
         if !id.trim().is_empty() {
             self.workspace_id = Some(id);
         }
+        self
+    }
+
+    /// Pin this MCP client's session identity to an authenticated principal.
+    /// Hosted transports use this so rebuilding a client per HTTP request does
+    /// not manufacture a new claim/run identity.
+    pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
+        self.agent_id = agent_id.as_uuid().to_string();
+        self.agent_id_is_authenticated = true;
         self
     }
 
@@ -72,6 +86,7 @@ impl ApiClient {
             workspace_id: None,
             http,
             agent_id: fresh_agent_id(),
+            agent_id_is_authenticated: false,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -79,6 +94,47 @@ impl ApiClient {
     /// Stable MCP process agent id (UUID string).
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    /// Return the token-bound agent identity enforced by the HTTP server.
+    ///
+    /// Hosted MCP dispatch pins that identity with [`Self::with_agent_id`], so
+    /// this is a local read there. A stdio client has no access to the decoded
+    /// bearer principal, therefore it asks the existing hosted MCP endpoint for
+    /// `daruma_workspace_info`. The hosted hop is pinned before dispatch and
+    /// cannot recurse into another lookup.
+    pub async fn authenticated_agent_id(&self) -> anyhow::Result<String> {
+        if self.agent_id_is_authenticated {
+            return Ok(self.agent_id.clone());
+        }
+
+        let response = self
+            .post_json(
+                "/v1/mcp",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "stdio-identity",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "daruma_workspace_info",
+                        "arguments": {}
+                    }
+                }),
+            )
+            .await?;
+        let text = response
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("hosted MCP identity response has no text payload"))?;
+        let workspace: Value = serde_json::from_str(text)?;
+        let agent_id = workspace
+            .get("mcp_agent_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("hosted MCP workspace info has no mcp_agent_id"))?;
+        agent_id
+            .parse::<AgentId>()
+            .map_err(|err| anyhow::anyhow!("hosted MCP returned invalid mcp_agent_id: {err}"))?;
+        Ok(agent_id.to_string())
     }
 
     /// Session dedup probe (task D). Given an object `id` and its current
@@ -134,7 +190,10 @@ impl ApiClient {
     /// error degrades to `None` so callers fall back to their normal error.
     pub async fn provision_repo_scope(&self, scope_path: &str) -> Option<String> {
         let resp = self
-            .post_json("/v1/repo-scopes/provision", json!({ "scope_path": scope_path }))
+            .post_json(
+                "/v1/repo-scopes/provision",
+                json!({ "scope_path": scope_path }),
+            )
             .await
             .ok()?;
         resp.get("project_id")
@@ -350,4 +409,20 @@ fn dedupe_ids(ids: Vec<(&'static str, String)>) -> Vec<(&'static str, String)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_client_identity_is_stable_for_the_process_and_its_clones() {
+        let client = ApiClient::new("http://localhost", "token");
+        let clone = client.clone();
+        assert_eq!(client.agent_id(), clone.agent_id());
+        assert!(client.agent_id().parse::<AgentId>().is_ok());
+
+        let next_process = ApiClient::new("http://localhost", "token");
+        assert_ne!(client.agent_id(), next_process.agent_id());
+    }
 }

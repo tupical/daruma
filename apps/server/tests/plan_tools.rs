@@ -387,8 +387,7 @@ async fn plan_status_override_reaches_http_and_returns_warning_via_mcp() {
     .await;
     assert_eq!(response["success"], true);
     assert_eq!(
-        response["warnings"][0]["code"],
-        "rule_warning:plan-approval-proof",
+        response["warnings"][0]["code"], "rule_warning:plan-approval-proof",
         "response: {response}"
     );
 }
@@ -498,6 +497,23 @@ async fn plan_next_task_orders_by_position_and_skips_blocked() {
             Some(resp["task_id"].as_str().unwrap().to_owned())
         }
     }
+
+    // ttl_secs=0 is the compatibility contract for a pure peek: it must not
+    // manufacture an expiry or acquire a claim.
+    let zero_ttl = call_tool(
+        &client,
+        "daruma_plan_next_task",
+        json!({
+            "id": plan_id,
+            "run_id": uuid::Uuid::now_v7().to_string(),
+            "claim_ttl_secs": 0
+        }),
+    )
+    .await;
+    assert_eq!(zero_ttl["task_id"], t1);
+    assert_eq!(zero_ttl["claim_expires_at"], serde_json::Value::Null);
+    let claims = client.get_json("/v1/claims").await.unwrap();
+    assert!(claims["claims"].as_array().unwrap().is_empty());
 
     // Step 1: t1 is at position 0 with no deps → wins.
     assert_eq!(

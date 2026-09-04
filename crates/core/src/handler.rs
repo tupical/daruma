@@ -445,7 +445,12 @@ impl CommandHandler {
         };
         let plan_terminal = matches!(
             &cmd,
-            Command::ArchivePlan { .. } | Command::DeletePlan { .. }
+            Command::ArchivePlan { .. }
+                | Command::DeletePlan { .. }
+                | Command::SetPlanStatus {
+                    status: PlanStatus::Completed | PlanStatus::Abandoned,
+                    ..
+                }
         );
         let serial_plan_run = plan_terminal || matches!(&cmd, Command::StartRun { .. });
         let _plan_run_guard = if serial_plan_run {
@@ -575,7 +580,7 @@ impl CommandHandler {
             self.claims
                 .as_ref()
                 .unwrap()
-                .record_plan_terminal(actor.clone(), envelopes)
+                .record_plan_terminal(actor.clone(), authenticated_agent_id, is_admin, envelopes)
                 .await?
         } else {
             self.store.append_batch(envelopes).await?
