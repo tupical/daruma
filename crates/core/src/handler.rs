@@ -454,9 +454,8 @@ impl CommandHandler {
             }
             _ => false,
         };
-        let serial_plan_run = plan_terminal
-            || task_may_complete_plan
-            || matches!(&cmd, Command::StartRun { .. });
+        let serial_plan_run =
+            plan_terminal || task_may_complete_plan || matches!(&cmd, Command::StartRun { .. });
         let _plan_run_guard = if serial_plan_run {
             Some(self.plan_run_lifecycle.lock().await)
         } else {
@@ -710,13 +709,16 @@ impl CommandHandler {
 
             let mut all_terminal = true;
             for plan_task in plans.list_plan_tasks_ordered(plan_id).await? {
-                let pending = pending_statuses
-                    .iter()
-                    .rev()
-                    .find_map(|(task_id, status)| (*task_id == plan_task.task_id).then_some(*status));
+                let pending = pending_statuses.iter().rev().find_map(|(task_id, status)| {
+                    (*task_id == plan_task.task_id).then_some(*status)
+                });
                 let status = match pending {
                     Some(status) => Some(status),
-                    None => self.tasks.get(plan_task.task_id).await?.map(|task| task.status),
+                    None => self
+                        .tasks
+                        .get(plan_task.task_id)
+                        .await?
+                        .map(|task| task.status),
                 };
                 if !status.is_some_and(Status::is_terminal) {
                     all_terminal = false;
@@ -3808,18 +3810,13 @@ mod tests {
             // this read together and deterministically observe the stale peer.
             // With the boundary, the timeout lets the first close proceed and
             // project before the second close enters reconciliation.
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                self.barrier.wait(),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_millis(100), self.barrier.wait())
+                    .await;
             self.inner.list_plan_tasks_ordered(plan_id).await
         }
 
-        async fn list_plans_for_task(
-            &self,
-            task_id: TaskId,
-        ) -> daruma_shared::Result<Vec<PlanId>> {
+        async fn list_plans_for_task(&self, task_id: TaskId) -> daruma_shared::Result<Vec<PlanId>> {
             self.inner.list_plans_for_task(task_id).await
         }
 
@@ -5064,6 +5061,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_status_terminal_task_leaves_plan_active_while_a_sibling_is_open() {
+        let (handler, plans, ..) = build_plan_stack().await;
+        let mut task_ids = Vec::new();
+        for title in ["Closed sibling", "Still open sibling"] {
+            let envs = handler
+                .handle(
+                    Command::CreateTask {
+                        task: NewTask::new(title),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            task_ids.push(match &envs[0].payload {
+                Event::TaskCreated { task } => task.id.unwrap(),
+                other => panic!("expected TaskCreated, got {other:?}"),
+            });
+        }
+        let plan_id = create_active_plan(&handler, ProjectId::new()).await;
+        for (position, task_id) in task_ids.iter().copied().enumerate() {
+            handler
+                .handle(
+                    Command::AddPlanTask {
+                        plan_id,
+                        task_id,
+                        position: Some(position as u32),
+                        depends_on: None,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let events = handler
+            .handle(
+                Command::SetStatus {
+                    id: task_ids[0],
+                    status: Status::Cancelled,
+                    force: false,
+                    override_reason: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !events.iter().any(|event| matches!(
+                event.payload,
+                Event::PlanStatusChanged {
+                    to: PS::Completed,
+                    ..
+                }
+            )),
+            "plan must not reconcile to completed while a sibling task is still open"
+        );
+        assert_eq!(
+            plans.get(plan_id).await.unwrap().unwrap().status,
+            PS::Active
+        );
+
+        // Closing the remaining sibling reconciles the plan on the very next
+        // terminal transition, so the negative case above is a guard, not a
+        // dead end.
+        handler
+            .handle(
+                Command::SetStatus {
+                    id: task_ids[1],
+                    status: Status::Done,
+                    force: false,
+                    override_reason: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            plans.get(plan_id).await.unwrap().unwrap().status,
+            PS::Completed
+        );
+    }
+
+    #[tokio::test]
     async fn set_status_last_terminal_task_completes_active_plan() {
         let (handler, plans, ..) = build_plan_stack().await;
         let task_envs = handler
@@ -5114,7 +5195,10 @@ mod tests {
                 to: PS::Completed,
             } if id == plan_id
         )));
-        assert_eq!(plans.get(plan_id).await.unwrap().unwrap().status, PS::Completed);
+        assert_eq!(
+            plans.get(plan_id).await.unwrap().unwrap().status,
+            PS::Completed
+        );
     }
 
     #[tokio::test]
@@ -5185,7 +5269,10 @@ mod tests {
             .count();
 
         assert_eq!(completion_events, 1);
-        assert_eq!(plans.get(plan_id).await.unwrap().unwrap().status, PS::Completed);
+        assert_eq!(
+            plans.get(plan_id).await.unwrap().unwrap().status,
+            PS::Completed
+        );
     }
 
     #[tokio::test]
