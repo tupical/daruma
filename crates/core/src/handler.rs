@@ -480,10 +480,44 @@ impl CommandHandler {
         // warnings/blocks act, so `Allowed` decisions add nothing — an
         // unconstrained workspace stays silent (spec §1.5; task risk note).
         let mut rule_audit: Vec<Event> = Vec::new();
+        let mut rule_metrics = Vec::new();
         if let Some(gate) = &self.lifecycle_gate {
             let gate_override = gate_override.unwrap_or_default();
             for check in derive_gate_checks(&events) {
-                match gate.check(&actor, &check, &gate_override).await? {
+                let (decision, observations) =
+                    gate.check_observed(&actor, &check, &gate_override).await?;
+                rule_metrics.extend(observations.into_iter().map(|observation| {
+                    use daruma_events::event::{
+                        OperationalEventType, OperationalMetric, OperationalOutcome,
+                    };
+                    Event::OperationalMetricRecorded {
+                        metric: OperationalMetric {
+                            ts: time::now(),
+                            event_type: OperationalEventType::Step,
+                            run_id: check.run_id.map(|id| id.to_string()).unwrap_or_default(),
+                            node_id: Some(observation.rule_id.to_string()),
+                            layer: "daruma".into(),
+                            name: "rule.advisory_evaluated".into(),
+                            outcome: OperationalOutcome::Ok,
+                            latency_ms: 0,
+                            tokens: None,
+                            retry_count: 0,
+                            error_class: None,
+                            stuck_reason: None,
+                            attrs: serde_json::json!({
+                                "rule_id": observation.rule_id,
+                                "rule_key": observation.rule_key,
+                                "rule_revision": observation.rule_revision,
+                                "triggered": observation.triggered,
+                                "trigger": check.trigger.as_str(),
+                                "project_id": check.project_id,
+                                "plan_id": check.plan_id,
+                                "task_id": check.task_id,
+                            }),
+                        },
+                    }
+                }));
+                match decision {
                     GateDecision::Allowed => {}
                     GateDecision::Warning(mut batch) => {
                         rule_audit.extend(rule_fired_events(
@@ -499,12 +533,13 @@ impl CommandHandler {
                         // rejected transition is still visible in the event log
                         // / webhooks even though the mutation never lands.
                         let blocked = blocked_outcomes(&details, &message);
-                        let audit = rule_fired_events(
+                        let mut audit = rule_fired_events(
                             &check,
                             &actor,
                             EventRuleDecision::Blocked,
                             blocked.iter().map(|(d, m)| (d, m.as_str())),
                         );
+                        audit.splice(0..0, rule_metrics.drain(..));
                         if !audit.is_empty() {
                             let envs = audit
                                 .into_iter()
@@ -539,6 +574,7 @@ impl CommandHandler {
         let mut envelopes: Vec<EventEnvelope> = rule_audit
             .into_iter()
             .chain(events)
+            .chain(rule_metrics)
             .map(|payload| EventEnvelope::new(actor.clone(), payload))
             .collect();
 

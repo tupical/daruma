@@ -397,10 +397,7 @@ async fn example1_read_artifact_required_blocks_plan_approve() {
         )
         .await
         .expect_err("read_artifact required must block approve");
-    assert!(
-        is_blocked(&err, "read-architecture-md message"),
-        "got: {err}"
-    );
+    assert!(is_blocked(&err, "read-architecture-md message"), "got: {err}");
 }
 
 #[tokio::test]
@@ -1816,5 +1813,105 @@ async fn blocked_error_lists_every_blocking_rule_not_just_the_first() {
             hint["evidence"]["scope"], task_scope,
             "no plan/project in the chain → scope falls back inwards to the task"
         );
+    }
+}
+
+#[tokio::test]
+async fn advisory_metrics_cover_opportunities_without_counting_readiness_probes() {
+    for scenario in ["warning", "satisfied", "condition_miss", "off", "blocked"] {
+        let stack = stack().await;
+        let requirement = Requirement::ImpactCheck {
+            target: "auth".into(),
+            required_fields: vec![],
+        };
+        let mut rule = new_rule(
+            "advisory-metric",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeStart,
+            requirement.clone(),
+            RuleMode::Recommendation,
+            true,
+        );
+        if scenario == "off" {
+            rule.mode = RuleMode::Off;
+        }
+        if scenario == "condition_miss" {
+            rule.condition = Some(Condition {
+                status_from: Some(vec![Status::Todo]),
+                status_to: None,
+            });
+        }
+        let installed = install(&stack, rule).await;
+        let task = create_task(&stack, scenario).await;
+        if scenario == "satisfied" {
+            record_evidence(
+                &stack,
+                new_evidence(
+                    EvidenceKind::ImpactAssessment,
+                    RuleScope::Task { id: task },
+                    Some("auth"),
+                ),
+            )
+            .await;
+        }
+        if scenario == "blocked" {
+            install(
+                &stack,
+                new_rule(
+                    "block",
+                    RuleScope::Tenant,
+                    RuleTrigger::TaskBeforeStart,
+                    requirement,
+                    RuleMode::Required,
+                    false,
+                ),
+            )
+            .await;
+        }
+        let before = stack.handler.store.latest_seq().await.unwrap();
+        stack.can_start(task).await;
+        assert_eq!(
+            stack.handler.store.latest_seq().await.unwrap(),
+            before,
+            "readiness must not write metrics"
+        );
+        let result = stack
+            .handler
+            .handle(
+                Command::SetStatus {
+                    id: task,
+                    status: Status::InProgress,
+                    force: false,
+                    override_reason: None,
+                },
+                Actor::user(),
+            )
+            .await;
+        assert_eq!(result.is_err(), scenario == "blocked", "{scenario}");
+        let events = stack.handler.store.load_since(before, 100).await.unwrap();
+        let metrics: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                Event::OperationalMetricRecorded { metric }
+                    if metric.name == "rule.advisory_evaluated" =>
+                {
+                    Some(metric)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(metrics.len(), usize::from(scenario != "off"), "{scenario}");
+        if let Some(metric) = metrics.first() {
+            assert_eq!(metric.attrs["rule_id"], serde_json::json!(installed.id));
+            assert_eq!(
+                metric.attrs["rule_revision"],
+                serde_json::json!(installed.updated_at)
+            );
+            assert_eq!(metric.attrs["task_id"], serde_json::json!(task));
+            assert_eq!(
+                metric.attrs["triggered"],
+                scenario == "warning" || scenario == "blocked"
+            );
+        }
     }
 }

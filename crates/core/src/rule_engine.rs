@@ -38,7 +38,9 @@ use daruma_domain::{
 use daruma_shared::Result;
 use serde_json::json;
 
-use crate::lifecycle_gate::{GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent};
+use crate::lifecycle_gate::{
+    GateCheck, GateDecision, GateOverride, LifecycleGate, RuleObservation, TriggerEvent,
+};
 use daruma_storage::{evidence_repo::EvidenceCheck, EvidenceRepo, RuleRepo};
 
 /// Rule engine over a [`RuleRepo`] and, optionally, an [`EvidenceRepo`]
@@ -110,6 +112,16 @@ impl LifecycleGate for RuleEngineGate {
         check: &GateCheck,
         gate_override: &GateOverride,
     ) -> Result<GateDecision> {
+        Ok(self.check_observed(_actor, check, gate_override).await?.0)
+    }
+
+    async fn check_observed(
+        &self,
+        _actor: &Actor,
+        check: &GateCheck,
+        gate_override: &GateOverride,
+    ) -> Result<(GateDecision, Vec<RuleObservation>)> {
+        let mut observations = Vec::new();
         let trigger = map_trigger(check.trigger);
         let chain = Self::scope_chain(check);
         let candidates = self.rules.effective_rules(&chain, trigger).await?;
@@ -120,6 +132,14 @@ impl LifecycleGate for RuleEngineGate {
         let mut override_forbidden = false;
 
         for rule in &candidates {
+            if rule.mode == RuleMode::Recommendation {
+                observations.push(RuleObservation {
+                    rule_id: rule.id,
+                    rule_key: rule.rule_key.clone(),
+                    rule_revision: rule.updated_at,
+                    triggered: false,
+                });
+            }
             if !condition_matches(rule.condition.as_ref(), check) {
                 continue;
             }
@@ -141,7 +161,13 @@ impl LifecycleGate for RuleEngineGate {
             let rejection_reason = evidence_check.and_then(|check| check.reason);
             match rule.mode {
                 RuleMode::Off => {}
-                RuleMode::Recommendation => warnings.push(rule_warning(rule)),
+                RuleMode::Recommendation => {
+                    observations
+                        .last_mut()
+                        .expect("advisory observation")
+                        .triggered = true;
+                    warnings.push(rule_warning(rule));
+                }
                 RuleMode::Required => {
                     if !rule.override_allowed {
                         override_forbidden = true;
@@ -152,11 +178,14 @@ impl LifecycleGate for RuleEngineGate {
         }
 
         if blocked.is_empty() {
-            return Ok(if warnings.is_empty() {
-                GateDecision::Allowed
-            } else {
-                GateDecision::Warning(warnings)
-            });
+            return Ok((
+                if warnings.is_empty() {
+                    GateDecision::Allowed
+                } else {
+                    GateDecision::Warning(warnings)
+                },
+                observations,
+            ));
         }
 
         // Override path (spec §1.5): force + non-empty reason passes blocked
@@ -177,11 +206,14 @@ impl LifecycleGate for RuleEngineGate {
             for (rule, _) in blocked {
                 warnings.push(rule_warning(rule));
             }
-            return Ok(if warnings.is_empty() {
-                GateDecision::Allowed
-            } else {
-                GateDecision::Warning(warnings)
-            });
+            return Ok((
+                if warnings.is_empty() {
+                    GateDecision::Allowed
+                } else {
+                    GateDecision::Warning(warnings)
+                },
+                observations,
+            ));
         }
 
         // Build the structured outcome list (spec §1.5): all blocked first,
@@ -206,17 +238,20 @@ impl LifecycleGate for RuleEngineGate {
             .map(|(rule, _)| unblock_hint(rule, &chain, check.trigger))
             .collect();
         let (first, reason) = &blocked[0];
-        Ok(GateDecision::Blocked {
-            message: blocked_message(&blocked),
-            details: json!({
-                "rule_id": first.id.to_string(),
-                "rule_key": first.rule_key,
-                "requirement": first.requirement,
-                "reason": reason,
-                "outcomes": outcomes,
-                "unblock": unblock,
-            }),
-        })
+        Ok((
+            GateDecision::Blocked {
+                message: blocked_message(&blocked),
+                details: json!({
+                    "rule_id": first.id.to_string(),
+                    "rule_key": first.rule_key,
+                    "requirement": first.requirement,
+                    "reason": reason,
+                    "outcomes": outcomes,
+                    "unblock": unblock,
+                }),
+            },
+            observations,
+        ))
     }
 }
 
