@@ -1915,3 +1915,62 @@ async fn advisory_metrics_cover_opportunities_without_counting_readiness_probes(
         }
     }
 }
+
+#[tokio::test]
+async fn independent_test_attestation_binds_task_revision_and_authenticated_verifier() {
+    let stack = stack().await;
+    let task = create_task(&stack, "Pinned test verification").await;
+    let other_task = create_task(&stack, "Other task").await;
+    let executor = daruma_shared::AgentId::new();
+    let verifier = daruma_shared::AgentId::new();
+    let revision = "a".repeat(40);
+    let target = format!("test-verification:{revision}");
+    install(&stack, new_rule(
+        "independent-tests", RuleScope::Task { id: task }, RuleTrigger::TaskBeforeComplete,
+        Requirement::IndependentTestVerification { executor_id: executor, source_revision: revision },
+        RuleMode::Required, false,
+    )).await;
+    let complete = || Command::SetStatus { id: task, status: Status::Done, force: false, override_reason: None };
+    for (scope_task, proof_target, passed, authenticated) in [
+        (task, target.clone(), serde_json::json!(true), executor),
+        (other_task, target.clone(), serde_json::json!(true), verifier),
+        (task, "test-verification:stale".into(), serde_json::json!(true), verifier),
+        (task, target.clone(), serde_json::json!(false), verifier),
+        (task, target.clone(), serde_json::json!("true"), verifier),
+    ] {
+        let mut evidence = new_evidence(EvidenceKind::ArtifactCreated, RuleScope::Task { id: scope_task }, Some(&proof_target));
+        evidence.payload = serde_json::json!({ "passed": passed, "actor_id": verifier, "attested_by_verifier": verifier });
+        let outcome = stack.handler.handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence },
+            Actor::Agent { id: verifier, name: "forged envelope".into() },
+            authenticated, false,
+        ).await.unwrap();
+        let Event::EvidenceRecorded { evidence } = &outcome.events[0].payload else { panic!("missing evidence") };
+        assert_eq!(evidence.actor.id, Some(authenticated));
+        let error = stack.handler.handle(complete(), Actor::user()).await.unwrap_err();
+        assert!(is_blocked(&error, "independent-tests"), "{error}");
+    }
+    let mut proof = new_evidence(EvidenceKind::ArtifactCreated, RuleScope::Task { id: task }, Some(&target));
+    proof.payload = serde_json::json!({ "passed": true });
+    // A legacy/offline actor claim cannot masquerade as authenticated provenance.
+    stack.handler.handle(
+        Command::RecordEvidence { evidence: proof.clone() },
+        Actor::Agent { id: verifier, name: "unverified".into() },
+    ).await.unwrap();
+    assert!(stack.handler.handle(complete(), Actor::user()).await.is_err());
+    let recorded = stack.handler.handle_authenticated_with_warnings(
+        Command::RecordEvidence { evidence: proof.clone() }, Actor::user(), verifier, false,
+    ).await.unwrap();
+    let Event::EvidenceRecorded { evidence } = &recorded.events[0].payload else { panic!("missing evidence") };
+    let mut retracted = proof.clone();
+    retracted.supersedes = Some(evidence.id);
+    retracted.payload = serde_json::json!({ "passed": false });
+    stack.handler.handle_authenticated_with_warnings(
+        Command::RecordEvidence { evidence: retracted }, Actor::user(), verifier, false,
+    ).await.unwrap();
+    assert!(stack.handler.handle(complete(), Actor::user()).await.is_err());
+    stack.handler.handle_authenticated_with_warnings(
+        Command::RecordEvidence { evidence: proof }, Actor::user(), verifier, false,
+    ).await.unwrap();
+    stack.handler.handle(complete(), Actor::user()).await.unwrap();
+}

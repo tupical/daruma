@@ -2834,11 +2834,13 @@ async fn record_evidence(
         .map_err(ApiError::from_missing_cap)?;
     let envs = state
         .commands
-        .dispatch(
+        .dispatch_authenticated(
             Command::RecordEvidence {
                 evidence: body.evidence,
             },
-            actor_from(&auth, None),
+            auth.actor(),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?;

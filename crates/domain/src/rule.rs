@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Status;
-use daruma_shared::{PlanId, ProjectId, RuleId, TaskId, Timestamp};
+use daruma_shared::{AgentId, PlanId, ProjectId, RuleId, TaskId, Timestamp};
 
 /// How strictly a rule is enforced (spec §1, `RuleMode`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +180,11 @@ pub enum Requirement {
     OwnerRequired,
     /// Task must declare acceptance criteria.
     AcceptanceCriteriaRequired,
+    /// A passing test report for a pinned revision, attested by another authenticated actor.
+    IndependentTestVerification {
+        executor_id: AgentId,
+        source_revision: String,
+    },
     /// Assess risk.
     RiskCheck {
         target: String,
@@ -204,6 +209,7 @@ impl Requirement {
             Requirement::OwnerRequired => "owner_required",
             Requirement::AcceptanceCriteriaRequired => "acceptance_criteria_required",
             Requirement::RiskCheck { .. } => "risk_check",
+            Requirement::IndependentTestVerification { .. } => "independent_test_verification",
         }
     }
 }

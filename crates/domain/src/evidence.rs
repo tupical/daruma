@@ -148,6 +148,10 @@ pub struct Evidence {
     pub doc_version: Option<String>,
     /// Who recorded the evidence.
     pub actor: ActorRef,
+    /// Transport-authenticated principal; absent for legacy/offline evidence.
+    /// Server-assigned, never accepted in NewEvidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authenticated_actor_id: Option<AgentId>,
     /// Free-form why/details (the completion note text, the assessment, …).
     #[serde(default)]
     pub reason: String,
@@ -250,6 +254,7 @@ impl NewEvidence {
             target: self.target,
             doc_version: self.doc_version,
             actor,
+            authenticated_actor_id: None,
             reason: self.reason,
             payload: self.payload,
             project_id: self.project_id,

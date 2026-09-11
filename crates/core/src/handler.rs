@@ -424,6 +424,12 @@ impl CommandHandler {
         authenticated_agent_id: Option<AgentId>,
         is_admin: bool,
     ) -> Result<DispatchOutcome> {
+        let actor = match (&cmd, authenticated_agent_id) {
+            (Command::RecordEvidence { .. }, Some(id)) => Actor::Agent {
+                id, name: "authenticated".into(),
+            },
+            _ => actor,
+        };
         let serial_external_key_intake = match &cmd {
             Command::CreateTask { task } => task
                 .external_key
@@ -466,6 +472,11 @@ impl CommandHandler {
         // only exists once envelopes are built below. Note the command now.
         let materialising = matches!(cmd, Command::MaterializePlan { .. });
         let mut events = self.build_events(cmd, &actor).await?;
+        for event in &mut events {
+            if let Event::EvidenceRecorded { evidence } = event {
+                evidence.authenticated_actor_id = authenticated_agent_id;
+            }
+        }
         self.append_plan_reconciliations(&mut events).await?;
         if events.is_empty() {
             return Ok(DispatchOutcome {

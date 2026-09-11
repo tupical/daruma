@@ -79,6 +79,17 @@ impl RuleEngineGate {
         let Some(evidence) = &self.evidence else {
             return Ok(EvidenceCheck::default());
         };
+        if let Requirement::IndependentTestVerification { executor_id, source_revision } = &rule.requirement {
+            let valid_revision = matches!(source_revision.len(), 40 | 64)
+                && source_revision.bytes().all(|byte| byte.is_ascii_hexdigit());
+            let satisfied = if let Some(RuleScope::Task { id }) = chain.last().filter(|_| valid_revision) {
+                evidence.has_independent_test_verification(*id, *executor_id, source_revision).await?
+            } else { false };
+            return Ok(EvidenceCheck {
+                satisfied,
+                reason: (!satisfied).then(|| "requires a live passing test attestation for this task and pinned revision from an authenticated actor other than executor_id".into()),
+            });
+        }
         let (kind, target, required_fields, min_version) = requirement_evidence(&rule.requirement);
         evidence
             .has_live_evidence(chain, kind, target.as_deref(), required_fields, min_version)
@@ -279,6 +290,12 @@ fn requirement_evidence(
             None,
             (min_version != "latest").then_some(min_version.as_str()),
         ),
+        Requirement::IndependentTestVerification { source_revision, .. } => (
+            EvidenceKind::ArtifactCreated,
+            Some(format!("test-verification:{source_revision}")),
+            None,
+            None,
+        ),
         Requirement::CreateArtifact { artifact_kind } => (
             EvidenceKind::ArtifactCreated,
             Some(artifact_kind.clone()),
@@ -424,6 +441,17 @@ fn rule_outcome(rule: &Rule, decision: &str, reason: Option<&str>) -> serde_json
 /// instead of pretending otherwise.
 fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serde_json::Value {
     let (kind, target, _, _) = requirement_evidence(&rule.requirement);
+    if let Requirement::IndependentTestVerification { executor_id, source_revision } = &rule.requirement {
+        return json!({
+            "rule_key": rule.rule_key,
+            "requirement": "independent_test_verification",
+            "executor_id": executor_id,
+            "source_revision": source_revision,
+            "reach": "self_only",
+            "evidence": { "kind": kind, "scope": chain.last(), "target": target, "payload": { "passed": true } },
+            "note": "Verifier submits using its own authenticated identity; payload actor fields do not establish independence."
+        });
+    }
     let reach = kind.reach();
     // Sanity on the FULL chain (before any slicing): `scope_chain` always
     // seeds the tenant root.
