@@ -164,14 +164,11 @@ pub async fn related(
     Ok(Json(neighborhood))
 }
 
-/// Semantic full-text search over WorkspaceGraph nodes.
+/// Full-text search over the Daruma WorkspaceGraph projection.
 ///
-/// NOTE: This is a **Sensemaking-layer** concern (knowledge: semantic recall),
-/// not strict execution. The owning primitive lives in the Sensemaking layer
-/// (`satori::semantic_search`); this core handler is retained as a delegation
-/// surface and is out of the default MCP execution profile (see
-/// `daruma_workspacegraph_search`, profile `Full`). The *structural*
-/// navigation handlers ([`status`], [`context`], [`related`]) stay in core.
+/// Daruma owns the FTS implementation and project filtering. This route does
+/// not delegate to Satori or use an embedding index. The MCP tool remains
+/// available under the full profile; inventory uses the scoped task list.
 pub async fn search(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -195,14 +192,8 @@ pub async fn search(
     Ok(Json(hits))
 }
 
-/// Behavioral impact analysis: downstream tasks/plans affected by a node.
-///
-/// NOTE: This is a **Sensemaking-layer** concern (knowledge: behavioral
-/// impact reasoning), not strict execution. The owning primitive lives in the
-/// Sensemaking layer (`satori::impact`); this core handler is retained as a
-/// delegation surface and is out of the default MCP execution profile (see
-/// `daruma_workspacegraph_impact`, profile `Full`). The *structural*
-/// navigation handlers ([`status`], [`context`], [`related`]) stay in core.
+/// Downstream impact through Daruma's Blocks, PlanContains and ownership edges.
+/// The traversal is implemented in the core graph repository, with no Satori delegation.
 pub async fn impact(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,

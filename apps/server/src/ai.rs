@@ -1,24 +1,14 @@
-//! Batch task complexity analysis (§3.8.3) — server-local shim.
+//! Batch task complexity analysis (§3.8.3) — Daruma server implementation.
 //!
 //! Given a slice of `TaskBrief` rows, issue **one** LLM call and return a
 //! `ComplexityHint` per task. The whole point of batching is to amortise
 //! one prompt across N tasks rather than calling decompose N times — see
 //! ROADMAP §3.8 (CTM A.1).
 //!
-//! # Deprecated: delegation-shim
-//! This is **planning-layer** logic (raw task text → complexity structure)
-//! living in the **execution** core only as a transitional shim. The
-//! canonical home is `yatagarasu::analyze_complexity_batch`
-//! (`planning_oss`), whose pure primitive returns hint drafts and never
-//! touches storage. The `POST /v1/ai/analyze-complexity/{plan_id}` route
-//! still calls this shim; that wiring moves to the planning layer at the
-//! cloud cutover (separate plan), after which this module is removed. Do
-//! not add new callers here.
-//!
-//! The projection write-back (`task_complexity_hints`) is **not** part of
-//! this move — it is structural execution storage and stays in core: the
-//! planning primitive returns hints, core assigns `batch_id` +
-//! `generated_at` and upserts via `state.complexity_hints.upsert_batch`.
+//! The `POST /v1/ai/analyze-complexity/{plan_id}` route calls this implementation.
+//! Daruma owns batch scoring and the `task_complexity_hints` projection; the
+//! unused Yatagarasu scorer was removed. Decompose/scope draft generation stays
+//! in Yatagarasu and is a separate operation, not a delegation target here.
 //!
 //! This module used to live in `crates/ai`; that crate was collapsed once
 //! its only remaining consumers were this server and re-exports of
@@ -125,9 +115,6 @@ fn build_prompt(tasks: &[TaskBrief]) -> String {
 /// `tasks` (when the model returns a row per input). Tasks the model
 /// omits from its response are simply absent in the returned vec.
 ///
-/// **Deprecated delegation-shim** — see the module docs. The canonical
-/// implementation is `yatagarasu::analyze_complexity_batch`; this copy is
-/// retained only until the cloud cutover rewires the server route.
 pub async fn analyze_complexity_batch(
     client: &OpenAiClient,
     tasks: Vec<TaskBrief>,

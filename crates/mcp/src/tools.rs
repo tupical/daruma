@@ -291,7 +291,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_lesson_recall",
             "Recall lessons",
-            "[Sensemaking layer / deprecated in core] Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix. Lesson recall is a knowledge concern owned by the Sensemaking layer (`satori::lesson_recall`); the core comment store stays, but this tool is out of the default execution profile and reachable only under `full`.",
+            "Recall lesson comments from Daruma. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix. Implemented by the core comment store; available under `full`.",
             schema_lesson_recall(),
             Dom::Tasks, F, X, Ann::Read,
         ),
@@ -533,7 +533,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_ai_analyze_complexity",
             "AI: analyze plan complexity",
-            "[Planning layer / deprecated in core] Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). The analysis itself is planning-layer logic (`yatagarasu::analyze_complexity_batch`); this tool remains a delegation-shim until the cloud cutover. Decomposition also lives in the planning layer — there is no core decompose tool to chain into.",
+            "Estimate complexity for every task in a plan in one batch LLM call. Daruma server performs the analysis and upserts `task_complexity_hints` (score 1-10, recommended_subtasks, expansion_hint, reasoning). Yatagarasu decompose/scope are separate draft operations; this tool does not delegate to them.",
             schema_ai_analyze_complexity(),
             Dom::Ai, F, X, Ann::AiWrite,
         ),
@@ -766,14 +766,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_workspacegraph_search",
             "Search WorkspaceGraph nodes",
-            "[Sensemaking layer / deprecated in core] Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Semantic search is a knowledge concern owned by the Sensemaking layer (`satori::semantic_search`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`. Not for listing open work (use `daruma_list status=active`).",
+            "Full-text search over Daruma WorkspaceGraph nodes, implemented by the core FTS projection. Find a node before exploring its graph neighborhood. Available under `full`. Not for listing open work (use `daruma_list status=active`).",
             schema_workspacegraph_search(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_impact",
             "Graph impact analysis",
-            "[Sensemaking layer / deprecated in core] Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges. Behavioral impact analysis is a knowledge concern owned by the Sensemaking layer (`satori::impact`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`.",
+            "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges. Daruma core traverses the graph and applies project filtering. Available under `full`.",
             schema_workspacegraph_impact(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
@@ -1858,11 +1858,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }))
                 .await
         }
-        // Deprecated delegation-shim: this is a thin HTTP forward to the
-        // `/v1/ai/analyze-complexity` route, whose complexity-analysis logic
-        // now canonically lives in the planning layer
-        // (`yatagarasu::analyze_complexity_batch`). Kept until the cloud
-        // cutover rewires the route to the planning layer (separate plan).
+        // Forward to the Daruma server's batch complexity implementation.
         "daruma_ai_analyze_complexity" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
