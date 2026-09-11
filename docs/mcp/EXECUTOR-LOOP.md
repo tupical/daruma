@@ -31,7 +31,7 @@ comment(task_id, body=<artifact summary>, kind=outcome)
   ↓
 complete(task_id)
   ↓
-run_finish_step(run_id, task_id, outcome={kind:"success"})
+run_finish_step(run_id, task_id, outcome={kind:"done"})
   ↓
 repeat from plan_progress
 ```
@@ -47,7 +47,7 @@ repeat from plan_progress
 | 5 | *(work)* | Agent edits codebase; no direct DB writes |
 | 6 | `daruma_comment` | `{ task_id, body, kind: "outcome" }` |
 | 7 | `daruma_complete` | `{ id: task_id }` |
-| 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "success" } }` |
+| 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
 | 9 | goto 2 | |
 | ∞ | `daruma_run_complete` | When plan drained |
 
@@ -61,7 +61,7 @@ Loop until `daruma_plan_progress` returns no `next_ready` and all tasks are done
 1. Call `daruma_plan_progress` — if `next_ready` is absent and counts show completion, call `daruma_run_complete` and stop.
 2. Call `daruma_plan_next_task` with `claim_ttl_secs=300`.
 3. Set the task `in_progress`, do the work, leave an `outcome` comment summarizing changes.
-4. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "success" }`.
+4. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "done" }`.
 5. On blocker: comment with `kind=blocker`, do not complete; move to the next ready task or stop and report.
 
 Rules:
@@ -76,7 +76,7 @@ Rules:
 |-----------|--------|
 | `plan_next_task` returns null but tasks remain | Check plan status; verify blockers via `daruma_relations` (`blocks` edges). |
 | Claim expired | Re-call `plan_next_task` with fresh TTL or `daruma_claim`. |
-| Step failed | `run_finish_step` with `{ "kind": "failure", "reason": "…" }`; optionally `daruma_reopen` after fix. |
+| Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
 
 ## Related tools
@@ -89,3 +89,17 @@ Rules:
 - [../guides/comment-conventions.md](../guides/comment-conventions.md) — `lesson:` prefix
 - [../guides/ai-agent.md](../guides/ai-agent.md) — AI layer rules
 - `clients/claude-plugin/lib/orchestrator.mjs` — reference implementation using `plan_next_task`
+
+## CLI execution bounds
+
+The `daruma-claude` reference executor shares a 100-attempt budget across a plan.
+A task stops after two identical nonempty failed-task error/result messages,
+three failed executions, an executor exception, or its configured retry limit.
+Partial team completion counts do not reset failed-attempt counts: they are not
+proof that a build or test regression was fixed. Each stop records a blocker
+comment; claimed tasks are released and the plan run is aborted instead of
+starting another wave. Plans use the UUID returned by `daruma_run_start`.
+
+These are CLI invocation bounds, not a server-wide token budget or a sandbox
+for arbitrary agent side effects. Restarting the CLI starts a new run; the
+blocker record remains in Daruma for the next operator's decision.
