@@ -4421,7 +4421,19 @@ fn schema_session_start() -> Value {
                     "model": {"type":"string", "description":"Model display name or id"},
                     "chat_id": {"type":"string", "description":"Opaque conversation id in the client"},
                     "transcript_path": {"type":"string", "description":"Absolute path to chat transcript jsonl if known"},
-                    "workspace_path": {"type":"string", "description":"Repo or workspace root"}
+                    "workspace_path": {"type":"string", "description":"Repo or workspace root"},
+                    "git_work_context": {
+                        "type":"object",
+                        "description":"Client-observed Git snapshot. Local stdio captures omitted context; hosted MCP requires caller-provided values. Null means unknown; this is provenance, not authorization.",
+                        "properties": {
+                            "repo_root": {"type":["string","null"]},
+                            "worktree_path": {"type":"string"},
+                            "head_sha": {"type":["string","null"]},
+                            "branch_ref": {"type":["string","null"]},
+                            "merge_request_id": {"type":["string","null"]},
+                            "observed_at": {"type":"string"}
+                        }
+                    }
                 }
             }
         },

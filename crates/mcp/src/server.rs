@@ -140,7 +140,7 @@ pub async fn run_stdio_with_profile(client: ApiClient, profile: ToolProfile) -> 
         }
         let parsed: Result<JsonRpcRequest, _> = serde_json::from_str(&line);
         let response = match parsed {
-            Ok(req) => {
+            Ok(mut req) => {
                 if req.jsonrpc != "2.0" {
                     Some(JsonRpcResponse::err(
                         req.id.clone().unwrap_or(Value::Null),
@@ -148,6 +148,7 @@ pub async fn run_stdio_with_profile(client: ApiClient, profile: ToolProfile) -> 
                         "jsonrpc must be 2.0",
                     ))
                 } else {
+                    enrich_local_session_request(&mut req);
                     dispatch_request_with_profile(&client, profile, req).await
                 }
             }
@@ -168,6 +169,42 @@ pub async fn run_stdio_with_profile(client: ApiClient, profile: ToolProfile) -> 
     Ok(())
 }
 
+/// This enrichment is deliberately outside the shared HTTP dispatch path.
+fn enrich_local_session_request(req: &mut JsonRpcRequest) {
+    use crate::session_metadata::{
+        git_work_context, merge_defaults, KEY_GIT_WORK_CONTEXT, KEY_WORKSPACE_PATH,
+    };
+    if req.method != "tools/call" {
+        return;
+    }
+    let Some(params) = req.params.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    if params.get("name").and_then(Value::as_str) != Some("daruma_session_start") {
+        return;
+    }
+    let Some(args) = params
+        .entry("arguments")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        return;
+    };
+    if args.get("metadata").is_some_and(|value| !value.is_object()) {
+        return;
+    }
+    let mut metadata = merge_defaults(args.get("metadata").cloned().unwrap_or_else(|| json!({})));
+    if metadata.get(KEY_GIT_WORK_CONTEXT).is_none() {
+        if let Some(path) = metadata[KEY_WORKSPACE_PATH].as_str() {
+            let mr = std::env::var("DARUMA_MERGE_REQUEST_ID").ok();
+            if let Some(context) = git_work_context(std::path::Path::new(path), mr.as_deref()) {
+                metadata[KEY_GIT_WORK_CONTEXT] = context;
+            }
+        }
+    }
+    args.insert("metadata".into(), metadata);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +217,32 @@ mod tests {
             method: method.to_string(),
             params,
         }
+    }
+
+    #[test]
+    fn local_enrichment_preserves_explicit_remote_context_and_malformed_requests() {
+        for params in [
+            None,
+            Some(json!(null)),
+            Some(json!({"name":"daruma_session_start", "arguments":42})),
+        ] {
+            let mut req = request("tools/call", params);
+            let original = serde_json::to_value(&req).unwrap();
+            enrich_local_session_request(&mut req);
+            assert_eq!(serde_json::to_value(req).unwrap(), original);
+        }
+        let context = json!({"worktree_path":"/remote/repo", "head_sha":"caller-snapshot"});
+        let mut req = request(
+            "tools/call",
+            Some(json!({
+                "name":"daruma_session_start", "arguments":{"metadata":{"git_work_context":context}}
+            })),
+        );
+        enrich_local_session_request(&mut req);
+        assert_eq!(
+            req.params.unwrap()["arguments"]["metadata"]["git_work_context"],
+            context
+        );
     }
 
     #[tokio::test]

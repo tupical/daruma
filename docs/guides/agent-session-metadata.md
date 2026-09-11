@@ -24,6 +24,7 @@ When an MCP/IDE agent starts work, it should open a **Daruma session** with
 | `chat_id` | opaque string | Client conversation id |
 | `transcript_path` | `/home/.../agent-transcripts/abc.jsonl` | Path to chat log |
 | `workspace_path` | `/home/.../projects/daruma` | Repo root |
+| `git_work_context` | object below | Git snapshot observed by the client |
 
 Environment defaults (merged when omitted in the call):
 
@@ -34,6 +35,42 @@ Environment defaults (merged when omitted in the call):
 - `DARUMA_WORKSPACE` (or process CWD)
 
 Caller-provided `metadata` fields override env defaults.
+
+## Git work context
+
+Local stdio captures missing `metadata.git_work_context` when processing
+`daruma_session_start`, using the caller's `workspace_path` or the local
+workspace/CWD default. The snapshot is persisted through the existing session
+metadata/event projection; no additional session entity is created.
+
+```json
+{
+  "repo_root": "/home/user/projects/repo",
+  "worktree_path": "/home/user/worktrees/feature",
+  "head_sha": "0123456789012345678901234567890123456789",
+  "branch_ref": "refs/heads/feature",
+  "merge_request_id": "42",
+  "observed_at": "2026-09-11T00:00:00Z"
+}
+```
+
+`repo_root` is the first/main working tree reported by Git, while
+`worktree_path` identifies the actual checkout. `head_sha` is the full commit
+hash and remains the code anchor when branch names change. Detached HEAD has
+`branch_ref: null`; an unborn branch has `head_sha: null`. Git unavailable or
+a non-repository directory leaves the whole context absent. If the installed
+Git cannot enumerate worktrees, `repo_root` is null.
+
+MR/PR identity is explicit: pass it in the snapshot or set
+`DARUMA_MERGE_REQUEST_ID` for local stdio. No network lookup or branch-name
+guessing occurs. Existing explicit snapshots, including unknown fields, are
+preserved. Git status, diffs, remotes and credentials are not collected.
+
+Hosted HTTP MCP never runs Git to infer the caller's checkout. Its caller must
+collect this snapshot locally and pass it in `metadata`. The values are
+client-reported provenance, not verified authorization or evidence that an MR
+was merged. The snapshot describes session start; after switching checkouts
+or committing, start a new session to record the new work context.
 
 ## HTTP API
 
