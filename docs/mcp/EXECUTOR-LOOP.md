@@ -103,3 +103,17 @@ starting another wave. Plans use the UUID returned by `daruma_run_start`.
 These are CLI invocation bounds, not a server-wide token budget or a sandbox
 for arbitrary agent side effects. Restarting the CLI starts a new run; the
 blocker record remains in Daruma for the next operator's decision.
+
+## Continuation context
+
+Before every CLI execution attempt, Daruma supplies the current task and the
+current run's journal (`daruma_run_notes_list`). The CLI's private MCP subprocess
+uses the full profile for this read; the default tool catalogue stays compact.
+The prompt carries task id/status/version time, run id and up to ten journal
+entries with author and timestamp; bodies are bounded to 600 characters.
+The read is capped at 500 notes and marks omitted entries/bodies; a full page
+indicates that additional server notes may exist.
+Every attempt appends a summary to the same server journal. A terminal task
+stops retries instead of being reopened from a stale local snapshot.
+This projection creates no `consensus.md` or other local state file and does
+not guess associations to other AgentSessions sharing an agent id.
