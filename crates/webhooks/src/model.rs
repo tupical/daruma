@@ -33,6 +33,12 @@ pub struct Webhook {
 }
 
 impl Webhook {
+    /// Remove the signing secret from an admin API response.
+    pub fn redacted(mut self) -> Self {
+        self.secret.clear();
+        self
+    }
+
     /// True if this webhook subscribes to the given event kind.
     pub fn matches_kind(&self, kind: &str) -> bool {
         self.events.is_empty() || self.events.iter().any(|k| k == kind)

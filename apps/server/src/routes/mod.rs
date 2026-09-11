@@ -4885,7 +4885,7 @@ async fn create_webhook(
         .insert(webhook.clone())
         .await
         .map_err(ApiError::from)?;
-    Ok((StatusCode::CREATED, Json(webhook)))
+    Ok((StatusCode::CREATED, Json(webhook.redacted())))
 }
 
 async fn list_webhooks(
@@ -4895,7 +4895,9 @@ async fn list_webhooks(
     auth.require(Capability::WebhookRead)
         .map_err(ApiError::from_missing_cap)?;
     let list = state.webhooks.list_all().await.map_err(ApiError::from)?;
-    Ok(Json(list))
+    Ok(Json(
+        list.into_iter().map(|w| w.redacted()).collect::<Vec<_>>(),
+    ))
 }
 
 async fn patch_webhook(
@@ -4913,7 +4915,7 @@ async fn patch_webhook(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("webhook {id_str}"))))?;
-    Ok(Json(updated))
+    Ok(Json(updated.redacted()))
 }
 
 async fn delete_webhook(
