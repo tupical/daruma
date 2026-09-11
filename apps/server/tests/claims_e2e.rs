@@ -1108,3 +1108,90 @@ async fn websocket_rejects_raw_start_run_without_mutation() {
     );
     assert_no_claim(&h, &task_id).await;
 }
+
+#[tokio::test]
+async fn terminal_tasks_are_neither_ready_nor_claimable_via_any_drain() {
+    let h = test_app().await;
+    let project = create_project(&h.router, &h.admin_token).await;
+    let plan = create_active_plan_in_project(&h.router, &h.admin_token, &project).await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let id = create_task(&h.router, &h.admin_token).await;
+        attach_task(&h.router, &h.admin_token, &plan, &id).await;
+        ids.push(id);
+    }
+    for (id, status) in [(&ids[0], "done"), (&ids[1], "cancelled")] {
+        let (code, response) = post_json(
+            &h.router,
+            &h.admin_token,
+            "/v1/commands",
+            &json!({"command":{"type":"set_status", "id":id, "status":status}}).to_string(),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{response}");
+        let (code, response) = post_json(
+            &h.router,
+            &h.admin_token,
+            "/v1/claims",
+            &json!({"task_id":id, "ttl_secs":60}).to_string(),
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT, "{response}");
+        assert_no_claim(&h, id).await;
+        let (_, ready) = get_json(
+            &h.router,
+            &h.admin_token,
+            &format!("/v1/tasks/{id}/can_start"),
+        )
+        .await;
+        assert_eq!(ready["ready"], false, "{ready}");
+        assert_eq!(ready["reason"], "terminal_task", "{ready}");
+    }
+    let missing = TaskId::new();
+    let (code, _) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/claims",
+        &json!({"task_id":missing, "ttl_secs":60}).to_string(),
+    )
+    .await;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+    for uri in [
+        format!("/v1/plans/{plan}/next-task"),
+        format!("/v1/ready?project_id={project}"),
+    ] {
+        let (code, response) = get_json(&h.router, &h.admin_token, &uri).await;
+        assert_eq!(code, StatusCode::OK, "{response}");
+        let encoded = response.to_string();
+        assert!(encoded.contains(&ids[2]), "{uri}: {response}");
+        assert!(!encoded.contains(&ids[0]), "{uri}: {response}");
+        assert!(!encoded.contains(&ids[1]), "{uri}: {response}");
+    }
+    for uri in [
+        format!("/v1/plans/{plan}/drain-next"),
+        format!("/v1/ready/drain?project_id={project}"),
+    ] {
+        let (code, response) = post_json(&h.router, &h.admin_token, &uri, "{}").await;
+        assert_eq!(code, StatusCode::OK, "{response}");
+        assert_eq!(response["task_id"], ids[2], "{uri}: {response}");
+        assert_no_claim(&h, &ids[0]).await;
+        assert_no_claim(&h, &ids[1]).await;
+    }
+}
+
+#[tokio::test]
+async fn http_claim_audit_failure_cannot_leave_an_invisible_holder() {
+    let h = test_app().await;
+    let id = create_task(&h.router, &h.admin_token).await;
+    sqlx::query("CREATE TRIGGER fail_claim_audit BEFORE INSERT ON events WHEN NEW.kind = 'agent_claimed' BEGIN SELECT RAISE(ABORT, 'forced claim audit failure'); END")
+        .execute(&h.pool).await.unwrap();
+    let (code, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/claims",
+        &json!({"task_id":id, "ttl_secs":60}).to_string(),
+    )
+    .await;
+    assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR, "{response}");
+    assert_no_claim(&h, &id).await;
+}

@@ -86,7 +86,7 @@ pub async fn plan_fanout(
         .filter_map(|pt| {
             task_map
                 .get(&pt.task_id)
-                .filter(|task| task.status != Status::Done)
+                .filter(|task| !task.status.is_terminal())
                 .map(|_| pt.task_id)
         })
         .collect::<HashSet<_>>();
@@ -204,8 +204,9 @@ pub async fn can_start(
 
     let (rule_blockers, rule_warnings) = rule_readiness(gate, &task).await?;
 
-    let ready = blockers.is_empty() && rule_blockers.is_empty();
+    let ready = !task.status.is_terminal() && blockers.is_empty() && rule_blockers.is_empty();
     let reason = match (blockers.len(), rule_blockers.len()) {
+        _ if task.status.is_terminal() => "terminal_task".to_string(),
         (0, 0) => "ready".to_string(),
         (0, r) => format!("blocked_by_{r}_rule(s)"),
         (t, 0) => format!("blocked_by_{t}_task(s)"),

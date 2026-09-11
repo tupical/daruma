@@ -5,7 +5,7 @@ Canonical agent loop for draining a plan without a human in the loop. Stateless 
 ## Prerequisites
 
 - Plan status **`active`** (use `daruma_plan_set_status` if still `draft`).
-- A **`run_id`** from `daruma_run_start` (or a fresh UUID per drain pass — see `plan_next_task` docs).
+- A **`run_id`** returned by `daruma_run_start`, or omit it when calling `daruma_plan_drain_next` so the server starts an authenticated run. Never invent a run UUID.
 - Workspace default project set (`daruma_project_use`) when tasks are project-scoped.
 
 ## Loop
@@ -19,11 +19,9 @@ run_start(plan_id, agent_id)
 │      run_complete(run) → EXIT        │
 └──────────────────────────────────────┘
   ↓
-next = plan_next_task(plan_id, run_id, claim_ttl_secs=300)
+next = plan_drain_next(plan_id, run_id, claim_ttl_secs=300)
   ↓
-set_status(next.task_id, in_progress)
-  ↓
-claim(next.task_id, agent_id, ttl)     ← optional if next_task already claimed
+<server claims task and sets in_progress>
   ↓
 <execute work in repo / run tests / edit files>
   ↓
@@ -117,3 +115,17 @@ Every attempt appends a summary to the same server journal. A terminal task
 stops retries instead of being reopened from a stale local snapshot.
 This projection creates no `consensus.md` or other local state file and does
 not guess associations to other AgentSessions sharing an agent id.
+
+
+## Terminal tasks and atomic claims
+
+`next-task`, plan fanout and project ready/drain exclude `done` and `cancelled`
+tasks. Explicit dependency success still requires `done`: cancelling a prerequisite
+does not assert that its deliverable exists. `can_start` returns `terminal_task`
+for a terminal target; reopen deliberately before attempting a new claim.
+
+HTTP `/claims` and run-bound drain use the same recorded claim transaction.
+A missing task returns 404, a terminal task 409. A failed audit append rolls back
+the holder, preventing invisible claims. Claim acquisition also shares the handler
+lifecycle lock with task status projection, so a completed/cancelled task cannot be
+reclaimed in that handler's event-to-projection interval.

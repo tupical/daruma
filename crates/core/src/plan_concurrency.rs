@@ -35,7 +35,7 @@ pub struct NextTask {
 /// Algorithm:
 /// 1. Load plan → status must be `Active`, else return `None`.
 /// 2. List `plan_tasks` ordered by `position`.
-/// 3. Skip tasks whose `status == Done`.
+/// 3. Skip terminal tasks (`Done` or `Cancelled`).
 /// 4. Skip tasks whose `depends_on` contains any non-Done task.
 /// 5. Skip tasks with an active cross-task `Blocks` blocker (same
 ///    semantics as `can_start`) — without this, two agents can grab
@@ -82,8 +82,8 @@ impl NextTaskResolver<'_> {
                 None => continue,
             };
 
-            // Skip done tasks
-            if task.status == Status::Done {
+            // Terminal tasks must never be offered for execution.
+            if task.status.is_terminal() {
                 continue;
             }
 

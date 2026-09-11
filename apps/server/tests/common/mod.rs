@@ -44,6 +44,7 @@ const DEFAULT_RATE_LIMIT: u32 = 300;
 /// Fully wired in-memory server: router, state, event bus, and an
 /// admin-scope token ready for `Authorization: Bearer …`.
 pub struct TestApp {
+    pub pool: sqlx::SqlitePool,
     pub router: Router,
     pub state: AppState,
     pub bus: EventBus,
@@ -272,6 +273,7 @@ impl TestAppBuilder {
         let router = router(state.clone());
 
         TestApp {
+            pool: db.pool().clone(),
             router,
             state,
             bus,

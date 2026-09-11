@@ -57,7 +57,7 @@ use daruma_mcp::{
 use daruma_shared::{
     AgentId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId, RunId, TaskId,
 };
-use daruma_storage::{ActiveClaim, ClaimOutcome, RecordedClaimOutcome, ReserveOutcome};
+use daruma_storage::{ActiveClaim, RecordedClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -6857,8 +6857,10 @@ async fn acquire_claim(
 
     // Atomic exclusive acquire: another agent's live claim blocks us.
     match state
-        .claims
-        .try_acquire(
+        .commands
+        .handler()
+        .try_acquire_claim(
+            actor_from(&auth, None),
             auth.agent_id,
             body.task_id,
             chrono::Duration::seconds(body.ttl_secs as i64),
@@ -6866,7 +6868,7 @@ async fn acquire_claim(
         .await
         .map_err(ApiError::from)?
     {
-        ClaimOutcome::Busy { holder, expires_at } => Ok(Json(MutationResponse {
+        RecordedClaimOutcome::Busy { holder, expires_at } => Ok(Json(MutationResponse {
             success: false,
             event_id: None,
             event_seq: None,
@@ -6880,25 +6882,12 @@ async fn acquire_claim(
             warnings: vec![],
             client_command_id: None,
         })),
-        ClaimOutcome::Acquired {
+        RecordedClaimOutcome::Acquired {
             expires_at,
             claim_id,
+            event,
         } => {
-            // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
-            let envs = state
-                .commands
-                .dispatch(
-                    Command::AcquireClaim {
-                        agent_id: auth.agent_id,
-                        task_id: body.task_id,
-                        claim_id,
-                        expires_at,
-                    },
-                    actor_from(&auth, None),
-                )
-                .await
-                .map_err(ApiError::from)?;
-            let last = envs.last();
+            let last = Some(&event);
             Ok(Json(MutationResponse {
                 success: true,
                 event_id: last.map(|e| e.id),

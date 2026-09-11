@@ -472,6 +472,19 @@ impl AgentClaimRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
 
+        let status: Option<String> = sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?")
+            .bind(task_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        match status.as_deref() {
+            None => return Err(CoreError::not_found(format!("task {task_id}"))),
+            Some("done" | "cancelled") => {
+                return Err(CoreError::conflict("terminal task cannot be claimed"))
+            }
+            Some(_) => {}
+        }
+
         if let Some(run_id) = run_id.as_deref() {
             let row = sqlx::query(
                 "SELECT r.plan_id, r.status, p.status AS plan_status, \
@@ -1377,6 +1390,14 @@ mod tests {
         (db, repo)
     }
 
+    async fn seed_claim_task(db: &Db) -> TaskId {
+        let id = TaskId::new();
+        sqlx::query("INSERT INTO tasks (id, title, created_at, updated_at) VALUES (?, 'claim target', ?, ?)")
+            .bind(id.to_string()).bind(Utc::now().to_rfc3339()).bind(Utc::now().to_rfc3339())
+            .execute(db.pool()).await.unwrap();
+        id
+    }
+
     #[tokio::test]
     async fn claim_acquire_and_check() {
         let (_db, repo) = make_repo().await;
@@ -1477,7 +1498,7 @@ mod tests {
     async fn failed_audit_after_acquire_leaves_neither_row_nor_event() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
 
         sqlx::query(
             "CREATE TRIGGER fail_claim_audit BEFORE INSERT ON events \
@@ -1516,7 +1537,7 @@ mod tests {
     async fn failed_release_audit_preserves_exact_claim_and_emits_nothing() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
         let claim_id = match repo
             .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60))
             .await
@@ -1565,7 +1586,7 @@ mod tests {
     async fn delayed_compensation_cannot_release_reacquired_generation() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
         let stale_claim_id = match repo
             .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60))
             .await
@@ -1611,7 +1632,7 @@ mod tests {
     async fn task_close_records_exact_generation_release_atomically() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
         let claim_id = match repo
             .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60))
             .await
@@ -1673,7 +1694,7 @@ mod tests {
     async fn delayed_close_projector_cannot_delete_reopened_generation() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
         let old_claim_id = match repo
             .try_acquire_recorded(Actor::user(), agent_id, task_id, Duration::seconds(60))
             .await
@@ -1732,7 +1753,7 @@ mod tests {
     async fn sweep_selection_cannot_delete_concurrent_refresh_or_emit_release() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
         let stale_claim_id = ClaimId::new();
 
         sqlx::query(
@@ -1853,7 +1874,7 @@ mod tests {
     async fn live_run_bound_claim_keeps_run_on_runless_refresh() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = seed_claim_task(&db).await;
         let run_id = RunId::new();
         let old_claim_id = ClaimId::new();
 

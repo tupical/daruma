@@ -105,8 +105,8 @@ pub struct CommandHandler {
     // task migrates its UI) and in-process tests.
     pub plan_only_intake: bool,
 
-    // ponytail: one process-wide boundary is enough; shard per plan only if
-    // run/plan lifecycle contention becomes measurable.
+    // ponytail: one handler boundary serializes command projection and claims;
+    // shard only if tenant contention becomes measurable.
     plan_run_lifecycle: tokio::sync::Mutex<()>,
     // `external_key` is workspace-unique. Keep the read-before-append decision
     // and the resulting projection update in one process-wide critical section
@@ -298,6 +298,7 @@ impl CommandHandler {
         task_id: TaskId,
         ttl: chrono::Duration,
     ) -> Result<RecordedClaimOutcome> {
+        let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
             .claims
             .as_ref()
@@ -367,6 +368,7 @@ impl CommandHandler {
         task_id: TaskId,
         ttl: chrono::Duration,
     ) -> Result<RecordedClaimOutcome> {
+        let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
             .claims
             .as_ref()
@@ -426,7 +428,8 @@ impl CommandHandler {
     ) -> Result<DispatchOutcome> {
         let actor = match (&cmd, authenticated_agent_id) {
             (Command::RecordEvidence { .. }, Some(id)) => Actor::Agent {
-                id, name: "authenticated".into(),
+                id,
+                name: "authenticated".into(),
             },
             _ => actor,
         };
@@ -4940,7 +4943,20 @@ mod tests {
     async fn acquire_and_release_claim_emit_events() {
         let (handler, ..) = build_plan_stack().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = match handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("claim target"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap()[0]
+            .payload
+        {
+            Event::TaskCreated { ref task } => task.id.unwrap(),
+            ref other => panic!("expected task_created, got {other:?}"),
+        };
 
         let claim = handler
             .try_acquire_claim(
