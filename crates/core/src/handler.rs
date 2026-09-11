@@ -452,12 +452,10 @@ impl CommandHandler {
                     ..
                 }
         );
-        let serial_plan_run = plan_terminal || matches!(&cmd, Command::StartRun { .. });
-        let _plan_run_guard = if serial_plan_run {
-            Some(self.plan_run_lifecycle.lock().await)
-        } else {
-            None
-        };
+        // ponytail: serialize commands per handler through projection updates;
+        // shard by aggregate only if measured command contention requires it.
+        // Reconciliation must not race task reopening or plan recomposition.
+        let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let owned_terminal = authenticated_agent_id.is_some()
@@ -467,7 +465,8 @@ impl CommandHandler {
         // `source_event_id` to point at the real `PlanCreated` event id, which
         // only exists once envelopes are built below. Note the command now.
         let materialising = matches!(cmd, Command::MaterializePlan { .. });
-        let events = self.build_events(cmd, &actor).await?;
+        let mut events = self.build_events(cmd, &actor).await?;
+        self.append_plan_reconciliations(&mut events).await?;
         if events.is_empty() {
             return Ok(DispatchOutcome {
                 events: vec![],
@@ -694,6 +693,118 @@ impl CommandHandler {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Reconcile only aggregates touched by this command. Overlay its pending
+    /// transitions on the read model so task and plan closure commit together.
+    async fn append_plan_reconciliations(&self, events: &mut Vec<Event>) -> Result<()> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        let Some(plans) = &self.plans else {
+            return Ok(());
+        };
+        let mut candidates = VecDeque::new();
+        let mut task_statuses = HashMap::new();
+        let mut plan_statuses = HashMap::new();
+        let mut ended_runs = HashSet::new();
+        for event in events.iter() {
+            match event {
+                Event::TaskStatusChanged { task_id, to, .. } => {
+                    task_statuses.insert(*task_id, *to);
+                    if to.is_terminal() {
+                        candidates.extend(plans.list_plans_for_task(*task_id).await?);
+                    }
+                }
+                Event::PlanStatusChanged { plan_id, to, .. } => {
+                    plan_statuses.insert(*plan_id, *to);
+                    if matches!(to, PlanStatus::Completed | PlanStatus::Abandoned) {
+                        if let Some(plan) = plans.get(*plan_id).await? {
+                            candidates.extend(plan.parent_plan_id);
+                        }
+                    }
+                }
+                Event::PlanArchived { plan_id, .. } => {
+                    plan_statuses.insert(*plan_id, PlanStatus::Abandoned);
+                    if let Some(plan) = plans.get(*plan_id).await? {
+                        candidates.extend(plan.parent_plan_id);
+                    }
+                }
+                Event::RunCompleted { run_id, .. }
+                | Event::RunFailed { run_id, .. }
+                | Event::RunAborted { run_id, .. } => {
+                    ended_runs.insert(*run_id);
+                    if let Some(runs) = &self.runs {
+                        if let Some(run) = runs.get(*run_id).await? {
+                            candidates.push_back(run.plan_id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        while let Some(plan_id) = candidates.pop_front() {
+            let Some(plan) = plans.get(plan_id).await? else {
+                continue;
+            };
+            let status = plan_statuses.get(&plan_id).copied().unwrap_or(plan.status);
+            if status != PlanStatus::Active || plan.archived_at.is_some() {
+                continue;
+            }
+            let tasks = plans.list_plan_tasks_ordered(plan_id).await?;
+            // Empty plans are not evidence of completed work.
+            if tasks.is_empty() {
+                continue;
+            }
+            let mut ready = true;
+            for member in tasks {
+                let Some(task) = self.tasks.get(member.task_id).await? else {
+                    ready = false;
+                    break;
+                };
+                if !task_statuses
+                    .get(&task.id)
+                    .copied()
+                    .unwrap_or(task.status)
+                    .is_terminal()
+                {
+                    ready = false;
+                    break;
+                }
+            }
+            if !ready {
+                continue;
+            }
+            let children = plans.list_children(plan_id).await?;
+            if children.iter().any(|child| {
+                !matches!(
+                    plan_statuses
+                        .get(&child.id)
+                        .copied()
+                        .unwrap_or(child.status),
+                    PlanStatus::Completed | PlanStatus::Abandoned
+                )
+            }) {
+                continue;
+            }
+            if let Some(runs) = &self.runs {
+                if runs
+                    .list_active_for_plan(plan_id)
+                    .await?
+                    .iter()
+                    .any(|run| !ended_runs.contains(&run.id))
+                {
+                    continue;
+                }
+            }
+            events.push(Event::PlanStatusChanged {
+                plan_id,
+                from: plan.status,
+                to: PlanStatus::Completed,
+            });
+            plan_statuses.insert(plan_id, PlanStatus::Completed);
+            candidates.extend(plan.parent_plan_id);
+        }
+        Ok(())
+    }
 
     /// Build the events for transitioning a single task to `to`, including
     /// the side-effects: blocker rejection, `TaskReopened`/`TaskClosed`,
@@ -3665,6 +3776,17 @@ mod tests {
 
     #[async_trait]
     impl PlanRepository for MemPlanRepo {
+        async fn list_children(&self, parent: PlanId) -> daruma_shared::Result<Vec<Plan>> {
+            Ok(self
+                .plans
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|plan| plan.parent_plan_id == Some(parent))
+                .cloned()
+                .collect())
+        }
+
         async fn get(&self, id: PlanId) -> daruma_shared::Result<Option<Plan>> {
             Ok(self.plans.lock().unwrap().get(&id).cloned())
         }

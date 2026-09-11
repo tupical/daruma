@@ -26,6 +26,8 @@ pub trait PlanRepository: Send + Sync {
     /// Backed by `idx_plan_tasks_task` so the lookup is O(memberships), not O(tasks).
     async fn list_plans_for_task(&self, task_id: TaskId) -> Result<Vec<PlanId>>;
 
+    async fn list_children(&self, plan_id: PlanId) -> Result<Vec<Plan>>;
+
     /// Apply a persisted event to the projection (mirrors `TaskRepo::apply_event`).
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
 }
@@ -103,6 +105,9 @@ use daruma_storage::{ExternalRefRepo, PlanRepo, RunRepo, SessionRepo};
 
 #[async_trait]
 impl PlanRepository for PlanRepo {
+    async fn list_children(&self, plan_id: PlanId) -> Result<Vec<Plan>> {
+        PlanRepo::list_children(self, plan_id).await
+    }
     async fn get(&self, id: PlanId) -> Result<Option<Plan>> {
         PlanRepo::get(self, id).await
     }

@@ -24,6 +24,17 @@ impl MemPlanRepo {
 
 #[async_trait]
 impl daruma_core::repos::PlanRepository for MemPlanRepo {
+    async fn list_children(&self, parent: PlanId) -> daruma_shared::Result<Vec<Plan>> {
+        Ok(self
+            .plans
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|plan| plan.parent_plan_id == Some(parent))
+            .cloned()
+            .collect())
+    }
+
     async fn get(&self, id: PlanId) -> Result<Option<Plan>> {
         Ok(self.plans.lock().unwrap().get(&id).cloned())
     }
