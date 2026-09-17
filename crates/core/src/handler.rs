@@ -1463,6 +1463,18 @@ impl CommandHandler {
                         )));
                     }
                 }
+                // Git context is replaced whole: normalise/validate the shape
+                // once here so every reader (projection, MCP, UI) sees a
+                // trimmed, well-formed object or nothing.
+                let patch = match patch.git_context {
+                    Some(Some(ctx)) => daruma_domain::TaskPatch {
+                        git_context: Some(Some(
+                            ctx.normalized().map_err(CoreError::validation)?,
+                        )),
+                        ..patch
+                    },
+                    _ => patch,
+                };
                 self.tasks
                     .get(id)
                     .await?
