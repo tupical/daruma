@@ -469,7 +469,7 @@ mod tests {
             supersedes: None,
         }
         .into_evidence(
-            ActorRef::from_actor(&Actor::User),
+            ActorRef::from_actor(&Actor::user()),
             daruma_shared::time::now(),
         )
     }

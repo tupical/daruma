@@ -407,7 +407,7 @@ mod tests {
                 project,
                 "task.stuck",
                 &[still_here],
-                &ActorRef::from_actor(&Actor::User),
+                &ActorRef::from_actor(&Actor::user()),
                 time::now(),
             )
             .await
@@ -435,7 +435,7 @@ mod tests {
             project,
             "task.stuck",
             &[],
-            &ActorRef::from_actor(&Actor::User),
+            &ActorRef::from_actor(&Actor::user()),
             time::now(),
         )
         .await
@@ -489,7 +489,7 @@ mod tests {
             .upsert(&sample(project, Some(TaskId::new()), "a"))
             .await
             .unwrap();
-        let actor = ActorRef::from_actor(&Actor::User);
+        let actor = ActorRef::from_actor(&Actor::user());
 
         assert!(repo
             .set_status(id, FindingStatus::Acknowledged, &actor, time::now())

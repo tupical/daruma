@@ -123,7 +123,7 @@ async fn new_task_gets_created_by_from_event_actor() {
 async fn completing_task_populates_completed_by() {
     let (tasks, store) = build_stack().await;
     let task_id = TaskId::new();
-    let creator = Actor::User;
+    let creator = Actor::user();
     let completer = Actor::Agent {
         id: AgentId::new(),
         name: "bot.completer".into(),
