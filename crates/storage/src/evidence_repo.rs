@@ -88,7 +88,7 @@ impl EvidenceRepo {
         let found: i64 = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM evidence WHERE scope_kind = 'task' AND scope_id = ? \
              AND kind = 'artifact_created' AND target = ? AND superseded_by IS NULL \
-             AND actor_kind = 'agent' AND authenticated_actor_id = actor_id AND actor_id != ? \
+             AND authenticated_actor_id IS NOT NULL AND authenticated_actor_id = actor_id AND actor_id != ? \
              AND json_type(payload, '$.passed') = 'true')",
         )
         .bind(task_id.to_string())

@@ -426,10 +426,15 @@ impl CommandHandler {
         authenticated_agent_id: Option<AgentId>,
         is_admin: bool,
     ) -> Result<DispatchOutcome> {
+        // Evidence must be attributed to the authenticated principal, never to
+        // a client-asserted actor: the payload actor is untrusted for
+        // independence checks. The token-derived actor already carries the
+        // principal (Bot → Agent, human tokens → User { id }), so only its
+        // id is pinned here; the kind is not rewritten.
         let actor = match (&cmd, authenticated_agent_id) {
-            (Command::RecordEvidence { .. }, Some(id)) => Actor::Agent {
-                id,
-                name: "authenticated".into(),
+            (Command::RecordEvidence { .. }, Some(id)) => match actor {
+                Actor::Agent { name, .. } => Actor::Agent { id, name },
+                Actor::User { name, .. } => Actor::User { id: Some(id), name },
             },
             _ => actor,
         };

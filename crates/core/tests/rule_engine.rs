@@ -1974,3 +1974,60 @@ async fn independent_test_attestation_binds_task_revision_and_authenticated_veri
     ).await.unwrap();
     stack.handler.handle(complete(), Actor::user()).await.unwrap();
 }
+
+/// Evidence keeps the token's actor *kind* and pins only the principal id: a
+/// human token stays `User { id }` (so the cabinet can name the person) and a
+/// forged agent envelope id is replaced, never trusted.
+#[tokio::test]
+async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
+    let stack = stack().await;
+    let task = create_task(&stack, "Actor kind").await;
+    let principal = daruma_shared::AgentId::new();
+    let forged = daruma_shared::AgentId::new();
+
+    let evidence = new_evidence(EvidenceKind::CompletionNote, RuleScope::Task { id: task }, None);
+    let outcome = stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence },
+            Actor::User { id: Some(forged), name: Some("owner@example.com".into()) },
+            principal,
+            false,
+        )
+        .await
+        .unwrap();
+    let recorded = outcome
+        .events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
+            _ => None,
+        })
+        .expect("evidence recorded");
+    assert_eq!(recorded.actor.kind, "user");
+    assert_eq!(recorded.actor.id, Some(principal));
+    assert_eq!(recorded.actor.name.as_deref(), Some("owner@example.com"));
+    assert_eq!(recorded.authenticated_actor_id, Some(principal));
+
+    let evidence = new_evidence(EvidenceKind::CompletionNote, RuleScope::Task { id: task }, None);
+    let outcome = stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence },
+            Actor::Agent { id: forged, name: "bot".into() },
+            principal,
+            false,
+        )
+        .await
+        .unwrap();
+    let recorded = outcome
+        .events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
+            _ => None,
+        })
+        .expect("evidence recorded");
+    assert_eq!(recorded.actor.kind, "agent");
+    assert_eq!(recorded.actor.id, Some(principal));
+}
