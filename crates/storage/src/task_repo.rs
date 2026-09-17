@@ -42,7 +42,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks{status_clause} ORDER BY created_at ASC"
         );
         let mut q = sqlx::query(&sql);
@@ -75,7 +75,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks {where_clause}{status_clause} ORDER BY created_at ASC"
         );
         let mut q = sqlx::query(&sql);
@@ -98,7 +98,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks \
              WHERE status = ? ORDER BY created_at ASC",
         )
@@ -134,7 +134,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key, status_changed_at \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context, status_changed_at \
              FROM tasks \
              WHERE status = ? AND status_changed_at IS NOT NULL AND status_changed_at < ? \
              {where_clause} \
@@ -169,7 +169,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks WHERE id = ?",
         )
         .bind(id.to_string())
@@ -189,7 +189,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks WHERE external_key = ?",
         )
         .bind(external_key)
@@ -205,7 +205,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks \
              WHERE project_id = ? AND triage_state = 'pending' \
              ORDER BY created_at ASC",
@@ -248,7 +248,7 @@ impl TaskRepo {
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
              created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-             updated_event_seq, source_event_id, triage_state, external_key \
+             updated_event_seq, source_event_id, triage_state, external_key, git_context \
              FROM tasks WHERE id IN ({ph})",
             ph = placeholders
         );
@@ -297,6 +297,7 @@ impl TaskRepo {
                     // (was hardcoded `None`). Plain `CreateTask` leaves it unset.
                     source_event_id: new_task.source_event_id,
                     external_key: new_task.external_key.clone(),
+                    git_context: None,
                 };
                 let after = task_value(&task)?;
                 self.upsert_task_tx(&mut tx, &task).await?;
@@ -455,6 +456,7 @@ impl TaskRepo {
                         // can be walked later.
                         source_event_id: Some(envelope.id),
                         external_key: new_task.external_key.clone(),
+                        git_context: None,
                     };
                     let after = task_value(&task)?;
                     self.upsert_task_tx(&mut tx, &task).await?;
@@ -605,8 +607,8 @@ impl TaskRepo {
              (id, project_id, title, description, status, priority, due_at, \
               created_at, updated_at, started_at, completed_at, \
               created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-              updated_event_seq, source_event_id, triage_state, external_key) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+              updated_event_seq, source_event_id, triage_state, external_key, git_context) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
               project_id = excluded.project_id, title = excluded.title, \
               description = excluded.description, status = excluded.status, \
@@ -620,7 +622,8 @@ impl TaskRepo {
               updated_event_seq = excluded.updated_event_seq, \
               source_event_id = excluded.source_event_id, \
               triage_state = excluded.triage_state, \
-              external_key = excluded.external_key",
+              external_key = excluded.external_key, \
+              git_context = excluded.git_context",
         )
         .bind(task.id.to_string())
         .bind(project_id)
@@ -641,6 +644,12 @@ impl TaskRepo {
         .bind(source_event_id)
         .bind(task.triage_state.map(TriageState::as_str))
         .bind(task.external_key.clone())
+        .bind(
+            task.git_context
+                .as_ref()
+                .map(|g| serde_json::to_string(g).map_err(|e| CoreError::serde(e.to_string())))
+                .transpose()?,
+        )
         .execute(&mut **tx)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -654,7 +663,7 @@ async fn get_task_tx(tx: &mut Transaction<'_, Sqlite>, id: TaskId) -> Result<Opt
         "SELECT id, project_id, title, description, status, priority, \
          due_at, created_at, updated_at, started_at, completed_at, \
          created_by_json, completed_by_json, updated_by_json, updated_event_id, \
-         updated_event_seq, source_event_id, triage_state, external_key \
+         updated_event_seq, source_event_id, triage_state, external_key, git_context \
          FROM tasks WHERE id = ?",
     )
     .bind(id.to_string())
@@ -771,6 +780,11 @@ fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> Result<Task> {
     let external_key: Option<String> = row
         .try_get("external_key")
         .map_err(|e| CoreError::storage(e.to_string()))?;
+    let git_context: Option<daruma_domain::GitContext> = row
+        .try_get::<Option<String>, _>("git_context")
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        .map(|raw| serde_json::from_str(&raw).map_err(|e| CoreError::serde(e.to_string())))
+        .transpose()?;
 
     let task_id = id
         .parse::<TaskId>()
@@ -821,6 +835,7 @@ fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> Result<Task> {
             })
             .transpose()?,
         external_key,
+        git_context,
     })
 }
 

@@ -9,7 +9,7 @@ use crate::task::Status;
 /// - key absent  → `None`          (no change intended)
 /// - key = null  → `Some(None)`    (unparent / clear)
 /// - key = value → `Some(Some(v))` (set / re-parent)
-fn deserialize_double_option<'de, T, D>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
+pub(crate) fn deserialize_double_option<'de, T, D>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,

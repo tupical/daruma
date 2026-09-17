@@ -146,6 +146,72 @@ pub struct Task {
     /// no external origin. Serialised as omitted (not `null`) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_key: Option<String>,
+    /// Where the work for this task lives in Git, as reported by the agent
+    /// or person doing it (branch, head commit, merge request, repository).
+    /// Execution-owned like `due_at`: set through `update_task`, replaced
+    /// whole, cleared with `null`. Client-reported provenance, not verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_context: Option<GitContext>,
+}
+
+/// Git work context of a task. Every field is optional so a caller can pin
+/// just a branch, just a merge request, or the full set; an all-empty
+/// context is rejected at validation. `head_sha` is the code anchor when
+/// branch names change; `mr_url` is the review surface (PR/MR page).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GitContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mr_url: Option<String>,
+}
+
+impl GitContext {
+    /// Trim fields, drop empties, and reject shapes that cannot be a Git
+    /// context: nothing set, oversized values, control characters, a
+    /// `head_sha` that is not 7–64 hex chars, or an `mr_url` that is not an
+    /// absolute http(s) URL.
+    pub fn normalized(mut self) -> Result<Self, String> {
+        fn clean(value: Option<String>, name: &str, max: usize) -> Result<Option<String>, String> {
+            let Some(value) = value else { return Ok(None) };
+            let value = value.trim();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            if value.chars().count() > max {
+                return Err(format!("git_context.{name} is longer than {max} characters"));
+            }
+            if value.chars().any(char::is_control) {
+                return Err(format!("git_context.{name} contains control characters"));
+            }
+            Ok(Some(value.to_string()))
+        }
+        self.repo = clean(self.repo, "repo", 512)?;
+        self.branch = clean(self.branch, "branch", 256)?;
+        self.head_sha = clean(self.head_sha, "head_sha", 64)?;
+        self.mr_url = clean(self.mr_url, "mr_url", 2048)?;
+        if let Some(sha) = &self.head_sha {
+            if sha.len() < 7 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("git_context.head_sha must be 7–64 hex characters".into());
+            }
+            self.head_sha = Some(sha.to_ascii_lowercase());
+        }
+        if let Some(url) = &self.mr_url {
+            let ok = (url.starts_with("https://") || url.starts_with("http://"))
+                && !url.contains(char::is_whitespace);
+            if !ok {
+                return Err("git_context.mr_url must be an absolute http(s) URL".into());
+            }
+        }
+        if self.repo.is_none() && self.branch.is_none() && self.head_sha.is_none() && self.mr_url.is_none() {
+            return Err("git_context must set at least one of repo, branch, head_sha, mr_url".into());
+        }
+        Ok(self)
+    }
 }
 
 impl Task {
@@ -172,6 +238,7 @@ impl Task {
             updated_event_seq: None,
             source_event_id: input.source_event_id,
             external_key: input.external_key,
+            git_context: None,
         }
     }
 }
@@ -245,10 +312,23 @@ pub struct TaskPatch {
     pub priority: Option<Priority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_state: Option<Option<TriageState>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Three-way: absent = no change, `null` = clear, value = set.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::plan::deserialize_double_option"
+    )]
     pub due_at: Option<Option<Timestamp>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<ProjectId>>,
+    /// Replaced whole (`Some(Some(ctx))`) or cleared (`Some(None)`); on the
+    /// wire absent = no change, `null` = clear.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::plan::deserialize_double_option"
+    )]
+    pub git_context: Option<Option<GitContext>>,
 }
 
 impl TaskPatch {
@@ -260,6 +340,7 @@ impl TaskPatch {
             && self.triage_state.is_none()
             && self.due_at.is_none()
             && self.project_id.is_none()
+            && self.git_context.is_none()
     }
 
     pub fn apply(self, task: &mut Task) {
@@ -283,6 +364,9 @@ impl TaskPatch {
         }
         if let Some(p) = self.project_id {
             task.project_id = p;
+        }
+        if let Some(g) = self.git_context {
+            task.git_context = g;
         }
         task.updated_at = time::now();
     }

@@ -1037,6 +1037,7 @@ fn rollback_task_command(after: Value) -> Result<Command, ApiError> {
             triage_state: Some(task.triage_state),
             due_at: Some(task.due_at),
             project_id: Some(task.project_id),
+            git_context: Some(task.git_context),
         },
     })
 }

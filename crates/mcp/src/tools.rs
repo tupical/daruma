@@ -263,7 +263,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, or due date. When plan-only intake is on, title and description are plan-owned (ADR-0007 Q1) and this tool rejects them — amend them via daruma_amend_plan_task against the owning plan. Status and priority are set by daruma_set_status and daruma_set_priority, not here. Recorded in the task event/activity log.",
+            "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; set at handoff, null clears). Under plan-only intake title/description are plan-owned (ADR-0007 Q1) and rejected here — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -1463,8 +1463,16 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                     patch.insert("due_at".to_string(), Value::String(due_at.to_string()));
                 }
             }
+            if let Some(git_context) = args.get("git_context") {
+                if !(git_context.is_null() || git_context.is_object()) {
+                    anyhow::bail!("`git_context` must be an object or null");
+                }
+                patch.insert("git_context".to_string(), git_context.clone());
+            }
             if patch.is_empty() {
-                anyhow::bail!("at least one of `title`, `description`, or `due_at` is required");
+                anyhow::bail!(
+                    "at least one of `title`, `description`, `due_at`, or `git_context` is required"
+                );
             }
             client
                 .post_command(json!({"type":"update_task","id": id, "patch": patch}))
@@ -3352,7 +3360,8 @@ fn schema_update() -> Value {
             "due_at": {
                 "description":"RFC3339 timestamp to set, or null to clear.",
                 "anyOf": [{"type":"string"}, {"type":"null"}]
-            }
+            },
+            "git_context": {"anyOf": [{"type":"object"}, {"type":"null"}]}
         },
         "required":["id"]
     })

@@ -72,6 +72,22 @@ client-reported provenance, not verified authorization or evidence that an MR
 was merged. The snapshot describes session start; after switching checkouts
 or committing, start a new session to record the new work context.
 
+## Git context on the task itself
+
+The session snapshot above records where an agent *started*. The durable
+answer to "where is the work for this task" lives on the task: the
+execution-owned field `git_context` `{repo?, branch?, head_sha?, mr_url?}`.
+
+- Set it through `daruma_update` (`git_context` argument) or
+  `update_task` with `patch.git_context`; the object is replaced whole,
+  `null` clears it. At least one field is required; `head_sha` must be
+  7–64 hex characters, `mr_url` an absolute http(s) URL.
+- It is client-reported provenance, not verification that a branch exists
+  or an MR was merged. History is not backfilled — earlier agents wrote the
+  branch into comments.
+- Convention for executors: set `branch` + `head_sha` when handing a task
+  to review, add `mr_url` once a PR/MR exists.
+
 ## HTTP API
 
 ```http
