@@ -69,7 +69,7 @@ async fn set_status_done_to_todo_emits_task_reopened() {
     match &envs[1].payload {
         Event::TaskReopened { task_id, by, .. } => {
             assert_eq!(*task_id, id);
-            assert!(matches!(by, Actor::User));
+            assert!(matches!(by, Actor::User { .. }));
         }
         other => panic!("expected TaskReopened, got {other:?}"),
     }

@@ -40,14 +40,18 @@ impl AuthContext {
     /// dispatched on behalf of this token.
     ///
     /// - `TokenKind::Bot` → `Actor::Agent { id: agent_id, name: "bot.<agent_id>" }`
-    /// - `TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License` → `Actor::User`
+    /// - `TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License` →
+    ///   `Actor::User { id: agent_id }` — the token's principal is the person
+    ///   (or the service acting for them), so the journal can answer "who".
     pub fn actor(&self) -> Actor {
         match self.token_kind {
             TokenKind::Bot => Actor::Agent {
                 id: self.agent_id,
                 name: format!("bot.{}", self.agent_id),
             },
-            TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License => Actor::User,
+            TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License => {
+                Actor::user_with_id(self.agent_id)
+            }
         }
     }
 }

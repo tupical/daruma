@@ -192,10 +192,10 @@ impl ActorRef {
     /// Project a domain [`Actor`](crate::Actor) into the stored triple.
     pub fn from_actor(actor: &crate::Actor) -> Self {
         match actor {
-            crate::Actor::User => ActorRef {
+            crate::Actor::User { id, name } => ActorRef {
                 kind: "user".into(),
-                id: None,
-                name: None,
+                id: *id,
+                name: name.clone(),
             },
             crate::Actor::Agent { id, name } => ActorRef {
                 kind: "agent".into(),
@@ -310,7 +310,7 @@ mod tests {
             rule_id: None,
             supersedes: None,
         }
-        .into_evidence(ActorRef::from_actor(&crate::Actor::User), now);
+        .into_evidence(ActorRef::from_actor(&crate::Actor::user()), now);
         assert_eq!(ev.kind, EvidenceKind::CompletionNote);
         assert_eq!(ev.actor.kind, "user");
         assert!(ev.superseded_by.is_none());

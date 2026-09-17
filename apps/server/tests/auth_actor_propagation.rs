@@ -79,11 +79,11 @@ async fn ac2_pat_token_produces_user_actor_in_event() {
 
     let events = h.state.store.load_since(0, 100).await.unwrap();
     let last = events.last().expect("at least one event should be stored");
-    assert_eq!(
-        last.actor,
-        daruma_domain::Actor::User,
-        "PAT token must produce Actor::User"
-    );
+    // The principal is the token's agent_id: the journal can answer "who".
+    match &last.actor {
+        daruma_domain::Actor::User { id: Some(_), .. } => {}
+        other => panic!("PAT token must produce Actor::User with a principal, got {other:?}"),
+    }
 }
 
 // ── AC-3: actor_strict behaviour ─────────────────────────────────────────────
@@ -122,7 +122,7 @@ async fn ac3_no_strict_bot_envelope_actor_user_passes_through() {
     let last = events.last().expect("event should be stored");
     assert_eq!(
         last.actor,
-        daruma_domain::Actor::User,
+        daruma_domain::Actor::user(),
         "without actor_strict, envelope Actor::User from bot token must pass through"
     );
 }

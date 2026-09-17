@@ -955,7 +955,10 @@ impl CommandHandler {
         let ts_human = env.occurred_at.format("%Y-%m-%d %H:%M");
         let agent_name = match &env.actor {
             A::Agent { name, .. } => name.clone(),
-            A::User => "user".to_string(),
+            A::User {
+                name: Some(name), ..
+            } => name.clone(),
+            A::User { .. } => "user".to_string(),
         };
 
         match &env.payload {
