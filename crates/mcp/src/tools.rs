@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default tool for \"what's open / inventory\". Required `status`: a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, `active` (all non-terminal), or `all`. Avoid `status=all` unless the user explicitly asked for the archive — it can return a very large response. Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
+            "List tasks — the default tool for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). Required `status`: one of `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma-separated list, `active` (all non-terminal), or `all` (avoid unless the user asked for the archive — very large). Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
