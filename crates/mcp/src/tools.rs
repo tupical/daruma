@@ -4053,6 +4053,10 @@ fn schema_run_finish_step() -> Value {
                     "kind": {
                         "type":"string",
                         "enum":["done","skipped","failed","superseded"]
+                    },
+                    "reason": {
+                        "type":"string",
+                        "description":"Required with kind=failed: the first line of the real error (build/test/tool output), not a paraphrase — repeated identical reasons are how the server detects a stuck loop."
                     }
                 },
                 "required":["kind"]
