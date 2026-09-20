@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default tool for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). Required `status`: one of `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma-separated list, `active` (all non-terminal), or `all` (avoid unless the user asked for the archive — very large). Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
+            "List tasks — the default tool for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). Default `view=summary` rows already carry id/title/status/priority/project — no follow-up `daruma_get` or `view=detail` unless you need the description or comments. Required `status`: one of `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma-separated list, `active` (all non-terminal), or `all` (avoid unless the user asked for the archive — very large). Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -3587,7 +3587,7 @@ fn schema_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required. inbox|todo|in_progress|in_review|done|cancelled, a comma-separated list, `active` (non-terminal), or `all`. Ask before `all`: the archive can be very heavy."
+                "description": "Required; see tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -3603,7 +3603,7 @@ fn schema_list() -> Value {
                 "type":"string",
                 "enum":["summary","detail"],
                 "default":"summary",
-                "description":"summary: id/title/status/priority/project; detail: full task rows."
+                "description":"detail = full task rows."
             }
         },
         "required": ["status"]
