@@ -435,18 +435,41 @@ async fn evidence_identity_is_authenticated_on_dedicated_and_command_routes() {
         "authenticated_actor_id": forged,
         "payload": {"passed": true, "actor_id": forged}
     });
-    let (status, response) = json_post(app.router.clone(), &app.admin_token, "/v1/evidence",
-        &json!({"evidence": evidence}).to_string()).await;
+    let (status, response) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/evidence",
+        &json!({"evidence": evidence}).to_string(),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(response["data"]["evidence"]["actor"]["id"], app.admin_agent_id.as_uuid().to_string());
-    assert_eq!(response["data"]["evidence"]["authenticated_actor_id"], app.admin_agent_id.as_uuid().to_string());
-    let (status, response) = json_post(app.router.clone(), &app.admin_token, "/v1/commands",
+    assert_eq!(
+        response["data"]["evidence"]["actor"]["id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+    assert_eq!(
+        response["data"]["evidence"]["authenticated_actor_id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+    let (status, response) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/commands",
         &json!({
             "command": {"type": "record_evidence", "evidence": evidence},
             "actor": {"kind": "agent", "id": forged, "name": "forged"}
-        }).to_string()).await;
+        })
+        .to_string(),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{response}");
     let recorded = &response["data"][0]["payload"]["evidence"];
-    assert_eq!(recorded["actor"]["id"], app.admin_agent_id.as_uuid().to_string());
-    assert_eq!(recorded["authenticated_actor_id"], app.admin_agent_id.as_uuid().to_string());
+    assert_eq!(
+        recorded["actor"]["id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+    assert_eq!(
+        recorded["authenticated_actor_id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
 }

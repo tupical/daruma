@@ -30,7 +30,7 @@ pub use artifact::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactSta
 pub use audit_finding::{
     AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus, NewFinding,
 };
-pub use comment::{Comment, CommentKind, CommentPatch, NewComment};
+pub use comment::{Comment, CommentKind, CommentPatch, NewComment, TransitionComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;
 pub use document::{Document, DocumentKind, DocumentStatus, NewDocument};
@@ -54,6 +54,8 @@ pub use session::{
     AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind, SessionStepStatus,
 };
 pub use signal::SignalKind;
-pub use task::{CompletionNote, NewTask, Priority, Status, Task, TaskPatch, TriageState, GitContext};
+pub use task::{
+    CompletionNote, GitContext, NewTask, Priority, Status, Task, TaskPatch, TriageState,
+};
 pub use work_lease::{canonical_target_uri, targets_overlap, LeaseMode, WorkLease};
 pub use work_unit::{NewWorkUnit, WorkUnit, WorkUnitStatus};

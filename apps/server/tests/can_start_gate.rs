@@ -86,7 +86,11 @@ async fn can_start_route_reports_the_gate_that_would_block_the_transition() {
         json!(false),
         "the route must consult the gate: {readiness}"
     );
-    assert_eq!(readiness["blockers"], json!([]), "no relation blockers here");
+    assert_eq!(
+        readiness["blockers"],
+        json!([]),
+        "no relation blockers here"
+    );
     assert_eq!(
         readiness["rule_blockers"][0]["rule_key"],
         json!("acceptance-criteria"),

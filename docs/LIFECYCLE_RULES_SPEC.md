@@ -236,6 +236,10 @@ struct EnforcementResult {           // агрегат по всем срабо�
 `daruma_plan_set_status`; для плана также HTTP `POST /v1/plans/{id}/status`).
 Override едет на команде, а не на триггере: для обхода при завершении задачи
 нужен `daruma_set_status status=done`, а не `daruma_complete`.
+У `SetStatus` есть и опциональный `comment {body ≤ 4 KiB, kind}`: комментарий
+записывается в одной транзакции с переходом и только если переход принят —
+`blocked` от гейта, активный `blocks`-блокер или no-op переход комментарий не
+создают (прецедент `completion_note` §1.4).
 Обойдённый `blocked` возвращается исполнителю как warning и сейчас попадает в
 аудит как `RuleFired(warning)`; отдельное `RuleOverridden` с сохранением причины
 остаётся целевым контрактом §1.6. Для прохода required-правила `force` без

@@ -183,7 +183,9 @@ impl GitContext {
                 return Ok(None);
             }
             if value.chars().count() > max {
-                return Err(format!("git_context.{name} is longer than {max} characters"));
+                return Err(format!(
+                    "git_context.{name} is longer than {max} characters"
+                ));
             }
             if value.chars().any(char::is_control) {
                 return Err(format!("git_context.{name} contains control characters"));
@@ -207,8 +209,14 @@ impl GitContext {
                 return Err("git_context.mr_url must be an absolute http(s) URL".into());
             }
         }
-        if self.repo.is_none() && self.branch.is_none() && self.head_sha.is_none() && self.mr_url.is_none() {
-            return Err("git_context must set at least one of repo, branch, head_sha, mr_url".into());
+        if self.repo.is_none()
+            && self.branch.is_none()
+            && self.head_sha.is_none()
+            && self.mr_url.is_none()
+        {
+            return Err(
+                "git_context must set at least one of repo, branch, head_sha, mr_url".into(),
+            );
         }
         Ok(self)
     }

@@ -344,7 +344,11 @@ async fn doc_lifecycle_and_task_link_roundtrip() {
     // creation-time anchor (the barrier requires one).
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
     assert_eq!(doc["document"]["status"], "active", "got: {doc}");
-    assert_eq!(doc["document"]["task_id"], anchor_task_id.as_str(), "got: {doc}");
+    assert_eq!(
+        doc["document"]["task_id"],
+        anchor_task_id.as_str(),
+        "got: {doc}"
+    );
 
     // Status change.
     let resp = call_tool(

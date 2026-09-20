@@ -99,6 +99,7 @@ async fn set_status_done_blocked_by_active() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -136,6 +137,7 @@ async fn blocker_done_emits_unblocked() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -191,6 +193,7 @@ async fn multiple_blockers_only_unblock_when_all_done() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -216,6 +219,7 @@ async fn multiple_blockers_only_unblock_when_all_done() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -250,6 +254,7 @@ async fn set_status_done_no_blockers_ok() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )

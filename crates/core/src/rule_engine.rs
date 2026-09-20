@@ -79,12 +79,21 @@ impl RuleEngineGate {
         let Some(evidence) = &self.evidence else {
             return Ok(EvidenceCheck::default());
         };
-        if let Requirement::IndependentTestVerification { executor_id, source_revision } = &rule.requirement {
+        if let Requirement::IndependentTestVerification {
+            executor_id,
+            source_revision,
+        } = &rule.requirement
+        {
             let valid_revision = matches!(source_revision.len(), 40 | 64)
                 && source_revision.bytes().all(|byte| byte.is_ascii_hexdigit());
-            let satisfied = if let Some(RuleScope::Task { id }) = chain.last().filter(|_| valid_revision) {
-                evidence.has_independent_test_verification(*id, *executor_id, source_revision).await?
-            } else { false };
+            let satisfied =
+                if let Some(RuleScope::Task { id }) = chain.last().filter(|_| valid_revision) {
+                    evidence
+                        .has_independent_test_verification(*id, *executor_id, source_revision)
+                        .await?
+                } else {
+                    false
+                };
             return Ok(EvidenceCheck {
                 satisfied,
                 reason: (!satisfied).then(|| "requires a live passing test attestation for this task and pinned revision from an authenticated actor other than executor_id".into()),
@@ -290,7 +299,9 @@ fn requirement_evidence(
             None,
             (min_version != "latest").then_some(min_version.as_str()),
         ),
-        Requirement::IndependentTestVerification { source_revision, .. } => (
+        Requirement::IndependentTestVerification {
+            source_revision, ..
+        } => (
             EvidenceKind::ArtifactCreated,
             Some(format!("test-verification:{source_revision}")),
             None,
@@ -441,7 +452,11 @@ fn rule_outcome(rule: &Rule, decision: &str, reason: Option<&str>) -> serde_json
 /// instead of pretending otherwise.
 fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serde_json::Value {
     let (kind, target, _, _) = requirement_evidence(&rule.requirement);
-    if let Requirement::IndependentTestVerification { executor_id, source_revision } = &rule.requirement {
+    if let Requirement::IndependentTestVerification {
+        executor_id,
+        source_revision,
+    } = &rule.requirement
+    {
         return json!({
             "rule_key": rule.rule_key,
             "requirement": "independent_test_verification",
@@ -455,7 +470,9 @@ fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serd
     let reach = kind.reach();
     // Sanity on the FULL chain (before any slicing): `scope_chain` always
     // seeds the tenant root.
-    let _tenant_root = chain.first().expect("scope chain always has the tenant root");
+    let _tenant_root = chain
+        .first()
+        .expect("scope chain always has the tenant root");
 
     let creates_innermost = matches!(
         trigger,

@@ -1468,9 +1468,7 @@ impl CommandHandler {
                 // trimmed, well-formed object or nothing.
                 let patch = match patch.git_context {
                     Some(Some(ctx)) => daruma_domain::TaskPatch {
-                        git_context: Some(Some(
-                            ctx.normalized().map_err(CoreError::validation)?,
-                        )),
+                        git_context: Some(Some(ctx.normalized().map_err(CoreError::validation)?)),
                         ..patch
                     },
                     _ => patch,
@@ -1643,14 +1641,69 @@ impl CommandHandler {
                 Ok(events)
             }
 
-            Command::SetStatus { id, status, .. } => {
+            Command::SetStatus {
+                id,
+                status,
+                comment,
+                ..
+            } => {
                 let task = self
                     .tasks
                     .get(id)
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
-                self.emit_status_transition_events(&task, status, actor, time::now())
-                    .await
+                // Validate the comment before touching the transition so a bad
+                // note never half-applies; emit it after the transition events
+                // so it exists only when the status change itself is accepted
+                // (relation blockers above, lifecycle gate in dispatch).
+                let note = comment
+                    .map(|c| {
+                        let body = c.body.trim().to_string();
+                        if body.is_empty() {
+                            return Err(CoreError::validation(
+                                "transition comment body must not be empty",
+                            ));
+                        }
+                        if body.len() > daruma_domain::TransitionComment::MAX_BODY_BYTES {
+                            return Err(CoreError::validation(format!(
+                                "transition comment body must not exceed {} bytes",
+                                daruma_domain::TransitionComment::MAX_BODY_BYTES
+                            )));
+                        }
+                        Ok((body, c.kind))
+                    })
+                    .transpose()?;
+                let now = time::now();
+                let mut events = self
+                    .emit_status_transition_events(&task, status, actor, now)
+                    .await?;
+                if let Some((body, kind)) = note {
+                    if events.is_empty() {
+                        // No-op transition (same status): nothing to annotate.
+                        return Ok(events);
+                    }
+                    let preview: String = body.chars().take(80).collect();
+                    let comment = Comment::from_new(
+                        daruma_domain::NewComment {
+                            id: None,
+                            task_id: id,
+                            body,
+                            parent_id: None,
+                            kind,
+                        },
+                        actor.clone(),
+                        now,
+                    );
+                    let comment_id = comment.id;
+                    events.push(Event::CommentAdded { comment });
+                    events.push(Event::TaskCommented {
+                        task_id: id,
+                        comment_id,
+                        author: actor.clone(),
+                        preview,
+                    });
+                }
+                Ok(events)
             }
 
             Command::SetPriority { id, priority } => {
@@ -5087,6 +5140,7 @@ mod tests {
                     status: Status::Done,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )
@@ -5248,6 +5302,7 @@ mod tests {
                     status: daruma_domain::Status::Cancelled,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )

@@ -161,7 +161,10 @@ async fn comment_response_drops_echoed_body_keeps_ids_and_seq() {
         .expect("comment must succeed");
     let text = serde_json::to_string(&result).unwrap();
 
-    assert!(!text.contains(body_text), "echoed body must be gone: {text}");
+    assert!(
+        !text.contains(body_text),
+        "echoed body must be gone: {text}"
+    );
 
     let data = &result["data"];
     // `kind` was sent by the client too, but at 8 bytes it is below
@@ -172,7 +175,10 @@ async fn comment_response_drops_echoed_body_keeps_ids_and_seq() {
         data["kind"], "progress",
         "short enum-like echo is kept by design: {result}"
     );
-    assert_eq!(data["id"], "cmt_1", "created comment id must stay: {result}");
+    assert_eq!(
+        data["id"], "cmt_1",
+        "created comment id must stay: {result}"
+    );
     assert_eq!(data["task_id"], "tsk_1", "task id must stay: {result}");
     assert_eq!(data["seq"], 42, "seq must stay: {result}");
     assert!(
@@ -210,15 +216,24 @@ async fn plan_materialize_keeps_created_ids_drops_echoed_titles() {
         "step one: migrate the alpha cohort to the new planner",
         "step two: migrate the beta cohort to the new planner",
     ] {
-        assert!(!text.contains(echoed), "echoed `{echoed}` must be gone: {text}");
+        assert!(
+            !text.contains(echoed),
+            "echoed `{echoed}` must be gone: {text}"
+        );
     }
     // The created ids are the whole point of the response.
     assert!(text.contains("pln_1"), "plan id must stay: {text}");
     assert!(text.contains("tsk_1"), "first task id must stay: {text}");
     assert!(text.contains("tsk_2"), "second task id must stay: {text}");
     // Event metadata is server-produced, not echo.
-    assert!(text.contains("plan_created"), "event type must stay: {text}");
-    assert!(text.contains("task_created"), "event type must stay: {text}");
+    assert!(
+        text.contains("plan_created"),
+        "event type must stay: {text}"
+    );
+    assert!(
+        text.contains("task_created"),
+        "event type must stay: {text}"
+    );
     assert_eq!(result["success"], true, "success flag must stay: {result}");
 }
 
@@ -267,7 +282,10 @@ async fn status_change_event_keeps_from_and_to() {
         payload["type"], "task_status_changed",
         "event type must stay: {result}"
     );
-    assert_eq!(payload["from"], "todo", "transition origin must stay: {result}");
+    assert_eq!(
+        payload["from"], "todo",
+        "transition origin must stay: {result}"
+    );
     assert_eq!(
         payload["to"], "in_progress",
         "transition target must survive projection even though it equals the sent status: {result}"

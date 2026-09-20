@@ -41,12 +41,11 @@ repeat from plan_progress
 | 1 | `daruma_run_start` | `{ plan_id, agent_id }` |
 | 2 | `daruma_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
 | 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` |
-| 4 | `daruma_set_status` | `{ id, status: "in_progress" }` |
+| 4 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
 | 5 | *(work)* | Agent edits codebase; no direct DB writes |
-| 6 | `daruma_comment` | `{ task_id, body, kind: "outcome" }` |
-| 7 | `daruma_complete` | `{ id: task_id }` |
-| 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
-| 9 | goto 2 | |
+| 6 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
+| 7 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
+| 8 | goto 2 | |
 | ∞ | `daruma_run_complete` | When plan drained |
 
 ## Prompt template (drop into agent system context)

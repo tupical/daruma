@@ -90,7 +90,6 @@ async fn ac7_tools_list_advertises_at_least_ten_required_tools() {
     }
 }
 
-
 /// Seed a project through the MCP dispatch path; returns its id.
 async fn mcp_seed_project(client: &ApiClient, title: &str) -> String {
     let resp = dispatch_request(
@@ -102,7 +101,11 @@ async fn mcp_seed_project(client: &ApiClient, title: &str) -> String {
     )
     .await
     .unwrap();
-    assert!(resp.error.is_none(), "project create failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "project create failed: {:?}",
+        resp.error
+    );
     let content = resp.result.unwrap()["content"][0]["text"]
         .as_str()
         .unwrap()
@@ -463,9 +466,15 @@ async fn tools_call_update_sets_and_clears_git_context() {
     let update = |args: serde_json::Value| {
         let client = &client;
         async move {
-            dispatch_request(client, req("tools/call", json!({"name": "daruma_update", "arguments": args})))
-                .await
-                .unwrap()
+            dispatch_request(
+                client,
+                req(
+                    "tools/call",
+                    json!({"name": "daruma_update", "arguments": args}),
+                ),
+            )
+            .await
+            .unwrap()
         }
     };
 
@@ -478,28 +487,51 @@ async fn tools_call_update_sets_and_clears_git_context() {
         }
     }))
     .await;
-    assert!(resp.error.is_none(), "set git_context failed: {:?}", resp.error);
-    let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_owned();
+    assert!(
+        resp.error.is_none(),
+        "set git_context failed: {:?}",
+        resp.error
+    );
+    let text = resp.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let events: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(events["data"][0]["payload"]["type"], "task_updated");
 
-    let (status, task) = get_json(app.router.clone(), &app.admin_token, &format!("/v1/tasks/{task_id}")).await;
+    let (status, task) = get_json(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{task}");
     let task = task.get("task").cloned().unwrap_or(task);
     assert_eq!(task["git_context"]["branch"], "work/01a0a96a", "{task}");
     assert_eq!(task["git_context"]["head_sha"], "6e840c6abcdef");
-    assert_eq!(task["git_context"]["mr_url"], "https://github.com/tupical/mcpbox.ru/pull/7");
-    assert!(task["git_context"].get("repo").is_none(), "absent fields are omitted");
+    assert_eq!(
+        task["git_context"]["mr_url"],
+        "https://github.com/tupical/mcpbox.ru/pull/7"
+    );
+    assert!(
+        task["git_context"].get("repo").is_none(),
+        "absent fields are omitted"
+    );
 
     // Invalid shapes are rejected by the server, not silently stored.
     let resp = update(json!({"id": task_id, "git_context": {"head_sha": "not-hex"}})).await;
-    let rejected = resp.error.is_some()
-        || resp.result.as_ref().is_some_and(|r| r["isError"] == true);
+    let rejected =
+        resp.error.is_some() || resp.result.as_ref().is_some_and(|r| r["isError"] == true);
     assert!(rejected, "invalid head_sha must be rejected: {resp:?}");
 
     let resp = update(json!({"id": task_id, "git_context": null})).await;
     assert!(resp.error.is_none(), "clear failed: {:?}", resp.error);
-    let (_, task) = get_json(app.router.clone(), &app.admin_token, &format!("/v1/tasks/{task_id}")).await;
+    let (_, task) = get_json(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
     let task = task.get("task").cloned().unwrap_or(task);
     assert!(task.get("git_context").is_none(), "cleared: {task}");
 }

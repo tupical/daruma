@@ -37,10 +37,7 @@ fn recording_router(capture: Arc<Mutex<Vec<Captured>>>) -> Router {
     }))
 }
 
-async fn with_recording_server(
-    tool: &str,
-    args: Value,
-) -> (anyhow::Result<Value>, Vec<Captured>) {
+async fn with_recording_server(tool: &str, args: Value) -> (anyhow::Result<Value>, Vec<Captured>) {
     use tokio::net::TcpListener;
 
     let captured: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));

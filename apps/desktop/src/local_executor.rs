@@ -58,12 +58,12 @@ impl LocalExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use daruma_core::{
         embed::{ActivityRepo, CommentRepo, Db, EventBus, SqliteEventStore, TaskRepo},
         CommandHandler,
     };
     use daruma_domain::NewTask;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn dispatch_applies_locally_and_enqueues_events() {

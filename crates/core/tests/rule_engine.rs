@@ -224,6 +224,7 @@ async fn example3_completion_note_required_blocks_complete() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -266,6 +267,7 @@ async fn example3_recommendation_warns_but_proceeds() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -306,6 +308,7 @@ async fn off_mode_not_evaluated() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -348,6 +351,7 @@ async fn example2_impact_check_required_blocks_start() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -397,7 +401,10 @@ async fn example1_read_artifact_required_blocks_plan_approve() {
         )
         .await
         .expect_err("read_artifact required must block approve");
-    assert!(is_blocked(&err, "read-architecture-md message"), "got: {err}");
+    assert!(
+        is_blocked(&err, "read-architecture-md message"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -431,7 +438,10 @@ async fn plan_approve_override_passes_and_returns_the_bypassed_rule_as_a_warning
         .handle(command(false, None), Actor::user())
         .await
         .expect_err("the rule must block a normal approval");
-    assert!(is_blocked(&err, "read-architecture-md message"), "got: {err}");
+    assert!(
+        is_blocked(&err, "read-architecture-md message"),
+        "got: {err}"
+    );
 
     let outcome = stack
         .handler
@@ -578,6 +588,7 @@ async fn override_allowed_rule_passes_with_force_in_commands_path() {
                 status: Status::Done,
                 force: true,
                 override_reason: None, // force alone, no reason
+                comment: None,
             },
             Actor::user(),
         )
@@ -616,6 +627,7 @@ async fn force_with_a_reason_overrides_a_rule_that_allows_it() {
                 status: Status::Done,
                 force: true,
                 override_reason: Some("hotfix: production is down".into()),
+                comment: None,
             },
             Actor::user(),
         )
@@ -656,6 +668,7 @@ async fn a_blank_override_reason_does_not_buy_a_bypass() {
                 status: Status::Done,
                 force: true,
                 override_reason: Some("   ".into()),
+                comment: None,
             },
             Actor::user(),
         )
@@ -706,6 +719,7 @@ async fn a_single_non_overridable_rule_poisons_the_whole_override() {
                 status: Status::Done,
                 force: true,
                 override_reason: Some("hotfix: production is down".into()),
+                comment: None,
             },
             Actor::user(),
         )
@@ -750,6 +764,7 @@ async fn decision_is_deterministic() {
                     status: Status::Done,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )
@@ -800,6 +815,7 @@ async fn required_with_evidence_allows_complete() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -841,6 +857,7 @@ async fn required_without_evidence_blocks_complete() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -886,6 +903,7 @@ async fn evidence_of_wrong_kind_does_not_satisfy() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1090,6 +1108,7 @@ async fn start(
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1509,6 +1528,7 @@ async fn document_read_hint_keeps_innermost_scope_and_exposes_tenant_reach() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1552,6 +1572,7 @@ async fn unblock_suffix_is_never_added_to_allowed_or_warning_results() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1578,6 +1599,7 @@ async fn unblock_suffix_is_never_added_to_allowed_or_warning_results() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1780,6 +1802,7 @@ async fn blocked_error_lists_every_blocking_rule_not_just_the_first() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1883,6 +1906,7 @@ async fn advisory_metrics_cover_opportunities_without_counting_readiness_probes(
                     status: Status::InProgress,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )
@@ -1925,54 +1949,150 @@ async fn independent_test_attestation_binds_task_revision_and_authenticated_veri
     let verifier = daruma_shared::AgentId::new();
     let revision = "a".repeat(40);
     let target = format!("test-verification:{revision}");
-    install(&stack, new_rule(
-        "independent-tests", RuleScope::Task { id: task }, RuleTrigger::TaskBeforeComplete,
-        Requirement::IndependentTestVerification { executor_id: executor, source_revision: revision },
-        RuleMode::Required, false,
-    )).await;
-    let complete = || Command::SetStatus { id: task, status: Status::Done, force: false, override_reason: None };
+    install(
+        &stack,
+        new_rule(
+            "independent-tests",
+            RuleScope::Task { id: task },
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::IndependentTestVerification {
+                executor_id: executor,
+                source_revision: revision,
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    let complete = || Command::SetStatus {
+        id: task,
+        status: Status::Done,
+        force: false,
+        override_reason: None,
+        comment: None,
+    };
     for (scope_task, proof_target, passed, authenticated) in [
         (task, target.clone(), serde_json::json!(true), executor),
-        (other_task, target.clone(), serde_json::json!(true), verifier),
-        (task, "test-verification:stale".into(), serde_json::json!(true), verifier),
+        (
+            other_task,
+            target.clone(),
+            serde_json::json!(true),
+            verifier,
+        ),
+        (
+            task,
+            "test-verification:stale".into(),
+            serde_json::json!(true),
+            verifier,
+        ),
         (task, target.clone(), serde_json::json!(false), verifier),
         (task, target.clone(), serde_json::json!("true"), verifier),
     ] {
-        let mut evidence = new_evidence(EvidenceKind::ArtifactCreated, RuleScope::Task { id: scope_task }, Some(&proof_target));
+        let mut evidence = new_evidence(
+            EvidenceKind::ArtifactCreated,
+            RuleScope::Task { id: scope_task },
+            Some(&proof_target),
+        );
         evidence.payload = serde_json::json!({ "passed": passed, "actor_id": verifier, "attested_by_verifier": verifier });
-        let outcome = stack.handler.handle_authenticated_with_warnings(
-            Command::RecordEvidence { evidence },
-            Actor::Agent { id: verifier, name: "forged envelope".into() },
-            authenticated, false,
-        ).await.unwrap();
-        let Event::EvidenceRecorded { evidence } = &outcome.events[0].payload else { panic!("missing evidence") };
+        let outcome = stack
+            .handler
+            .handle_authenticated_with_warnings(
+                Command::RecordEvidence { evidence },
+                Actor::Agent {
+                    id: verifier,
+                    name: "forged envelope".into(),
+                },
+                authenticated,
+                false,
+            )
+            .await
+            .unwrap();
+        let Event::EvidenceRecorded { evidence } = &outcome.events[0].payload else {
+            panic!("missing evidence")
+        };
         assert_eq!(evidence.actor.id, Some(authenticated));
-        let error = stack.handler.handle(complete(), Actor::user()).await.unwrap_err();
+        let error = stack
+            .handler
+            .handle(complete(), Actor::user())
+            .await
+            .unwrap_err();
         assert!(is_blocked(&error, "independent-tests"), "{error}");
     }
-    let mut proof = new_evidence(EvidenceKind::ArtifactCreated, RuleScope::Task { id: task }, Some(&target));
+    let mut proof = new_evidence(
+        EvidenceKind::ArtifactCreated,
+        RuleScope::Task { id: task },
+        Some(&target),
+    );
     proof.payload = serde_json::json!({ "passed": true });
     // A legacy/offline actor claim cannot masquerade as authenticated provenance.
-    stack.handler.handle(
-        Command::RecordEvidence { evidence: proof.clone() },
-        Actor::Agent { id: verifier, name: "unverified".into() },
-    ).await.unwrap();
-    assert!(stack.handler.handle(complete(), Actor::user()).await.is_err());
-    let recorded = stack.handler.handle_authenticated_with_warnings(
-        Command::RecordEvidence { evidence: proof.clone() }, Actor::user(), verifier, false,
-    ).await.unwrap();
-    let Event::EvidenceRecorded { evidence } = &recorded.events[0].payload else { panic!("missing evidence") };
+    stack
+        .handler
+        .handle(
+            Command::RecordEvidence {
+                evidence: proof.clone(),
+            },
+            Actor::Agent {
+                id: verifier,
+                name: "unverified".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(stack
+        .handler
+        .handle(complete(), Actor::user())
+        .await
+        .is_err());
+    let recorded = stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence {
+                evidence: proof.clone(),
+            },
+            Actor::user(),
+            verifier,
+            false,
+        )
+        .await
+        .unwrap();
+    let Event::EvidenceRecorded { evidence } = &recorded.events[0].payload else {
+        panic!("missing evidence")
+    };
     let mut retracted = proof.clone();
     retracted.supersedes = Some(evidence.id);
     retracted.payload = serde_json::json!({ "passed": false });
-    stack.handler.handle_authenticated_with_warnings(
-        Command::RecordEvidence { evidence: retracted }, Actor::user(), verifier, false,
-    ).await.unwrap();
-    assert!(stack.handler.handle(complete(), Actor::user()).await.is_err());
-    stack.handler.handle_authenticated_with_warnings(
-        Command::RecordEvidence { evidence: proof }, Actor::user(), verifier, false,
-    ).await.unwrap();
-    stack.handler.handle(complete(), Actor::user()).await.unwrap();
+    stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence {
+                evidence: retracted,
+            },
+            Actor::user(),
+            verifier,
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(stack
+        .handler
+        .handle(complete(), Actor::user())
+        .await
+        .is_err());
+    stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence: proof },
+            Actor::user(),
+            verifier,
+            false,
+        )
+        .await
+        .unwrap();
+    stack
+        .handler
+        .handle(complete(), Actor::user())
+        .await
+        .unwrap();
 }
 
 /// Evidence keeps the token's actor *kind* and pins only the principal id: a
@@ -1985,12 +2105,19 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
     let principal = daruma_shared::AgentId::new();
     let forged = daruma_shared::AgentId::new();
 
-    let evidence = new_evidence(EvidenceKind::CompletionNote, RuleScope::Task { id: task }, None);
+    let evidence = new_evidence(
+        EvidenceKind::CompletionNote,
+        RuleScope::Task { id: task },
+        None,
+    );
     let outcome = stack
         .handler
         .handle_authenticated_with_warnings(
             Command::RecordEvidence { evidence },
-            Actor::User { id: Some(forged), name: Some("owner@example.com".into()) },
+            Actor::User {
+                id: Some(forged),
+                name: Some("owner@example.com".into()),
+            },
             principal,
             false,
         )
@@ -2009,12 +2136,19 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
     assert_eq!(recorded.actor.name.as_deref(), Some("owner@example.com"));
     assert_eq!(recorded.authenticated_actor_id, Some(principal));
 
-    let evidence = new_evidence(EvidenceKind::CompletionNote, RuleScope::Task { id: task }, None);
+    let evidence = new_evidence(
+        EvidenceKind::CompletionNote,
+        RuleScope::Task { id: task },
+        None,
+    );
     let outcome = stack
         .handler
         .handle_authenticated_with_warnings(
             Command::RecordEvidence { evidence },
-            Actor::Agent { id: forged, name: "bot".into() },
+            Actor::Agent {
+                id: forged,
+                name: "bot".into(),
+            },
             principal,
             false,
         )

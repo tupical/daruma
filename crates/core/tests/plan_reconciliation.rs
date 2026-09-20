@@ -89,6 +89,7 @@ fn status(id: TaskId, status: Status) -> Command {
         status,
         force: false,
         override_reason: None,
+        comment: None,
     }
 }
 

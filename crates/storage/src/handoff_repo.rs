@@ -366,7 +366,13 @@ mod tests {
         let (from2, to2) = (WorkUnitId::new(), WorkUnitId::new());
         let c2 = contract(from2, to2);
         let id2 = c2.id;
-        apply(&repo, Event::HandoffRequested { handoff: c2.clone() }).await;
+        apply(
+            &repo,
+            Event::HandoffRequested {
+                handoff: c2.clone(),
+            },
+        )
+        .await;
         apply(
             &repo,
             Event::HandoffRejected {

@@ -377,8 +377,11 @@ fn row_to_evidence(row: &sqlx::sqlite::SqliteRow) -> Result<Evidence> {
         scope,
         target: row.try_get("target").map_err(map_row_err)?,
         doc_version: row.try_get("doc_version").map_err(map_row_err)?,
-        authenticated_actor_id: row.try_get::<Option<String>, _>("authenticated_actor_id")
-            .map_err(map_row_err)?.map(|id| id.parse()).transpose()
+        authenticated_actor_id: row
+            .try_get::<Option<String>, _>("authenticated_actor_id")
+            .map_err(map_row_err)?
+            .map(|id| id.parse())
+            .transpose()
             .map_err(|_| CoreError::storage("bad authenticated actor id"))?,
         actor: ActorRef {
             kind: row.try_get("actor_kind").map_err(map_row_err)?,

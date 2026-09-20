@@ -209,9 +209,7 @@ impl ScopeView {
                  pass an absolute path"
             );
         };
-        Ok(normalize_path(
-            &Path::new(key).join(path).to_string_lossy(),
-        ))
+        Ok(normalize_path(&Path::new(key).join(path).to_string_lossy()))
     }
 
     fn scope_for_current_workspace(&self) -> anyhow::Result<String> {
@@ -475,7 +473,10 @@ mod tests {
         // Relative paths and keyless binding ask for scope_path.
         assert!(ws.project_for_path("sub").is_err());
         assert!(ws.scope_for_binding(None).is_err());
-        assert_eq!(ws.scope_for_binding(Some("/srv/repo")).unwrap(), "/srv/repo");
+        assert_eq!(
+            ws.scope_for_binding(Some("/srv/repo")).unwrap(),
+            "/srv/repo"
+        );
     }
 
     #[test]

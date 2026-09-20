@@ -9,9 +9,7 @@ use daruma_core::{Command, CommandHandler};
 use daruma_domain::{Actor, GitContext, NewTask, TaskPatch};
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::TaskId;
-use daruma_storage::{
-    ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo,
-};
+use daruma_storage::{ActivityRepo, CommentRepo, Db, ProjectRepo, SqliteEventStore, TaskRepo};
 
 async fn build_stack() -> (CommandHandler, Arc<TaskRepo>) {
     let db = Db::memory().await.unwrap();
@@ -22,8 +20,14 @@ async fn build_stack() -> (CommandHandler, Arc<TaskRepo>) {
     let projects = Arc::new(ProjectRepo::new(pool.clone()));
     let comments = Arc::new(CommentRepo::new(pool.clone()));
     let activity = Arc::new(ActivityRepo::new(pool.clone()));
-    let handler =
-        CommandHandler::new(store, tasks.clone(), projects, comments, activity, EventBus::default());
+    let handler = CommandHandler::new(
+        store,
+        tasks.clone(),
+        projects,
+        comments,
+        activity,
+        EventBus::default(),
+    );
     (handler, tasks)
 }
 
@@ -63,18 +67,34 @@ async fn git_context_is_set_replaced_whole_and_cleared() {
         mr_url: None,
     };
     let envs = handler
-        .handle(Command::UpdateTask { id, patch: patch(Some(ctx)) }, Actor::user())
+        .handle(
+            Command::UpdateTask {
+                id,
+                patch: patch(Some(ctx)),
+            },
+            Actor::user(),
+        )
         .await
         .unwrap();
     // The event carries the normalised context, so every projection agrees.
     let Event::TaskUpdated { patch: emitted, .. } = &envs[0].payload else {
         panic!("expected TaskUpdated");
     };
-    let emitted = emitted.git_context.clone().flatten().expect("context in event");
+    let emitted = emitted
+        .git_context
+        .clone()
+        .flatten()
+        .expect("context in event");
     assert_eq!(emitted.repo.as_deref(), Some("tupical/mcpbox.ru"));
     assert_eq!(emitted.head_sha.as_deref(), Some("6e840c6"));
 
-    let stored = tasks.get(id).await.unwrap().unwrap().git_context.expect("projected");
+    let stored = tasks
+        .get(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .git_context
+        .expect("projected");
     assert_eq!(stored, emitted);
 
     // Replace whole: a patch with only mr_url drops the earlier branch/sha.
@@ -93,11 +113,20 @@ async fn git_context_is_set_replaced_whole_and_cleared() {
         .unwrap();
     let stored = tasks.get(id).await.unwrap().unwrap().git_context.unwrap();
     assert!(stored.branch.is_none() && stored.head_sha.is_none());
-    assert_eq!(stored.mr_url.as_deref(), Some("https://github.com/tupical/mcpbox.ru/pull/7"));
+    assert_eq!(
+        stored.mr_url.as_deref(),
+        Some("https://github.com/tupical/mcpbox.ru/pull/7")
+    );
 
     // Clear.
     handler
-        .handle(Command::UpdateTask { id, patch: patch(None) }, Actor::user())
+        .handle(
+            Command::UpdateTask {
+                id,
+                patch: patch(None),
+            },
+            Actor::user(),
+        )
         .await
         .unwrap();
     assert!(tasks.get(id).await.unwrap().unwrap().git_context.is_none());
@@ -113,20 +142,35 @@ async fn git_context_is_validated_and_is_execution_owned() {
     for (ctx, needle) in [
         (GitContext::default(), "at least one"),
         (
-            GitContext { head_sha: Some("xyz".into()), ..GitContext::default() },
+            GitContext {
+                head_sha: Some("xyz".into()),
+                ..GitContext::default()
+            },
             "head_sha",
         ),
         (
-            GitContext { mr_url: Some("javascript:alert(1)".into()), ..GitContext::default() },
+            GitContext {
+                mr_url: Some("javascript:alert(1)".into()),
+                ..GitContext::default()
+            },
             "mr_url",
         ),
         (
-            GitContext { branch: Some("bad\nbranch".into()), ..GitContext::default() },
+            GitContext {
+                branch: Some("bad\nbranch".into()),
+                ..GitContext::default()
+            },
             "control",
         ),
     ] {
         let err = handler
-            .handle(Command::UpdateTask { id, patch: patch(Some(ctx)) }, Actor::user())
+            .handle(
+                Command::UpdateTask {
+                    id,
+                    patch: patch(Some(ctx)),
+                },
+                Actor::user(),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains(needle), "{err}");
@@ -138,7 +182,10 @@ async fn git_context_is_validated_and_is_execution_owned() {
         .handle(
             Command::UpdateTask {
                 id,
-                patch: patch(Some(GitContext { branch: Some("work/x".into()), ..GitContext::default() })),
+                patch: patch(Some(GitContext {
+                    branch: Some("work/x".into()),
+                    ..GitContext::default()
+                })),
             },
             Actor::user(),
         )
@@ -150,7 +197,10 @@ async fn git_context_is_validated_and_is_execution_owned() {
                 id,
                 patch: TaskPatch {
                     title: Some("renamed".into()),
-                    ..patch(Some(GitContext { branch: Some("work/y".into()), ..GitContext::default() }))
+                    ..patch(Some(GitContext {
+                        branch: Some("work/y".into()),
+                        ..GitContext::default()
+                    }))
                 },
             },
             Actor::user(),

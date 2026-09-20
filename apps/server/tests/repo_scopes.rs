@@ -194,7 +194,10 @@ async fn provision_on_creates_and_is_idempotent() {
     assert_eq!(project_count(&app.router, &token).await, 1);
 
     let (_, projects) = json_get(app.router.clone(), &token, "/v1/projects").await;
-    assert_eq!(projects[0]["title"], "acme-api", "title = basename: {projects}");
+    assert_eq!(
+        projects[0]["title"], "acme-api",
+        "title = basename: {projects}"
+    );
 
     // Second call for the same path is a no-op that returns the same project.
     let again = provision(&addr, &token, "/srv/tenant/acme-api").await;
@@ -387,8 +390,5 @@ async fn server_mode_mcp_resolves_scopes_from_table() {
         .await
         .unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("no daruma scope configured"),
-        "got: {body}"
-    );
+    assert!(msg.contains("no daruma scope configured"), "got: {body}");
 }

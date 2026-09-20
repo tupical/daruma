@@ -3927,6 +3927,7 @@ async fn mutation_warnings(
         // the reason too would swallow the warning for a caller who sent one
         // without `force` — no override AND no warning.
         override_reason: _,
+        comment: _,
     } = command
     else {
         return Ok(vec![]);
@@ -5811,6 +5812,7 @@ async fn drain_one_plan(
                             // rule override.
                             force: true,
                             override_reason: None,
+                            comment: None,
                         },
                         actor_from(auth, None),
                     )

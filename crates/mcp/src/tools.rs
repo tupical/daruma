@@ -298,7 +298,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_set_status",
             "Set task status",
-            "Set a task's status (inbox / todo / in_progress / in_review / done / cancelled).",
+            "Set a task's status. Optional `comment` {body, kind} lands atomically with the transition — no separate daruma_comment.",
             schema_set_status(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -319,7 +319,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_complete",
             "Complete task",
-            "Mark a task as completed. Optionally attach a completion note (reason / result_summary / acceptance_criteria_status / related_artifacts); the completing actor (user vs agent) is recorded automatically.",
+            "Mark a task as completed. Optional note (reason / result_summary / acceptance_criteria_status / related_artifacts) replaces a preliminary daruma_comment; the completing actor is recorded automatically.",
             schema_complete(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -591,7 +591,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_list",
             "List plans",
-            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans carry their full goal + success criteria and are token-heavy — summarize a single plan with `daruma_plan_get` instead of enumerating. `project_id` uses the resolved repo project when unambiguous; pass `all` to query across projects.",
+            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans are token-heavy — use `daruma_plan_get` for one plan instead. `project_id` defaults to the resolved repo project; `all` spans projects.",
             schema_plan_list(),
             Dom::Plans, D, C, Ann::Read,
         ),
@@ -633,7 +633,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_set_status",
             "Set plan status",
-            "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
+            "Set plan status (draft, active, completed, abandoned).",
             schema_plan_set_status(),
             Dom::Plans, D, E, Ann::WriteIdem,
         ),
@@ -1760,6 +1760,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .filter(|r| !r.trim().is_empty())
             {
                 command["override_reason"] = json!(reason);
+            }
+            if let Some(comment) = args.get("comment").filter(|v| !v.is_null()) {
+                let body = comment
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("`comment.body` (string) is required"))?;
+                let mut note = json!({"body": body});
+                if let Some(kind_raw) = comment.get("kind").and_then(|v| v.as_str()) {
+                    note["kind"] = json!(normalise_comment_kind(kind_raw)?);
+                }
+                command["comment"] = note;
             }
             client.post_command(command).await
         }
@@ -3379,7 +3390,16 @@ fn schema_set_status() -> Value {
             },
             "override_reason": {
                 "type":"string",
-                "description":"With `force`, explain an allowed rule override. Blank reasons and non-overridable rules block the whole set; prefer satisfying the rule with daruma_evidence_submit."
+                "description":"With `force`: why an overridable rule is bypassed. Blank or non-overridable → whole call blocked; prefer daruma_evidence_submit."
+            },
+            "comment": {
+                "type":"object",
+                "description":"Recorded atomically with the transition (≤4 KiB); dropped if it is rejected.",
+                "properties": {
+                    "body": {"type":"string"},
+                    "kind": {"type":"string","enum":["intent","progress","outcome","blocker","research"]}
+                },
+                "required":["body"]
             }
         },
         "required":["id","status"]
@@ -3515,11 +3535,7 @@ fn schema_comment() -> Value {
             // snake_case; the server is lenient about case.
             "kind": {
                 "type":"string",
-                "enum":[
-                    "intent","progress","outcome","blocker","research",
-                    "Intent","Progress","Outcome","Blocker","Research"
-                ],
-                "description":"Semantic comment kind."
+                "enum":["intent","progress","outcome","blocker","research"]
             }
         },
         "required":["task_id","body"]
@@ -3788,11 +3804,11 @@ fn schema_plan_set_status() -> Value {
             "status":  {"type":"string","enum":["draft","active","completed","abandoned"]},
             "force": {
                 "type":"boolean",
-                "description":"Required together with override_reason to bypass an override_allowed rule on plan.before_approve; on its own it does nothing."
+                "description":"With override_reason, bypass an overridable plan.before_approve rule; alone does nothing."
             },
             "override_reason": {
                 "type":"string",
-                "description":"With `force`, explain an allowed rule override. Blank reasons and non-overridable rules block the whole set; prefer satisfying the rule with daruma_evidence_submit."
+                "description":"With `force`: why an overridable rule is bypassed. Blank or non-overridable → whole call blocked; prefer daruma_evidence_submit."
             }
         },
         "required":["plan_id","status"]
@@ -5519,7 +5535,7 @@ mod tests {
         );
         assert_eq!(
             plan["properties"]["force"]["description"],
-            "Required together with override_reason to bypass an override_allowed rule on plan.before_approve; on its own it does nothing."
+            "With override_reason, bypass an overridable plan.before_approve rule; alone does nothing."
         );
     }
 

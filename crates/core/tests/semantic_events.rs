@@ -57,6 +57,7 @@ async fn set_status_done_to_todo_emits_task_reopened() {
                 status: Status::Todo,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -89,6 +90,7 @@ async fn set_status_todo_to_done_emits_task_closed() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -117,6 +119,7 @@ async fn set_status_todo_to_in_progress_emits_only_mechanical() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )

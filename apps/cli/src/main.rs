@@ -19,10 +19,10 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use daruma_mcp::{run_stdio_with_profile, workspace::Workspace, ApiClient, ToolProfile};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use daruma_mcp::{run_stdio_with_profile, workspace::Workspace, ApiClient, ToolProfile};
 use tracing_subscriber::EnvFilter;
 
 mod format;
@@ -291,8 +291,13 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
     // One-time move of file-based scope bindings to the server (0046).
     match daruma_mcp::workspace::migrate_workspaces_file(&client).await {
         Ok(0) => {}
-        Ok(n) => tracing::info!(bindings = n, "migrated workspaces.json to server repo-scopes"),
-        Err(e) => tracing::warn!(error = %e, "workspaces.json migration failed; keeping file for retry"),
+        Ok(n) => tracing::info!(
+            bindings = n,
+            "migrated workspaces.json to server repo-scopes"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "workspaces.json migration failed; keeping file for retry")
+        }
     }
 
     tracing::info!(profile = profile.as_str(), "daruma mcp ready on stdio");
@@ -484,7 +489,12 @@ fn install_codex_policy(project_dir: &Path) -> anyhow::Result<()> {
 
     if project_dir.join(".omc").is_dir() {
         let omc_agents_md = project_dir.join(".omc/AGENTS.md");
-        write_managed_block(&omc_agents_md, OMC_GUARD_BEGIN, OMC_GUARD_END, OMC_GUARD_BODY)?;
+        write_managed_block(
+            &omc_agents_md,
+            OMC_GUARD_BEGIN,
+            OMC_GUARD_END,
+            OMC_GUARD_BODY,
+        )?;
         println!("omc guard written:    {}", omc_agents_md.display());
     }
     Ok(())
@@ -866,8 +876,8 @@ mod tests {
 
     #[test]
     fn install_mcp_json_writes_entry_into_empty_file() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-mcp-test-empty-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-mcp-test-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join(".cursor").join("mcp.json");
 
@@ -888,8 +898,8 @@ mod tests {
 
     #[test]
     fn install_mcp_json_preserves_foreign_entries() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-mcp-test-foreign-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-mcp-test-foreign-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
@@ -917,8 +927,7 @@ mod tests {
 
     #[test]
     fn install_mcp_json_skips_without_force_when_entry_exists() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-mcp-test-skip-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("daruma-mcp-test-skip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
@@ -940,8 +949,8 @@ mod tests {
 
     #[test]
     fn install_mcp_json_force_overwrites_existing_entry() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-mcp-test-force-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-mcp-test-force-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
@@ -968,8 +977,8 @@ mod tests {
 
     #[test]
     fn install_codex_policy_creates_agents_md() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-codex-test-create-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-codex-test-create-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -984,8 +993,8 @@ mod tests {
 
     #[test]
     fn install_codex_policy_writes_omc_guard_when_omc_present() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-codex-test-guard-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-codex-test-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".omc")).unwrap();
 
@@ -1003,8 +1012,8 @@ mod tests {
 
     #[test]
     fn install_codex_policy_skips_omc_guard_without_omc() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-codex-test-noguard-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-codex-test-noguard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1019,8 +1028,8 @@ mod tests {
 
     #[test]
     fn install_codex_policy_idempotent_rerun() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-codex-test-idem-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-codex-test-idem-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1036,8 +1045,8 @@ mod tests {
 
     #[test]
     fn install_codex_policy_preserves_surrounding_content() {
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-codex-test-preserve-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-codex-test-preserve-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("AGENTS.md");
@@ -1056,8 +1065,8 @@ mod tests {
     fn codex_policy_block_matches_js_marker_format() {
         // The block produced by write_managed_block must start/end with the
         // same markers the JS buildBlock() uses so cross-tool idempotency holds.
-        let dir = std::env::temp_dir()
-            .join(format!("daruma-codex-test-markers-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("daruma-codex-test-markers-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1103,8 +1112,7 @@ mod tests {
     #[test]
     fn save_self_host_credentials_writes_active_profile() {
         let _guard = env_lock().lock().unwrap();
-        let dir =
-            std::env::temp_dir().join(format!("daruma-cli-cred-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("daruma-cli-cred-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var(daruma_mcp::paths::ENV_AGENT_DIR, &dir);
 
@@ -1126,10 +1134,8 @@ mod tests {
     #[test]
     fn save_local_credentials_reads_bootstrap_token() {
         let _guard = env_lock().lock().unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "daruma-cli-local-cred-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("daruma-cli-local-cred-test-{}", std::process::id()));
         let agent_dir = root.join("agent");
         let data_dir = root.join("data");
         let _ = std::fs::remove_dir_all(&root);

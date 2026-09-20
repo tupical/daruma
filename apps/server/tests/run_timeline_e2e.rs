@@ -148,8 +148,12 @@ async fn timeline_reports_steps_notes_and_outcomes() {
     assert_eq!(status, StatusCode::CREATED);
 
     // ── GET timeline ────────────────────────────────────────────────────────
-    let (status, body) =
-        json_get(app.router.clone(), &token, &format!("/v1/runs/{run_id}/timeline")).await;
+    let (status, body) = json_get(
+        app.router.clone(),
+        &token,
+        &format!("/v1/runs/{run_id}/timeline"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "timeline failed: {body}");
 
     assert_eq!(body["run"]["id"].as_str().unwrap(), run_id);
@@ -159,11 +163,17 @@ async fn timeline_reports_steps_notes_and_outcomes() {
 
     // Steps are ordered by start; step 1 = Done on task_ok.
     let s0 = &steps[0];
-    assert_eq!(s0["task_id"].as_str().unwrap(), task_ok.as_uuid().to_string());
+    assert_eq!(
+        s0["task_id"].as_str().unwrap(),
+        task_ok.as_uuid().to_string()
+    );
     assert!(s0["started_at"].is_string());
     assert!(s0["finished_at"].is_string());
     // outcome is a nested JSON object, not an escaped string.
-    assert!(s0["outcome"].is_object(), "outcome should be an object: {s0}");
+    assert!(
+        s0["outcome"].is_object(),
+        "outcome should be an object: {s0}"
+    );
     assert_eq!(s0["outcome"]["kind"].as_str().unwrap(), "done");
 
     // Step 2 = Failed{reason} on task_fail — reason must survive.
@@ -241,7 +251,6 @@ async fn timeline_and_get_unknown_run_is_404() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let (status, _) =
-        json_get(app.router.clone(), &token, &format!("/v1/runs/{unknown}")).await;
+    let (status, _) = json_get(app.router.clone(), &token, &format!("/v1/runs/{unknown}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
