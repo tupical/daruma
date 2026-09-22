@@ -115,6 +115,8 @@ struct Condition {
     priority:    Option<Vec<Priority>>,        // p0..p3
     changed_paths:  Option<Vec<GlobPattern>>,  // матчится по artifact uri,
                                                // work_lease target_uri, reserve_files
+    title_prefix: Option<Vec<String>>,         // task.*: заголовок задачи начинается
+                                               // с одного из префиксов (напр. "[Audit]")
     // reserved (в ядре нет носителя; включаются после появления):
     task_labels:      Option<Vec<String>>,     // reserved — у Task нет labels
     affected_modules: Option<Vec<String>>,     // reserved — нет понятия module
@@ -123,6 +125,11 @@ struct Condition {
                                                // с Command-поверхностью артефактов
 }
 ```
+
+**Носитель task-переходов.** Событие смены статуса несёт только id задачи;
+rule engine достаёт из строки задачи `project_id` (project-правила входят в
+цепочку scope, §2) и заголовок для `title_prefix`. `plan_id` для задачи в
+цепочку пока не попадает — plan-scope правила на `task.before_*` не действуют.
 
 **Reserved-политика:** reserved-поля входят в контракт (имена зарезервированы),
 но правило, использующее их, отклоняется валидацией ядра v1 с понятной ошибкой —

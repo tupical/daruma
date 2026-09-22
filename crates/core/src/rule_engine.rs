@@ -22,7 +22,8 @@
 //! with `override_allowed=true`.
 //!
 //! Zero-cost when no rules exist: a check whose scope chain has no matching
-//! rows resolves to `Allowed` after one indexed query (the handler only calls
+//! rows resolves to `Allowed` after one indexed query per chain element (plus
+//! a task-row lookup for task transitions, which carry only the task id) (the handler only calls
 //! the gate at all when one is wired). Evidence is only queried for rules that
 //! both match and would otherwise block, so an unconstrained workspace pays
 //! nothing extra.
@@ -155,6 +156,20 @@ impl LifecycleGate for RuleEngineGate {
     ) -> Result<(GateDecision, Vec<RuleObservation>)> {
         let mut observations = Vec::new();
         let trigger = map_trigger(check.trigger);
+        // Task transitions carry only the task id: resolve its project (scope
+        // chain) and title (`title_prefix`) from the persisted row.
+        let mut resolved;
+        let check = match check.task_id {
+            Some(task_id) if check.project_id.is_none() || check.task_title.is_none() => {
+                resolved = check.clone();
+                if let Some((project_id, title)) = self.rules.task_context(task_id).await? {
+                    resolved.project_id = resolved.project_id.or(project_id);
+                    resolved.task_title.get_or_insert(title);
+                }
+                &resolved
+            }
+            _ => check,
+        };
         let chain = Self::scope_chain(check);
         let candidates = self.rules.effective_rules(&chain, trigger).await?;
 
@@ -382,7 +397,8 @@ fn map_trigger(t: TriggerEvent) -> RuleTrigger {
 
 /// Match a rule condition against a check (spec §1.2 v1 fields). Empty / `None`
 /// condition matches everything. Semantics: AND across fields, OR within a
-/// list. Only the status-transition fields exist in v1; the spec's other
+/// list. Only the status-transition and task-title-prefix fields exist in v1;
+/// the spec's other
 /// targeting fields (priority, changed_paths, …) are omitted from
 /// [`Condition`] until their carrier reaches `GateCheck`.
 fn condition_matches(condition: Option<&Condition>, check: &GateCheck) -> bool {
@@ -410,6 +426,12 @@ fn condition_matches(condition: Option<&Condition>, check: &GateCheck) -> bool {
                 }
             }
             None => return false,
+        }
+    }
+    if let Some(prefixes) = &cond.title_prefix {
+        match &check.task_title {
+            Some(title) if prefixes.iter().any(|p| title.starts_with(p.as_str())) => {}
+            _ => return false,
         }
     }
     true

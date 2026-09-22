@@ -986,6 +986,7 @@ async fn required_fields_reject_incomplete_evidence_and_explain_why() {
         status_to: Some(Status::InProgress),
         plan_status_from: None,
         plan_status_to: None,
+        task_title: None,
     };
     let GateDecision::Blocked { details, .. } = stack
         .gate
@@ -1053,6 +1054,7 @@ async fn read_artifact_min_version_is_enforced_numerically() {
             status_to: Some(Status::InProgress),
             plan_status_from: None,
             plan_status_to: None,
+            task_title: None,
         };
         let decision = stack
             .gate
@@ -1244,6 +1246,7 @@ async fn can_start_honours_a_rule_conditioned_on_the_status_being_left() {
     rule.condition = Some(Condition {
         status_from: Some(vec![Status::Todo]),
         status_to: None,
+        title_prefix: None,
     });
     install(&stack, rule).await;
     let task = create_task(&stack, "Touch auth").await;
@@ -1655,6 +1658,7 @@ async fn blocked_details_keep_outcomes_beside_unblock_hints() {
         status_to: Some(Status::Done),
         plan_status_from: None,
         plan_status_to: None,
+        task_title: None,
     };
 
     let GateDecision::Blocked { details, .. } = stack
@@ -1864,6 +1868,7 @@ async fn advisory_metrics_cover_opportunities_without_counting_readiness_probes(
             rule.condition = Some(Condition {
                 status_from: Some(vec![Status::Todo]),
                 status_to: None,
+                title_prefix: None,
             });
         }
         let installed = install(&stack, rule).await;
@@ -2170,21 +2175,12 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
 
 /// `document_linked`: satisfied only by a bound, non-archived document — no
 /// evidence row involved, and the unblock hint says there is nothing to submit.
+/// The rule is project-scoped and targeted by `title_prefix`: task transitions
+/// carry only the task id, so this also pins that the gate resolves the task's
+/// project into the scope chain and leaves sibling tasks alone.
 #[tokio::test]
 async fn document_linked_requires_a_live_bound_document() {
     let stack = stack().await;
-    install(
-        &stack,
-        new_rule(
-            "audit-report",
-            RuleScope::Tenant,
-            RuleTrigger::TaskBeforeComplete,
-            Requirement::DocumentLinked,
-            RuleMode::Required,
-            true,
-        ),
-    )
-    .await;
     let envs = stack
         .handler
         .handle(
@@ -2200,17 +2196,48 @@ async fn document_linked_requires_a_live_bound_document() {
         Event::ProjectCreated { project } => project.id,
         other => panic!("expected ProjectCreated, got {other:?}"),
     };
-    let mut new_task = daruma_domain::NewTask::new("Audit");
-    new_task.project_id = Some(project_id);
-    let envs = stack
+    let mut rule = new_rule(
+        "audit-report",
+        RuleScope::Project { id: project_id },
+        RuleTrigger::TaskBeforeComplete,
+        Requirement::DocumentLinked,
+        RuleMode::Required,
+        true,
+    );
+    rule.condition = Some(Condition {
+        title_prefix: Some(vec!["[Audit]".into()]),
+        ..Default::default()
+    });
+    install(&stack, rule).await;
+    let mut task_ids = Vec::new();
+    for title in ["[Audit] usage", "Regular work"] {
+        let mut new_task = daruma_domain::NewTask::new(title);
+        new_task.project_id = Some(project_id);
+        let envs = stack
+            .handler
+            .handle(Command::CreateTask { task: new_task }, Actor::user())
+            .await
+            .unwrap();
+        task_ids.push(match &envs[0].payload {
+            Event::TaskCreated { task } => task.id.unwrap(),
+            other => panic!("expected TaskCreated, got {other:?}"),
+        });
+    }
+    let (task, regular) = (task_ids[0], task_ids[1]);
+    stack
         .handler
-        .handle(Command::CreateTask { task: new_task }, Actor::user())
+        .handle(
+            Command::SetStatus {
+                id: regular,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
         .await
-        .unwrap();
-    let task = match &envs[0].payload {
-        Event::TaskCreated { task } => task.id.unwrap(),
-        other => panic!("expected TaskCreated, got {other:?}"),
-    };
+        .expect("title_prefix leaves non-audit tasks of the project alone");
     let done = || Command::SetStatus {
         id: task,
         status: Status::Done,

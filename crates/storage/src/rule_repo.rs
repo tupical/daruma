@@ -9,7 +9,7 @@
 use crate::parse_ts;
 use daruma_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{CoreError, Result, RuleId};
+use daruma_shared::{CoreError, ProjectId, Result, RuleId, TaskId};
 use sqlx::{Row, SqlitePool};
 
 pub struct RuleRepo {
@@ -70,6 +70,28 @@ impl RuleRepo {
     /// weakening leaves the parent effective (spec §2.3). Strengthening is
     /// always allowed. This is the hot path for the gate; when no scope in
     /// the chain has rows it is a single empty query.
+    /// Project and title of a persisted task. Task status events carry only
+    /// the id; the gate needs the project for the scope chain (spec §2) and
+    /// the title for `Condition.title_prefix`. `None` = no such task.
+    pub async fn task_context(&self, id: TaskId) -> Result<Option<(Option<ProjectId>, String)>> {
+        let row: Option<(Option<String>, String)> =
+            sqlx::query_as("SELECT project_id, title FROM tasks WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        row.map(|(project, title)| {
+            let project = project
+                .map(|p| {
+                    p.parse()
+                        .map_err(|_| CoreError::storage("bad task project_id"))
+                })
+                .transpose()?;
+            Ok((project, title))
+        })
+        .transpose()
+    }
+
     pub async fn effective_rules(
         &self,
         chain: &[RuleScope],

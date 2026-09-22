@@ -122,7 +122,8 @@ pub enum RuleTrigger {
 /// rule fires on every trigger event in its scope. Semantics: AND across
 /// fields, OR within a list.
 ///
-/// Only the v1-evaluable fields are present (status transition). Reserved
+/// Only the v1-evaluable fields are present (status transition, task title
+/// prefix). Reserved
 /// spec fields (`priority`, `changed_paths`, `task_labels`,
 /// `affected_modules`) are omitted by design: their carriers are not on
 /// `GateCheck` yet, so storing them would round-trip silently without ever
@@ -135,11 +136,15 @@ pub struct Condition {
     /// For `before_*` transitions: the status being entered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_to: Option<Vec<Status>>,
+    /// For `task.*` triggers: the task title starts with one of these
+    /// prefixes (e.g. `[Audit]`). Checks without a task never match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_prefix: Option<Vec<String>>,
 }
 
 impl Condition {
     pub fn is_empty(&self) -> bool {
-        self.status_from.is_none() && self.status_to.is_none()
+        self.status_from.is_none() && self.status_to.is_none() && self.title_prefix.is_none()
     }
 }
 

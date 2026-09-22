@@ -90,6 +90,10 @@ pub struct GateCheck {
     pub status_to: Option<Status>,
     pub plan_status_from: Option<PlanStatus>,
     pub plan_status_to: Option<PlanStatus>,
+    /// Task title for `Condition.title_prefix`. Set from `TaskCreated`; for
+    /// transitions the rule engine resolves it (with `project_id`) from the
+    /// persisted task, since the status event carries only the id.
+    pub task_title: Option<String>,
 }
 
 impl GateCheck {
@@ -106,6 +110,7 @@ impl GateCheck {
             status_to: None,
             plan_status_from: None,
             plan_status_to: None,
+            task_title: None,
         }
     }
 }
@@ -232,6 +237,7 @@ pub fn derive_gate_checks(events: &[Event]) -> Vec<GateCheck> {
                 let mut check = GateCheck::new(TriggerEvent::TaskCreated);
                 check.task_id = task.id;
                 check.project_id = task.project_id;
+                check.task_title = Some(task.title.clone());
                 checks.push(check);
             }
             Event::TaskStatusChanged { task_id, from, to }
