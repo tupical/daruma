@@ -185,6 +185,10 @@ pub enum Requirement {
         executor_id: AgentId,
         source_revision: String,
     },
+    /// Task must have ≥1 bound document (`LinkDocumentToTask`) that is not
+    /// archived. Satisfied from document state, not from an evidence row: the
+    /// binding itself is the proof, so there is nothing to submit.
+    DocumentLinked,
     /// Assess risk.
     RiskCheck {
         target: String,
@@ -209,6 +213,7 @@ impl Requirement {
             Requirement::OwnerRequired => "owner_required",
             Requirement::AcceptanceCriteriaRequired => "acceptance_criteria_required",
             Requirement::RiskCheck { .. } => "risk_check",
+            Requirement::DocumentLinked => "document_linked",
             Requirement::IndependentTestVerification { .. } => "independent_test_verification",
         }
     }
@@ -367,6 +372,13 @@ mod tests {
         let back: Requirement = serde_json::from_str(&json).unwrap();
         assert_eq!(back, r);
         assert_eq!(r.type_str(), "completion_note");
+    }
+
+    #[test]
+    fn document_linked_is_a_unit_type_tag() {
+        let r: Requirement = serde_json::from_str(r#"{"type":"document_linked"}"#).unwrap();
+        assert_eq!(r, Requirement::DocumentLinked);
+        assert_eq!(r.type_str(), "document_linked");
     }
 
     #[test]

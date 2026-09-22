@@ -100,6 +100,22 @@ impl EvidenceRepo {
         Ok(found != 0)
     }
 
+    /// `document_linked` requirement: does `task_id` have at least one bound,
+    /// non-archived document? Reads the `documents` projection directly — the
+    /// binding is the proof, no evidence row exists for it. `archived_at` is
+    /// checked too: rows archived before migration 0042 keep `status='active'`.
+    pub async fn task_has_live_document(&self, task_id: daruma_shared::TaskId) -> Result<bool> {
+        let found: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE task_id = ? \
+             AND status != 'archived' AND archived_at IS NULL)",
+        )
+        .bind(task_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(found != 0)
+    }
+
     /// Gate hot path: does *live* evidence of `kind` exist anywhere in the scope
     /// chain the kind can legitimately reach, optionally matching `target`?
     ///

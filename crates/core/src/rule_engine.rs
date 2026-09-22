@@ -99,6 +99,18 @@ impl RuleEngineGate {
                 reason: (!satisfied).then(|| "requires a live passing test attestation for this task and pinned revision from an authenticated actor other than executor_id".into()),
             });
         }
+        if let Requirement::DocumentLinked = rule.requirement {
+            let satisfied = match chain.last() {
+                Some(RuleScope::Task { id }) => evidence.task_has_live_document(*id).await?,
+                _ => false,
+            };
+            return Ok(EvidenceCheck {
+                satisfied,
+                reason: (!satisfied).then(|| {
+                    "requires at least one non-archived document linked to this task".into()
+                }),
+            });
+        }
         let (kind, target, required_fields, min_version) = requirement_evidence(&rule.requirement);
         evidence
             .has_live_evidence(chain, kind, target.as_deref(), required_fields, min_version)
@@ -335,6 +347,9 @@ fn requirement_evidence(
             None,
         ),
         Requirement::OwnerRequired => (EvidenceKind::OwnerAssigned, None, None, None),
+        // Never consulted: satisfied from document state (`requirement_satisfied`)
+        // and hinted separately (`unblock_hint`).
+        Requirement::DocumentLinked => (EvidenceKind::ArtifactCreated, None, None, None),
         Requirement::AcceptanceCriteriaRequired => {
             (EvidenceKind::AcceptanceCriteriaDefined, None, None, None)
         }
@@ -465,6 +480,14 @@ fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serd
             "reach": "self_only",
             "evidence": { "kind": kind, "scope": chain.last(), "target": target, "payload": { "passed": true } },
             "note": "Verifier submits using its own authenticated identity; payload actor fields do not establish independence."
+        });
+    }
+    if let Requirement::DocumentLinked = rule.requirement {
+        return json!({
+            "rule_key": rule.rule_key,
+            "requirement_type": "document_linked",
+            "reach": "self_only",
+            "note": "no evidence to submit: create a document and link it to this task (LinkDocumentToTask / daruma_doc_link_task); archived documents do not count"
         });
     }
     let reach = kind.reach();

@@ -145,6 +145,14 @@ struct Condition {
 | `owner_required`                | `owner_assigned`               | —                                               |
 | `acceptance_criteria_required`  | `acceptance_criteria_defined`  | —                                               |
 | `risk_check`                    | `risk_check_completed`         | `target`, `required_fields[]`                   |
+| `document_linked`               | — (состояние документов)       | —                                               |
+
+`document_linked` — исключение из 1:1: доказательство — сама привязка, а не
+Evidence. Требование выполнено, если у проверяемой задачи есть ≥1 документ с
+`documents.task_id` = задача (`LinkDocumentToTask` / `daruma_doc_link_task`
+или `task_id` при `CreateDocument`) и статусом не `archived`. Отправлять
+нечего: `unblock[]` для него несёт `note` без объекта `evidence`. Имеет смысл
+на `task.before_complete`; на других триггерах без task scope не выполняется.
 
 ```rust
 struct Evidence {
@@ -430,7 +438,7 @@ Effective rules для сущности E:
 | 2 критерии завершения | `acceptance_criteria_required` на `task.before_start`/`before_complete` |
 | 3 контекст задачи | Cloud-шаблон: `task.before_start` + `read_artifact`/`impact_check` |
 | 4–5 исполнитель и причина действия | EventEnvelope.actor (есть всегда) + Evidence.reason |
-| 6 документ привязан к задаче | OSS doc↔task binding + правило на `artifact.created` |
+| 6 документ привязан к задаче | OSS doc↔task binding + `document_linked` на `task.before_complete` |
 | 7–8 триггер и потребитель документа | носитель — метаданные документа; проверка — Cloud-шаблон (Cloud-only в v1, ядро поля не валидирует) |
 | 9 ЖЦ артефакта | статусы документов/артефактов (registry, migration 0036) |
 | 10–11 завершение с результатом и who/when/why | `completion_note` (пример 3) |

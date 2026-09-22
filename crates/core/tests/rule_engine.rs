@@ -24,8 +24,8 @@ use daruma_domain::{
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::{CoreError, PlanId, ProjectId, TaskId};
 use daruma_storage::{
-    ActivityRepo, CommentRepo, Db, EvidenceRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo,
-    SqliteEventStore, TaskRepo,
+    ActivityRepo, CommentRepo, Db, DocumentRepo, EvidenceRepo, PlanRepo, ProjectRepo, RelationRepo,
+    RuleRepo, SqliteEventStore, TaskRepo,
 };
 
 struct Stack {
@@ -63,6 +63,7 @@ async fn stack() -> Stack {
     let rules = Arc::new(RuleRepo::new(pool.clone()));
     let evidence = Arc::new(EvidenceRepo::new(pool.clone()));
     let relations = Arc::new(RelationRepo::new(pool.clone()));
+    let documents = Arc::new(DocumentRepo::new(pool.clone()));
     let gate: Arc<dyn LifecycleGate> = Arc::new(RuleEngineGate::with_evidence(
         rules.clone(),
         evidence.clone(),
@@ -79,6 +80,7 @@ async fn stack() -> Stack {
     .with_plans(plans)
     .with_rules(rules.clone())
     .with_evidence(evidence.clone())
+    .with_documents(documents)
     // The gate reads evidence so a satisfied `required` requirement unblocks.
     // The same instance answers `can_start`: two gates could drift, one cannot.
     .with_lifecycle_gate(gate.clone());
@@ -2164,4 +2166,117 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
         .expect("evidence recorded");
     assert_eq!(recorded.actor.kind, "agent");
     assert_eq!(recorded.actor.id, Some(principal));
+}
+
+/// `document_linked`: satisfied only by a bound, non-archived document — no
+/// evidence row involved, and the unblock hint says there is nothing to submit.
+#[tokio::test]
+async fn document_linked_requires_a_live_bound_document() {
+    let stack = stack().await;
+    install(
+        &stack,
+        new_rule(
+            "audit-report",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::DocumentLinked,
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    let envs = stack
+        .handler
+        .handle(
+            Command::CreateProject {
+                title: "P".into(),
+                description: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let project_id = match &envs[0].payload {
+        Event::ProjectCreated { project } => project.id,
+        other => panic!("expected ProjectCreated, got {other:?}"),
+    };
+    let mut new_task = daruma_domain::NewTask::new("Audit");
+    new_task.project_id = Some(project_id);
+    let envs = stack
+        .handler
+        .handle(Command::CreateTask { task: new_task }, Actor::user())
+        .await
+        .unwrap();
+    let task = match &envs[0].payload {
+        Event::TaskCreated { task } => task.id.unwrap(),
+        other => panic!("expected TaskCreated, got {other:?}"),
+    };
+    let done = || Command::SetStatus {
+        id: task,
+        status: Status::Done,
+        force: false,
+        override_reason: None,
+        comment: None,
+    };
+    let create_doc = || Command::CreateDocument {
+        new_doc: daruma_domain::NewDocument {
+            id: None,
+            project_id,
+            kind: daruma_domain::DocumentKind::Interview,
+            title: "report".into(),
+            content: None,
+            status: None,
+            task_id: Some(task),
+            trigger_kind: None,
+            consumer: None,
+        },
+    };
+
+    let err = stack
+        .handler
+        .handle(done(), Actor::user())
+        .await
+        .expect_err("no document → blocked");
+    assert!(is_blocked(&err, "audit-report"), "got: {err}");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints[0]["requirement_type"], "document_linked");
+    assert!(hints[0].get("evidence").is_none(), "{hints:?}");
+
+    // An archived document does not count.
+    let envs = stack
+        .handler
+        .handle(create_doc(), Actor::user())
+        .await
+        .unwrap();
+    let archived = match &envs[0].payload {
+        Event::DocumentCreated { document } => document.id,
+        other => panic!("expected DocumentCreated, got {other:?}"),
+    };
+    stack
+        .handler
+        .handle(
+            Command::ArchiveDocument {
+                document_id: archived,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let err = stack
+        .handler
+        .handle(done(), Actor::user())
+        .await
+        .expect_err("archived document → still blocked");
+    assert!(is_blocked(&err, "audit-report"), "got: {err}");
+
+    stack
+        .handler
+        .handle(create_doc(), Actor::user())
+        .await
+        .unwrap();
+    stack
+        .handler
+        .handle(done(), Actor::user())
+        .await
+        .expect("live bound document satisfies the rule");
 }
