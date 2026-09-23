@@ -91,6 +91,16 @@ impl RateLimiter {
         let key = RateLimitKey::Ip(ip.to_string());
         self.check_key(key, PAIRING_LIMIT_PER_MIN as f64)
     }
+
+    /// Check an IP-keyed bucket with a caller-chosen per-minute limit, for
+    /// embedders guarding their own unauthenticated surfaces. Use a dedicated
+    /// `RateLimiter` per surface: IP buckets of one instance are shared.
+    pub fn check_ip(&self, ip: &str, limit_per_min: u32) -> Result<(), Duration> {
+        self.check_key(
+            RateLimitKey::Ip(ip.to_string()),
+            limit_per_min.max(1) as f64,
+        )
+    }
 }
 
 pub async fn enforce_rate_limit(
@@ -130,7 +140,7 @@ pub async fn enforce_pairing_rate_limit(
     }
 }
 
-fn rate_limited_response(retry_after: Duration) -> Response {
+pub fn rate_limited_response(retry_after: Duration) -> Response {
     let body = json!({
         "error": {
             "code": "rate_limited",
