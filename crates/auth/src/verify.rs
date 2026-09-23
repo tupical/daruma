@@ -140,6 +140,7 @@ pub async fn verify_bearer(
             rate_limit_per_min: candidate.rate_limit_per_min,
             scope: candidate.scope,
             token_kind: candidate.kind,
+            principal_id: None,
         });
     }
 

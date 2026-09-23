@@ -23,7 +23,19 @@ pub struct AuthContext {
     /// Kind of token that produced this context. Used by [`AuthContext::actor`]
     /// to derive the correct [`Actor`] for event attribution.
     pub token_kind: TokenKind,
+    /// Person the token acts for, when an embedding host knows it better than
+    /// the token's own `agent_id` (see [`HostPrincipal`]). Attribution only:
+    /// claims and leases stay keyed by `agent_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_id: Option<AgentId>,
 }
+
+/// Principal asserted by an embedding host (the cloud gateway: the account
+/// behind the token). Request extensions are set only by in-process code,
+/// never by clients, so the auth middleware copies it into
+/// [`AuthContext::principal_id`] as trusted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HostPrincipal(pub AgentId);
 
 impl AuthContext {
     /// Return `Ok(())` if the token's scope holds `cap`. Used at the top of
@@ -41,8 +53,9 @@ impl AuthContext {
     ///
     /// - `TokenKind::Bot` → `Actor::Agent { id: agent_id, name: "bot.<agent_id>" }`
     /// - `TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License` →
-    ///   `Actor::User { id: agent_id }` — the token's principal is the person
-    ///   (or the service acting for them), so the journal can answer "who".
+    ///   `Actor::User { id: principal_id or agent_id }` — the token's principal
+    ///   is the person (or the service acting for them), so the journal can
+    ///   answer "who".
     pub fn actor(&self) -> Actor {
         match self.token_kind {
             TokenKind::Bot => Actor::Agent {
@@ -50,7 +63,7 @@ impl AuthContext {
                 name: format!("bot.{}", self.agent_id),
             },
             TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License => {
-                Actor::user_with_id(self.agent_id)
+                Actor::user_with_id(self.principal_id.unwrap_or(self.agent_id))
             }
         }
     }
