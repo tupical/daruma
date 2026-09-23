@@ -12,7 +12,15 @@ async fn session_start_get_and_list_with_metadata() {
         "client": "cursor",
         "model": "composer-2.5",
         "chat_id": "chat-test-1",
-        "transcript_path": "/tmp/transcript.jsonl"
+        "transcript_path": "/tmp/transcript.jsonl",
+        "git_work_context": {
+            "repo_root": "/client/repo",
+            "worktree_path": "/client/worktree",
+            "head_sha": "0123456789012345678901234567890123456789",
+            "branch_ref": null,
+            "merge_request_id": "42",
+            "observed_at": "2026-09-11T00:00:00Z"
+        }
     });
 
     let (status, start) = json_post(
@@ -40,6 +48,10 @@ async fn session_start_get_and_list_with_metadata() {
     .await;
     assert_eq!(status, StatusCode::OK, "get: {got}");
     assert_eq!(got["metadata"]["chat_id"], "chat-test-1");
+    assert_eq!(
+        got["metadata"]["git_work_context"],
+        metadata["git_work_context"]
+    );
 
     let (status, listed) = json_get(
         app.router,

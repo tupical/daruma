@@ -251,6 +251,7 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )

@@ -24,7 +24,10 @@ async fn post_command(
 
 #[tokio::test]
 async fn create_task_bridged_when_plan_only_intake_on() {
-    let app = TestAppBuilder::default().plan_only_intake(true).build().await;
+    let app = TestAppBuilder::default()
+        .plan_only_intake(true)
+        .build()
+        .await;
 
     let (status, body) = post_command(
         &app,
@@ -59,7 +62,10 @@ async fn create_task_allowed_when_plan_only_intake_off() {
 
 #[tokio::test]
 async fn materialize_plan_accepted_when_plan_only_intake_on() {
-    let app = TestAppBuilder::default().plan_only_intake(true).build().await;
+    let app = TestAppBuilder::default()
+        .plan_only_intake(true)
+        .build()
+        .await;
 
     let (status, body) = post_command(
         &app,
@@ -84,9 +90,9 @@ async fn materialize_plan_accepted_when_plan_only_intake_on() {
 
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["success"], true, "{body}");
-    let envelopes = body["data"].as_array().unwrap_or_else(|| {
-        panic!("materialize must return event envelopes: {body}")
-    });
+    let envelopes = body["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("materialize must return event envelopes: {body}"));
     let types: Vec<&str> = envelopes
         .iter()
         .filter_map(|e| e["payload"]["type"].as_str())

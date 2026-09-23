@@ -6,6 +6,19 @@
 
 ## 0. Принцип и анти-цели
 
+**Телеметрия рекомендаций (2026-09-11).** Command handler сохраняет
+`OperationalMetricRecorded` с именем `rule.advisory_evaluated` для каждого
+эффективного правила `recommendation` при попытке перехода, включая
+несовпавшее условие и удовлетворённое evidence (`triggered: false`).
+Идентичность выборки: `rule_id`, `rule_revision` (updated_at определения),
+`project_id`; дополнительно записываются trigger и ссылки plan/task.
+Read-only `can_start` не пишет метрики. При блокировке сохраняются уже
+вычисленные наблюдения; off/disabled правила не учитываются.
+Gate возвращает наблюдения как данные, персистентность остаётся у ядра.
+Это telemetry с обычной retention, без новых таблиц и без изменения
+семантики `RuleFired`. События не содержат оценки false positive: для неё
+нужна явная разметка наблюдений, отсутствие оценок не равно нулю ошибок.
+
 Модель строго одна:
 
 ```text
@@ -102,6 +115,8 @@ struct Condition {
     priority:    Option<Vec<Priority>>,        // p0..p3
     changed_paths:  Option<Vec<GlobPattern>>,  // матчится по artifact uri,
                                                // work_lease target_uri, reserve_files
+    title_prefix: Option<Vec<String>>,         // task.*: заголовок задачи начинается
+                                               // с одного из префиксов (напр. "[Audit]")
     // reserved (в ядре нет носителя; включаются после появления):
     task_labels:      Option<Vec<String>>,     // reserved — у Task нет labels
     affected_modules: Option<Vec<String>>,     // reserved — нет понятия module
@@ -110,6 +125,11 @@ struct Condition {
                                                // с Command-поверхностью артефактов
 }
 ```
+
+**Носитель task-переходов.** Событие смены статуса несёт только id задачи;
+rule engine достаёт из строки задачи `project_id` (project-правила входят в
+цепочку scope, §2) и заголовок для `title_prefix`. `plan_id` для задачи в
+цепочку пока не попадает — plan-scope правила на `task.before_*` не действуют.
 
 **Reserved-политика:** reserved-поля входят в контракт (имена зарезервированы),
 но правило, использующее их, отклоняется валидацией ядра v1 с понятной ошибкой —
@@ -132,6 +152,14 @@ struct Condition {
 | `owner_required`                | `owner_assigned`               | —                                               |
 | `acceptance_criteria_required`  | `acceptance_criteria_defined`  | —                                               |
 | `risk_check`                    | `risk_check_completed`         | `target`, `required_fields[]`                   |
+| `document_linked`               | — (состояние документов)       | —                                               |
+
+`document_linked` — исключение из 1:1: доказательство — сама привязка, а не
+Evidence. Требование выполнено, если у проверяемой задачи есть ≥1 документ с
+`documents.task_id` = задача (`LinkDocumentToTask` / `daruma_doc_link_task`
+или `task_id` при `CreateDocument`) и статусом не `archived`. Отправлять
+нечего: `unblock[]` для него несёт `note` без объекта `evidence`. Имеет смысл
+на `task.before_complete`; на других триггерах без task scope не выполняется.
 
 ```rust
 struct Evidence {
@@ -223,6 +251,10 @@ struct EnforcementResult {           // агрегат по всем срабо�
 `daruma_plan_set_status`; для плана также HTTP `POST /v1/plans/{id}/status`).
 Override едет на команде, а не на триггере: для обхода при завершении задачи
 нужен `daruma_set_status status=done`, а не `daruma_complete`.
+У `SetStatus` есть и опциональный `comment {body ≤ 4 KiB, kind}`: комментарий
+записывается в одной транзакции с переходом и только если переход принят —
+`blocked` от гейта, активный `blocks`-блокер или no-op переход комментарий не
+создают (прецедент `completion_note` §1.4).
 Обойдённый `blocked` возвращается исполнителю как warning и сейчас попадает в
 аудит как `RuleFired(warning)`; отдельное `RuleOverridden` с сохранением причины
 остаётся целевым контрактом §1.6. Для прохода required-правила `force` без
@@ -413,7 +445,7 @@ Effective rules для сущности E:
 | 2 критерии завершения | `acceptance_criteria_required` на `task.before_start`/`before_complete` |
 | 3 контекст задачи | Cloud-шаблон: `task.before_start` + `read_artifact`/`impact_check` |
 | 4–5 исполнитель и причина действия | EventEnvelope.actor (есть всегда) + Evidence.reason |
-| 6 документ привязан к задаче | OSS doc↔task binding + правило на `artifact.created` |
+| 6 документ привязан к задаче | OSS doc↔task binding + `document_linked` на `task.before_complete` |
 | 7–8 триггер и потребитель документа | носитель — метаданные документа; проверка — Cloud-шаблон (Cloud-only в v1, ядро поля не валидирует) |
 | 9 ЖЦ артефакта | статусы документов/артефактов (registry, migration 0036) |
 | 10–11 завершение с результатом и who/when/why | `completion_note` (пример 3) |
@@ -430,3 +462,31 @@ Effective rules для сущности E:
 - `task_labels`/`affected_modules` в Condition — ждут носителя в ядре.
 - Command-поверхность артефактов (WorkUnit-слой) — её
   появление активирует триггеры `artifact.*`.
+
+## Независимое подтверждение тестов (2026-09-11)
+
+Опциональное требование `independent_test_verification` содержит
+`executor_id` (аутентифицированный principal исполнителя) и `source_revision`
+(полный Git SHA из 40 или 64 hex-символов). Применяйте его к
+`task.before_complete`, режим `required`, `override_allowed=false`.
+Владелец приёмки фиксирует исполнителя и ревизию в правиле; gate не выводит
+авторство кода из того, кто нажал «завершить», имени агента или git author.
+При изменении проверяемого кода обновите закреплённую ревизию.
+
+Подтверждение — `artifact_created` на **той же task scope**, с точным
+`target: "test-verification:<source_revision>"` и `payload: {"passed": true}`.
+Проектное/tenant evidence, пустой target, другая ревизия, строка `"true"`,
+отозванное свидетельство и самоаттестация не удовлетворяют требование.
+
+`authenticated_actor_id` ставится сервером из identity аутентифицированного
+запроса на `/v1/evidence` и `/v1/commands`; `NewEvidence` этого поля не принимает.
+Оно должно совпасть с записанным `actor.id` и отличаться от `executor_id`.
+Поля `actor_id`/`attested_by_verifier` внутри payload не являются доказательством.
+Для этого gate нужна отдельная аутентифицированная identity verifier; другой
+chat под тем же principal не считается независимым. Старое/offline evidence
+остаётся читаемым, но без серверной отметки не проходит это требование.
+Миграция 0055 добавляет nullable-колонку без фиктивного backfill.
+
+Это проверка атрибуции и привязки свидетельства. Она не запускает тесты и не
+доказывает, что два principal принадлежат разным людям. Управление правилами
+остаётся у существующего авторизованного владельца политики.

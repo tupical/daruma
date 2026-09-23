@@ -1065,7 +1065,11 @@ mod tests {
 
         let got = repo.list_live_by_task(task_a).await.unwrap();
         let ids: Vec<_> = got.iter().map(|d| d.id).collect();
-        assert_eq!(got.len(), 2, "only live (draft/active) docs on task_a: {ids:?}");
+        assert_eq!(
+            got.len(),
+            2,
+            "only live (draft/active) docs on task_a: {ids:?}"
+        );
         assert!(ids.contains(&live.id));
         assert!(ids.contains(&draft.id));
         assert!(!ids.contains(&frozen.id), "frozen doc is already settled");
@@ -1123,8 +1127,14 @@ mod tests {
 
         let candidates = repo.list_sweep_candidates().await.unwrap();
         let ids: Vec<_> = candidates.iter().map(|d| d.id).collect();
-        assert!(!ids.contains(&anchored_open.id), "open anchor is not a candidate");
-        assert!(ids.contains(&anchored_done.id), "done anchor bypassed the cascade");
+        assert!(
+            !ids.contains(&anchored_open.id),
+            "open anchor is not a candidate"
+        );
+        assert!(
+            ids.contains(&anchored_done.id),
+            "done anchor bypassed the cascade"
+        );
         assert!(ids.contains(&orphan.id), "no anchor at all");
         assert!(ids.contains(&dangling.id), "anchor task no longer exists");
         assert!(

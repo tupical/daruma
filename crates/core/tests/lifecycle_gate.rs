@@ -130,6 +130,7 @@ async fn gate_sees_task_and_project_triggers_with_force() {
                 status: Status::InProgress,
                 force: true,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -201,6 +202,7 @@ async fn blocked_aborts_before_persist_on_both_complete_paths() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -235,6 +237,7 @@ async fn blocked_aborts_before_persist_on_both_complete_paths() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -482,6 +485,7 @@ async fn rule_fired_audit_persists_on_blocked_and_is_visible_in_event_log() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )

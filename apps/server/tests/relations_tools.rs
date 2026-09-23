@@ -43,7 +43,11 @@ async fn create_task_via_mcp(client: &ApiClient, title: &str) -> String {
     )
     .await
     .unwrap();
-    assert!(proj.error.is_none(), "project create failed: {:?}", proj.error);
+    assert!(
+        proj.error.is_none(),
+        "project create failed: {:?}",
+        proj.error
+    );
     let proj_text = proj.result.unwrap()["content"][0]["text"]
         .as_str()
         .unwrap()

@@ -148,6 +148,10 @@ pub struct Evidence {
     pub doc_version: Option<String>,
     /// Who recorded the evidence.
     pub actor: ActorRef,
+    /// Transport-authenticated principal; absent for legacy/offline evidence.
+    /// Server-assigned, never accepted in NewEvidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authenticated_actor_id: Option<AgentId>,
     /// Free-form why/details (the completion note text, the assessment, …).
     #[serde(default)]
     pub reason: String,
@@ -192,10 +196,10 @@ impl ActorRef {
     /// Project a domain [`Actor`](crate::Actor) into the stored triple.
     pub fn from_actor(actor: &crate::Actor) -> Self {
         match actor {
-            crate::Actor::User => ActorRef {
+            crate::Actor::User { id, name } => ActorRef {
                 kind: "user".into(),
-                id: None,
-                name: None,
+                id: *id,
+                name: name.clone(),
             },
             crate::Actor::Agent { id, name } => ActorRef {
                 kind: "agent".into(),
@@ -250,6 +254,7 @@ impl NewEvidence {
             target: self.target,
             doc_version: self.doc_version,
             actor,
+            authenticated_actor_id: None,
             reason: self.reason,
             payload: self.payload,
             project_id: self.project_id,
@@ -310,7 +315,7 @@ mod tests {
             rule_id: None,
             supersedes: None,
         }
-        .into_evidence(ActorRef::from_actor(&crate::Actor::User), now);
+        .into_evidence(ActorRef::from_actor(&crate::Actor::user()), now);
         assert_eq!(ev.kind, EvidenceKind::CompletionNote);
         assert_eq!(ev.actor.kind, "user");
         assert!(ev.superseded_by.is_none());

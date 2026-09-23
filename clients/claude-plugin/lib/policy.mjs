@@ -64,7 +64,8 @@ markers.
    and create new daruma state only when the user asked to create or
    track durable work.
 
-6. **If daruma is unreachable** (\`daruma_healthz\` fails), stop
+6. **If daruma is unreachable** (any \`daruma_*\` call fails with a
+   transport error — no \`daruma_healthz\` preflight needed), stop
    and tell the user how to start the server — do not silently route
    to \`.omc/plans/\` or ad-hoc markdown:
 

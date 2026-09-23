@@ -30,7 +30,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use daruma_auth::{verify_bearer, AuthContext, TokenStore, VerifyError};
+use daruma_auth::{verify_bearer, AuthContext, HostPrincipal, TokenStore, VerifyError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -141,7 +141,10 @@ pub async fn require_auth(
     }
 }
 
-fn insert_auth_context(req: &mut Request, ctx: AuthContext) {
+fn insert_auth_context(req: &mut Request, mut ctx: AuthContext) {
+    if let Some(HostPrincipal(id)) = req.extensions().get::<HostPrincipal>().copied() {
+        ctx.principal_id = Some(id);
+    }
     req.extensions_mut().insert(ctx);
 }
 

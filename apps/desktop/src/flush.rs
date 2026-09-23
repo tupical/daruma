@@ -41,10 +41,10 @@ pub async fn flush_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use daruma_core::embed::{Db, Event, EventEnvelope};
     use daruma_domain::{Actor, NewTask};
     use daruma_shared::{CoreError, DeviceId};
+    use std::sync::{Arc, Mutex};
 
     struct RecordingSink {
         seen: Arc<Mutex<Vec<u64>>>,

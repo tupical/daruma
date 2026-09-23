@@ -19,10 +19,11 @@ impl RepoScopeRepo {
 
     /// Every configured binding as `(scope_path, project_id)`, ordered by path.
     pub async fn list(&self) -> Result<Vec<(String, String)>> {
-        let rows = sqlx::query("SELECT scope_path, project_id FROM repo_scopes ORDER BY scope_path")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let rows =
+            sqlx::query("SELECT scope_path, project_id FROM repo_scopes ORDER BY scope_path")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
         rows.iter()
             .map(|row| {
                 Ok((

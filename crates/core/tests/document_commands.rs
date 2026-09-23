@@ -648,9 +648,14 @@ async fn complete_task_freezes_its_live_documents() {
     let project_id = create_bare_project(&handler).await;
     let task_id = create_task(&handler, project_id, "Ship the feature").await;
 
-    let active_id =
-        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Active", task_id)
-            .await;
+    let active_id = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "Active",
+        task_id,
+    )
+    .await;
     let draft_id = {
         let envs = handler
             .handle(
@@ -677,9 +682,14 @@ async fn complete_task_freezes_its_live_documents() {
         }
     };
     // Already-archived sibling — the cascade must leave it alone.
-    let archived_id =
-        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Archived", task_id)
-            .await;
+    let archived_id = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "Archived",
+        task_id,
+    )
+    .await;
     handler
         .handle(
             Command::ArchiveDocument {
@@ -704,11 +714,9 @@ async fn complete_task_freezes_its_live_documents() {
     let frozen_ids: Vec<_> = envs
         .iter()
         .filter_map(|e| match &e.payload {
-            Event::DocumentStatusChanged { document_id, to, .. }
-                if *to == daruma_domain::DocumentStatus::Frozen =>
-            {
-                Some(*document_id)
-            }
+            Event::DocumentStatusChanged {
+                document_id, to, ..
+            } if *to == daruma_domain::DocumentStatus::Frozen => Some(*document_id),
             _ => None,
         })
         .collect();
@@ -742,9 +750,14 @@ async fn cancel_task_archives_its_live_documents() {
     let (handler, documents) = build_stack().await;
     let project_id = create_bare_project(&handler).await;
     let task_id = create_task(&handler, project_id, "Abandoned spike").await;
-    let doc_id =
-        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Notes", task_id)
-            .await;
+    let doc_id = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "Notes",
+        task_id,
+    )
+    .await;
 
     let envs = handler
         .handle(
@@ -753,6 +766,7 @@ async fn cancel_task_archives_its_live_documents() {
                 status: daruma_domain::Status::Cancelled,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -784,10 +798,22 @@ async fn bulk_set_status_cascades_per_task() {
     let project_id = create_bare_project(&handler).await;
     let task_a = create_task(&handler, project_id, "A").await;
     let task_b = create_task(&handler, project_id, "B").await;
-    let doc_a =
-        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "A doc", task_a).await;
-    let doc_b =
-        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "B doc", task_b).await;
+    let doc_a = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "A doc",
+        task_a,
+    )
+    .await;
+    let doc_b = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "B doc",
+        task_b,
+    )
+    .await;
 
     handler
         .handle(
@@ -819,9 +845,14 @@ async fn sweep_archives_documents_whose_task_is_terminal() {
     let (handler, documents) = build_stack().await;
     let project_id = create_bare_project(&handler).await;
     let task_id = create_task(&handler, project_id, "Will be force-completed").await;
-    let doc_id =
-        create_doc_for_task(&handler, project_id, DocumentKind::Interview, "Notes", task_id)
-            .await;
+    let doc_id = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::Interview,
+        "Notes",
+        task_id,
+    )
+    .await;
 
     // Complete the task — the cascade freezes the document immediately.
     handler
@@ -860,7 +891,10 @@ async fn sweep_archives_documents_whose_task_is_terminal() {
         "precondition: document is live again while its task is already terminal"
     );
 
-    let swept = handler.sweep_orphan_documents(daruma_shared::time::now()).await.unwrap();
+    let swept = handler
+        .sweep_orphan_documents(daruma_shared::time::now())
+        .await
+        .unwrap();
     assert_eq!(swept, 1, "exactly the one live doc on a terminal task");
     assert_eq!(
         documents.get(doc_id).await.unwrap().unwrap().status,
@@ -897,7 +931,10 @@ async fn sweep_archives_legacy_documents_without_a_task() {
         .await
         .unwrap();
 
-    let swept = handler.sweep_orphan_documents(daruma_shared::time::now()).await.unwrap();
+    let swept = handler
+        .sweep_orphan_documents(daruma_shared::time::now())
+        .await
+        .unwrap();
     assert_eq!(swept, 1);
     assert_eq!(
         documents.get(doc_id).await.unwrap().unwrap().status,

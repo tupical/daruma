@@ -263,7 +263,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, or due date. When plan-only intake is on, title and description are plan-owned (ADR-0007 Q1) and this tool rejects them — amend them via daruma_amend_plan_task against the owning plan. Status and priority are set by daruma_set_status and daruma_set_priority, not here. Recorded in the task event/activity log.",
+            "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; set at handoff, null clears). Under plan-only intake title/description are plan-owned (ADR-0007 Q1) and rejected here — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default tool for \"what's open / inventory\". Required `status`: a single value (`inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`), a comma-separated list, `active` (all non-terminal), or `all`. Avoid `status=all` unless the user explicitly asked for the archive — it can return a very large response. Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
+            "List tasks — the default tool for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). Default `view=summary` rows already carry id/title/status/priority/project — no follow-up `daruma_get` or `view=detail` unless you need the description or comments. Required `status`: one of `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma-separated list, `active` (all non-terminal), or `all` (avoid unless the user asked for the archive — very large). Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -291,14 +291,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_lesson_recall",
             "Recall lessons",
-            "[Sensemaking layer / deprecated in core] Recall lesson comments. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix. Lesson recall is a knowledge concern owned by the Sensemaking layer (`satori::lesson_recall`); the core comment store stays, but this tool is out of the default execution profile and reachable only under `full`.",
+            "Recall lesson comments from Daruma. Searches comments whose body starts with `lesson:`; optional `query` narrows the lesson prefix. Implemented by the core comment store; available under `full`.",
             schema_lesson_recall(),
             Dom::Tasks, F, X, Ann::Read,
         ),
         tool(
             "daruma_set_status",
             "Set task status",
-            "Set a task's status (inbox / todo / in_progress / in_review / done / cancelled).",
+            "Set a task's status. Optional `comment` {body, kind} lands atomically with the transition — no separate daruma_comment.",
             schema_set_status(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -319,7 +319,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_complete",
             "Complete task",
-            "Mark a task as completed. Optionally attach a completion note (reason / result_summary / acceptance_criteria_status / related_artifacts); the completing actor (user vs agent) is recorded automatically.",
+            "Mark a task as completed. Optional note (reason / result_summary / acceptance_criteria_status / related_artifacts) replaces a preliminary daruma_comment; the completing actor is recorded automatically.",
             schema_complete(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -533,7 +533,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_ai_analyze_complexity",
             "AI: analyze plan complexity",
-            "[Planning layer / deprecated in core] Estimate decomposition complexity for every task in a plan in one batch LLM call. Upserts the `task_complexity_hints` projection (per-task score 1-10, recommended_subtasks, expansion_hint, reasoning). The analysis itself is planning-layer logic (`yatagarasu::analyze_complexity_batch`); this tool remains a delegation-shim until the cloud cutover. Decomposition also lives in the planning layer — there is no core decompose tool to chain into.",
+            "Estimate complexity for every task in a plan in one batch LLM call. Daruma server performs the analysis and upserts `task_complexity_hints` (score 1-10, recommended_subtasks, expansion_hint, reasoning). Yatagarasu decompose/scope are separate draft operations; this tool does not delegate to them.",
             schema_ai_analyze_complexity(),
             Dom::Ai, F, X, Ann::AiWrite,
         ),
@@ -591,7 +591,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_list",
             "List plans",
-            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans carry their full goal + success criteria and are token-heavy — summarize a single plan with `daruma_plan_get` instead of enumerating. `project_id` uses the resolved repo project when unambiguous; pass `all` to query across projects.",
+            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans are token-heavy — use `daruma_plan_get` for one plan instead. `project_id` defaults to the resolved repo project; `all` spans projects.",
             schema_plan_list(),
             Dom::Plans, D, C, Ann::Read,
         ),
@@ -633,7 +633,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_set_status",
             "Set plan status",
-            "Transition a plan into a different lifecycle state (draft, active, completed, abandoned). Emits PlanStatusChanged.",
+            "Set plan status (draft, active, completed, abandoned).",
             schema_plan_set_status(),
             Dom::Plans, D, E, Ann::WriteIdem,
         ),
@@ -766,14 +766,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_workspacegraph_search",
             "Search WorkspaceGraph nodes",
-            "[Sensemaking layer / deprecated in core] Full-text search over WorkspaceGraph nodes — for finding a node whose graph neighborhood you then explore. Semantic search is a knowledge concern owned by the Sensemaking layer (`satori::semantic_search`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`. Not for listing open work (use `daruma_list status=active`).",
+            "Full-text search over Daruma WorkspaceGraph nodes, implemented by the core FTS projection. Find a node before exploring its graph neighborhood. Available under `full`. Not for listing open work (use `daruma_list status=active`).",
             schema_workspacegraph_search(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
         tool(
             "daruma_workspacegraph_impact",
             "Graph impact analysis",
-            "[Sensemaking layer / deprecated in core] Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges. Behavioral impact analysis is a knowledge concern owned by the Sensemaking layer (`satori::impact`); structural navigation (status/context/related) stays in core. Out of the default execution profile; reachable only under `full`.",
+            "Downstream tasks and plans affected through Blocks, PlanContains, and ownership edges. Daruma core traverses the graph and applies project filtering. Available under `full`.",
             schema_workspacegraph_impact(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
@@ -1463,8 +1463,16 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                     patch.insert("due_at".to_string(), Value::String(due_at.to_string()));
                 }
             }
+            if let Some(git_context) = args.get("git_context") {
+                if !(git_context.is_null() || git_context.is_object()) {
+                    anyhow::bail!("`git_context` must be an object or null");
+                }
+                patch.insert("git_context".to_string(), git_context.clone());
+            }
             if patch.is_empty() {
-                anyhow::bail!("at least one of `title`, `description`, or `due_at` is required");
+                anyhow::bail!(
+                    "at least one of `title`, `description`, `due_at`, or `git_context` is required"
+                );
             }
             client
                 .post_command(json!({"type":"update_task","id": id, "patch": patch}))
@@ -1753,6 +1761,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             {
                 command["override_reason"] = json!(reason);
             }
+            if let Some(comment) = args.get("comment").filter(|v| !v.is_null()) {
+                let body = comment
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("`comment.body` (string) is required"))?;
+                let mut note = json!({"body": body});
+                if let Some(kind_raw) = comment.get("kind").and_then(|v| v.as_str()) {
+                    note["kind"] = json!(normalise_comment_kind(kind_raw)?);
+                }
+                command["comment"] = note;
+            }
             client.post_command(command).await
         }
         "daruma_set_priority" => {
@@ -1858,11 +1877,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 }))
                 .await
         }
-        // Deprecated delegation-shim: this is a thin HTTP forward to the
-        // `/v1/ai/analyze-complexity` route, whose complexity-analysis logic
-        // now canonically lives in the planning layer
-        // (`yatagarasu::analyze_complexity_batch`). Kept until the cloud
-        // cutover rewires the route to the planning layer (separate plan).
+        // Forward to the Daruma server's batch complexity implementation.
         "daruma_ai_analyze_complexity" => {
             let plan_id = required_string(&args, "plan_id")?;
             let mut body = json!({});
@@ -3356,7 +3371,8 @@ fn schema_update() -> Value {
             "due_at": {
                 "description":"RFC3339 timestamp to set, or null to clear.",
                 "anyOf": [{"type":"string"}, {"type":"null"}]
-            }
+            },
+            "git_context": {"anyOf": [{"type":"object"}, {"type":"null"}]}
         },
         "required":["id"]
     })
@@ -3374,7 +3390,16 @@ fn schema_set_status() -> Value {
             },
             "override_reason": {
                 "type":"string",
-                "description":"With `force`, explain an allowed rule override. Blank reasons and non-overridable rules block the whole set; prefer satisfying the rule with daruma_evidence_submit."
+                "description":"With `force`: why an overridable rule is bypassed. Blank or non-overridable → whole call blocked; prefer daruma_evidence_submit."
+            },
+            "comment": {
+                "type":"object",
+                "description":"Recorded atomically with the transition (≤4 KiB); dropped if it is rejected.",
+                "properties": {
+                    "body": {"type":"string"},
+                    "kind": {"type":"string","enum":["intent","progress","outcome","blocker","research"]}
+                },
+                "required":["body"]
             }
         },
         "required":["id","status"]
@@ -3510,11 +3535,7 @@ fn schema_comment() -> Value {
             // snake_case; the server is lenient about case.
             "kind": {
                 "type":"string",
-                "enum":[
-                    "intent","progress","outcome","blocker","research",
-                    "Intent","Progress","Outcome","Blocker","Research"
-                ],
-                "description":"Semantic comment kind."
+                "enum":["intent","progress","outcome","blocker","research"]
             }
         },
         "required":["task_id","body"]
@@ -3566,7 +3587,7 @@ fn schema_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required. inbox|todo|in_progress|in_review|done|cancelled, a comma-separated list, `active` (non-terminal), or `all`. Ask before `all`: the archive can be very heavy."
+                "description": "Required; see tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -3582,7 +3603,7 @@ fn schema_list() -> Value {
                 "type":"string",
                 "enum":["summary","detail"],
                 "default":"summary",
-                "description":"summary: id/title/status/priority/project; detail: full task rows."
+                "description":"detail = full task rows."
             }
         },
         "required": ["status"]
@@ -3783,11 +3804,11 @@ fn schema_plan_set_status() -> Value {
             "status":  {"type":"string","enum":["draft","active","completed","abandoned"]},
             "force": {
                 "type":"boolean",
-                "description":"Required together with override_reason to bypass an override_allowed rule on plan.before_approve; on its own it does nothing."
+                "description":"With override_reason, bypass an overridable plan.before_approve rule; alone does nothing."
             },
             "override_reason": {
                 "type":"string",
-                "description":"With `force`, explain an allowed rule override. Blank reasons and non-overridable rules block the whole set; prefer satisfying the rule with daruma_evidence_submit."
+                "description":"With `force`: why an overridable rule is bypassed. Blank or non-overridable → whole call blocked; prefer daruma_evidence_submit."
             }
         },
         "required":["plan_id","status"]
@@ -4032,6 +4053,10 @@ fn schema_run_finish_step() -> Value {
                     "kind": {
                         "type":"string",
                         "enum":["done","skipped","failed","superseded"]
+                    },
+                    "reason": {
+                        "type":"string",
+                        "description":"Required with kind=failed: the first line of the real error (build/test/tool output), not a paraphrase — repeated identical reasons are how the server detects a stuck loop."
                     }
                 },
                 "required":["kind"]
@@ -4421,7 +4446,19 @@ fn schema_session_start() -> Value {
                     "model": {"type":"string", "description":"Model display name or id"},
                     "chat_id": {"type":"string", "description":"Opaque conversation id in the client"},
                     "transcript_path": {"type":"string", "description":"Absolute path to chat transcript jsonl if known"},
-                    "workspace_path": {"type":"string", "description":"Repo or workspace root"}
+                    "workspace_path": {"type":"string", "description":"Repo or workspace root"},
+                    "git_work_context": {
+                        "type":"object",
+                        "description":"Client-observed Git snapshot. Local stdio captures omitted context; hosted MCP requires caller-provided values. Null means unknown; this is provenance, not authorization.",
+                        "properties": {
+                            "repo_root": {"type":["string","null"]},
+                            "worktree_path": {"type":"string"},
+                            "head_sha": {"type":["string","null"]},
+                            "branch_ref": {"type":["string","null"]},
+                            "merge_request_id": {"type":["string","null"]},
+                            "observed_at": {"type":"string"}
+                        }
+                    }
                 }
             }
         },
@@ -5502,7 +5539,7 @@ mod tests {
         );
         assert_eq!(
             plan["properties"]["force"]["description"],
-            "Required together with override_reason to bypass an override_allowed rule on plan.before_approve; on its own it does nothing."
+            "With override_reason, bypass an overridable plan.before_approve rule; alone does nothing."
         );
     }
 

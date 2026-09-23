@@ -160,7 +160,10 @@ async fn build_enriched_body(
 }
 
 fn project_matches(filter: &ProjectFilter, project_id: Option<ProjectId>) -> bool {
-    filter.allows(project_id)
+    match filter {
+        ProjectFilter::All => true,
+        ProjectFilter::Only { projects } => project_id.is_some_and(|id| projects.contains(&id)),
+    }
 }
 
 async fn send(
@@ -201,7 +204,18 @@ async fn send(
                 },
             )
         }
-        Err(e) => (None, false, Some(e.to_string())),
+        Err(e) => (
+            None,
+            false,
+            Some(
+                if e.is_timeout() {
+                    "timeout"
+                } else {
+                    "transport error"
+                }
+                .to_owned(),
+            ),
+        ),
     };
 
     let _ = log_delivery(
@@ -240,4 +254,21 @@ async fn log_delivery(
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_delivery_requires_a_known_matching_project() {
+        let project = ProjectId::new();
+        let filter = ProjectFilter::Only {
+            projects: vec![project],
+        };
+        assert!(project_matches(&filter, Some(project)));
+        assert!(!project_matches(&filter, Some(ProjectId::new())));
+        assert!(!project_matches(&filter, None));
+        assert!(project_matches(&ProjectFilter::All, None));
+    }
 }

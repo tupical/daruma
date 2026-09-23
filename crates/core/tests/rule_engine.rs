@@ -24,8 +24,8 @@ use daruma_domain::{
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::{CoreError, PlanId, ProjectId, TaskId};
 use daruma_storage::{
-    ActivityRepo, CommentRepo, Db, EvidenceRepo, PlanRepo, ProjectRepo, RelationRepo, RuleRepo,
-    SqliteEventStore, TaskRepo,
+    ActivityRepo, CommentRepo, Db, DocumentRepo, EvidenceRepo, PlanRepo, ProjectRepo, RelationRepo,
+    RuleRepo, SqliteEventStore, TaskRepo,
 };
 
 struct Stack {
@@ -63,6 +63,7 @@ async fn stack() -> Stack {
     let rules = Arc::new(RuleRepo::new(pool.clone()));
     let evidence = Arc::new(EvidenceRepo::new(pool.clone()));
     let relations = Arc::new(RelationRepo::new(pool.clone()));
+    let documents = Arc::new(DocumentRepo::new(pool.clone()));
     let gate: Arc<dyn LifecycleGate> = Arc::new(RuleEngineGate::with_evidence(
         rules.clone(),
         evidence.clone(),
@@ -79,6 +80,7 @@ async fn stack() -> Stack {
     .with_plans(plans)
     .with_rules(rules.clone())
     .with_evidence(evidence.clone())
+    .with_documents(documents)
     // The gate reads evidence so a satisfied `required` requirement unblocks.
     // The same instance answers `can_start`: two gates could drift, one cannot.
     .with_lifecycle_gate(gate.clone());
@@ -224,6 +226,7 @@ async fn example3_completion_note_required_blocks_complete() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -266,6 +269,7 @@ async fn example3_recommendation_warns_but_proceeds() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -306,6 +310,7 @@ async fn off_mode_not_evaluated() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -348,6 +353,7 @@ async fn example2_impact_check_required_blocks_start() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -434,7 +440,10 @@ async fn plan_approve_override_passes_and_returns_the_bypassed_rule_as_a_warning
         .handle(command(false, None), Actor::user())
         .await
         .expect_err("the rule must block a normal approval");
-    assert!(is_blocked(&err, "read-architecture-md message"), "got: {err}");
+    assert!(
+        is_blocked(&err, "read-architecture-md message"),
+        "got: {err}"
+    );
 
     let outcome = stack
         .handler
@@ -581,6 +590,7 @@ async fn override_allowed_rule_passes_with_force_in_commands_path() {
                 status: Status::Done,
                 force: true,
                 override_reason: None, // force alone, no reason
+                comment: None,
             },
             Actor::user(),
         )
@@ -619,6 +629,7 @@ async fn force_with_a_reason_overrides_a_rule_that_allows_it() {
                 status: Status::Done,
                 force: true,
                 override_reason: Some("hotfix: production is down".into()),
+                comment: None,
             },
             Actor::user(),
         )
@@ -659,6 +670,7 @@ async fn a_blank_override_reason_does_not_buy_a_bypass() {
                 status: Status::Done,
                 force: true,
                 override_reason: Some("   ".into()),
+                comment: None,
             },
             Actor::user(),
         )
@@ -709,6 +721,7 @@ async fn a_single_non_overridable_rule_poisons_the_whole_override() {
                 status: Status::Done,
                 force: true,
                 override_reason: Some("hotfix: production is down".into()),
+                comment: None,
             },
             Actor::user(),
         )
@@ -753,6 +766,7 @@ async fn decision_is_deterministic() {
                     status: Status::Done,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )
@@ -803,6 +817,7 @@ async fn required_with_evidence_allows_complete() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -844,6 +859,7 @@ async fn required_without_evidence_blocks_complete() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -889,6 +905,7 @@ async fn evidence_of_wrong_kind_does_not_satisfy() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -969,6 +986,7 @@ async fn required_fields_reject_incomplete_evidence_and_explain_why() {
         status_to: Some(Status::InProgress),
         plan_status_from: None,
         plan_status_to: None,
+        task_title: None,
     };
     let GateDecision::Blocked { details, .. } = stack
         .gate
@@ -1036,6 +1054,7 @@ async fn read_artifact_min_version_is_enforced_numerically() {
             status_to: Some(Status::InProgress),
             plan_status_from: None,
             plan_status_to: None,
+            task_title: None,
         };
         let decision = stack
             .gate
@@ -1093,6 +1112,7 @@ async fn start(
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1226,6 +1246,7 @@ async fn can_start_honours_a_rule_conditioned_on_the_status_being_left() {
     rule.condition = Some(Condition {
         status_from: Some(vec![Status::Todo]),
         status_to: None,
+        title_prefix: None,
     });
     install(&stack, rule).await;
     let task = create_task(&stack, "Touch auth").await;
@@ -1512,6 +1533,7 @@ async fn document_read_hint_keeps_innermost_scope_and_exposes_tenant_reach() {
                 status: Status::InProgress,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1555,6 +1577,7 @@ async fn unblock_suffix_is_never_added_to_allowed_or_warning_results() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1581,6 +1604,7 @@ async fn unblock_suffix_is_never_added_to_allowed_or_warning_results() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1634,6 +1658,7 @@ async fn blocked_details_keep_outcomes_beside_unblock_hints() {
         status_to: Some(Status::Done),
         plan_status_from: None,
         plan_status_to: None,
+        task_title: None,
     };
 
     let GateDecision::Blocked { details, .. } = stack
@@ -1783,6 +1808,7 @@ async fn blocked_error_lists_every_blocking_rule_not_just_the_first() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -1817,4 +1843,467 @@ async fn blocked_error_lists_every_blocking_rule_not_just_the_first() {
             "no plan/project in the chain → scope falls back inwards to the task"
         );
     }
+}
+
+#[tokio::test]
+async fn advisory_metrics_cover_opportunities_without_counting_readiness_probes() {
+    for scenario in ["warning", "satisfied", "condition_miss", "off", "blocked"] {
+        let stack = stack().await;
+        let requirement = Requirement::ImpactCheck {
+            target: "auth".into(),
+            required_fields: vec![],
+        };
+        let mut rule = new_rule(
+            "advisory-metric",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeStart,
+            requirement.clone(),
+            RuleMode::Recommendation,
+            true,
+        );
+        if scenario == "off" {
+            rule.mode = RuleMode::Off;
+        }
+        if scenario == "condition_miss" {
+            rule.condition = Some(Condition {
+                status_from: Some(vec![Status::Todo]),
+                status_to: None,
+                title_prefix: None,
+            });
+        }
+        let installed = install(&stack, rule).await;
+        let task = create_task(&stack, scenario).await;
+        if scenario == "satisfied" {
+            record_evidence(
+                &stack,
+                new_evidence(
+                    EvidenceKind::ImpactAssessment,
+                    RuleScope::Task { id: task },
+                    Some("auth"),
+                ),
+            )
+            .await;
+        }
+        if scenario == "blocked" {
+            install(
+                &stack,
+                new_rule(
+                    "block",
+                    RuleScope::Tenant,
+                    RuleTrigger::TaskBeforeStart,
+                    requirement,
+                    RuleMode::Required,
+                    false,
+                ),
+            )
+            .await;
+        }
+        let before = stack.handler.store.latest_seq().await.unwrap();
+        stack.can_start(task).await;
+        assert_eq!(
+            stack.handler.store.latest_seq().await.unwrap(),
+            before,
+            "readiness must not write metrics"
+        );
+        let result = stack
+            .handler
+            .handle(
+                Command::SetStatus {
+                    id: task,
+                    status: Status::InProgress,
+                    force: false,
+                    override_reason: None,
+                    comment: None,
+                },
+                Actor::user(),
+            )
+            .await;
+        assert_eq!(result.is_err(), scenario == "blocked", "{scenario}");
+        let events = stack.handler.store.load_since(before, 100).await.unwrap();
+        let metrics: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                Event::OperationalMetricRecorded { metric }
+                    if metric.name == "rule.advisory_evaluated" =>
+                {
+                    Some(metric)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(metrics.len(), usize::from(scenario != "off"), "{scenario}");
+        if let Some(metric) = metrics.first() {
+            assert_eq!(metric.attrs["rule_id"], serde_json::json!(installed.id));
+            assert_eq!(
+                metric.attrs["rule_revision"],
+                serde_json::json!(installed.updated_at)
+            );
+            assert_eq!(metric.attrs["task_id"], serde_json::json!(task));
+            assert_eq!(
+                metric.attrs["triggered"],
+                scenario == "warning" || scenario == "blocked"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn independent_test_attestation_binds_task_revision_and_authenticated_verifier() {
+    let stack = stack().await;
+    let task = create_task(&stack, "Pinned test verification").await;
+    let other_task = create_task(&stack, "Other task").await;
+    let executor = daruma_shared::AgentId::new();
+    let verifier = daruma_shared::AgentId::new();
+    let revision = "a".repeat(40);
+    let target = format!("test-verification:{revision}");
+    install(
+        &stack,
+        new_rule(
+            "independent-tests",
+            RuleScope::Task { id: task },
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::IndependentTestVerification {
+                executor_id: executor,
+                source_revision: revision,
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    let complete = || Command::SetStatus {
+        id: task,
+        status: Status::Done,
+        force: false,
+        override_reason: None,
+        comment: None,
+    };
+    for (scope_task, proof_target, passed, authenticated) in [
+        (task, target.clone(), serde_json::json!(true), executor),
+        (
+            other_task,
+            target.clone(),
+            serde_json::json!(true),
+            verifier,
+        ),
+        (
+            task,
+            "test-verification:stale".into(),
+            serde_json::json!(true),
+            verifier,
+        ),
+        (task, target.clone(), serde_json::json!(false), verifier),
+        (task, target.clone(), serde_json::json!("true"), verifier),
+    ] {
+        let mut evidence = new_evidence(
+            EvidenceKind::ArtifactCreated,
+            RuleScope::Task { id: scope_task },
+            Some(&proof_target),
+        );
+        evidence.payload = serde_json::json!({ "passed": passed, "actor_id": verifier, "attested_by_verifier": verifier });
+        let outcome = stack
+            .handler
+            .handle_authenticated_with_warnings(
+                Command::RecordEvidence { evidence },
+                Actor::Agent {
+                    id: verifier,
+                    name: "forged envelope".into(),
+                },
+                authenticated,
+                false,
+            )
+            .await
+            .unwrap();
+        let Event::EvidenceRecorded { evidence } = &outcome.events[0].payload else {
+            panic!("missing evidence")
+        };
+        assert_eq!(evidence.actor.id, Some(authenticated));
+        let error = stack
+            .handler
+            .handle(complete(), Actor::user())
+            .await
+            .unwrap_err();
+        assert!(is_blocked(&error, "independent-tests"), "{error}");
+    }
+    let mut proof = new_evidence(
+        EvidenceKind::ArtifactCreated,
+        RuleScope::Task { id: task },
+        Some(&target),
+    );
+    proof.payload = serde_json::json!({ "passed": true });
+    // A legacy/offline actor claim cannot masquerade as authenticated provenance.
+    stack
+        .handler
+        .handle(
+            Command::RecordEvidence {
+                evidence: proof.clone(),
+            },
+            Actor::Agent {
+                id: verifier,
+                name: "unverified".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(stack
+        .handler
+        .handle(complete(), Actor::user())
+        .await
+        .is_err());
+    let recorded = stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence {
+                evidence: proof.clone(),
+            },
+            Actor::user(),
+            verifier,
+            false,
+        )
+        .await
+        .unwrap();
+    let Event::EvidenceRecorded { evidence } = &recorded.events[0].payload else {
+        panic!("missing evidence")
+    };
+    let mut retracted = proof.clone();
+    retracted.supersedes = Some(evidence.id);
+    retracted.payload = serde_json::json!({ "passed": false });
+    stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence {
+                evidence: retracted,
+            },
+            Actor::user(),
+            verifier,
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(stack
+        .handler
+        .handle(complete(), Actor::user())
+        .await
+        .is_err());
+    stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence: proof },
+            Actor::user(),
+            verifier,
+            false,
+        )
+        .await
+        .unwrap();
+    stack
+        .handler
+        .handle(complete(), Actor::user())
+        .await
+        .unwrap();
+}
+
+/// Evidence keeps the token's actor *kind* and pins only the principal id: a
+/// human token stays `User { id }` (so the cabinet can name the person) and a
+/// forged agent envelope id is replaced, never trusted.
+#[tokio::test]
+async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
+    let stack = stack().await;
+    let task = create_task(&stack, "Actor kind").await;
+    let principal = daruma_shared::AgentId::new();
+    let forged = daruma_shared::AgentId::new();
+
+    let evidence = new_evidence(
+        EvidenceKind::CompletionNote,
+        RuleScope::Task { id: task },
+        None,
+    );
+    let outcome = stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence },
+            Actor::User {
+                id: Some(forged),
+                name: Some("owner@example.com".into()),
+            },
+            principal,
+            false,
+        )
+        .await
+        .unwrap();
+    let recorded = outcome
+        .events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
+            _ => None,
+        })
+        .expect("evidence recorded");
+    assert_eq!(recorded.actor.kind, "user");
+    assert_eq!(recorded.actor.id, Some(principal));
+    assert_eq!(recorded.actor.name.as_deref(), Some("owner@example.com"));
+    assert_eq!(recorded.authenticated_actor_id, Some(principal));
+
+    let evidence = new_evidence(
+        EvidenceKind::CompletionNote,
+        RuleScope::Task { id: task },
+        None,
+    );
+    let outcome = stack
+        .handler
+        .handle_authenticated_with_warnings(
+            Command::RecordEvidence { evidence },
+            Actor::Agent {
+                id: forged,
+                name: "bot".into(),
+            },
+            principal,
+            false,
+        )
+        .await
+        .unwrap();
+    let recorded = outcome
+        .events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
+            _ => None,
+        })
+        .expect("evidence recorded");
+    assert_eq!(recorded.actor.kind, "agent");
+    assert_eq!(recorded.actor.id, Some(principal));
+}
+
+/// `document_linked`: satisfied only by a bound, non-archived document — no
+/// evidence row involved, and the unblock hint says there is nothing to submit.
+/// The rule is project-scoped and targeted by `title_prefix`: task transitions
+/// carry only the task id, so this also pins that the gate resolves the task's
+/// project into the scope chain and leaves sibling tasks alone.
+#[tokio::test]
+async fn document_linked_requires_a_live_bound_document() {
+    let stack = stack().await;
+    let envs = stack
+        .handler
+        .handle(
+            Command::CreateProject {
+                title: "P".into(),
+                description: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let project_id = match &envs[0].payload {
+        Event::ProjectCreated { project } => project.id,
+        other => panic!("expected ProjectCreated, got {other:?}"),
+    };
+    let mut rule = new_rule(
+        "audit-report",
+        RuleScope::Project { id: project_id },
+        RuleTrigger::TaskBeforeComplete,
+        Requirement::DocumentLinked,
+        RuleMode::Required,
+        true,
+    );
+    rule.condition = Some(Condition {
+        title_prefix: Some(vec!["[Audit]".into()]),
+        ..Default::default()
+    });
+    install(&stack, rule).await;
+    let mut task_ids = Vec::new();
+    for title in ["[Audit] usage", "Regular work"] {
+        let mut new_task = daruma_domain::NewTask::new(title);
+        new_task.project_id = Some(project_id);
+        let envs = stack
+            .handler
+            .handle(Command::CreateTask { task: new_task }, Actor::user())
+            .await
+            .unwrap();
+        task_ids.push(match &envs[0].payload {
+            Event::TaskCreated { task } => task.id.unwrap(),
+            other => panic!("expected TaskCreated, got {other:?}"),
+        });
+    }
+    let (task, regular) = (task_ids[0], task_ids[1]);
+    stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: regular,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("title_prefix leaves non-audit tasks of the project alone");
+    let done = || Command::SetStatus {
+        id: task,
+        status: Status::Done,
+        force: false,
+        override_reason: None,
+        comment: None,
+    };
+    let create_doc = || Command::CreateDocument {
+        new_doc: daruma_domain::NewDocument {
+            id: None,
+            project_id,
+            kind: daruma_domain::DocumentKind::Interview,
+            title: "report".into(),
+            content: None,
+            status: None,
+            task_id: Some(task),
+            trigger_kind: None,
+            consumer: None,
+        },
+    };
+
+    let err = stack
+        .handler
+        .handle(done(), Actor::user())
+        .await
+        .expect_err("no document → blocked");
+    assert!(is_blocked(&err, "audit-report"), "got: {err}");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints[0]["requirement_type"], "document_linked");
+    assert!(hints[0].get("evidence").is_none(), "{hints:?}");
+
+    // An archived document does not count.
+    let envs = stack
+        .handler
+        .handle(create_doc(), Actor::user())
+        .await
+        .unwrap();
+    let archived = match &envs[0].payload {
+        Event::DocumentCreated { document } => document.id,
+        other => panic!("expected DocumentCreated, got {other:?}"),
+    };
+    stack
+        .handler
+        .handle(
+            Command::ArchiveDocument {
+                document_id: archived,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let err = stack
+        .handler
+        .handle(done(), Actor::user())
+        .await
+        .expect_err("archived document → still blocked");
+    assert!(is_blocked(&err, "audit-report"), "got: {err}");
+
+    stack
+        .handler
+        .handle(create_doc(), Actor::user())
+        .await
+        .unwrap();
+    stack
+        .handler
+        .handle(done(), Actor::user())
+        .await
+        .expect("live bound document satisfies the rule");
 }

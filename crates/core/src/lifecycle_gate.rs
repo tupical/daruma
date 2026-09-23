@@ -90,6 +90,10 @@ pub struct GateCheck {
     pub status_to: Option<Status>,
     pub plan_status_from: Option<PlanStatus>,
     pub plan_status_to: Option<PlanStatus>,
+    /// Task title for `Condition.title_prefix`. Set from `TaskCreated`; for
+    /// transitions the rule engine resolves it (with `project_id`) from the
+    /// persisted task, since the status event carries only the id.
+    pub task_title: Option<String>,
 }
 
 impl GateCheck {
@@ -106,6 +110,7 @@ impl GateCheck {
             status_to: None,
             plan_status_from: None,
             plan_status_to: None,
+            task_title: None,
         }
     }
 }
@@ -161,6 +166,16 @@ pub enum GateDecision {
     },
 }
 
+/// One advisory rule opportunity, including checks that did not warn.
+/// Returned as data; only command dispatch persists observations.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuleObservation {
+    pub rule_id: daruma_shared::RuleId,
+    pub rule_key: String,
+    pub rule_revision: daruma_shared::Timestamp,
+    pub triggered: bool,
+}
+
 /// Pre-persist lifecycle gate. Implementations must be read-only and
 /// deterministic (spec §0 anti-goal checklist, §3 invariant 8): no nested
 /// commands, no mutations — the only outputs are the decision and the
@@ -173,6 +188,15 @@ pub trait LifecycleGate: Send + Sync {
         check: &GateCheck,
         gate_override: &GateOverride,
     ) -> Result<GateDecision>;
+
+    async fn check_observed(
+        &self,
+        actor: &Actor,
+        check: &GateCheck,
+        gate_override: &GateOverride,
+    ) -> Result<(GateDecision, Vec<RuleObservation>)> {
+        Ok((self.check(actor, check, gate_override).await?, vec![]))
+    }
 }
 
 /// Outcome of [`crate::CommandHandler::handle_with_warnings`].
@@ -213,6 +237,7 @@ pub fn derive_gate_checks(events: &[Event]) -> Vec<GateCheck> {
                 let mut check = GateCheck::new(TriggerEvent::TaskCreated);
                 check.task_id = task.id;
                 check.project_id = task.project_id;
+                check.task_title = Some(task.title.clone());
                 checks.push(check);
             }
             Event::TaskStatusChanged { task_id, from, to }

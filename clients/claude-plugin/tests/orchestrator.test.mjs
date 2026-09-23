@@ -43,12 +43,15 @@ function mockMcp({ drains, tasks = {}, tools = [] } = {}) {
     calls,
     async callTool(name, args) {
       calls.push({ name, args });
+      if (name === "daruma_workspace_info") return { parsed: { mcp_agent_id: "agent" } };
+      if (name === "daruma_run_start") return { parsed: { data: { run_id: "00000000-0000-4000-8000-000000000001" } } };
       if (name === "daruma_plan_drain_next") {
         const next = drains.shift();
         return { parsed: next ?? null, text: JSON.stringify(next ?? null) };
       }
+      if (name === "daruma_run_notes_list") return { parsed: { notes: [{ id: "note", body: "Previous check passed", author: { kind: "agent" }, created_at: "2026-09-11" }] } };
       if (name === "daruma_get") {
-        const task = tasks[args.id] ?? { id: args.id, title: args.id };
+        const task = { status: "todo", ...(tasks[args.id] ?? { id: args.id, title: args.id }) };
         return { parsed: task, text: JSON.stringify(task) };
       }
       if (name === "daruma_plan_get") {
@@ -156,4 +159,110 @@ test("team-from-plan drains, fetches, executes, and completes claimed task", asy
   assert.equal(result.summaries[0].taskId, "claimed");
   assert(mcp.calls.some((c) => c.name === "daruma_plan_drain_next" && c.args.plan_id === "pln_1"));
   assert(mcp.calls.some((c) => c.name === "daruma_complete" && c.args.id === "claimed" && c.args.result_summary.includes("completed=1")));
+});
+
+
+test("executor circuit breaker bounds retries and never completes failed work", async () => {
+  for (const [errors, remaining, expected, attempts] of [
+    [["same", "same", "unused"], 100, "repeated_error", 2],
+    [["one", "two", "three", "unused"], 100, "consecutive_failures", 3],
+    [["one", "unused"], 1, "iteration_budget_exhausted", 1],
+    [["unused"], 0, "iteration_budget_exhausted", 0],
+  ]) {
+    const mcp = mockMcp();
+    const budget = { remaining, reason: null };
+    let executions = 0;
+    const outcome = await _internal.executeTaskWithRetries({
+      mcp, task: { id: "task", title: "Task" }, maxRetries: 100,
+      stdout: { write() {}, isTTY: false }, write() {}, budget,
+      async execute() {
+        const error = errors[executions++];
+        return { ok: false, counts: { completed: 0, failed: 1 }, artifact: error,
+          tasks: [{ status: "failed", result: error }] };
+      },
+    });
+    assert.equal(outcome.reason, expected);
+    assert.equal(outcome.attempts, attempts);
+    assert.equal(executions, attempts);
+    assert(!mcp.calls.some((call) => call.name === "daruma_complete"));
+    assert(mcp.calls.some((call) => call.name === "daruma_comment" && call.args.kind === "blocker" && call.args.body.includes(expected)));
+  }
+});
+
+test("executor errors stop immediately; success uses remaining shared budget", async () => {
+  const mcp = mockMcp();
+  const base = { mcp, task: { id: "task" }, maxRetries: 100, stdout: {}, write() {} };
+  const failed = await _internal.executeTaskWithRetries({ ...base, async execute() { throw new Error("spawn failed"); } });
+  assert.equal(failed.reason, "executor_error");
+  assert.equal(failed.attempts, 1);
+  const budget = { remaining: 1, reason: null };
+  const success = await _internal.executeTaskWithRetries({ ...base, budget, async execute() {
+    return { ok: true, counts: { completed: 1, failed: 0 }, artifact: "Tests passed" };
+  } });
+  assert.equal(success.ok, true);
+  assert.equal(budget.remaining, 0);
+  await assert.rejects(_internal.executeTaskWithRetries({ ...base, maxRetries: Infinity }), /nonnegative integer/);
+});
+
+
+test("claimed execution exception releases claim, aborts real run and stops waves", async () => {
+  const mcp = mockMcp({ drains: [{ task_id: "a" }, { task_id: "b" }] });
+  await assert.rejects(_internal.runTeamFromPlanWaves({
+    mcp, planId: "plan", waves: [{ wave: 0, tasks: ["a"] }, { wave: 1, tasks: ["b"] }],
+    maxRetries: 2, workers: 1, agentId: "agent", write() {},
+    async executeTask() { throw new Error("test executor failed"); },
+  }), /test executor failed/);
+  assert(mcp.calls.some((call) => call.name === "daruma_release" && call.args.task_id === "a"));
+  assert(mcp.calls.some((call) => call.name === "daruma_run_abort" && call.args.run_id === "00000000-0000-4000-8000-000000000001"));
+  assert(!mcp.calls.some((call) => call.name === "daruma_get" && call.args.id === "b"));
+});
+
+
+test("sequential plan executor activates draft, drains claims and completes its run", async () => {
+  const mcp = mockMcp({ drains: [{ task_id: "a" }, null] });
+  const outcome = await _internal.runPlanLoop({
+    mcp, plan: { id: "plan", status: "draft" }, cwd: "/tmp", write() {},
+    async executeTask() { return { ok: true, attempts: 1, result: { counts: { completed: 1 } } }; },
+  });
+  assert.equal(outcome.summaries.length, 1);
+  const names = mcp.calls.map((call) => call.name);
+  assert(names.indexOf("daruma_plan_set_status") < names.indexOf("daruma_run_start"));
+  assert(names.includes("daruma_complete"));
+  assert(names.includes("daruma_run_complete"));
+  assert(!names.includes("daruma_run_abort"));
+  assert(mcp.calls.filter((call) => call.name === "daruma_plan_drain_next").every((call) => call.args.run_id === outcome.runId));
+});
+
+
+test("each retry reads fresh Daruma state and run journal into executor prompt", async () => {
+  const mcp = mockMcp({ tasks: { task: { id: "task", title: "Server title", description: "Server statement" } } });
+  let calls = 0;
+  await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", title: "Stale title" }, maxRetries: 1,
+    runId: "run", stdout: {}, write() {},
+    async execute({ task }) {
+      const prompt = _internal.executePromptFor(task);
+      assert(prompt.includes("Server title"));
+      assert(!prompt.includes("Stale title"));
+      assert(prompt.includes("Previous check passed"));
+      assert(prompt.includes('"run_id":"run"'));
+      return { ok: ++calls === 2, counts: { completed: 0, failed: 1 }, artifact: "attempt" };
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(mcp.calls.filter((call) => call.name === "daruma_get").length, 2);
+  assert.equal(mcp.calls.filter((call) => call.name === "daruma_run_notes_list").length, 2);
+  assert.equal(mcp.calls.filter((call) => call.name === "daruma_run_note_append").length, 2);
+});
+
+
+test("terminal task in server projection cannot be reopened by stale executor", async () => {
+  const mcp = mockMcp({ tasks: { task: { id: "task", status: "done" } } });
+  const outcome = await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", status: "todo" }, maxRetries: 2,
+    stdout: {}, write() {}, async execute() { assert.fail("terminal task executed"); },
+  });
+  assert.equal(outcome.reason, "task_no_longer_active");
+  assert.equal(outcome.attempts, 0);
+  assert(!mcp.calls.some((call) => ["daruma_set_status", "daruma_complete"].includes(call.name)));
 });

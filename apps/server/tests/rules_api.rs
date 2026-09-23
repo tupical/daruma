@@ -425,3 +425,51 @@ async fn get_evidence_still_reads_a_legacy_dangling_scope() {
         missing_project.as_uuid().to_string()
     );
 }
+
+#[tokio::test]
+async fn evidence_identity_is_authenticated_on_dedicated_and_command_routes() {
+    let app = TestAppBuilder::default().build().await;
+    let forged = daruma_shared::AgentId::new();
+    let evidence = json!({
+        "kind": "artifact_created", "scope": {"kind": "tenant"},
+        "authenticated_actor_id": forged,
+        "payload": {"passed": true, "actor_id": forged}
+    });
+    let (status, response) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/evidence",
+        &json!({"evidence": evidence}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["data"]["evidence"]["actor"]["id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+    assert_eq!(
+        response["data"]["evidence"]["authenticated_actor_id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+    let (status, response) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/commands",
+        &json!({
+            "command": {"type": "record_evidence", "evidence": evidence},
+            "actor": {"kind": "agent", "id": forged, "name": "forged"}
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let recorded = &response["data"][0]["payload"]["evidence"];
+    assert_eq!(
+        recorded["actor"]["id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+    assert_eq!(
+        recorded["authenticated_actor_id"],
+        app.admin_agent_id.as_uuid().to_string()
+    );
+}

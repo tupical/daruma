@@ -8,7 +8,7 @@ use daruma_domain::{
     AgentAction, AgentSessionPlanStep, ArtifactRelationKind, ArtifactStatus, CommentPatch,
     CompletionNote, NewArtifact, NewComment, NewDocument, NewPlan, NewTask, PlanPatch, PlanStatus,
     Priority, RelationKind, RunOutcome, SessionArtifactKind, SignalKind, Status, TaskPatch,
-    WorkLease,
+    TransitionComment, WorkLease,
 };
 use daruma_shared::{
     AgentId, AgentSessionId, ArtifactId, ClaimId, CommentId, DocumentId, HandoffId, PlanId,
@@ -55,6 +55,13 @@ pub enum Command {
         /// hatch — the normal way past a rule is to satisfy it with evidence.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         override_reason: Option<String>,
+        /// Optional comment recorded in the same command as the transition
+        /// (Action Fusion: `daruma_comment` → `daruma_set_status` pairs).
+        /// The comment is emitted only when the transition itself is
+        /// accepted — a gate-blocked or relation-blocked status change
+        /// records nothing. Omitted by legacy clients.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        comment: Option<TransitionComment>,
     },
     SetPriority {
         id: TaskId,

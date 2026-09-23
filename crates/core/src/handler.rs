@@ -105,8 +105,8 @@ pub struct CommandHandler {
     // task migrates its UI) and in-process tests.
     pub plan_only_intake: bool,
 
-    // ponytail: one process-wide boundary is enough; shard per plan only if
-    // run/plan lifecycle contention becomes measurable.
+    // ponytail: one handler boundary serializes command projection and claims;
+    // shard only if tenant contention becomes measurable.
     plan_run_lifecycle: tokio::sync::Mutex<()>,
     // `external_key` is workspace-unique. Keep the read-before-append decision
     // and the resulting projection update in one process-wide critical section
@@ -298,6 +298,7 @@ impl CommandHandler {
         task_id: TaskId,
         ttl: chrono::Duration,
     ) -> Result<RecordedClaimOutcome> {
+        let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
             .claims
             .as_ref()
@@ -367,6 +368,7 @@ impl CommandHandler {
         task_id: TaskId,
         ttl: chrono::Duration,
     ) -> Result<RecordedClaimOutcome> {
+        let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
             .claims
             .as_ref()
@@ -424,6 +426,18 @@ impl CommandHandler {
         authenticated_agent_id: Option<AgentId>,
         is_admin: bool,
     ) -> Result<DispatchOutcome> {
+        // Evidence must be attributed to the authenticated principal, never to
+        // a client-asserted actor: the payload actor is untrusted for
+        // independence checks. The token-derived actor already carries the
+        // principal (Bot → Agent, human tokens → User { id }), so only its
+        // id is pinned here; the kind is not rewritten.
+        let actor = match (&cmd, authenticated_agent_id) {
+            (Command::RecordEvidence { .. }, Some(id)) => match actor {
+                Actor::Agent { name, .. } => Actor::Agent { id, name },
+                Actor::User { name, .. } => Actor::User { id: Some(id), name },
+            },
+            _ => actor,
+        };
         let serial_external_key_intake = match &cmd {
             Command::CreateTask { task } => task
                 .external_key
@@ -452,12 +466,10 @@ impl CommandHandler {
                     ..
                 }
         );
-        let serial_plan_run = plan_terminal || matches!(&cmd, Command::StartRun { .. });
-        let _plan_run_guard = if serial_plan_run {
-            Some(self.plan_run_lifecycle.lock().await)
-        } else {
-            None
-        };
+        // ponytail: serialize commands per handler through projection updates;
+        // shard by aggregate only if measured command contention requires it.
+        // Reconciliation must not race task reopening or plan recomposition.
+        let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let owned_terminal = authenticated_agent_id.is_some()
@@ -467,7 +479,13 @@ impl CommandHandler {
         // `source_event_id` to point at the real `PlanCreated` event id, which
         // only exists once envelopes are built below. Note the command now.
         let materialising = matches!(cmd, Command::MaterializePlan { .. });
-        let events = self.build_events(cmd, &actor).await?;
+        let mut events = self.build_events(cmd, &actor).await?;
+        for event in &mut events {
+            if let Event::EvidenceRecorded { evidence } = event {
+                evidence.authenticated_actor_id = authenticated_agent_id;
+            }
+        }
+        self.append_plan_reconciliations(&mut events).await?;
         if events.is_empty() {
             return Ok(DispatchOutcome {
                 events: vec![],
@@ -480,10 +498,44 @@ impl CommandHandler {
         // warnings/blocks act, so `Allowed` decisions add nothing — an
         // unconstrained workspace stays silent (spec §1.5; task risk note).
         let mut rule_audit: Vec<Event> = Vec::new();
+        let mut rule_metrics = Vec::new();
         if let Some(gate) = &self.lifecycle_gate {
             let gate_override = gate_override.unwrap_or_default();
             for check in derive_gate_checks(&events) {
-                match gate.check(&actor, &check, &gate_override).await? {
+                let (decision, observations) =
+                    gate.check_observed(&actor, &check, &gate_override).await?;
+                rule_metrics.extend(observations.into_iter().map(|observation| {
+                    use daruma_events::event::{
+                        OperationalEventType, OperationalMetric, OperationalOutcome,
+                    };
+                    Event::OperationalMetricRecorded {
+                        metric: OperationalMetric {
+                            ts: time::now(),
+                            event_type: OperationalEventType::Step,
+                            run_id: check.run_id.map(|id| id.to_string()).unwrap_or_default(),
+                            node_id: Some(observation.rule_id.to_string()),
+                            layer: "daruma".into(),
+                            name: "rule.advisory_evaluated".into(),
+                            outcome: OperationalOutcome::Ok,
+                            latency_ms: 0,
+                            tokens: None,
+                            retry_count: 0,
+                            error_class: None,
+                            stuck_reason: None,
+                            attrs: serde_json::json!({
+                                "rule_id": observation.rule_id,
+                                "rule_key": observation.rule_key,
+                                "rule_revision": observation.rule_revision,
+                                "triggered": observation.triggered,
+                                "trigger": check.trigger.as_str(),
+                                "project_id": check.project_id,
+                                "plan_id": check.plan_id,
+                                "task_id": check.task_id,
+                            }),
+                        },
+                    }
+                }));
+                match decision {
                     GateDecision::Allowed => {}
                     GateDecision::Warning(mut batch) => {
                         rule_audit.extend(rule_fired_events(
@@ -499,12 +551,13 @@ impl CommandHandler {
                         // rejected transition is still visible in the event log
                         // / webhooks even though the mutation never lands.
                         let blocked = blocked_outcomes(&details, &message);
-                        let audit = rule_fired_events(
+                        let mut audit = rule_fired_events(
                             &check,
                             &actor,
                             EventRuleDecision::Blocked,
                             blocked.iter().map(|(d, m)| (d, m.as_str())),
                         );
+                        audit.splice(0..0, rule_metrics.drain(..));
                         if !audit.is_empty() {
                             let envs = audit
                                 .into_iter()
@@ -539,6 +592,7 @@ impl CommandHandler {
         let mut envelopes: Vec<EventEnvelope> = rule_audit
             .into_iter()
             .chain(events)
+            .chain(rule_metrics)
             .map(|payload| EventEnvelope::new(actor.clone(), payload))
             .collect();
 
@@ -658,6 +712,118 @@ impl CommandHandler {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// Reconcile only aggregates touched by this command. Overlay its pending
+    /// transitions on the read model so task and plan closure commit together.
+    async fn append_plan_reconciliations(&self, events: &mut Vec<Event>) -> Result<()> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        let Some(plans) = &self.plans else {
+            return Ok(());
+        };
+        let mut candidates = VecDeque::new();
+        let mut task_statuses = HashMap::new();
+        let mut plan_statuses = HashMap::new();
+        let mut ended_runs = HashSet::new();
+        for event in events.iter() {
+            match event {
+                Event::TaskStatusChanged { task_id, to, .. } => {
+                    task_statuses.insert(*task_id, *to);
+                    if to.is_terminal() {
+                        candidates.extend(plans.list_plans_for_task(*task_id).await?);
+                    }
+                }
+                Event::PlanStatusChanged { plan_id, to, .. } => {
+                    plan_statuses.insert(*plan_id, *to);
+                    if matches!(to, PlanStatus::Completed | PlanStatus::Abandoned) {
+                        if let Some(plan) = plans.get(*plan_id).await? {
+                            candidates.extend(plan.parent_plan_id);
+                        }
+                    }
+                }
+                Event::PlanArchived { plan_id, .. } => {
+                    plan_statuses.insert(*plan_id, PlanStatus::Abandoned);
+                    if let Some(plan) = plans.get(*plan_id).await? {
+                        candidates.extend(plan.parent_plan_id);
+                    }
+                }
+                Event::RunCompleted { run_id, .. }
+                | Event::RunFailed { run_id, .. }
+                | Event::RunAborted { run_id, .. } => {
+                    ended_runs.insert(*run_id);
+                    if let Some(runs) = &self.runs {
+                        if let Some(run) = runs.get(*run_id).await? {
+                            candidates.push_back(run.plan_id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        while let Some(plan_id) = candidates.pop_front() {
+            let Some(plan) = plans.get(plan_id).await? else {
+                continue;
+            };
+            let status = plan_statuses.get(&plan_id).copied().unwrap_or(plan.status);
+            if status != PlanStatus::Active || plan.archived_at.is_some() {
+                continue;
+            }
+            let tasks = plans.list_plan_tasks_ordered(plan_id).await?;
+            // Empty plans are not evidence of completed work.
+            if tasks.is_empty() {
+                continue;
+            }
+            let mut ready = true;
+            for member in tasks {
+                let Some(task) = self.tasks.get(member.task_id).await? else {
+                    ready = false;
+                    break;
+                };
+                if !task_statuses
+                    .get(&task.id)
+                    .copied()
+                    .unwrap_or(task.status)
+                    .is_terminal()
+                {
+                    ready = false;
+                    break;
+                }
+            }
+            if !ready {
+                continue;
+            }
+            let children = plans.list_children(plan_id).await?;
+            if children.iter().any(|child| {
+                !matches!(
+                    plan_statuses
+                        .get(&child.id)
+                        .copied()
+                        .unwrap_or(child.status),
+                    PlanStatus::Completed | PlanStatus::Abandoned
+                )
+            }) {
+                continue;
+            }
+            if let Some(runs) = &self.runs {
+                if runs
+                    .list_active_for_plan(plan_id)
+                    .await?
+                    .iter()
+                    .any(|run| !ended_runs.contains(&run.id))
+                {
+                    continue;
+                }
+            }
+            events.push(Event::PlanStatusChanged {
+                plan_id,
+                from: plan.status,
+                to: PlanStatus::Completed,
+            });
+            plan_statuses.insert(plan_id, PlanStatus::Completed);
+            candidates.extend(plan.parent_plan_id);
+        }
+        Ok(())
+    }
 
     /// Build the events for transitioning a single task to `to`, including
     /// the side-effects: blocker rejection, `TaskReopened`/`TaskClosed`,
@@ -955,7 +1121,10 @@ impl CommandHandler {
         let ts_human = env.occurred_at.format("%Y-%m-%d %H:%M");
         let agent_name = match &env.actor {
             A::Agent { name, .. } => name.clone(),
-            A::User => "user".to_string(),
+            A::User {
+                name: Some(name), ..
+            } => name.clone(),
+            A::User { .. } => "user".to_string(),
         };
 
         match &env.payload {
@@ -1294,6 +1463,16 @@ impl CommandHandler {
                         )));
                     }
                 }
+                // Git context is replaced whole: normalise/validate the shape
+                // once here so every reader (projection, MCP, UI) sees a
+                // trimmed, well-formed object or nothing.
+                let patch = match patch.git_context {
+                    Some(Some(ctx)) => daruma_domain::TaskPatch {
+                        git_context: Some(Some(ctx.normalized().map_err(CoreError::validation)?)),
+                        ..patch
+                    },
+                    _ => patch,
+                };
                 self.tasks
                     .get(id)
                     .await?
@@ -1462,14 +1641,69 @@ impl CommandHandler {
                 Ok(events)
             }
 
-            Command::SetStatus { id, status, .. } => {
+            Command::SetStatus {
+                id,
+                status,
+                comment,
+                ..
+            } => {
                 let task = self
                     .tasks
                     .get(id)
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
-                self.emit_status_transition_events(&task, status, actor, time::now())
-                    .await
+                // Validate the comment before touching the transition so a bad
+                // note never half-applies; emit it after the transition events
+                // so it exists only when the status change itself is accepted
+                // (relation blockers above, lifecycle gate in dispatch).
+                let note = comment
+                    .map(|c| {
+                        let body = c.body.trim().to_string();
+                        if body.is_empty() {
+                            return Err(CoreError::validation(
+                                "transition comment body must not be empty",
+                            ));
+                        }
+                        if body.len() > daruma_domain::TransitionComment::MAX_BODY_BYTES {
+                            return Err(CoreError::validation(format!(
+                                "transition comment body must not exceed {} bytes",
+                                daruma_domain::TransitionComment::MAX_BODY_BYTES
+                            )));
+                        }
+                        Ok((body, c.kind))
+                    })
+                    .transpose()?;
+                let now = time::now();
+                let mut events = self
+                    .emit_status_transition_events(&task, status, actor, now)
+                    .await?;
+                if let Some((body, kind)) = note {
+                    if events.is_empty() {
+                        // No-op transition (same status): nothing to annotate.
+                        return Ok(events);
+                    }
+                    let preview: String = body.chars().take(80).collect();
+                    let comment = Comment::from_new(
+                        daruma_domain::NewComment {
+                            id: None,
+                            task_id: id,
+                            body,
+                            parent_id: None,
+                            kind,
+                        },
+                        actor.clone(),
+                        now,
+                    );
+                    let comment_id = comment.id;
+                    events.push(Event::CommentAdded { comment });
+                    events.push(Event::TaskCommented {
+                        task_id: id,
+                        comment_id,
+                        author: actor.clone(),
+                        preview,
+                    });
+                }
+                Ok(events)
             }
 
             Command::SetPriority { id, priority } => {
@@ -3629,6 +3863,17 @@ mod tests {
 
     #[async_trait]
     impl PlanRepository for MemPlanRepo {
+        async fn list_children(&self, parent: PlanId) -> daruma_shared::Result<Vec<Plan>> {
+            Ok(self
+                .plans
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|plan| plan.parent_plan_id == Some(parent))
+                .cloned()
+                .collect())
+        }
+
         async fn get(&self, id: PlanId) -> daruma_shared::Result<Option<Plan>> {
             Ok(self.plans.lock().unwrap().get(&id).cloned())
         }
@@ -4771,7 +5016,20 @@ mod tests {
     async fn acquire_and_release_claim_emit_events() {
         let (handler, ..) = build_plan_stack().await;
         let agent_id = AgentId::new();
-        let task_id = TaskId::new();
+        let task_id = match handler
+            .handle(
+                Command::CreateTask {
+                    task: NewTask::new("claim target"),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap()[0]
+            .payload
+        {
+            Event::TaskCreated { ref task } => task.id.unwrap(),
+            ref other => panic!("expected task_created, got {other:?}"),
+        };
 
         let claim = handler
             .try_acquire_claim(
@@ -4882,6 +5140,7 @@ mod tests {
                     status: Status::Done,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )
@@ -5043,6 +5302,7 @@ mod tests {
                     status: daruma_domain::Status::Cancelled,
                     force: false,
                     override_reason: None,
+                    comment: None,
                 },
                 Actor::user(),
             )

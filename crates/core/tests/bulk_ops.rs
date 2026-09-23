@@ -247,6 +247,7 @@ async fn bulk_set_status_skips_already_in_target_status() {
                 status: Status::Todo,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )

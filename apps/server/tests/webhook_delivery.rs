@@ -144,6 +144,36 @@ async fn ac9_webhook_delivered_with_valid_hmac() {
     .await;
     assert_eq!(status, 201, "POST /v1/webhooks => 201; got body: {body}");
 
+    assert_eq!(body["secret"], "");
+    let listed: serde_json::Value = client
+        .get(format!("{server_url}/v1/webhooks"))
+        .bearer_auth(&server.token)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed[0]["secret"], "");
+    let patched: serde_json::Value = client
+        .patch(format!(
+            "{server_url}/v1/webhooks/{}",
+            body["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&server.token)
+        .json(&json!({"description": "redaction preserves signing"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(patched["secret"], "");
+
     // 3. Drive an event.
     let (status, _envs) = http_post_json(
         &client,

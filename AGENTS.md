@@ -155,7 +155,6 @@ Once the MCP server is registered, the agent drives Daruma through
 `daruma_*` MCP tools. The canonical workflow:
 
 ```
-daruma_healthz                          verify server is reachable
 daruma_workspace_info                   discover workspace / project ids
 daruma_list { status: "active" }        see open work
 daruma_plan_get / plan_next_task        read the active plan
@@ -163,6 +162,10 @@ daruma_claim { task_id }                claim a task before starting
 daruma_set_status { status: "done" }    close finished tasks
 daruma_comment { task_id, body }        attach artifacts / notes
 ```
+
+No `daruma_healthz` preflight: a transport error on the first real call already
+means the server is unreachable; `daruma_healthz` is the diagnostic for that
+case (version / git_sha), not a step of the workflow.
 
 MCP client setup and credentials: `docs/guides/mcp-client.md`; tool
 profiles: `docs/mcp/PROFILES.md`.
@@ -210,7 +213,8 @@ Codex plugin manages this block; do not hand-edit between the markers.
    (multi-step refactors, cross-session work, decomposition output)
    goes into daruma.
 
-5. **If daruma is unreachable** (`daruma_healthz` fails), stop
+5. **If daruma is unreachable** (any `daruma_*` call fails with a
+   transport error — no `daruma_healthz` preflight needed), stop
    and tell the user how to start the server — do not silently route
    to `.omc/plans/` or ad-hoc markdown:
 

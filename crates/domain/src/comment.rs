@@ -141,6 +141,22 @@ pub struct CommentPatch {
     pub body: Option<String>,
 }
 
+/// Comment that rides a status transition (`SetStatus.comment`). The task is
+/// implied by the command, so only the text and optional [`CommentKind`]
+/// travel. Body limit is deliberately tighter than a stand-alone comment: a
+/// transition note is a sentence or two, not a report.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TransitionComment {
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<CommentKind>,
+}
+
+impl TransitionComment {
+    /// Maximum body length in bytes (4 KiB).
+    pub const MAX_BODY_BYTES: usize = 4 * 1024;
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

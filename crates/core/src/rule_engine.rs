@@ -22,7 +22,8 @@
 //! with `override_allowed=true`.
 //!
 //! Zero-cost when no rules exist: a check whose scope chain has no matching
-//! rows resolves to `Allowed` after one indexed query (the handler only calls
+//! rows resolves to `Allowed` after one indexed query per chain element (plus
+//! a task-row lookup for task transitions, which carry only the task id) (the handler only calls
 //! the gate at all when one is wired). Evidence is only queried for rules that
 //! both match and would otherwise block, so an unconstrained workspace pays
 //! nothing extra.
@@ -38,7 +39,9 @@ use daruma_domain::{
 use daruma_shared::Result;
 use serde_json::json;
 
-use crate::lifecycle_gate::{GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent};
+use crate::lifecycle_gate::{
+    GateCheck, GateDecision, GateOverride, LifecycleGate, RuleObservation, TriggerEvent,
+};
 use daruma_storage::{evidence_repo::EvidenceCheck, EvidenceRepo, RuleRepo};
 
 /// Rule engine over a [`RuleRepo`] and, optionally, an [`EvidenceRepo`]
@@ -77,6 +80,38 @@ impl RuleEngineGate {
         let Some(evidence) = &self.evidence else {
             return Ok(EvidenceCheck::default());
         };
+        if let Requirement::IndependentTestVerification {
+            executor_id,
+            source_revision,
+        } = &rule.requirement
+        {
+            let valid_revision = matches!(source_revision.len(), 40 | 64)
+                && source_revision.bytes().all(|byte| byte.is_ascii_hexdigit());
+            let satisfied =
+                if let Some(RuleScope::Task { id }) = chain.last().filter(|_| valid_revision) {
+                    evidence
+                        .has_independent_test_verification(*id, *executor_id, source_revision)
+                        .await?
+                } else {
+                    false
+                };
+            return Ok(EvidenceCheck {
+                satisfied,
+                reason: (!satisfied).then(|| "requires a live passing test attestation for this task and pinned revision from an authenticated actor other than executor_id".into()),
+            });
+        }
+        if let Requirement::DocumentLinked = rule.requirement {
+            let satisfied = match chain.last() {
+                Some(RuleScope::Task { id }) => evidence.task_has_live_document(*id).await?,
+                _ => false,
+            };
+            return Ok(EvidenceCheck {
+                satisfied,
+                reason: (!satisfied).then(|| {
+                    "requires at least one non-archived document linked to this task".into()
+                }),
+            });
+        }
         let (kind, target, required_fields, min_version) = requirement_evidence(&rule.requirement);
         evidence
             .has_live_evidence(chain, kind, target.as_deref(), required_fields, min_version)
@@ -110,7 +145,31 @@ impl LifecycleGate for RuleEngineGate {
         check: &GateCheck,
         gate_override: &GateOverride,
     ) -> Result<GateDecision> {
+        Ok(self.check_observed(_actor, check, gate_override).await?.0)
+    }
+
+    async fn check_observed(
+        &self,
+        _actor: &Actor,
+        check: &GateCheck,
+        gate_override: &GateOverride,
+    ) -> Result<(GateDecision, Vec<RuleObservation>)> {
+        let mut observations = Vec::new();
         let trigger = map_trigger(check.trigger);
+        // Task transitions carry only the task id: resolve its project (scope
+        // chain) and title (`title_prefix`) from the persisted row.
+        let mut resolved;
+        let check = match check.task_id {
+            Some(task_id) if check.project_id.is_none() || check.task_title.is_none() => {
+                resolved = check.clone();
+                if let Some((project_id, title)) = self.rules.task_context(task_id).await? {
+                    resolved.project_id = resolved.project_id.or(project_id);
+                    resolved.task_title.get_or_insert(title);
+                }
+                &resolved
+            }
+            _ => check,
+        };
         let chain = Self::scope_chain(check);
         let candidates = self.rules.effective_rules(&chain, trigger).await?;
 
@@ -120,6 +179,14 @@ impl LifecycleGate for RuleEngineGate {
         let mut override_forbidden = false;
 
         for rule in &candidates {
+            if rule.mode == RuleMode::Recommendation {
+                observations.push(RuleObservation {
+                    rule_id: rule.id,
+                    rule_key: rule.rule_key.clone(),
+                    rule_revision: rule.updated_at,
+                    triggered: false,
+                });
+            }
             if !condition_matches(rule.condition.as_ref(), check) {
                 continue;
             }
@@ -141,7 +208,13 @@ impl LifecycleGate for RuleEngineGate {
             let rejection_reason = evidence_check.and_then(|check| check.reason);
             match rule.mode {
                 RuleMode::Off => {}
-                RuleMode::Recommendation => warnings.push(rule_warning(rule)),
+                RuleMode::Recommendation => {
+                    observations
+                        .last_mut()
+                        .expect("advisory observation")
+                        .triggered = true;
+                    warnings.push(rule_warning(rule));
+                }
                 RuleMode::Required => {
                     if !rule.override_allowed {
                         override_forbidden = true;
@@ -152,11 +225,14 @@ impl LifecycleGate for RuleEngineGate {
         }
 
         if blocked.is_empty() {
-            return Ok(if warnings.is_empty() {
-                GateDecision::Allowed
-            } else {
-                GateDecision::Warning(warnings)
-            });
+            return Ok((
+                if warnings.is_empty() {
+                    GateDecision::Allowed
+                } else {
+                    GateDecision::Warning(warnings)
+                },
+                observations,
+            ));
         }
 
         // Override path (spec §1.5): force + non-empty reason passes blocked
@@ -177,11 +253,14 @@ impl LifecycleGate for RuleEngineGate {
             for (rule, _) in blocked {
                 warnings.push(rule_warning(rule));
             }
-            return Ok(if warnings.is_empty() {
-                GateDecision::Allowed
-            } else {
-                GateDecision::Warning(warnings)
-            });
+            return Ok((
+                if warnings.is_empty() {
+                    GateDecision::Allowed
+                } else {
+                    GateDecision::Warning(warnings)
+                },
+                observations,
+            ));
         }
 
         // Build the structured outcome list (spec §1.5): all blocked first,
@@ -206,17 +285,20 @@ impl LifecycleGate for RuleEngineGate {
             .map(|(rule, _)| unblock_hint(rule, &chain, check.trigger))
             .collect();
         let (first, reason) = &blocked[0];
-        Ok(GateDecision::Blocked {
-            message: blocked_message(&blocked),
-            details: json!({
-                "rule_id": first.id.to_string(),
-                "rule_key": first.rule_key,
-                "requirement": first.requirement,
-                "reason": reason,
-                "outcomes": outcomes,
-                "unblock": unblock,
-            }),
-        })
+        Ok((
+            GateDecision::Blocked {
+                message: blocked_message(&blocked),
+                details: json!({
+                    "rule_id": first.id.to_string(),
+                    "rule_key": first.rule_key,
+                    "requirement": first.requirement,
+                    "reason": reason,
+                    "outcomes": outcomes,
+                    "unblock": unblock,
+                }),
+            },
+            observations,
+        ))
     }
 }
 
@@ -243,6 +325,14 @@ fn requirement_evidence(
             Some(doc_ref.clone()),
             None,
             (min_version != "latest").then_some(min_version.as_str()),
+        ),
+        Requirement::IndependentTestVerification {
+            source_revision, ..
+        } => (
+            EvidenceKind::ArtifactCreated,
+            Some(format!("test-verification:{source_revision}")),
+            None,
+            None,
         ),
         Requirement::CreateArtifact { artifact_kind } => (
             EvidenceKind::ArtifactCreated,
@@ -272,6 +362,9 @@ fn requirement_evidence(
             None,
         ),
         Requirement::OwnerRequired => (EvidenceKind::OwnerAssigned, None, None, None),
+        // Never consulted: satisfied from document state (`requirement_satisfied`)
+        // and hinted separately (`unblock_hint`).
+        Requirement::DocumentLinked => (EvidenceKind::ArtifactCreated, None, None, None),
         Requirement::AcceptanceCriteriaRequired => {
             (EvidenceKind::AcceptanceCriteriaDefined, None, None, None)
         }
@@ -304,7 +397,8 @@ fn map_trigger(t: TriggerEvent) -> RuleTrigger {
 
 /// Match a rule condition against a check (spec §1.2 v1 fields). Empty / `None`
 /// condition matches everything. Semantics: AND across fields, OR within a
-/// list. Only the status-transition fields exist in v1; the spec's other
+/// list. Only the status-transition and task-title-prefix fields exist in v1;
+/// the spec's other
 /// targeting fields (priority, changed_paths, …) are omitted from
 /// [`Condition`] until their carrier reaches `GateCheck`.
 fn condition_matches(condition: Option<&Condition>, check: &GateCheck) -> bool {
@@ -332,6 +426,12 @@ fn condition_matches(condition: Option<&Condition>, check: &GateCheck) -> bool {
                 }
             }
             None => return false,
+        }
+    }
+    if let Some(prefixes) = &cond.title_prefix {
+        match &check.task_title {
+            Some(title) if prefixes.iter().any(|p| title.starts_with(p.as_str())) => {}
+            _ => return false,
         }
     }
     true
@@ -389,10 +489,35 @@ fn rule_outcome(rule: &Rule, decision: &str, reason: Option<&str>) -> serde_json
 /// instead of pretending otherwise.
 fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serde_json::Value {
     let (kind, target, _, _) = requirement_evidence(&rule.requirement);
+    if let Requirement::IndependentTestVerification {
+        executor_id,
+        source_revision,
+    } = &rule.requirement
+    {
+        return json!({
+            "rule_key": rule.rule_key,
+            "requirement": "independent_test_verification",
+            "executor_id": executor_id,
+            "source_revision": source_revision,
+            "reach": "self_only",
+            "evidence": { "kind": kind, "scope": chain.last(), "target": target, "payload": { "passed": true } },
+            "note": "Verifier submits using its own authenticated identity; payload actor fields do not establish independence."
+        });
+    }
+    if let Requirement::DocumentLinked = rule.requirement {
+        return json!({
+            "rule_key": rule.rule_key,
+            "requirement_type": "document_linked",
+            "reach": "self_only",
+            "note": "no evidence to submit: create a document and link it to this task (LinkDocumentToTask / daruma_doc_link_task); archived documents do not count"
+        });
+    }
     let reach = kind.reach();
     // Sanity on the FULL chain (before any slicing): `scope_chain` always
     // seeds the tenant root.
-    let _tenant_root = chain.first().expect("scope chain always has the tenant root");
+    let _tenant_root = chain
+        .first()
+        .expect("scope chain always has the tenant root");
 
     let creates_innermost = matches!(
         trigger,

@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
 use daruma_core::embed::{
     ActivityRepo, CommentRepo, EventEnvelope, EventStore, ProjectRepo, ProjectionSnapshot,
     Snapshot, TaskRepo,
 };
 use daruma_shared::{CoreError, Result};
+use sqlx::SqlitePool;
 
 use crate::remote::HttpReplicaSink;
 
@@ -227,7 +227,11 @@ mod tests {
         assert_eq!(stats.server_seq, 7);
         assert_eq!(device.tasks.list_all().await.unwrap().len(), 1);
 
-        let stats = device.replica.apply_remote_events(vec![event]).await.unwrap();
+        let stats = device
+            .replica
+            .apply_remote_events(vec![event])
+            .await
+            .unwrap();
         assert_eq!(stats.applied, 0);
         assert_eq!(stats.server_seq, 7);
         assert_eq!(device.tasks.list_all().await.unwrap().len(), 1);

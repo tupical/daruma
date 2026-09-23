@@ -57,7 +57,7 @@ use daruma_mcp::{
 use daruma_shared::{
     AgentId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId, RunId, TaskId,
 };
-use daruma_storage::{ActiveClaim, ClaimOutcome, RecordedClaimOutcome, ReserveOutcome};
+use daruma_storage::{ActiveClaim, RecordedClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1037,6 +1037,7 @@ fn rollback_task_command(after: Value) -> Result<Command, ApiError> {
             triage_state: Some(task.triage_state),
             due_at: Some(task.due_at),
             project_id: Some(task.project_id),
+            git_context: Some(task.git_context),
         },
     })
 }
@@ -2834,11 +2835,13 @@ async fn record_evidence(
         .map_err(ApiError::from_missing_cap)?;
     let envs = state
         .commands
-        .dispatch(
+        .dispatch_authenticated(
             Command::RecordEvidence {
                 evidence: body.evidence,
             },
-            actor_from(&auth, None),
+            auth.actor(),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
         )
         .await
         .map_err(ApiError::from)?;
@@ -3924,6 +3927,7 @@ async fn mutation_warnings(
         // the reason too would swallow the warning for a caller who sent one
         // without `force` — no override AND no warning.
         override_reason: _,
+        comment: _,
     } = command
     else {
         return Ok(vec![]);
@@ -4883,7 +4887,7 @@ async fn create_webhook(
         .insert(webhook.clone())
         .await
         .map_err(ApiError::from)?;
-    Ok((StatusCode::CREATED, Json(webhook)))
+    Ok((StatusCode::CREATED, Json(webhook.redacted())))
 }
 
 async fn list_webhooks(
@@ -4893,7 +4897,9 @@ async fn list_webhooks(
     auth.require(Capability::WebhookRead)
         .map_err(ApiError::from_missing_cap)?;
     let list = state.webhooks.list_all().await.map_err(ApiError::from)?;
-    Ok(Json(list))
+    Ok(Json(
+        list.into_iter().map(|w| w.redacted()).collect::<Vec<_>>(),
+    ))
 }
 
 async fn patch_webhook(
@@ -4911,7 +4917,7 @@ async fn patch_webhook(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("webhook {id_str}"))))?;
-    Ok(Json(updated))
+    Ok(Json(updated.redacted()))
 }
 
 async fn delete_webhook(
@@ -5806,6 +5812,7 @@ async fn drain_one_plan(
                             // rule override.
                             force: true,
                             override_reason: None,
+                            comment: None,
                         },
                         actor_from(auth, None),
                     )
@@ -6855,8 +6862,10 @@ async fn acquire_claim(
 
     // Atomic exclusive acquire: another agent's live claim blocks us.
     match state
-        .claims
-        .try_acquire(
+        .commands
+        .handler()
+        .try_acquire_claim(
+            actor_from(&auth, None),
             auth.agent_id,
             body.task_id,
             chrono::Duration::seconds(body.ttl_secs as i64),
@@ -6864,7 +6873,7 @@ async fn acquire_claim(
         .await
         .map_err(ApiError::from)?
     {
-        ClaimOutcome::Busy { holder, expires_at } => Ok(Json(MutationResponse {
+        RecordedClaimOutcome::Busy { holder, expires_at } => Ok(Json(MutationResponse {
             success: false,
             event_id: None,
             event_seq: None,
@@ -6878,25 +6887,12 @@ async fn acquire_claim(
             warnings: vec![],
             client_command_id: None,
         })),
-        ClaimOutcome::Acquired {
+        RecordedClaimOutcome::Acquired {
             expires_at,
             claim_id,
+            event,
         } => {
-            // Emit AgentClaimed for audit + WebSocket sync (idempotent upsert).
-            let envs = state
-                .commands
-                .dispatch(
-                    Command::AcquireClaim {
-                        agent_id: auth.agent_id,
-                        task_id: body.task_id,
-                        claim_id,
-                        expires_at,
-                    },
-                    actor_from(&auth, None),
-                )
-                .await
-                .map_err(ApiError::from)?;
-            let last = envs.last();
+            let last = Some(&event);
             Ok(Json(MutationResponse {
                 success: true,
                 event_id: last.map(|e| e.id),

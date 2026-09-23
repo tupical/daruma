@@ -100,6 +100,7 @@ async fn set_status_done_transitions_blocks_to_was_blocking() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )
@@ -215,6 +216,7 @@ async fn transition_only_for_resolving_blocker_edges() {
                 status: Status::Done,
                 force: false,
                 override_reason: None,
+                comment: None,
             },
             Actor::user(),
         )

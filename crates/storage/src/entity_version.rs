@@ -289,7 +289,7 @@ pub(crate) fn update_summary(
 
 fn actor_columns(actor: &Actor) -> (&'static str, Option<String>, Option<String>) {
     match actor {
-        Actor::User => ("user", None, None),
+        Actor::User { id, name } => ("user", id.map(|id| id.to_string()), name.clone()),
         Actor::Agent { id, name } => ("agent", Some(id.to_string()), Some(name.clone())),
     }
 }

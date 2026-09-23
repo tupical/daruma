@@ -4,20 +4,54 @@ use serde::{Deserialize, Serialize};
 use crate::task::Priority;
 
 /// Who initiated a command/event.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Actor {
-    /// A human user using the desktop or web client.
-    #[default]
-    User,
+    /// A human user — directly through a client, or through an agent that
+    /// acts under that user's token. `id` is the authenticated principal
+    /// (the token's `agent_id`, or the hosting platform's account id) and
+    /// `name` an optional display name (e.g. e-mail); both are absent for
+    /// anonymous/legacy records, so `{"kind":"user"}` keeps round-tripping.
+    User {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<AgentId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     /// An AI agent. The `name` is a free-form identifier (e.g.
     /// "responses-gpt-4.1" or "local-parser").
     Agent { id: AgentId, name: String },
 }
 
+impl Default for Actor {
+    fn default() -> Self {
+        Self::User {
+            id: None,
+            name: None,
+        }
+    }
+}
+
 impl Actor {
+    /// Anonymous user (no principal known).
     pub fn user() -> Self {
-        Self::User
+        Self::default()
+    }
+
+    /// Identified user: the principal that authenticated the call.
+    pub fn user_with_id(id: AgentId) -> Self {
+        Self::User {
+            id: Some(id),
+            name: None,
+        }
+    }
+
+    /// Authenticated principal behind this actor, if any.
+    pub fn principal_id(&self) -> Option<AgentId> {
+        match self {
+            Self::User { id, .. } => *id,
+            Self::Agent { id, .. } => Some(*id),
+        }
     }
 
     pub fn agent(name: impl Into<String>) -> Self {
@@ -73,5 +107,43 @@ impl AgentAction {
             kind,
             created_at: time::now(),
         }
+    }
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::*;
+
+    #[test]
+    fn anonymous_user_round_trips_as_bare_kind() {
+        let json = serde_json::to_value(Actor::user()).unwrap();
+        assert_eq!(json, serde_json::json!({"kind": "user"}));
+        let parsed: Actor = serde_json::from_value(serde_json::json!({"kind": "user"})).unwrap();
+        assert_eq!(parsed, Actor::user());
+        assert_eq!(Actor::default(), Actor::user());
+        assert!(parsed.principal_id().is_none());
+    }
+
+    #[test]
+    fn identified_user_carries_principal_and_optional_name() {
+        let id = AgentId::new();
+        let actor = Actor::User {
+            id: Some(id),
+            name: Some("owner@example.com".into()),
+        };
+        let json = serde_json::to_value(&actor).unwrap();
+        assert_eq!(json["kind"], "user");
+        assert_eq!(json["id"], serde_json::json!(id.as_uuid().to_string()));
+        assert_eq!(json["name"], "owner@example.com");
+        let back: Actor = serde_json::from_value(json).unwrap();
+        assert_eq!(back, actor);
+        assert_eq!(back.principal_id(), Some(id));
+        assert!(!back.is_agent());
+        // Legacy/foreign payloads with an id but no name stay a user.
+        let only_id: Actor = serde_json::from_value(
+            serde_json::json!({"kind": "user", "id": id.as_uuid().to_string()}),
+        )
+        .unwrap();
+        assert_eq!(only_id, Actor::user_with_id(id));
     }
 }

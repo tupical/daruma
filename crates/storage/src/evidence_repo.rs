@@ -78,6 +78,44 @@ impl EvidenceRepo {
         rows.iter().map(row_to_evidence).collect()
     }
 
+    /// Test attestations are task-local and revision-bound; payload actor labels are untrusted.
+    pub async fn has_independent_test_verification(
+        &self,
+        task_id: daruma_shared::TaskId,
+        executor_id: daruma_shared::AgentId,
+        source_revision: &str,
+    ) -> Result<bool> {
+        let found: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM evidence WHERE scope_kind = 'task' AND scope_id = ? \
+             AND kind = 'artifact_created' AND target = ? AND superseded_by IS NULL \
+             AND authenticated_actor_id IS NOT NULL AND authenticated_actor_id = actor_id AND actor_id != ? \
+             AND json_type(payload, '$.passed') = 'true')",
+        )
+        .bind(task_id.to_string())
+        .bind(format!("test-verification:{source_revision}"))
+        .bind(executor_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(found != 0)
+    }
+
+    /// `document_linked` requirement: does `task_id` have at least one bound,
+    /// non-archived document? Reads the `documents` projection directly — the
+    /// binding is the proof, no evidence row exists for it. `archived_at` is
+    /// checked too: rows archived before migration 0042 keep `status='active'`.
+    pub async fn task_has_live_document(&self, task_id: daruma_shared::TaskId) -> Result<bool> {
+        let found: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE task_id = ? \
+             AND status != 'archived' AND archived_at IS NULL)",
+        )
+        .bind(task_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(found != 0)
+    }
+
     /// Gate hot path: does *live* evidence of `kind` exist anywhere in the scope
     /// chain the kind can legitimately reach, optionally matching `target`?
     ///
@@ -281,8 +319,8 @@ impl EvidenceRepo {
              (id, kind, scope_kind, scope_id, target, doc_version, \
               actor_kind, actor_id, actor_name, reason, payload, \
               project_id, plan_id, task_id, run_id, artifact_id, rule_id, \
-              recorded_at, superseded_by) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+              recorded_at, superseded_by, authenticated_actor_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO NOTHING",
         )
         .bind(ev.id.to_string())
@@ -304,6 +342,7 @@ impl EvidenceRepo {
         .bind(ev.rule_id.map(|i| i.to_string()))
         .bind(ev.recorded_at.to_rfc3339())
         .bind(ev.superseded_by.map(|i| i.to_string()))
+        .bind(ev.authenticated_actor_id.map(|i| i.to_string()))
         .execute(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -325,7 +364,7 @@ fn select_sql(tail: &str) -> String {
         "SELECT id, kind, scope_kind, scope_id, target, doc_version, \
          actor_kind, actor_id, actor_name, reason, payload, \
          project_id, plan_id, task_id, run_id, artifact_id, rule_id, \
-         recorded_at, superseded_by \
+         recorded_at, superseded_by, authenticated_actor_id \
          FROM evidence {tail}"
     )
 }
@@ -354,6 +393,12 @@ fn row_to_evidence(row: &sqlx::sqlite::SqliteRow) -> Result<Evidence> {
         scope,
         target: row.try_get("target").map_err(map_row_err)?,
         doc_version: row.try_get("doc_version").map_err(map_row_err)?,
+        authenticated_actor_id: row
+            .try_get::<Option<String>, _>("authenticated_actor_id")
+            .map_err(map_row_err)?
+            .map(|id| id.parse())
+            .transpose()
+            .map_err(|_| CoreError::storage("bad authenticated actor id"))?,
         actor: ActorRef {
             kind: row.try_get("actor_kind").map_err(map_row_err)?,
             id: actor_id
@@ -443,7 +488,7 @@ mod tests {
             supersedes: None,
         }
         .into_evidence(
-            ActorRef::from_actor(&Actor::User),
+            ActorRef::from_actor(&Actor::user()),
             daruma_shared::time::now(),
         )
     }

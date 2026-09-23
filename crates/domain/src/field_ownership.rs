@@ -144,7 +144,11 @@ mod tests {
             TaskField::Comments,
             TaskField::ClaimsRuns,
         ] {
-            assert_eq!(f.owner(), FieldOwner::Execution, "{f:?} must be execution-owned");
+            assert_eq!(
+                f.owner(),
+                FieldOwner::Execution,
+                "{f:?} must be execution-owned"
+            );
             assert!(!f.is_plan_owned());
         }
     }

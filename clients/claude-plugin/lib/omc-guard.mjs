@@ -38,7 +38,7 @@ this block; do not hand-edit between the markers.
   \`.omc/research/\`) remain untouched by this rule — only plan
   persistence is redirected.
 
-If \`daruma_healthz\` fails, surface that to the user and ask them to
+If a \`daruma_*\` call fails with a transport error, surface that to the user and ask them to
 start the daruma server. Do not silently fall back to \`.omc/plans/\`.
 `;
 
