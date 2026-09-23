@@ -79,7 +79,7 @@ debugging where no plan needs to outlive the current chat.
    `expansion_hint` (needs an AI provider on the server; if it returns
    `502 ai_unavailable`, just proceed manually).
 6. **Execute loop** — for each pending task:
-   - `daruma_plan_next_task` to claim the next ready item
+   - `daruma_plan_drain_next` to claim the next ready item
    - do the work in Cursor (OMC executors are fine as long as they
      consume the plan from daruma, not from `.omc/plans/`)
    - `daruma_comment` to attach the artifact (diff summary, file list,
@@ -94,7 +94,7 @@ debugging where no plan needs to outlive the current chat.
 - Optional auth via `${env:DARUMA_TOKEN}`; the server writes a bootstrap
   token to `<data>/bootstrap.token` on first run.
 
-If `daruma_healthz` fails, tell the user to start the server:
+If a `daruma_*` call fails with a transport error, tell the user to start the server:
 
 ```bash
 ./target/release/daruma-server
@@ -157,7 +157,7 @@ JSON) for the exact same answer.
 ## Hygiene
 
 - Never invent task IDs — always use the IDs returned by
-  `daruma_plan_materialize` / `_plan_next_task`.
+  `daruma_plan_materialize` / `_plan_drain_next`.
 - A user mention of a task, plan, TODO file, checklist, or id-shaped string
   is not proof the item exists. Resolve the actual task/plan with a scoped
   daruma read before commenting, claiming, reopening, or completing it.

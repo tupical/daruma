@@ -57,8 +57,8 @@ inventory/audit ("what's open", "close what's done" — use
    (1–2) when the neighborhood is too small.
 4. **Impact before destructive changes** — `daruma_workspacegraph_impact`
    when completing, cancelling, or re-blocking a task that may unblock others.
-5. **Discovery** — `daruma_workspacegraph_search` when the user describes
-   work by keyword rather than id.
+5. **Locate a known node** — `daruma_workspacegraph_search` when you know the
+   item exists, only have a keyword, and need its graph neighborhood.
 
 ## Hygiene
 

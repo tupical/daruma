@@ -46,7 +46,7 @@ Show full details for that specific task.
 Show progress for the active plan in the current project.
 
 1. `daruma_workspace_info` → resolve `default_project`.
-2. `daruma_plan_list status=["active","in_progress"]` → most recent plan.
+2. `daruma_plan_list status="active"` → most recent plan.
 3. `daruma_plan_progress plan_id=<id>` for the progress bar.
 4. Render:
 

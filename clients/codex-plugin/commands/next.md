@@ -9,10 +9,11 @@ afterward, control returns to the user/agent to actually execute it.
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
 2. Active plan: `daruma_plan_list` filtered to
-   `status = ["active", "in_progress"]`, most recent.
-   If none, stop with "no active plan — `daruma_plan_create` first".
-3. `daruma_plan_next_task` with the plan id. Server atomically picks
-   the next ready (unblocked) task and transitions `todo → in_progress`.
+   `status = "active"`, most recent.
+   If none, stop with "no active plan — `daruma_plan_materialize` first".
+3. `daruma_plan_drain_next` with `plan_id`. The server atomically claims
+   the next ready (unblocked) task for this session and returns null when
+   nothing is ready.
 4. If "no ready task":
 
    ```

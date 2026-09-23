@@ -8,9 +8,9 @@ tasks or write to `.omc/plans/`.
 ## Steps
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
-2. `daruma_plan_list` with `status = ["active", "in_progress"]`.
+2. `daruma_plan_list` with `status = "active"`.
    Pick the most recently updated. If none, say
-   "no active plan — `daruma_plan_create` first" and stop.
+   "no active plan — `daruma_plan_materialize` first" and stop.
 3. `daruma_plan_get` with the chosen `plan_id`.
 4. Compute `done_count / total_count`. Build a 20-cell bar:
    `▓▓▓▓▓▓▓▓░░░░░░░░░░░░ 40%`.
@@ -40,4 +40,4 @@ tasks or write to `.omc/plans/`.
 6. Suggest next action:
    - any `in_progress` → `→ continue: <title>`.
    - else any ready `todo` → `→ next: run /daruma-claude:next`.
-   - else all done → `→ plan complete — daruma_plan_set_status status=done`.
+   - else all done → `→ plan complete — daruma_plan_set_status status=completed`.

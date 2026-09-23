@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks (ADR-0007 plan-only intake): atomically create a plan together with its tasks in one transaction. Pass `plan` (title required; project resolved from the repo scope when unambiguous) and `tasks` (each title required). Tasks inherit the plan's project and carry provenance to the PlanCreated event. Optional task `external_key` makes repeated delivery reuse the existing task, append the incoming context as a comment, and attach it to the new plan. Raw ideas that are not yet a structured plan belong in the upstream layers (intake/sensemaking), not here.",
+            "The ONLY intake path for new tasks (ADR-0007 plan-only intake): atomically create a plan together with its tasks in one transaction. Pass `plan` (title required; project resolved from the repo scope when unambiguous) and `tasks` (each title required). Tasks inherit the plan's project and carry provenance to the PlanCreated event. Optional task `external_key` makes repeated delivery reuse the existing task, append the incoming context as a comment, and attach it to the new plan. Where an upstream maturity pipeline is deployed, raw ideas go through it instead of here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -570,7 +570,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_create",
             "Create plan",
-            "Create a new execution plan for a project. daruma is the single source of truth for tasks/plans — do not also persist them in markdown, TODO files, or .omc/plans/.",
+            "Create an empty execution plan (no tasks) for a project. To create a plan together with new tasks use `daruma_plan_materialize`; attach existing tasks with `daruma_plan_add_task`.",
             schema_plan_create(),
             Dom::Plans, D, C, Ann::Write,
         ),
