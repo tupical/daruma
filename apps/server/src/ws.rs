@@ -569,6 +569,26 @@ async fn handle_dispatch(
         return;
     }
 
+    // The project's plan-source policy is written only by its owner-facing
+    // PATCH endpoint, which a hosted gateway can restrict; a WS frame is
+    // proxied unseen, so it must not reach the policy (auto_append still may).
+    if let daruma_core::Command::UpdateProjectSettings {
+        intake_source: Some(_),
+        ..
+    } = &command
+    {
+        send_json(
+            out_tx,
+            &WsServerMessage::Error {
+                code: "intake_source_http_only".to_string(),
+                message: "intake_source can be changed only via PATCH /v1/projects/{id}/settings"
+                    .to_string(),
+                request_id: None,
+            },
+        );
+        return;
+    }
+
     // Mirror the HTTP-side capability check.
     let needed = match &command {
         daruma_core::Command::CreateTask { .. }
