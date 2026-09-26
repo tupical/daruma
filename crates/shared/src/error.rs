@@ -43,10 +43,14 @@ pub enum CoreError {
         current: i64,
     },
 
-    /// A conflict with a machine-readable `code` the caller can act on
-    /// (HTTP 409).
+    /// A conflict with a machine-readable `code` and `details` the caller
+    /// can act on (HTTP 409).
     #[error("{code}: {message}")]
-    CodedConflict { code: &'static str, message: String },
+    CodedConflict {
+        code: &'static str,
+        message: String,
+        details: serde_json::Value,
+    },
 
     /// A well-formed request the server refuses on a semantic rule, with a
     /// machine-readable `code` and `details` the caller can act on (HTTP 422).
@@ -111,6 +115,7 @@ impl CoreError {
         Self::CodedConflict {
             code,
             message: message.into(),
+            details: serde_json::Value::Null,
         }
     }
     pub fn unprocessable(

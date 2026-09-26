@@ -9,7 +9,7 @@ use daruma_api_dto::MutationWarning;
 use daruma_core::{repos::PlanRepository, Command, CommandHandler};
 use daruma_domain::{
     Actor, AutoAppendPatch, GitContext, IntakeSourceMode, IntakeSourcePolicy, NewPlan, NewTask,
-    Plan, SourceChannel, SourceDeriveRule,
+    Plan, SourceChannel, SourceDeriveRule, SourceInput,
 };
 use daruma_events::{Event, EventBus, EventStore};
 use daruma_shared::{CoreError, ProjectId};
@@ -397,6 +397,111 @@ async fn note_required_channel_needs_a_source_brief() {
     plan.source_ref = Some("self://other".into());
     let (_, warnings) = s.materialize(plan).await;
     assert_eq!(codes(&warnings), ["plan_source_note_required"]);
+}
+
+/// `note_required` is also met by the nearest node's `note` (incoming or
+/// stored), or a `label` on a `note:` node, on materialize, plan_create and
+/// extend. A label on any other node explains nothing.
+#[tokio::test]
+async fn note_required_channel_is_met_by_node_note_or_label() {
+    let s = stack().await;
+    // Source-less plans for the extend path, before enforce forbids them.
+    let (bare_ok, _) = s.materialize(s.new_plan()).await;
+    let (bare_bad, _) = s.materialize(s.new_plan()).await;
+    s.policy(IntakeSourcePolicy {
+        channels: ["self", "note"]
+            .map(|scheme| SourceChannel {
+                scheme: scheme.into(),
+                pattern: None,
+                label: None,
+                note_required: true,
+            })
+            .into(),
+        ..policy(IntakeSourceMode::Enforce)
+    })
+    .await;
+    let node = |r: &str, label: Option<&str>, note: Option<&str>| SourceInput {
+        source_ref: Some(r.into()),
+        label: label.map(Into::into),
+        note: note.map(Into::into),
+        ..SourceInput::default()
+    };
+    let with = |source: SourceInput| {
+        let mut plan = s.new_plan();
+        plan.source = Some(source);
+        plan
+    };
+    let reason = |err: CoreError| match err {
+        CoreError::Unprocessable { code, details, .. } => {
+            assert_eq!(code, "plan_source_required");
+            details["reason"].as_str().unwrap().to_owned()
+        }
+        other => panic!("expected Unprocessable, got {other:?}"),
+    };
+
+    // Incoming node: a note passes; a label passes only on a `note:` node.
+    let (_, warnings) = s
+        .materialize(with(node("self://a", None, Some("owner asked"))))
+        .await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let err = s
+        .try_materialize(with(node("self://b", Some("Chat"), None)), Actor::user())
+        .await
+        .unwrap_err();
+    assert_eq!(reason(err), "plan_source_note_required");
+    let (stored, warnings) = s
+        .materialize(with(SourceInput {
+            label: Some("Call with the owner".into()),
+            ..SourceInput::default()
+        }))
+        .await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(stored.source_ref.unwrap().starts_with("note:"));
+
+    // Stored node: a bare ref to `self://a` carries its stored note (plan_create).
+    let mut plan = s.new_plan();
+    plan.source_ref = Some("self://a".into());
+    s.handler
+        .handle(
+            Command::CreatePlan {
+                plan,
+                external_ref: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+
+    // Nothing explains it → 422.
+    let err = s
+        .try_materialize(with(node("self://c", None, None)), Actor::user())
+        .await
+        .unwrap_err();
+    assert_eq!(reason(err), "plan_source_note_required");
+
+    // Extend `{plan_id, source}`: a note passes, a bare ref is a 422.
+    let set = |plan_id, source| Command::ExtendSource {
+        plan_id: Some(plan_id),
+        source_ref: None,
+        source: Some(source),
+        upstream: vec![],
+    };
+    s.handler
+        .handle(
+            set(bare_ok.id, node("self://d", None, Some("why"))),
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let err = s
+        .handler
+        .handle(
+            set(bare_bad.id, node("self://e", None, None)),
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(reason(err), "plan_source_note_required");
 }
 
 #[tokio::test]

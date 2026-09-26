@@ -301,7 +301,7 @@ async fn intake_keeps_existing_upstream_and_warns() {
     assert_eq!(two[2].1.as_deref(), Some("Обсуждение"));
 }
 
-/// `ExtendSource` by ref or by plan attaches to the top node.
+/// `ExtendSource` by plan attaches to the top node; by ref only to the top.
 #[tokio::test]
 async fn extend_attaches_to_top_node() {
     let s = stack().await;
@@ -316,14 +316,31 @@ async fn extend_attaches_to_top_node() {
         )
         .await
         .unwrap();
-    // By any node of the chain — the issue itself — to the new top.
-    s.handler
+    // By a node below the top: 409 naming the top, nothing written.
+    let top = s.chain(ISSUE_1).await[2].0.clone();
+    let err = s
+        .handler
         .handle(
             extend(
                 None,
                 Some(ISSUE_1),
                 vec![node(None, Some("Client problem"))],
             ),
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    let CoreError::CodedConflict { details, .. } = &err else {
+        panic!("expected CodedConflict, got {err:?}");
+    };
+    assert_eq!(code(&err), "source_upstream_conflict");
+    assert_eq!(details["top"], top.as_str(), "{err}");
+    assert!(err.to_string().contains(&top), "{err}");
+    assert_eq!(s.chain(ISSUE_1).await.len(), 3);
+    // By the top itself.
+    s.handler
+        .handle(
+            extend(None, Some(&top), vec![node(None, Some("Client problem"))]),
             Actor::user(),
         )
         .await
@@ -492,7 +509,7 @@ async fn cycle_and_depth_are_rejected() {
     assert_eq!(code(&err), "source_chain_invalid", "{err}");
     assert_eq!(s.source_count().await, before);
 
-    // 1 + 31 nodes fit; one more above the top does not.
+    // 1 + 31 nodes fit; one more above the top (`self://n29`) does not.
     let upstream: Vec<_> = (0..30)
         .map(|i| node(Some(&format!("self://n{i}")), None))
         .collect();
@@ -504,7 +521,11 @@ async fn cycle_and_depth_are_rejected() {
     let err = s
         .handler
         .handle(
-            extend(None, Some(ISSUE_1), vec![node(Some("self://over"), None)]),
+            extend(
+                None,
+                Some("self://n29"),
+                vec![node(Some("self://over"), None)],
+            ),
             Actor::user(),
         )
         .await
@@ -515,7 +536,7 @@ async fn cycle_and_depth_are_rejected() {
         .collect();
     let err = s
         .handler
-        .handle(extend(None, Some(ISSUE_1), too_long), Actor::user())
+        .handle(extend(None, Some("self://n29"), too_long), Actor::user())
         .await
         .unwrap_err();
     assert_eq!(code(&err), "source_chain_invalid", "{err}");

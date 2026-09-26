@@ -75,6 +75,9 @@ impl IntoResponse for ApiError {
             }),
             CoreError::Unprocessable {
                 message, details, ..
+            }
+            | CoreError::CodedConflict {
+                message, details, ..
             } => {
                 let mut error = json!({ "code": self.0.code(), "message": message });
                 if let (Some(error), Some(details)) = (error.as_object_mut(), details.as_object()) {

@@ -118,14 +118,20 @@ async fn source_chain_read_search_and_extend() {
         "{body}"
     );
 
-    // Extend from the e-mail: attaches above the top node (the discussion).
+    // Extend from the e-mail: not the top (the discussion is) → 409 naming it.
     let extend = |body: Value| post(&app, "/v1/sources/extend", body);
     let (status, body) =
         extend(json!({ "ref": EMAIL, "upstream": [{ "label": "Client problem" }] })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "source_upstream_conflict", "{body}");
+    let top = body["error"]["top"].as_str().unwrap().to_owned();
+    assert_eq!(top, chain[2]["ref"].as_str().unwrap(), "{body}");
+    let (status, body) =
+        extend(json!({ "ref": top, "upstream": [{ "label": "Client problem" }] })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let chain = body["data"]["source_chain"].as_array().unwrap();
-    assert_eq!(chain.len(), 3, "{body}");
-    assert_eq!(chain[2]["label"], "Client problem");
+    assert_eq!(chain.len(), 2, "{body}");
+    assert_eq!(chain[1]["label"], "Client problem");
 
     let (status, body) =
         extend(json!({ "plan_id": second, "source": { "ref": "self://x" } })).await;

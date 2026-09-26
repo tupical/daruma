@@ -217,7 +217,9 @@ impl CommandHandler {
         actor: &Actor,
     ) -> Result<(Vec<MutationWarning>, Vec<Event>)> {
         let (git_context, nodes) = prepare_plan_source(plan, actor)?;
-        let mut warnings = self.apply_source_policy(plan, git_context).await?;
+        let mut warnings = self
+            .apply_source_policy(plan, git_context, nodes.first())
+            .await?;
         let (events, kept) = self.plan_source_events(plan, nodes, actor).await?;
         warnings.extend(kept);
         Ok((warnings, events))
@@ -355,7 +357,8 @@ impl CommandHandler {
 
     /// `ExtendSource` (ADR-0009): give a source-less plan its nearest node
     /// (`PlanSourceSet`, checked against the plan project's channels), or
-    /// attach `upstream` to the top node of an existing chain.
+    /// attach `upstream` to the top node of an existing chain — the plan's,
+    /// or `ref` itself, which must be that top (409 naming it otherwise).
     pub(crate) async fn extend_source(
         &self,
         plan_id: Option<PlanId>,
@@ -379,11 +382,14 @@ impl CommandHandler {
                         let nodes = source_nodes(Some(source), upstream, actor)?;
                         let nearest = nodes[0].source_ref.clone();
                         let policy = self.intake_policy(plan.project_id).await?;
-                        let warnings = source_policy_findings(
-                            &policy,
-                            Some(&nearest),
-                            plan.source_brief.as_deref(),
-                        )?;
+                        let explained = self
+                            .source_explained(
+                                plan.source_brief.as_deref(),
+                                nodes.first(),
+                                Some(&nearest),
+                            )
+                            .await?;
+                        let warnings = source_policy_findings(&policy, Some(&nearest), explained)?;
                         let (mut events, _) = self.link_sources(nodes, false).await?;
                         events.push(Event::PlanSourceSet {
                             plan_id: id,
@@ -432,12 +438,27 @@ impl CommandHandler {
             ));
         }
         // The top node: the first without `upstream_ref`, walked from start.
-        let mut top = start;
+        // ponytail: bounded by SOURCE_CHAIN_MAX steps; a chain longer than
+        // that (impossible under current checks, only in old data) stops
+        // below its real top, so a `ref` extend gets a false 409. Walk to the
+        // end with cycle detection if such data ever shows up.
+        let mut top = start.clone();
         for _ in 0..SOURCE_CHAIN_MAX {
             match plans.get_source(&top).await?.and_then(|n| n.upstream_ref) {
                 Some(up) => top = up,
                 None => break,
             }
+        }
+        // By `ref`, the caller names the node to extend: anything but the top
+        // already has its upstream, and a set link is never rewritten.
+        if source_ref.is_some() && top != start {
+            return Err(CoreError::CodedConflict {
+                code: "source_upstream_conflict",
+                message: format!(
+                    "source `{start}` already has an upstream; extend the chain's top node `{top}` instead"
+                ),
+                details: json!({ "ref": start, "top": top }),
+            });
         }
         let mut nodes = vec![SourceInput {
             source_ref: Some(top),
@@ -458,6 +479,7 @@ impl CommandHandler {
         &self,
         plan: &mut NewPlan,
         git_context: Option<GitContext>,
+        nearest: Option<&SourceNode>,
     ) -> Result<Vec<MutationWarning>> {
         let policy = self.intake_policy(plan.project_id).await?;
 
@@ -520,12 +542,45 @@ impl CommandHandler {
             }
         }
 
+        let explained = self
+            .source_explained(
+                plan.source_brief.as_deref(),
+                nearest,
+                plan.source_ref.as_deref(),
+            )
+            .await?;
         warnings.extend(source_policy_findings(
             &policy,
             plan.source_ref.as_deref(),
-            plan.source_brief.as_deref(),
+            explained,
         )?);
         Ok(warnings)
+    }
+
+    /// What satisfies a `note_required` channel: the plan's `source_brief`,
+    /// or a `note` on the nearest node — `incoming` (whose ref is
+    /// `source_ref`) or the one already stored under `source_ref`. A `label`
+    /// counts only on a `note:` node, where the label is the content.
+    async fn source_explained(
+        &self,
+        source_brief: Option<&str>,
+        incoming: Option<&SourceNode>,
+        source_ref: Option<&str>,
+    ) -> Result<bool> {
+        let set = |v: Option<&str>| v.is_some_and(|v| !v.trim().is_empty());
+        let node_set = |n: &SourceNode| {
+            set(n.note.as_deref()) || (n.source_ref.starts_with("note:") && set(n.label.as_deref()))
+        };
+        if set(source_brief) || incoming.is_some_and(node_set) {
+            return Ok(true);
+        }
+        let (Some(source_ref), Some(plans)) = (source_ref, &self.plans) else {
+            return Ok(false);
+        };
+        Ok(plans
+            .get_source(source_ref)
+            .await?
+            .is_some_and(|n| node_set(&n)))
     }
 }
 
@@ -534,7 +589,7 @@ impl CommandHandler {
 pub(crate) fn source_policy_findings(
     policy: &IntakeSourcePolicy,
     source_ref: Option<&str>,
-    source_brief: Option<&str>,
+    explained: bool,
 ) -> Result<Vec<MutationWarning>> {
     if policy.mode == IntakeSourceMode::Off {
         return Ok(Vec::new());
@@ -553,17 +608,16 @@ pub(crate) fn source_policy_findings(
                         break;
                     }
                 }
-                let brief_empty = !source_brief.is_some_and(|b| !b.trim().is_empty());
                 if !policy.channels.is_empty() && matched.is_none() {
                     Some((
                         "plan_source_channel_mismatch",
                         format!("source `{source_ref}` matches none of the project's channels"),
                     ))
-                } else if matched.is_some_and(|c| c.note_required) && brief_empty {
+                } else if matched.is_some_and(|c| c.note_required) && !explained {
                     Some((
                         "plan_source_note_required",
                         format!(
-                            "the channel of source `{source_ref}` requires a note: pass `source_brief`"
+                            "source `{source_ref}`: channel requires an explanation: pass source.note (or source_brief)"
                         ),
                     ))
                 } else {

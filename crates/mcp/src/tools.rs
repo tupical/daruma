@@ -432,7 +432,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_source_extend",
             "Extend plan source chain",
-            "Extend a plan's source chain (ADR-0009) with a source found above it — only one that the issue/e-mail body or the user states, never invented. Pass exactly one of `plan_id` / `ref`. A plan without a source takes `source` as its nearest node (no auto-parent); otherwise `upstream` (nearest first) attaches to the chain's top node. Set links never change (409). Returns the chain.",
+            "Extend a plan's source chain (ADR-0009) with a source found above it — only one that the issue/e-mail body or the user states, never invented. Pass exactly one of `plan_id` / `ref`. A plan without a source takes `source` as its nearest node (no auto-parent); otherwise `upstream` (nearest first) attaches to the top node of the plan's chain, or to `ref`, which must be that top (else 409 names it). Returns the chain.",
             schema_source_extend(),
             Dom::Plans, F, E, Ann::Write,
         ),
@@ -4286,7 +4286,7 @@ fn schema_source_extend() -> Value {
         "type":"object",
         "properties": {
             "plan_id": {"type":"string"},
-            "ref": {"type":"string","description":"Any node of an existing chain."},
+            "ref": {"type":"string","description":"Top node of an existing chain."},
             "source": node.clone(),
             "upstream": {"type":"array","items": node,"description":"Nodes above, nearest first."}
         }
