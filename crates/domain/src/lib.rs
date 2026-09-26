@@ -20,6 +20,7 @@ pub mod rule;
 pub mod run;
 pub mod session;
 pub mod signal;
+pub mod source;
 pub mod task;
 pub mod work_lease;
 pub mod work_unit;
@@ -57,6 +58,7 @@ pub use session::{
     AgentSession, AgentSessionPlanStep, SessionArtifact, SessionArtifactKind, SessionStepStatus,
 };
 pub use signal::SignalKind;
+pub use source::{SourceInput, SourceNode, SOURCE_CHAIN_MAX};
 pub use task::{
     CompletionNote, GitContext, NewTask, Priority, Status, Task, TaskPatch, TriageState,
 };

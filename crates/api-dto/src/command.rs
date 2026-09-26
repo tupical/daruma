@@ -183,6 +183,21 @@ pub enum Command {
         tasks: Vec<NewTask>,
     },
 
+    /// ADR-0009: extend a source chain. Exactly one of `plan_id` / `ref`.
+    /// A plan without a source takes `source` (+ optional `upstream`) as
+    /// its nearest node; otherwise `upstream` (nearest first) is attached to
+    /// the top node of the chain. Fill-only: set links never change.
+    ExtendSource {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_id: Option<PlanId>,
+        #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+        source_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<daruma_domain::SourceInput>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        upstream: Vec<daruma_domain::SourceInput>,
+    },
+
     /// Update title / description / goal / success_criteria via a sparse patch.
     UpdatePlan {
         id: PlanId,
@@ -574,6 +589,7 @@ impl Command {
             // Plans
             Command::CreatePlan { .. } => "create_plan",
             Command::MaterializePlan { .. } => "materialize_plan",
+            Command::ExtendSource { .. } => "extend_source",
             Command::UpdatePlan { .. } => "update_plan",
             Command::AmendPlanTask { .. } => "amend_plan_task",
             Command::ArchivePlan { .. } => "archive_plan",

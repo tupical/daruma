@@ -312,6 +312,20 @@ pub enum Event {
         at: Timestamp,
     },
 
+    /// ADR-0009 source chain: a source node was created or had empty fields
+    /// filled (fill-only). Carries the merged node, synthetic refs included,
+    /// so replay needs nothing else.
+    SourceUpserted {
+        source: daruma_domain::SourceNode,
+    },
+
+    /// ADR-0009: a plan created without a source got one later (fill-only).
+    PlanSourceSet {
+        plan_id: PlanId,
+        source_ref: String,
+        at: Timestamp,
+    },
+
     // ── Runs — mechanical (Wave 1 / W1.3) ─────────────────────────────────────
     /// An agent started executing a plan.
     RunStarted {
@@ -958,6 +972,8 @@ impl Event {
             Event::PlanReordered { .. } => "plan_reordered",
             Event::PlanArchived { .. } => "plan_archived",
             Event::PlanDeleted { .. } => "plan_deleted",
+            Event::SourceUpserted { .. } => "source_upserted",
+            Event::PlanSourceSet { .. } => "plan_source_set",
             // Runs
             Event::RunStarted { .. } => "run_started",
             Event::RunStepStarted { .. } => "run_step_started",
@@ -1138,7 +1154,9 @@ impl Event {
             | Event::PlanTaskAmended { .. }
             | Event::PlanReordered { .. }
             | Event::PlanArchived { .. }
-            | Event::PlanDeleted { .. } => Channel::Plans,
+            | Event::PlanDeleted { .. }
+            | Event::SourceUpserted { .. }
+            | Event::PlanSourceSet { .. } => Channel::Plans,
 
             // ── Runs channel ──────────────────────────────────────────────────
             // Mechanical run events.
@@ -1542,6 +1560,24 @@ mod tests {
                 at: time::now(),
             },
             "plan_deleted",
+        );
+    }
+
+    #[test]
+    fn source_upserted_round_trip() {
+        assert_round_trip(
+            Event::SourceUpserted {
+                source: daruma_domain::SourceNode {
+                    source_ref: "note:1".into(),
+                    label: Some("Call".into()),
+                    occurred_at: Some("2026-01-01".into()),
+                    note: None,
+                    upstream_ref: Some("mailto:a@x".into()),
+                    created_at: time::now(),
+                    created_by: Some(daruma_domain::Actor::user()),
+                },
+            },
+            "source_upserted",
         );
     }
 

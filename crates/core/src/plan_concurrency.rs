@@ -244,6 +244,20 @@ mod tests {
             Ok(v)
         }
 
+        async fn get_source(
+            &self,
+            _source_ref: &str,
+        ) -> daruma_shared::Result<Option<daruma_domain::SourceNode>> {
+            Ok(None)
+        }
+
+        async fn source_descendants(
+            &self,
+            source_ref: &str,
+        ) -> daruma_shared::Result<(Vec<String>, usize)> {
+            Ok((vec![source_ref.to_string()], 0))
+        }
+
         async fn earliest_by_source_ref(
             &self,
             project_id: daruma_shared::ProjectId,

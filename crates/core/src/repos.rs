@@ -7,7 +7,7 @@
 //! held as its concrete `daruma-storage` type instead.
 
 use async_trait::async_trait;
-use daruma_domain::{AgentSession, Plan, PlanTask, Run};
+use daruma_domain::{AgentSession, Plan, PlanTask, Run, SourceNode};
 use daruma_events::EventEnvelope;
 use daruma_shared::{AgentSessionId, PlanId, ProjectId, Result, RunId, TaskId};
 
@@ -35,6 +35,13 @@ pub trait PlanRepository: Send + Sync {
         project_id: ProjectId,
         source_ref: &str,
     ) -> Result<Option<PlanId>>;
+
+    /// ADR-0009 source node by ref.
+    async fn get_source(&self, source_ref: &str) -> Result<Option<SourceNode>>;
+
+    /// Refs whose chain passes through `source_ref` (itself included) and
+    /// the longest distance below it.
+    async fn source_descendants(&self, source_ref: &str) -> Result<(Vec<String>, usize)>;
 
     /// Apply a persisted event to the projection (mirrors `TaskRepo::apply_event`).
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
@@ -132,6 +139,12 @@ impl PlanRepository for PlanRepo {
         source_ref: &str,
     ) -> Result<Option<PlanId>> {
         PlanRepo::earliest_by_source_ref(self, project_id, source_ref).await
+    }
+    async fn get_source(&self, source_ref: &str) -> Result<Option<SourceNode>> {
+        PlanRepo::get_source(self, source_ref).await
+    }
+    async fn source_descendants(&self, source_ref: &str) -> Result<(Vec<String>, usize)> {
+        PlanRepo::source_descendants(self, source_ref).await
     }
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
         PlanRepo::apply_event(self, env).await

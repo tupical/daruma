@@ -127,8 +127,20 @@ pub fn normalize_source_ref(raw: &str) -> Result<String, String> {
         let host_port = &authority[authority.rfind('@').map_or(0, |i| i + 1)..];
         let default_port = if lower == "http" { ":80" } else { ":443" };
         let host_port = host_port.strip_suffix(default_port).unwrap_or(host_port);
-        if host_port.is_empty() || host_port.starts_with(':') {
-            return Err(format!("source_ref `{s}` has no host"));
+        // A port, if any, is digits only (`https://u:p/ss@Host` is not a
+        // host `u` on port `p`); a bracketed IPv6 host has its own colons.
+        // Without brackets a host has at most one `:` (a bare IPv6 is not a
+        // host); a bracketed IPv6 host has its own colons.
+        let bare_ipv6 = !host_port.starts_with('[') && host_port.matches(':').count() > 1;
+        let valid_host = !bare_ipv6
+            && match host_port.rsplit_once(':') {
+                Some((host, port)) if !host_port.ends_with(']') => {
+                    !host.is_empty() && !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                }
+                _ => !host_port.is_empty(),
+            };
+        if !valid_host {
+            return Err(format!("source_ref `{s}` has no valid host"));
         }
         let mut out = format!(
             "{lower}://{}{}",
@@ -141,10 +153,21 @@ pub fn normalize_source_ref(raw: &str) -> Result<String, String> {
         }
         // A fragment of `k=v` pairs (OAuth implicit flow) gets the same
         // secret filter; any other fragment (`#inbox/<id>`) is identity.
-        let fragment = match fragment {
-            Some(f) if f.contains('=') => strip_secret_params(f),
-            other => other.map(str::to_string),
+        // A hash route (`#/cb?k=v`) keeps its route and filters its params;
+        // any part holding `k=v` pairs (route or params) gets the filter.
+        let filter = |part: &str| match part.contains('=') {
+            true => strip_secret_params(part).unwrap_or_default(),
+            false => part.to_string(),
         };
+        let fragment = fragment
+            .map(|f| match f.split_once('?') {
+                Some((route, params)) => match strip_secret_params(params) {
+                    Some(params) => format!("{}?{params}", filter(route)),
+                    None => filter(route),
+                },
+                None => filter(f),
+            })
+            .filter(|f| !f.is_empty());
         if let Some(fragment) = fragment {
             out.push('#');
             out.push_str(&fragment);
@@ -391,6 +414,11 @@ pub struct NewPlan {
     /// feeds the project policy's `derive` rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_context: Option<GitContext>,
+    /// Intake-only source chain (ADR-0009): the nearest node and its
+    /// `upstream`. Its ref (or a synthetic `note:`) becomes `source_ref`;
+    /// the nodes are written as `SourceUpserted`, not stored on the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::source::SourceInput>,
 }
 
 impl NewPlan {
@@ -407,6 +435,7 @@ impl NewPlan {
             source_brief: None,
             source_ref: None,
             git_context: None,
+            source: None,
         }
     }
 
@@ -502,7 +531,32 @@ mod tests {
         );
         // `@` after the first `/` is path, not userinfo.
         assert_eq!(n("https://Host.x/ss@A/x").unwrap(), "https://host.x/ss@A/x");
-        assert_eq!(n("https://u:p/ss@Host/x").unwrap(), "https://u:p/ss@Host/x");
+        assert!(n("https://u:p/ss@Host/x")
+            .unwrap_err()
+            .contains("has no valid host"));
+        assert!(n("https://host:/x").is_err());
+        assert_eq!(n("https://[::1]:8443/x").unwrap(), "https://[::1]:8443/x");
+        assert_eq!(n("https://[::1]/x").unwrap(), "https://[::1]/x");
+        assert!(n("https://::1/x").is_err());
+        assert!(n("https://fe80::1:8080/x").is_err());
+        // A route part holding `k=v` gets the secret filter too.
+        assert_eq!(
+            n("https://app.x/#access_token=x?y").unwrap(),
+            "https://app.x#?y"
+        );
+        assert_eq!(
+            n("https://app.x/#access_token=x&s=1?y").unwrap(),
+            "https://app.x#s=1?y"
+        );
+        // Hash-route params are filtered after the first `?`.
+        assert_eq!(
+            n("https://app.x/#/cb?access_token=x&s=1").unwrap(),
+            "https://app.x#/cb?s=1"
+        );
+        assert_eq!(
+            n("https://app.x/#/cb?access_token=x").unwrap(),
+            "https://app.x#/cb"
+        );
         assert_ne!(
             n("https://bugzilla.x/show_bug.cgi?id=1").unwrap(),
             n("https://bugzilla.x/show_bug.cgi?id=2").unwrap()

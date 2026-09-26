@@ -461,9 +461,15 @@ async fn intake_marker_is_reserved_and_create_plan_follows_policy() {
         .await
         .unwrap();
     assert!(outcome.warnings.is_empty());
-    let Event::PlanCreated { plan } = &outcome.events[0].payload else {
-        panic!("expected PlanCreated");
-    };
+    // The ref-only source node rides ahead of the plan (ADR-0009 chain).
+    let plan = outcome
+        .events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::PlanCreated { plan } => Some(plan),
+            _ => None,
+        })
+        .expect("PlanCreated");
     let stored = s.plans.get(plan.id).await.unwrap().unwrap();
     assert_eq!(stored.source_ref.as_deref(), Some("mcpbox:run:42"));
     let err = create(s.new_plan(), Some(("t".into(), "k".into(), "e2".into())))

@@ -470,6 +470,7 @@ impl CommandHandler {
         // shard by aggregate only if measured command contention requires it.
         // Reconciliation must not race task reopening or plan recomposition.
         // ponytail: атомарность авто-parent держится на одном экземпляре handler; в облаке handler на запрос → гонка может дать два корня, дальше детерминированно выбирается ранний (created_at,id). Межпроцессный лок/UNIQUE — если это станет проблемой.
+        // ponytail: то же для цепочки источников (ADR-0009): два handler-а могут одновременно связать один узел с разными upstream — проекция COALESCE оставит первую связь, а проигравший получит не ту цепочку без сигнала (warning/409 не будет). Лечится тем же межпроцессным локом.
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
@@ -484,19 +485,46 @@ impl CommandHandler {
         // the policy check, auto-parent lookup and plan creation are atomic.
         // `CreatePlan` with `external_ref` is an internal idempotent producer:
         // shape checks only, no policy.
-        let mut warnings = match &mut cmd {
+        // Source-chain upserts (and `PlanSourceSet`) ride ahead of the
+        // mutation in the same batch.
+        let (mut warnings, source_events) = match &mut cmd {
             Command::MaterializePlan { plan, .. }
             | Command::CreatePlan {
                 plan,
                 external_ref: None,
-            } => self.resolve_plan_source(plan).await?,
+            } => self.resolve_plan_source(plan, &actor).await?,
             Command::CreatePlan { plan, .. } => {
-                crate::plan_source::prepare_plan_source(plan)?;
-                Vec::new()
+                let (_, nodes) = crate::plan_source::prepare_plan_source(plan, &actor)?;
+                let (events, warnings) = self.plan_source_events(plan, nodes, &actor).await?;
+                (warnings, events)
             }
-            _ => Vec::new(),
+            Command::ExtendSource {
+                plan_id,
+                source_ref,
+                source,
+                upstream,
+            } => {
+                self.extend_source(
+                    *plan_id,
+                    source_ref.as_deref(),
+                    source.as_ref(),
+                    upstream,
+                    &actor,
+                )
+                .await?
+            }
+            _ => Default::default(),
         };
+        let extending = matches!(cmd, Command::ExtendSource { .. });
         let mut events = self.build_events(cmd, &actor).await?;
+        // An idempotent no-op create (known `external_ref`) writes no nodes.
+        if extending
+            || events
+                .iter()
+                .any(|e| matches!(e, Event::PlanCreated { .. }))
+        {
+            events.splice(0..0, source_events);
+        }
         for event in &mut events {
             if let Event::EvidenceRecorded { evidence } = event {
                 evidence.authenticated_actor_id = authenticated_agent_id;
@@ -2453,6 +2481,9 @@ impl CommandHandler {
                 Ok(events)
             }
 
+            // Built with the source chain ahead of `build_events`.
+            Command::ExtendSource { .. } => Ok(vec![]),
+
             Command::DeletePlan { id } => {
                 let plan_repo = self
                     .plans
@@ -3912,6 +3943,20 @@ mod tests {
                 .unwrap_or_default();
             v.sort_by_key(|t| t.position);
             Ok(v)
+        }
+
+        async fn get_source(
+            &self,
+            _source_ref: &str,
+        ) -> daruma_shared::Result<Option<daruma_domain::SourceNode>> {
+            Ok(None)
+        }
+
+        async fn source_descendants(
+            &self,
+            source_ref: &str,
+        ) -> daruma_shared::Result<(Vec<String>, usize)> {
+            Ok((vec![source_ref.to_string()], 0))
         }
 
         async fn earliest_by_source_ref(

@@ -148,8 +148,8 @@ async fn plan_materialize_requires_tasks() {
     }
 }
 
-/// ADR-0009: `plan.source.ref` → `source_ref`, `plan.git_context` passes
-/// through; wrong shapes fail before any request.
+/// ADR-0009: `plan.source` (the chain's nearest node) and
+/// `plan.git_context` pass through; wrong shapes fail before any request.
 #[tokio::test]
 async fn plan_materialize_maps_source_and_git_context() {
     let (result, captured) = with_recording_server(
@@ -168,21 +168,12 @@ async fn plan_materialize_maps_source_and_git_context() {
     .await;
     result.unwrap();
     let plan = &captured[0].body["command"]["plan"];
-    assert_eq!(plan["source_ref"], "https://gitlab.x/g/p/-/issues/7");
+    assert_eq!(plan["source"]["ref"], "https://gitlab.x/g/p/-/issues/7");
     assert_eq!(plan["source_brief"], "from standup");
     assert_eq!(plan["git_context"]["branch"], "7_fix_login");
-    assert!(plan.get("source").is_none());
 
     for (bad, needle) in [
         (json!({"source": "https://x"}), "`source` must be an object"),
-        (
-            json!({"source": {"ref": 7}}),
-            "`source.ref` must be a string",
-        ),
-        (
-            json!({"source": {"ref": "self://a", "note": "n"}}),
-            "source.note` is reserved",
-        ),
         (
             json!({"git_context": "main"}),
             "`git_context` must be an object",
@@ -240,7 +231,7 @@ async fn plan_create_maps_source_and_git_context() {
         json!({
             "title": "Plan",
             "project_id": "prj_1",
-            "source": {"ref": "mailto:c@acme.ru"},
+            "source": {"ref": "mailto:c@acme.ru", "note": "n", "upstream": [{"label": "Call"}]},
             "source_brief": "asked by mail",
             "git_context": {"branch": "12_x"}
         }),
@@ -249,16 +240,24 @@ async fn plan_create_maps_source_and_git_context() {
     result.unwrap();
     assert_eq!(captured[0].path, "/v1/plans");
     let plan = &captured[0].body["plan"];
-    assert_eq!(plan["source_ref"], "mailto:c@acme.ru");
+    assert_eq!(plan["source"]["ref"], "mailto:c@acme.ru");
+    assert_eq!(plan["source"]["note"], "n");
+    assert_eq!(plan["source"]["upstream"][0]["label"], "Call");
     assert_eq!(plan["source_brief"], "asked by mail");
     assert_eq!(plan["git_context"]["branch"], "12_x");
+}
 
+/// `daruma_source_extend` forwards its arguments to `POST /v1/sources/extend`.
+#[tokio::test]
+async fn source_extend_forwards_arguments() {
     let (result, captured) = with_recording_server(
-        "daruma_plan_create",
-        json!({"title": "Plan", "project_id": "prj_1", "source": {"note": "x"}}),
+        "daruma_source_extend",
+        json!({"ref": "mailto:c@acme.ru", "upstream": [{"label": "Call", "occurred_at": "2026-01-01"}]}),
     )
     .await;
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("source.note` is reserved"), "{msg}");
-    assert!(captured.is_empty());
+    result.unwrap();
+    assert_eq!(captured[0].path, "/v1/sources/extend");
+    assert_eq!(captured[0].body["ref"], "mailto:c@acme.ru");
+    assert_eq!(captured[0].body["upstream"][0]["label"], "Call");
+    assert!(captured[0].body.get("plan_id").is_none());
 }

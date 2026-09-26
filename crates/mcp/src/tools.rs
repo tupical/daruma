@@ -430,6 +430,13 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             Dom::Projects, F, E, Ann::Read,
         ),
         tool(
+            "daruma_source_extend",
+            "Extend plan source chain",
+            "Extend a plan's source chain (ADR-0009) with a source found above it — only one that the issue/e-mail body or the user states, never invented. Pass exactly one of `plan_id` / `ref`. A plan without a source takes `source` as its nearest node (no auto-parent); otherwise `upstream` (nearest first) attaches to the chain's top node. Set links never change (409). Returns the chain.",
+            schema_source_extend(),
+            Dom::Plans, F, E, Ann::Write,
+        ),
+        tool(
             "daruma_project_settings_update",
             "Update project settings",
             "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document; pass `intake_source` to replace the plan-source policy (null removes it).",
@@ -1359,25 +1366,16 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 }
 
 /// ADR-0009 plan source arguments shared by plan_materialize and
-/// plan_create: `source.ref` → `source_ref`, `git_context` passes through;
-/// wrong shapes fail before any request. `source.note` is reserved for the
-/// source-chain note; the trigger text goes in `source_brief`.
+/// plan_create: `source` (the nearest node `{ref?, label?, occurred_at?,
+/// note?, upstream?}`, validated by the server) and `git_context` pass
+/// through; wrong shapes fail before any request. The trigger text goes in
+/// `source_brief`.
 fn apply_plan_source(args: &Map<String, Value>, plan: &mut Value) -> anyhow::Result<()> {
     if let Some(source) = args.get("source") {
-        let source = source
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("`source` must be an object"))?;
-        if source.contains_key("note") {
-            return Err(anyhow::anyhow!(
-                "`source.note` is reserved; use `source_brief`"
-            ));
+        if !source.is_object() {
+            return Err(anyhow::anyhow!("`source` must be an object"));
         }
-        if let Some(r) = source.get("ref") {
-            let r = r
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("`source.ref` must be a string"))?;
-            plan["source_ref"] = json!(r);
-        }
+        plan["source"] = source.clone();
     }
     if let Some(git_context) = args.get("git_context") {
         if !git_context.is_object() {
@@ -2047,6 +2045,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
+            for key in ["source", "channel"] {
+                if let Some(value) = args.get(key).and_then(Value::as_str) {
+                    params.push((key, urlencode(value)));
+                }
+            }
+            if view == "detail" {
+                params.push(("source_chain", "true".into()));
+            }
             match resolve_project_filter(client, &args, true, false, true).await? {
                 ProjectFilter::All | ProjectFilter::None => {}
                 ProjectFilter::Project(pid) => {
@@ -2482,6 +2488,15 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client
                 .get_json(&format!("/v1/projects/{project_id}/settings"))
                 .await
+        }
+        "daruma_source_extend" => {
+            let mut body = json!({});
+            for key in ["plan_id", "ref", "source", "upstream"] {
+                if let Some(value) = args.get(key) {
+                    body[key] = value.clone();
+                }
+            }
+            client.post_json("/v1/sources/extend", body).await
         }
         "daruma_project_settings_update" => {
             let project_id = required_string(&args, "project_id")?;
@@ -3361,7 +3376,7 @@ fn schema_plan_materialize() -> Value {
                     "success_criteria": {"type":"array","items":{"type":"string"}},
                     "parent_plan_id": {"type":"string"},
                     "source_brief": {"type":"string","description":"Free-text brief (trigger) that produced this plan, e.g. the prompt; not updatable."},
-                    "source": {"type":"object","description":"{ref: URI (issue URL, mailto:, self://…)}"},
+                    "source": {"type":"object","description":"{ref: URI, label, occurred_at, note, upstream: [nodes, nearest first]}"},
                     "git_context": {"type":"object","description":"{repo, branch, head_sha, mr_url}"},
                     "project_id": {"type":"string","description":"Project; omit to infer from the repo."}
                 },
@@ -3807,7 +3822,7 @@ fn schema_plan_create() -> Value {
             "parent_plan_id":   {"type":"string"},
             "success_criteria": {"type":"array","items":{"type":"string"}},
             "source_brief":     {"type":"string"},
-            "source":           {"type":"object","description":"As in daruma_plan_materialize."},
+            "source":           {"type":"object","description":"{ref, label, upstream[]}"},
             "git_context":      {"type":"object"}
         },
         "required":["title","project_id"]
@@ -3921,7 +3936,9 @@ fn schema_plan_list() -> Value {
                 "enum":["summary","detail"],
                 "default":"summary",
                 "description":"summary: id/title/status/project; detail: full plan rows."
-            }
+            },
+            "source": {"type":"string","description":"Source URI anywhere in the chain."},
+            "channel": {"type":"string","description":"Scheme of the nearest source."}
         },
         "required": ["status"]
     })
@@ -4252,6 +4269,27 @@ fn schema_handoff_respond() -> Value {
             "required_changes": {"type":"array","items":{"type":"string"},"description":"Changes required before a re-request (reject only)."}
         },
         "required":["handoff_id","decision"]
+    })
+}
+
+fn schema_source_extend() -> Value {
+    let node = json!({
+        "type":"object",
+        "properties": {
+            "ref": {"type":"string","description":"URI; omit for a server-issued note:<id>."},
+            "label": {"type":"string","description":"Human name; required without ref."},
+            "occurred_at": {"type":"string","description":"RFC 3339 or YYYY-MM-DD."},
+            "note": {"type":"string"}
+        }
+    });
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string"},
+            "ref": {"type":"string","description":"Any node of an existing chain."},
+            "source": node.clone(),
+            "upstream": {"type":"array","items": node,"description":"Nodes above, nearest first."}
+        }
     })
 }
 
@@ -5396,13 +5434,17 @@ fn plan_progress_view(plan_resp: Value, graph: Value) -> Value {
         }
     }
 
-    json!({
+    let mut view = json!({
         "plan": plan,
         "progress": progress,
         "active": active.into_iter().take(5).collect::<Vec<_>>(),
         "blocked": blocked.into_iter().take(5).collect::<Vec<_>>(),
         "next": next.into_iter().take(5).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(chain) = plan_resp.get("source_chain") {
+        view["source_chain"] = chain.clone();
+    }
+    view
 }
 
 fn node_is_blocked(

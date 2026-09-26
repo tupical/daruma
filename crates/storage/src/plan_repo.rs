@@ -2,7 +2,10 @@
 //! `plans` and `plan_tasks` SQLite tables.
 
 use crate::parse_ts;
-use daruma_domain::{Actor, Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask};
+use daruma_domain::{
+    Actor, Plan, PlanProgress, PlanProgressSummary, PlanStatus, PlanTask, SourceNode,
+    SOURCE_CHAIN_MAX,
+};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, PlanId, ProjectId, Result, TaskId, Timestamp};
 use sqlx::{Row, SqlitePool};
@@ -170,6 +173,113 @@ impl PlanRepo {
                 .map_err(|e| CoreError::serde(e.to_string()))
         })
         .transpose()
+    }
+
+    // ── source chain (ADR-0009) ──────────────────────────────────────────────
+
+    pub async fn get_source(&self, source_ref: &str) -> Result<Option<SourceNode>> {
+        sqlx::query(
+            "SELECT ref, label, occurred_at, note, upstream_ref, created_at, created_by \
+             FROM sources WHERE ref = ?",
+        )
+        .bind(source_ref)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        .as_ref()
+        .map(row_to_source)
+        .transpose()
+    }
+
+    /// The chain from `source_ref` upwards, nearest first, at most
+    /// [`SOURCE_CHAIN_MAX`] nodes. Empty when the node is not stored.
+    pub async fn source_chain(&self, source_ref: &str) -> Result<Vec<SourceNode>> {
+        let mut chains = self.source_chains(&[source_ref.to_string()]).await?;
+        Ok(chains.remove(source_ref).unwrap_or_default())
+    }
+
+    /// [`Self::source_chain`] for many start refs in one query, keyed by
+    /// start ref (refs without a stored node are absent).
+    pub async fn source_chains(
+        &self,
+        source_refs: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<SourceNode>>> {
+        let starts =
+            serde_json::to_string(source_refs).map_err(|e| CoreError::serde(e.to_string()))?;
+        let rows = sqlx::query(
+            "WITH RECURSIVE chain(start, ref, depth) AS ( \
+               SELECT DISTINCT value, value, 0 FROM json_each(?) \
+               UNION ALL \
+               SELECT c.start, s.upstream_ref, c.depth + 1 FROM chain c JOIN sources s ON s.ref = c.ref \
+               WHERE s.upstream_ref IS NOT NULL AND c.depth + 1 < ? \
+             ) \
+             SELECT c.start, s.ref, s.label, s.occurred_at, s.note, s.upstream_ref, s.created_at, s.created_by \
+             FROM chain c JOIN sources s ON s.ref = c.ref ORDER BY c.start, c.depth",
+        )
+        .bind(starts)
+        .bind(SOURCE_CHAIN_MAX as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut chains: std::collections::HashMap<String, Vec<SourceNode>> = Default::default();
+        for row in &rows {
+            let start: String = row
+                .try_get("start")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            chains.entry(start).or_default().push(row_to_source(row)?);
+        }
+        Ok(chains)
+    }
+
+    /// Plans (oldest first) whose source chain contains `source_ref`
+    /// anywhere — their `source_ref` is the node or one below it — in one
+    /// project or all.
+    pub async fn list_by_source(
+        &self,
+        project_id: Option<ProjectId>,
+        source_ref: &str,
+    ) -> Result<Vec<Plan>> {
+        let rows = sqlx::query(
+            "WITH RECURSIVE down(ref, depth) AS ( \
+               SELECT ?, 0 \
+               UNION \
+               SELECT s.ref, d.depth + 1 FROM down d JOIN sources s ON s.upstream_ref = d.ref \
+               WHERE d.depth + 1 < ? \
+             ) \
+             SELECT id, project_id, parent_plan_id, title, description, goal, \
+             success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
+             FROM plans WHERE source_ref IN (SELECT ref FROM down) \
+             AND (? IS NULL OR project_id = ?) ORDER BY created_at ASC",
+        )
+        .bind(source_ref)
+        .bind(SOURCE_CHAIN_MAX as i64)
+        .bind(project_id.map(|p| p.to_string()))
+        .bind(project_id.map(|p| p.to_string()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_plan).collect()
+    }
+
+    /// `source_ref` and every node whose chain passes through it, with the
+    /// longest distance below it; traversal bounded by [`SOURCE_CHAIN_MAX`].
+    pub async fn source_descendants(&self, source_ref: &str) -> Result<(Vec<String>, usize)> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "WITH RECURSIVE down(ref, depth) AS ( \
+               SELECT ?, 0 \
+               UNION ALL \
+               SELECT s.ref, d.depth + 1 FROM down d JOIN sources s ON s.upstream_ref = d.ref \
+               WHERE d.depth + 1 < ? \
+             ) \
+             SELECT ref, MAX(depth) FROM down GROUP BY ref",
+        )
+        .bind(source_ref)
+        .bind(SOURCE_CHAIN_MAX as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        let depth = rows.iter().map(|(_, d)| *d as usize).max().unwrap_or(0);
+        Ok((rows.into_iter().map(|(r, _)| r).collect(), depth))
     }
 
     // ── plan mutations ───────────────────────────────────────────────────────
@@ -708,6 +818,54 @@ impl PlanRepo {
                     .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
+            // Fill-only: a replayed or repeated upsert never overwrites a
+            // set field (the handler already refused conflicting links).
+            Event::SourceUpserted { source } => {
+                let created_by = source
+                    .created_by
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| CoreError::serde(e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO sources \
+                     (ref, label, occurred_at, note, upstream_ref, created_at, created_by) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(ref) DO UPDATE SET \
+                       label = COALESCE(sources.label, excluded.label), \
+                       occurred_at = COALESCE(sources.occurred_at, excluded.occurred_at), \
+                       note = COALESCE(sources.note, excluded.note), \
+                       upstream_ref = COALESCE(sources.upstream_ref, excluded.upstream_ref)",
+                )
+                .bind(&source.source_ref)
+                .bind(&source.label)
+                .bind(&source.occurred_at)
+                .bind(&source.note)
+                .bind(&source.upstream_ref)
+                .bind(source.created_at.to_rfc3339())
+                .bind(created_by)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+
+            Event::PlanSourceSet {
+                plan_id,
+                source_ref,
+                at,
+            } => {
+                sqlx::query(
+                    "UPDATE plans SET source_ref = ?, updated_at = ? \
+                     WHERE id = ? AND source_ref IS NULL",
+                )
+                .bind(source_ref)
+                .bind(at.to_rfc3339())
+                .bind(plan_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+
             _ => {}
         }
 
@@ -753,6 +911,26 @@ impl PlanRepo {
 }
 
 // ── row mapping ───────────────────────────────────────────────────────────────
+
+fn row_to_source(row: &sqlx::sqlite::SqliteRow) -> Result<SourceNode> {
+    let get = |col: &str| -> Result<Option<String>> {
+        row.try_get(col)
+            .map_err(|e| CoreError::storage(e.to_string()))
+    };
+    let created_at = get("created_at")?.unwrap_or_default();
+    Ok(SourceNode {
+        source_ref: get("ref")?.unwrap_or_default(),
+        label: get("label")?,
+        occurred_at: get("occurred_at")?,
+        note: get("note")?,
+        upstream_ref: get("upstream_ref")?,
+        created_at: parse_ts(&created_at)?,
+        created_by: get("created_by")?
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| CoreError::serde(e.to_string()))?,
+    })
+}
 
 fn row_to_plan(row: &sqlx::sqlite::SqliteRow) -> Result<Plan> {
     let id: String = row

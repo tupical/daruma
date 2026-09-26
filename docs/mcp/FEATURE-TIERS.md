@@ -10,7 +10,7 @@
 
 | domain | Core | Enhancing | Extending |
 |---|---:|---:|---:|
-| Plans | 9 | 7 | 2 |
+| Plans | 9 | 8 | 2 |
 | Tasks | 7 | 5 | 3 |
 | Projects | 3 | 4 | 2 |
 | Admin | 0 | 5 | 2 |
@@ -24,7 +24,7 @@
 | Relations | 0 | 3 | 0 |
 | Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 19 | 60 | 46 |
+| ИТОГО | 19 | 61 | 46 |
 
 ## Plans
 
@@ -32,6 +32,7 @@
 |---|---|---|---|---|
 | `daruma_plan_materialize` | Core / основные | `default` | Materialize plan with tasks | write |
 | `daruma_amend_plan_task` | Core / основные | `default` | Amend plan task | write |
+| `daruma_source_extend` | Enhancing / усиливающие | `full` | Extend plan source chain | write |
 | `daruma_plan_create` | Core / основные | `default` | Create plan | write |
 | `daruma_plan_update` | Core / основные | `full` | Update plan | write |
 | `daruma_plan_get` | Core / основные | `default` | Get plan | read |

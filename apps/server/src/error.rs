@@ -47,7 +47,7 @@ impl IntoResponse for ApiError {
         let status = match &self.0 {
             CoreError::NotFound(_) => StatusCode::NOT_FOUND,
             CoreError::Validation(_) => StatusCode::BAD_REQUEST,
-            CoreError::Conflict(_) => StatusCode::CONFLICT,
+            CoreError::Conflict(_) | CoreError::CodedConflict { .. } => StatusCode::CONFLICT,
             CoreError::Ai(_) => StatusCode::BAD_GATEWAY,
             CoreError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             CoreError::Forbidden(_) => StatusCode::FORBIDDEN,

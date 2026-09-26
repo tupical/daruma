@@ -43,6 +43,11 @@ pub enum CoreError {
         current: i64,
     },
 
+    /// A conflict with a machine-readable `code` the caller can act on
+    /// (HTTP 409).
+    #[error("{code}: {message}")]
+    CodedConflict { code: &'static str, message: String },
+
     /// A well-formed request the server refuses on a semantic rule, with a
     /// machine-readable `code` and `details` the caller can act on (HTTP 422).
     #[error("{code}: {message}")]
@@ -68,7 +73,7 @@ impl CoreError {
             CoreError::Unauthorized(_) => "unauthorized",
             CoreError::Forbidden(_) => "forbidden",
             CoreError::QuotaExceeded { .. } => "quota_exceeded",
-            CoreError::Unprocessable { code, .. } => code,
+            CoreError::CodedConflict { code, .. } | CoreError::Unprocessable { code, .. } => code,
         }
     }
 
@@ -101,6 +106,12 @@ impl CoreError {
     }
     pub fn forbidden(msg: impl Into<String>) -> Self {
         Self::Forbidden(msg.into())
+    }
+    pub fn coded_conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::CodedConflict {
+            code,
+            message: message.into(),
+        }
     }
     pub fn unprocessable(
         code: &'static str,

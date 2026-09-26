@@ -288,6 +288,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/plans/{id}/graph", get(get_plan_graph))
         .route("/plans/{id}/fanout", get(get_plan_fanout))
         .route("/plans/{id}/runs", get(list_plan_runs))
+        .route("/sources/extend", post(extend_source))
         // ── Run routes (W3.1) ───────────────────────────────────────────────
         .route("/runs", post(start_run))
         .route("/runs/{id}", get(get_run))
@@ -5011,6 +5012,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         // Plan commands
         Command::CreatePlan { .. }
         | Command::MaterializePlan { .. }
+        | Command::ExtendSource { .. }
         | Command::UpdatePlan { .. }
         | Command::AmendPlanTask { .. }
         | Command::ArchivePlan { .. }
@@ -5174,12 +5176,123 @@ async fn get_plan(
         .await
         .map_err(ApiError::from)?
         .unwrap_or(plan.updated_at);
-    Ok(Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "plan": plan,
         "progress": progress,
         "slug": plan_url_slug(&plan),
         "latest_activity_at": latest_activity_at,
-    })))
+    });
+    if let Some(chain) = source_chain_json(&state, plan.source_ref.as_deref()).await? {
+        body["source_chain"] = chain;
+    }
+    Ok(Json(body))
+}
+
+/// ADR-0009 `source_chain` of one start ref; `None` without a ref.
+async fn source_chain_json(
+    state: &AppState,
+    source_ref: Option<&str>,
+) -> Result<Option<Value>, ApiError> {
+    let Some(source_ref) = source_ref else {
+        return Ok(None);
+    };
+    let chain = state
+        .plans
+        .source_chain(source_ref)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Some(chain_json(source_ref, chain)))
+}
+
+/// A chain, nearest first, as `[{ref,label,occurred_at,note}]` (absent
+/// fields omitted). A ref with no stored node — a plan from before the
+/// chain — is a one-node chain.
+fn chain_json(source_ref: &str, chain: Vec<daruma_domain::SourceNode>) -> Value {
+    if chain.is_empty() {
+        return json!([{ "ref": source_ref }]);
+    }
+    Value::Array(
+        chain
+            .into_iter()
+            .map(|node| {
+                let mut row = json!({
+                    "ref": node.source_ref,
+                    "label": node.label,
+                    "occurred_at": node.occurred_at,
+                    "note": node.note,
+                });
+                if let Some(row) = row.as_object_mut() {
+                    row.retain(|_, v| !v.is_null());
+                }
+                row
+            })
+            .collect(),
+    )
+}
+
+#[derive(Deserialize)]
+struct ExtendSourceBody {
+    #[serde(default)]
+    plan_id: Option<PlanId>,
+    #[serde(rename = "ref", default)]
+    source_ref: Option<String>,
+    #[serde(default)]
+    source: Option<daruma_domain::SourceInput>,
+    #[serde(default)]
+    upstream: Vec<daruma_domain::SourceInput>,
+}
+
+/// `POST /v1/sources/extend` — ADR-0009: give a source-less plan its source
+/// chain, or attach `upstream` to the top of a chain (by `plan_id` or
+/// `ref`). Fill-only. Returns the resulting chain, nearest first.
+async fn extend_source(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ExtendSourceBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::PlanWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let start_ref = body
+        .source_ref
+        .as_deref()
+        .map(daruma_domain::normalize_source_ref)
+        .transpose()
+        .map_err(|e| ApiError::from(CoreError::validation(e)))?;
+    let outcome = state
+        .commands
+        .dispatch_with_warnings(
+            Command::ExtendSource {
+                plan_id: body.plan_id,
+                source_ref: body.source_ref,
+                source: body.source,
+                upstream: body.upstream,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let start_ref = match (start_ref, body.plan_id) {
+        (Some(start), _) => Some(start),
+        (None, Some(plan_id)) => state
+            .plans
+            .get(plan_id)
+            .await
+            .map_err(ApiError::from)?
+            .and_then(|plan| plan.source_ref),
+        (None, None) => None,
+    };
+    let envs = outcome.events;
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({
+            "source_chain": source_chain_json(&state, start_ref.as_deref()).await?.unwrap_or(json!([])),
+        }),
+        warnings: outcome.warnings,
+        client_command_id: None,
+    }))
 }
 
 fn parse_plan_ref(raw: &str) -> Result<PlanId, ApiError> {
@@ -5340,6 +5453,13 @@ struct ListPlansQuery {
     cursor: Option<String>,
     /// Return `{items,next_cursor,has_more}` instead of the legacy array.
     page: Option<bool>,
+    /// ADR-0009: plans whose source chain contains this node anywhere
+    /// (normalised). Without `project_id`, spans every project.
+    source: Option<String>,
+    /// ADR-0009: plans whose nearest source has this scheme.
+    channel: Option<String>,
+    /// Attach each row's `source_chain`.
+    source_chain: Option<bool>,
 }
 
 /// Parse the required plan `status` query parameter.
@@ -5401,8 +5521,24 @@ async fn list_plans(
 
     let status_filter = parse_plan_status_filter(q.status.as_deref())?;
 
-    let mut plans = match q.project_id.as_deref() {
-        Some(pid) => {
+    let mut plans = match (q.project_id.as_deref(), q.source.as_deref()) {
+        // ADR-0009: the node anywhere in the chain, filtered in SQL; without
+        // `project_id` it spans projects.
+        (pid, Some(source)) => {
+            let source = daruma_domain::normalize_source_ref(source)
+                .map_err(|e| ApiError::from(CoreError::validation(e)))?;
+            let project_id = pid.map(|pid| parse_id(pid, "project id")).transpose()?;
+            let mut found = state
+                .plans
+                .list_by_source(project_id, &source)
+                .await
+                .map_err(ApiError::from)?;
+            if let Some(statuses) = &status_filter {
+                found.retain(|p| statuses.contains(&p.status));
+            }
+            found
+        }
+        (Some(pid), None) => {
             let project_id = parse_id(pid, "project id")?;
             state
                 .plans
@@ -5410,31 +5546,67 @@ async fn list_plans(
                 .await
                 .map_err(ApiError::from)?
         }
-        None => {
+        (None, None) => {
             return Err(ApiError::from(CoreError::validation(
                 "project_id is required",
             )))
         }
     };
+    if let Some(channel) = q.channel.as_deref().map(str::trim) {
+        plans.retain(|p| {
+            p.source_ref.as_deref().is_some_and(|r| {
+                r.split(':')
+                    .next()
+                    .is_some_and(|scheme| scheme.eq_ignore_ascii_case(channel))
+            })
+        });
+    }
     plans.sort_by(|a, b| {
         a.created_at
             .cmp(&b.created_at)
             .then_with(|| a.id.to_string().cmp(&b.id.to_string()))
     });
-    if wants_page(q.page, q.cursor.as_deref()) {
+    let body = if wants_page(q.page, q.cursor.as_deref()) {
         let limit = page_collection_limit(q.limit, plans.len());
-        Ok(Json(page_by_id(
-            plans,
-            q.cursor.as_deref(),
-            limit,
-            |plan| plan.id.to_string(),
-        )))
+        json!(page_by_id(plans, q.cursor.as_deref(), limit, |plan| plan
+            .id
+            .to_string(),))
     } else {
         if let Some(limit) = collection_limit(q.limit) {
             plans.truncate(limit);
         }
-        Ok(Json(json!(plans)))
+        json!(plans)
+    };
+    if !q.source_chain.unwrap_or(false) {
+        return Ok(Json(body));
     }
+    let mut body = body;
+    let rows = match body.get("items") {
+        Some(items) => items,
+        None => &body,
+    };
+    let starts: Vec<String> = rows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row["source_ref"].as_str().map(str::to_string))
+        .collect();
+    let chains = state
+        .plans
+        .source_chains(&starts)
+        .await
+        .map_err(ApiError::from)?;
+    let rows = match body.get_mut("items") {
+        Some(items) => items.as_array_mut(),
+        None => body.as_array_mut(),
+    };
+    for row in rows.into_iter().flatten() {
+        if let Some(source_ref) = row["source_ref"].as_str().map(str::to_string) {
+            let chain = chains.get(&source_ref).cloned().unwrap_or_default();
+            row["source_chain"] = chain_json(&source_ref, chain);
+        }
+    }
+    Ok(Json(body))
 }
 
 #[derive(Deserialize)]
