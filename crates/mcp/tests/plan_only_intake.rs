@@ -147,3 +147,118 @@ async fn plan_materialize_requires_tasks() {
         assert!(captured.is_empty(), "no request expected, got {captured:?}");
     }
 }
+
+/// ADR-0009: `plan.source.ref` → `source_ref`, `plan.git_context` passes
+/// through; wrong shapes fail before any request.
+#[tokio::test]
+async fn plan_materialize_maps_source_and_git_context() {
+    let (result, captured) = with_recording_server(
+        "daruma_plan_materialize",
+        json!({
+            "plan": {
+                "title": "Fix login",
+                "project_id": "prj_1",
+                "source": {"ref": "https://gitlab.x/g/p/-/issues/7"},
+                "source_brief": "from standup",
+                "git_context": {"branch": "7_fix_login"}
+            },
+            "tasks": [{"title": "t"}]
+        }),
+    )
+    .await;
+    result.unwrap();
+    let plan = &captured[0].body["command"]["plan"];
+    assert_eq!(plan["source_ref"], "https://gitlab.x/g/p/-/issues/7");
+    assert_eq!(plan["source_brief"], "from standup");
+    assert_eq!(plan["git_context"]["branch"], "7_fix_login");
+    assert!(plan.get("source").is_none());
+
+    for (bad, needle) in [
+        (json!({"source": "https://x"}), "`source` must be an object"),
+        (
+            json!({"source": {"ref": 7}}),
+            "`source.ref` must be a string",
+        ),
+        (
+            json!({"source": {"ref": "self://a", "note": "n"}}),
+            "source.note` is reserved",
+        ),
+        (
+            json!({"git_context": "main"}),
+            "`git_context` must be an object",
+        ),
+    ] {
+        let mut plan = json!({"title": "x", "project_id": "prj_1"});
+        for (k, v) in bad.as_object().unwrap() {
+            plan[k] = v.clone();
+        }
+        let (result, captured) = with_recording_server(
+            "daruma_plan_materialize",
+            json!({"plan": plan, "tasks": [{"title": "t"}]}),
+        )
+        .await;
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains(needle), "{msg}");
+        assert!(captured.is_empty());
+    }
+}
+
+/// `intake_source` reaches PATCH /settings as given, and `null` is kept (it
+/// removes the policy server-side).
+#[tokio::test]
+async fn project_settings_update_forwards_intake_source() {
+    let policy = json!({"mode": "enforce", "channels": [{"scheme": "https"}]});
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "intake_source": policy}),
+    )
+    .await;
+    result.unwrap();
+    assert_eq!(captured[0].path, "/v1/projects/prj_1/settings");
+    assert_eq!(captured[0].body["intake_source"], policy);
+
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "intake_source": null}),
+    )
+    .await;
+    result.unwrap();
+    assert!(captured[0].body["intake_source"].is_null());
+    assert!(captured[0]
+        .body
+        .as_object()
+        .unwrap()
+        .contains_key("intake_source"));
+}
+
+/// `daruma_plan_create` takes the same `source`/`git_context` arguments as
+/// materialize and forwards them to `POST /v1/plans`.
+#[tokio::test]
+async fn plan_create_maps_source_and_git_context() {
+    let (result, captured) = with_recording_server(
+        "daruma_plan_create",
+        json!({
+            "title": "Plan",
+            "project_id": "prj_1",
+            "source": {"ref": "mailto:c@acme.ru"},
+            "source_brief": "asked by mail",
+            "git_context": {"branch": "12_x"}
+        }),
+    )
+    .await;
+    result.unwrap();
+    assert_eq!(captured[0].path, "/v1/plans");
+    let plan = &captured[0].body["plan"];
+    assert_eq!(plan["source_ref"], "mailto:c@acme.ru");
+    assert_eq!(plan["source_brief"], "asked by mail");
+    assert_eq!(plan["git_context"]["branch"], "12_x");
+
+    let (result, captured) = with_recording_server(
+        "daruma_plan_create",
+        json!({"title": "Plan", "project_id": "prj_1", "source": {"note": "x"}}),
+    )
+    .await;
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("source.note` is reserved"), "{msg}");
+    assert!(captured.is_empty());
+}

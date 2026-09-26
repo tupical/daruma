@@ -9,7 +9,7 @@ use crate::task::Status;
 /// - key absent  → `None`          (no change intended)
 /// - key = null  → `Some(None)`    (unparent / clear)
 /// - key = value → `Some(Some(v))` (set / re-parent)
-pub(crate) fn deserialize_double_option<'de, T, D>(
+pub fn deserialize_double_option<'de, T, D>(
     d: D,
 ) -> std::result::Result<Option<Option<T>>, D::Error>
 where
@@ -20,6 +20,146 @@ where
 }
 
 use crate::agent::Actor;
+use crate::task::GitContext;
+
+/// Longest accepted `source_ref`, in characters.
+pub const SOURCE_REF_MAX_LEN: usize = 2048;
+
+/// Query parameters dropped from `http(s)` refs: they carry credentials,
+/// never identity (matched case-insensitively).
+const SECRET_QUERY_PARAMS: &[&str] = &[
+    "token",
+    "private_token",
+    "access_token",
+    "api_key",
+    "apikey",
+    "sig",
+    "signature",
+    "password",
+    "secret",
+];
+
+/// Drop `k=v` parameters whose (percent-decoded) name is a secret; keep the
+/// rest in order. `None` when nothing is left.
+fn strip_secret_params(params: &str) -> Option<String> {
+    let kept: Vec<&str> = params
+        .split('&')
+        .filter(|param| {
+            let name = percent_decode(param.split('=').next().unwrap_or_default());
+            !name.is_empty()
+                && !SECRET_QUERY_PARAMS
+                    .iter()
+                    .any(|secret| name.eq_ignore_ascii_case(secret))
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("&"))
+}
+
+/// Decode `%XX` escapes; malformed escapes stay as written.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Normalise a plan source URI (ADR-0009). The scheme is the channel, so one
+/// is required; it is lower-cased for every ref (RFC 3986). `http(s)` refs
+/// need a host; they lose userinfo, the default port, a trailing `/` and
+/// secret query parameters, while the host is lower-cased. Query and
+/// fragment otherwise stay — they identify things (`?id=1`, `#inbox/<id>`).
+/// Other schemes keep everything after the scheme as given.
+pub fn normalize_source_ref(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("source_ref must not be empty".into());
+    }
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("source_ref must not contain whitespace or control characters".into());
+    }
+    let scheme = s.split(':').next().unwrap_or_default();
+    let valid_scheme = s.contains(':')
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+    if !valid_scheme {
+        return Err(format!(
+            "source_ref `{s}` must be a URI with a scheme (e.g. https://…, mailto:…, self://…)"
+        ));
+    }
+    let lower = scheme.to_ascii_lowercase();
+    let rest = &s[scheme.len() + 1..];
+    let out = if lower == "http" || lower == "https" {
+        let Some(after) = rest.strip_prefix("//") else {
+            return Err(format!(
+                "source_ref `{s}` must be an absolute {lower}:// URL"
+            ));
+        };
+        // Userinfo is only an `@` inside the authority, i.e. before the
+        // first `/`, `?` or `#` (`https://u:p/ss@host` has none).
+        let authority_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+        let (authority, tail) = after.split_at(authority_end);
+        let (before_fragment, fragment) = match tail.split_once('#') {
+            Some((b, f)) => (b, Some(f)),
+            None => (tail, None),
+        };
+        let (path, query) = match before_fragment.split_once('?') {
+            Some((p, q)) => (p, Some(q)),
+            None => (before_fragment, None),
+        };
+        let host_port = &authority[authority.rfind('@').map_or(0, |i| i + 1)..];
+        let default_port = if lower == "http" { ":80" } else { ":443" };
+        let host_port = host_port.strip_suffix(default_port).unwrap_or(host_port);
+        if host_port.is_empty() || host_port.starts_with(':') {
+            return Err(format!("source_ref `{s}` has no host"));
+        }
+        let mut out = format!(
+            "{lower}://{}{}",
+            host_port.to_ascii_lowercase(),
+            path.trim_end_matches('/')
+        );
+        if let Some(query) = query.and_then(strip_secret_params) {
+            out.push('?');
+            out.push_str(&query);
+        }
+        // A fragment of `k=v` pairs (OAuth implicit flow) gets the same
+        // secret filter; any other fragment (`#inbox/<id>`) is identity.
+        let fragment = match fragment {
+            Some(f) if f.contains('=') => strip_secret_params(f),
+            other => other.map(str::to_string),
+        };
+        if let Some(fragment) = fragment {
+            out.push('#');
+            out.push_str(&fragment);
+        }
+        out
+    } else {
+        format!("{lower}:{rest}")
+    };
+    if out.chars().count() > SOURCE_REF_MAX_LEN {
+        return Err(format!(
+            "source_ref is longer than {SOURCE_REF_MAX_LEN} characters"
+        ));
+    }
+    Ok(out)
+}
 
 /// Status of a Plan.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -54,6 +194,10 @@ pub struct Plan {
     /// chooses what to store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_brief: Option<String>,
+    /// ADR-0009 source umbrella: normalised URI of where the work came from
+    /// (issue, e-mail, `self://…`). The scheme is the channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
 }
 
 /// Associates a task with a plan at a given position.
@@ -239,6 +383,14 @@ pub struct NewPlan {
     /// (typically the original user prompt).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_brief: Option<String>,
+    /// ADR-0009 source umbrella URI. At materialize the server may also
+    /// derive it (parent plan, project `intake_source` policy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    /// Intake-only Git work context (not stored on the plan): its `branch`
+    /// feeds the project policy's `derive` rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_context: Option<GitContext>,
 }
 
 impl NewPlan {
@@ -253,6 +405,8 @@ impl NewPlan {
             success_criteria: None,
             parent_plan_id: None,
             source_brief: None,
+            source_ref: None,
+            git_context: None,
         }
     }
 
@@ -272,6 +426,7 @@ impl NewPlan {
             updated_at: now,
             archived_at: None,
             source_brief: self.source_brief,
+            source_ref: self.source_ref,
         }
     }
 }
@@ -299,7 +454,87 @@ mod tests {
             updated_at: now,
             archived_at: None,
             source_brief: None,
+            source_ref: None,
         }
+    }
+
+    #[test]
+    fn normalize_source_ref_branches() {
+        let n = |s: &str| normalize_source_ref(s);
+        // http(s): lower scheme/host, no userinfo/default port/trailing `/`,
+        // secret params dropped, other query params and fragment kept.
+        assert_eq!(
+            n("  HTTPS://user:tok@GitLab.X:443/G/P/-/issues/12/?private_token=s&ID=1#note_1 ")
+                .unwrap(),
+            "https://gitlab.x/G/P/-/issues/12?ID=1#note_1"
+        );
+        assert_eq!(n("http://Host.IO:80/").unwrap(), "http://host.io");
+        assert_eq!(n("http://host.io:8080/a").unwrap(), "http://host.io:8080/a");
+        assert_eq!(
+            n("https://x.io/p?private_token=x&id=1").unwrap(),
+            "https://x.io/p?id=1"
+        );
+        assert_eq!(
+            n("https://x.io/p?Token=a&SIG=b&api_key=c").unwrap(),
+            "https://x.io/p"
+        );
+        assert_eq!(
+            n("https://x.io/p?b=2&a=1").unwrap(),
+            "https://x.io/p?b=2&a=1"
+        );
+        // Trackers use `key` as identity; names are %-decoded before matching.
+        assert_eq!(
+            n("https://jira.x/browse?key=PROJ-1&auth=a").unwrap(),
+            "https://jira.x/browse?key=PROJ-1&auth=a"
+        );
+        assert_eq!(
+            n("https://x.io/p?private%5Ftoken=x&id=1&%74oken=y").unwrap(),
+            "https://x.io/p?id=1"
+        );
+        // Fragment `k=v` params get the same filter; other fragments stay.
+        assert_eq!(
+            n("https://app.x/cb#access_token=abc&state=s").unwrap(),
+            "https://app.x/cb#state=s"
+        );
+        assert_eq!(
+            n("https://app.x/cb#access_token=abc").unwrap(),
+            "https://app.x/cb"
+        );
+        // `@` after the first `/` is path, not userinfo.
+        assert_eq!(n("https://Host.x/ss@A/x").unwrap(), "https://host.x/ss@A/x");
+        assert_eq!(n("https://u:p/ss@Host/x").unwrap(), "https://u:p/ss@Host/x");
+        assert_ne!(
+            n("https://bugzilla.x/show_bug.cgi?id=1").unwrap(),
+            n("https://bugzilla.x/show_bug.cgi?id=2").unwrap()
+        );
+        assert_eq!(
+            n("https://mail.google.com/mail/u/0/#inbox/FMfcg123").unwrap(),
+            "https://mail.google.com/mail/u/0#inbox/FMfcg123"
+        );
+        // Other schemes: scheme lower-cased, the rest kept verbatim.
+        assert_eq!(
+            n(" mailto:Client@Acme.ru#<Msg-1@x> ").unwrap(),
+            "mailto:Client@Acme.ru#<Msg-1@x>"
+        );
+        assert_eq!(n("SELF://x").unwrap(), "self://x");
+        assert_eq!(n("self://Alice").unwrap(), "self://Alice");
+        // Errors.
+        for bad in [
+            "   ",
+            "gitlab issue 12",
+            "1abc:foo",
+            ":foo",
+            "self://a\nb",
+            "self://a b",
+            "https:foo",
+            "https://",
+            "https:///x",
+            "https://user@/x",
+        ] {
+            assert!(n(bad).is_err(), "{bad:?} must be rejected");
+        }
+        assert!(n(&format!("verbal://{}", "x".repeat(2048))).is_err());
+        assert!(n(&format!("verbal://{}", "x".repeat(2000))).is_ok());
     }
 
     #[test]

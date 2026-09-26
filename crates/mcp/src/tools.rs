@@ -249,42 +249,42 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks (ADR-0007 plan-only intake): atomically create a plan together with its tasks in one transaction. Pass `plan` (title required; project resolved from the repo scope when unambiguous) and `tasks` (each title required). Tasks inherit the plan's project and carry provenance to the PlanCreated event. Optional task `external_key` makes repeated delivery reuse the existing task, append the incoming context as a comment, and attach it to the new plan. Where an upstream maturity pipeline is deployed, raw ideas go through it instead of here.",
+            "The ONLY intake path for new tasks (ADR-0007): atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. `plan.source`/`plan.git_context` record where work came from; project policy may warn or reject (422 lists channels). Raw ideas go through the maturity pipeline where one is deployed.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
         tool(
             "daruma_get",
             "Get task",
-            "Fetch a single task by id. Use only when you need fields a recent list/search row does not already carry (those rows include title, status, and priority). Pass optional `max_tokens` for a bounded excerpt when the task body may be large. Pass `dedup: true` to get a compact `unchanged` marker when this session already holds the task at its current version.",
+            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version.",
             schema_bounded_read_ext("id", "Task identifier", true),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; set at handoff, null clears). Under plan-only intake title/description are plan-owned (ADR-0007 Q1) and rejected here — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
+            "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; null clears). Under plan-only intake title/description are plan-owned (ADR-0007 Q1) — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_amend_plan_task",
             "Amend plan task",
-            "Amend the plan-owned fields (title/description/project_id) of a task that is a member of a plan (ADR-0007 Q1). Required under plan-only intake; when plan-only intake is off, daruma_update can still change these fields directly. Pass plan_id, task_id and a patch with only plan-owned fields; execution-owned fields (status/priority/triage_state/due_at) go through their own commands — daruma_set_status, daruma_set_priority and daruma_update.",
+            "Amend the plan-owned fields (title/description/project_id) of a plan member task (ADR-0007 Q1). Required under plan-only intake (otherwise daruma_update also works). Pass plan_id, task_id and a patch of only plan-owned fields; status/priority/triage_state/due_at go through daruma_set_status, daruma_set_priority, daruma_update.",
             schema_amend_plan_task(),
             Dom::Plans, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default tool for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). Default `view=summary` rows already carry id/title/status/priority/project — no follow-up `daruma_get` or `view=detail` unless you need the description or comments. Required `status`: one of `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma-separated list, `active` (all non-terminal), or `all` (avoid unless the user asked for the archive — very large). Optional `project_id` (`inbox` = no project, `all` = every project); when omitted, the resolved repo project is used if unambiguous, otherwise a compact project-selection response is returned.",
+            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (required): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
             "daruma_search",
             "Search tasks and comments",
-            "Full-text lookup across tasks, comments, and plans for a named keyword. Use when the user names concrete text to find; to enumerate open work use `daruma_list status=active` instead. Defaults to a small MCP page and marks truncation.",
+            "Full-text lookup of a named keyword across tasks, comments, and plans. To enumerate open work use `daruma_list status=active`. Returns a small page and marks truncation.",
             schema_search(),
             Dom::Tasks, D, X, Ann::Read,
         ),
@@ -319,7 +319,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_complete",
             "Complete task",
-            "Mark a task as completed. Optional note (reason / result_summary / acceptance_criteria_status / related_artifacts) replaces a preliminary daruma_comment; the completing actor is recorded automatically.",
+            "Complete a task. Optional note (reason / result_summary / acceptance_criteria_status / related_artifacts) replaces a separate daruma_comment; the actor is recorded automatically.",
             schema_complete(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
@@ -361,7 +361,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_can_start",
             "Check task readiness",
-            "Check whether a task is ready to start. Reports blocking tasks (`blockers`) and, separately, lifecycle rules that would refuse the transition (`rule_blockers`) plus advisory ones (`rule_warnings`). `ready: true` means `daruma_set_status in_progress` passes the rule gate.",
+            "Check whether a task is ready to start. Reports blocking tasks (`blockers`), lifecycle rules that would refuse the transition (`rule_blockers`) and advisory ones (`rule_warnings`). `ready: true` = `daruma_set_status in_progress` passes the rule gate.",
             schema_can_start(),
             Dom::Tasks, D, X, Ann::Read,
         ),
@@ -383,7 +383,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_use",
             "Bind workspace to project",
-            "Bind a workspace/repo scope to a daruma project. When MCP runs in a folder containing multiple repos, pass `scope_path` so unscoped parent-folder calls remain explicit. Pass `project_id: null` to clear the selected scope.",
+            "Bind a workspace/repo scope to a daruma project. In a folder with several repos pass `scope_path` so parent-folder calls stay explicit. `project_id: null` clears the scope.",
             schema_project_use(),
             Dom::Projects, D, C, Ann::WriteIdem,
         ),
@@ -425,14 +425,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_settings_get",
             "Get project settings",
-            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default).",
+            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default), and the plan-source policy `intake_source` (null = warn).",
             schema_with_id("project_id"),
             Dom::Projects, F, E, Ann::Read,
         ),
         tool(
             "daruma_project_settings_update",
             "Update project settings",
-            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document.",
+            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document; pass `intake_source` to replace the plan-source policy (null removes it).",
             schema_project_settings_update(),
             Dom::Projects, F, E, Ann::WriteIdem,
         ),
@@ -476,7 +476,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_evidence_submit",
             "Record lifecycle evidence",
-            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Kinds: document_read_ack, impact_assessment, decision_record, completion_note, artifact_created, owner_assigned, acceptance_criteria_defined, risk_check_completed. Scope ceilings: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records are stored but satisfy nothing; use the scope of the described entity. Evidence is immutable; `supersedes` replaces a prior record.",
+            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Kinds: document_read_ack, impact_assessment, decision_record, completion_note, artifact_created, owner_assigned, acceptance_criteria_defined, risk_check_completed. Scope ceilings: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records satisfy nothing — use the described entity's scope. Evidence is immutable; `supersedes` replaces a prior record.",
             schema_evidence_submit(),
             // Default profile, not full: defining a rule is an admin act, but
             // attesting that a requirement is met is the executor's — and it is
@@ -487,7 +487,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_evidence_list",
             "List lifecycle evidence",
-            "List evidence recorded at a scope (tenant by default; pass `project_id`, `plan_id`, or `task_id` for a narrower scope). Superseded records are hidden unless `include_superseded` is true.",
+            "List evidence at a scope (tenant by default; `project_id`/`plan_id`/`task_id` narrow it). Superseded records are hidden unless `include_superseded`.",
             schema_evidence_list(),
             // Paired with submit: an executor that can attest must be able to
             // see what is already attested, or it re-submits blindly.
@@ -570,7 +570,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_create",
             "Create plan",
-            "Create an empty execution plan (no tasks) for a project. To create a plan together with new tasks use `daruma_plan_materialize`; attach existing tasks with `daruma_plan_add_task`.",
+            "Create an empty plan (no tasks) for a project. New tasks: `daruma_plan_materialize`; existing tasks: `daruma_plan_add_task`.",
             schema_plan_create(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -584,21 +584,21 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_get",
             "Get plan",
-            "Fetch a plan by id, including progress metrics — the cheap way to summarize one plan's status (prefer this over enumerating completed plans or tasks).",
+            "Fetch a plan with progress metrics — the cheap way to summarize one plan (prefer over enumerating plans or tasks).",
             schema_plan_get(),
             Dom::Plans, D, C, Ann::Read,
         ),
         tool(
             "daruma_plan_list",
             "List plans",
-            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma-separated list, or `all`. Prefer `draft,active`; completed plans are token-heavy — use `daruma_plan_get` for one plan instead. `project_id` defaults to the resolved repo project; `all` spans projects.",
+            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma list, or `all`. Prefer `draft,active`; completed plans are token-heavy — use `daruma_plan_get` for one plan. `project_id` defaults to the repo project; `all` spans projects.",
             schema_plan_list(),
             Dom::Plans, D, C, Ann::Read,
         ),
         tool(
             "daruma_plan_add_task",
             "Attach task to plan",
-            "Recompose plans: attach an EXISTING task (already materialized via a plan) to another plan at an optional position with optional dependencies. NOT an intake path — new tasks enter only via `daruma_plan_materialize` (ADR-0007).",
+            "Recompose plans: attach an EXISTING (already materialized) task to another plan, optionally at a position with dependencies. Not intake — new tasks enter only via `daruma_plan_materialize` (ADR-0007).",
             schema_plan_add_task(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -654,7 +654,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
-            "Atomically resolve the next eligible plan task and acquire an exclusive claim for this session's agent. Omit run_id unless continuing a UUID returned by daruma_run_start. Concurrent callers each get a distinct task; returns null when no unclaimed ready task remains. Re-call in a loop to drain a plan across many agents.",
+            "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
             schema_plan_drain_next(),
             Dom::Plans, D, E, Ann::Write,
         ),
@@ -816,7 +816,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_run_note_append",
             "Append run note",
-            "Append a free-form journal note to an active run. The actor is taken from the MCP session token; body is required (≤ 4 KiB).",
+            "Append a journal note (body required, ≤ 4 KiB) to an active run; the actor comes from the session token.",
             schema_run_note_append(),
             Dom::Runs, D, E, Ann::Write,
         ),
@@ -838,7 +838,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_claim",
             "Claim task",
-            "Acquire an optimistic claim on a task for a given TTL in seconds. Pass the agent UUID from daruma_workspace_info.mcp_agent_id.",
+            "Claim a task optimistically for a TTL in seconds; agent UUID from daruma_workspace_info.mcp_agent_id.",
             schema_claim(),
             Dom::Coordination, D, E, Ann::Write,
         ),
@@ -1037,7 +1037,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_relations",
             "Read task relations",
-            "Read 5-group relations projection for a task (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
+            "Task relations in 5 groups (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
             schema_relations(),
             Dom::Relations, D, E, Ann::Read,
         ),
@@ -1358,6 +1358,36 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
     Ok(strip_request_echo(result, &args))
 }
 
+/// ADR-0009 plan source arguments shared by plan_materialize and
+/// plan_create: `source.ref` → `source_ref`, `git_context` passes through;
+/// wrong shapes fail before any request. `source.note` is reserved for the
+/// source-chain note; the trigger text goes in `source_brief`.
+fn apply_plan_source(args: &Map<String, Value>, plan: &mut Value) -> anyhow::Result<()> {
+    if let Some(source) = args.get("source") {
+        let source = source
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("`source` must be an object"))?;
+        if source.contains_key("note") {
+            return Err(anyhow::anyhow!(
+                "`source.note` is reserved; use `source_brief`"
+            ));
+        }
+        if let Some(r) = source.get("ref") {
+            let r = r
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("`source.ref` must be a string"))?;
+            plan["source_ref"] = json!(r);
+        }
+    }
+    if let Some(git_context) = args.get("git_context") {
+        if !git_context.is_object() {
+            return Err(anyhow::anyhow!("`git_context` must be an object"));
+        }
+        plan["git_context"] = git_context.clone();
+    }
+    Ok(())
+}
+
 /// Raw dispatch by tool name, without the mutation-response projection.
 async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyhow::Result<Value> {
     let args = arguments.as_object().cloned().unwrap_or_default();
@@ -1407,6 +1437,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(criteria) = plan_args.get("success_criteria") {
                 plan["success_criteria"] = criteria.clone();
             }
+            apply_plan_source(&plan_args, &mut plan)?;
             let tasks = args
                 .get("tasks")
                 .and_then(|v| v.as_array())
@@ -1968,6 +1999,10 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(criteria) = args.get("success_criteria") {
                 plan["success_criteria"] = criteria.clone();
             }
+            if let Some(brief) = args.get("source_brief").and_then(|v| v.as_str()) {
+                plan["source_brief"] = json!(brief);
+            }
+            apply_plan_source(&args, &mut plan)?;
             client.post_json("/v1/plans", json!({ "plan": plan })).await
         }
         "daruma_plan_update" => {
@@ -2457,11 +2492,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(v) = args.get("human_log").and_then(|v| v.as_bool()) {
                 auto_append["human_log"] = json!(v);
             }
+            let mut body = json!({ "auto_append": auto_append });
+            // Present-but-null is meaningful: it removes the policy.
+            if let Some(policy) = args.get("intake_source") {
+                body["intake_source"] = policy.clone();
+            }
             client
-                .patch_json(
-                    &format!("/v1/projects/{project_id}/settings"),
-                    json!({ "auto_append": auto_append }),
-                )
+                .patch_json(&format!("/v1/projects/{project_id}/settings"), body)
                 .await
         }
         "daruma_rule_list" => {
@@ -3113,7 +3150,7 @@ fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Valu
         "max_tokens": {
             "type":"integer",
             "minimum": 1,
-            "description":"Token budget for a bounded excerpt; prose is trimmed and `truncation` reports omissions; id/status/priority are never trimmed. Omit for the full object."
+            "description":"Token budget for a bounded excerpt; trims prose, `truncation` reports omissions; never trims id/status/priority. Omit for the full object."
         }
     });
     if with_dedup {
@@ -3122,7 +3159,7 @@ fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Valu
             json!({
                 "type":"boolean",
                 "default": false,
-                "description":"Defaults false. A hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
+                "description":"Default false; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }),
         );
     }
@@ -3323,7 +3360,9 @@ fn schema_plan_materialize() -> Value {
                     "goal": {"type":"string"},
                     "success_criteria": {"type":"array","items":{"type":"string"}},
                     "parent_plan_id": {"type":"string"},
-                    "source_brief": {"type":"string","description":"Free-text brief that produced this plan (e.g. the original prompt). Set at materialize only; not updatable."},
+                    "source_brief": {"type":"string","description":"Free-text brief (trigger) that produced this plan, e.g. the prompt; not updatable."},
+                    "source": {"type":"object","description":"{ref: URI (issue URL, mailto:, self://…)}"},
+                    "git_context": {"type":"object","description":"{repo, branch, head_sha, mr_url}"},
                     "project_id": {"type":"string","description":"Project; omit to infer from the repo."}
                 },
                 "required":["title"]
@@ -3338,23 +3377,22 @@ fn schema_plan_materialize() -> Value {
                         "description": {"type":"string"},
                         "priority": {"type":"string","enum":["p0","p1","p2","p3"]},
                         "due_at": {"type":"string","description":"RFC3339 timestamp."},
-                        "external_key": {"type":"string","description":"Workspace-unique idempotency key. Repeated delivery reuses the existing task, appends the incoming context as a comment, and attaches it to the new plan."}
+                        "external_key": {"type":"string","description":"Workspace-unique idempotency key: a repeat reuses the task, appends the new context as a comment, and attaches it to this plan."}
                     },
                     "required":["title"]
-                },
-                "description":"Tasks inheriting the plan's project and provenance."
+                }
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (repo folder name)."
+                "description":"Repo scope name."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope, alias-safe form."
+                "description":"Repo scope name (alias-safe)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path resolved to the nearest configured daruma scope."
+                "description":"Path; the nearest configured scope applies."
             }
         },
         "required":["plan","tasks"]
@@ -3390,7 +3428,7 @@ fn schema_set_status() -> Value {
             },
             "override_reason": {
                 "type":"string",
-                "description":"With `force`: why an overridable rule is bypassed. Blank or non-overridable → whole call blocked; prefer daruma_evidence_submit."
+                "description":"With `force`: why an overridable rule is bypassed; blank/non-overridable blocks the call. Prefer daruma_evidence_submit."
             },
             "comment": {
                 "type":"object",
@@ -3425,7 +3463,7 @@ fn schema_amend_plan_task() -> Value {
             "task_id": {"type":"string"},
             "patch": {
                 "type":"object",
-                "description":"Sparse patch; only plan-owned fields are accepted (title/description/project_id).",
+                "description":"Sparse patch of plan-owned fields only.",
                 "properties": {
                     "title": {"type":"string"},
                     "description": {"type":"string"},
@@ -3571,19 +3609,19 @@ fn schema_list() -> Value {
         "properties": {
             "project_id": {
                 "type":"string",
-                "description": "Project id, `inbox` (tasks with no project), or `all` (every project); omit to infer from the repo."
+                "description": "Project id, `inbox`, or `all`; omit to infer from the repo."
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (repo folder name)."
+                "description":"Repo scope name."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope, alias-safe form."
+                "description":"Repo scope name (alias-safe)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path resolved to the nearest configured daruma scope."
+                "description":"Path; the nearest configured scope applies."
             },
             "status": {
                 "type":"string",
@@ -3597,7 +3635,7 @@ fn schema_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"Opaque next_cursor; do not auto-fetch."
+                "description":"next_cursor; don't auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3625,11 +3663,11 @@ fn schema_search() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope; use this, not `scope` (which filters search domains)."
+                "description":"Repo scope name (not `scope`, which filters domains)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path resolved to the nearest configured daruma scope."
+                "description":"Path; the nearest configured scope applies."
             },
             "limit": {
                 "type":"integer",
@@ -3639,7 +3677,7 @@ fn schema_search() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"Opaque next_cursor; do not auto-fetch."
+                "description":"next_cursor; don't auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3666,11 +3704,11 @@ fn schema_lesson_recall() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope, alias-safe form."
+                "description":"Repo scope name (alias-safe)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path resolved to the nearest configured daruma scope."
+                "description":"Path; the nearest configured scope applies."
             },
             "limit": {
                 "type":"integer",
@@ -3767,7 +3805,10 @@ fn schema_plan_create() -> Value {
             "description":      {"type":"string"},
             "goal":             {"type":"string"},
             "parent_plan_id":   {"type":"string"},
-            "success_criteria": {"type":"array","items":{"type":"string"}}
+            "success_criteria": {"type":"array","items":{"type":"string"}},
+            "source_brief":     {"type":"string"},
+            "source":           {"type":"object","description":"As in daruma_plan_materialize."},
+            "git_context":      {"type":"object"}
         },
         "required":["title","project_id"]
     })
@@ -3808,7 +3849,7 @@ fn schema_plan_set_status() -> Value {
             },
             "override_reason": {
                 "type":"string",
-                "description":"With `force`: why an overridable rule is bypassed. Blank or non-overridable → whole call blocked; prefer daruma_evidence_submit."
+                "description":"With `force`: why an overridable rule is bypassed; blank/non-overridable blocks the call. Prefer daruma_evidence_submit."
             }
         },
         "required":["plan_id","status"]
@@ -3829,12 +3870,12 @@ fn schema_plan_get() -> Value {
             "max_tokens": {
                 "type":"integer",
                 "minimum": 1,
-                "description":"Token budget for detail; trims prose and adds `truncation`; id/status/priority are never trimmed. Omit for the full object."
+                "description":"Token budget for detail; trims prose, adds `truncation`; never trims id/status/priority. Omit for the full object."
             },
             "dedup": {
                 "type":"boolean",
                 "default": false,
-                "description":"Detail-view session dedup, default false. A hit returns a compact `unchanged` marker with `ref`; re-read without `dedup` for full detail."
+                "description":"Session dedup for detail, default false; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }
         },
         "required":["id"]
@@ -3851,19 +3892,19 @@ fn schema_plan_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (repo folder name)."
+                "description":"Repo scope name."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope, alias-safe form."
+                "description":"Repo scope name (alias-safe)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path resolved to the nearest configured daruma scope."
+                "description":"Path; the nearest configured scope applies."
             },
             "status": {
                 "type":"string",
-                "description": "Required. draft|active|completed|abandoned, a comma-separated list, or `all`. Ask before `all`: the archive can be very heavy."
+                "description": "Required; see tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -3873,7 +3914,7 @@ fn schema_plan_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"Opaque next_cursor; do not auto-fetch."
+                "description":"next_cursor; don't auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3989,15 +4030,15 @@ fn schema_workspacegraph_search() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Named daruma scope (repo folder name)."
+                "description":"Repo scope name."
             },
             "project_scope": {
                 "type":"string",
-                "description":"Named daruma scope, alias-safe form."
+                "description":"Repo scope name (alias-safe)."
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path resolved to the nearest configured daruma scope."
+                "description":"Path; the nearest configured scope applies."
             },
             "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
         },
@@ -4220,7 +4261,8 @@ fn schema_project_settings_update() -> Value {
         "properties": {
             "project_id": {"type":"string"},
             "interview": {"type":"boolean","description":"Auto-append agent activity to the Interview document."},
-            "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."}
+            "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."},
+            "intake_source": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Plan-source policy {mode: off|warn|enforce, default_ref, derive:[{from:\"branch\",pattern,ref}], channels:[{scheme,pattern,label,note_required}]}; null removes."}
         },
         "required":["project_id"]
     })
@@ -4669,9 +4711,9 @@ fn schema_doc_list() -> Value {
                 "type":"string",
                 "description":"Project id. When omitted, the resolved repo project is used only if unambiguous."
             },
-            "scope": {"type":"string", "description":"Named daruma scope (repo folder name)."},
-            "project_scope": {"type":"string", "description":"Named daruma scope, alias-safe form."},
-            "scope_path": {"type":"string", "description":"Path resolved to the nearest configured daruma scope."},
+            "scope": {"type":"string", "description":"Repo scope name."},
+            "project_scope": {"type":"string", "description":"Repo scope name (alias-safe)."},
+            "scope_path": {"type":"string", "description":"Path; the nearest configured scope applies."},
             "kind":             {"type":"string","enum":["interview","human_log"]},
             "include_archived": {"type":"boolean","default":false}
         }

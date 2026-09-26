@@ -244,6 +244,25 @@ mod tests {
             Ok(v)
         }
 
+        async fn earliest_by_source_ref(
+            &self,
+            project_id: daruma_shared::ProjectId,
+            source_ref: &str,
+        ) -> daruma_shared::Result<Option<PlanId>> {
+            Ok(self
+                .plans
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|p| {
+                    p.project_id == project_id
+                        && p.archived_at.is_none()
+                        && p.source_ref.as_deref() == Some(source_ref)
+                })
+                .min_by_key(|p| (p.created_at, p.id.to_string()))
+                .map(|p| p.id))
+        }
+
         async fn list_plans_for_task(&self, _task_id: TaskId) -> Result<Vec<PlanId>> {
             Ok(vec![])
         }
@@ -269,6 +288,7 @@ mod tests {
             updated_at: now,
             archived_at: None,
             source_brief: None,
+            source_ref: None,
         }
     }
 

@@ -175,6 +175,7 @@ async fn toggles_disable_appends_and_persist() {
                     interview: None,
                     human_log: Some(false),
                 },
+                intake_source: None,
             },
             Actor::user(),
         )
@@ -208,6 +209,7 @@ async fn toggles_disable_appends_and_persist() {
                     interview: None,
                     human_log: Some(true),
                 },
+                intake_source: None,
             },
             Actor::user(),
         )

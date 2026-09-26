@@ -52,6 +52,7 @@ impl IntoResponse for ApiError {
             CoreError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             CoreError::Forbidden(_) => StatusCode::FORBIDDEN,
             CoreError::QuotaExceeded { .. } => StatusCode::PAYMENT_REQUIRED,
+            CoreError::Unprocessable { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
@@ -72,6 +73,17 @@ impl IntoResponse for ApiError {
                     "current": current,
                 }
             }),
+            CoreError::Unprocessable {
+                message, details, ..
+            } => {
+                let mut error = json!({ "code": self.0.code(), "message": message });
+                if let (Some(error), Some(details)) = (error.as_object_mut(), details.as_object()) {
+                    for (key, value) in details {
+                        error.entry(key.clone()).or_insert_with(|| value.clone());
+                    }
+                }
+                json!({ "error": error })
+            }
             _ => json!({
                 "error": {
                     "code": self.0.code(),
@@ -123,6 +135,23 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(json["error"]["code"], "validation");
+    }
+
+    #[tokio::test]
+    async fn unprocessable_error_returns_422_with_details() {
+        let err = ApiError(CoreError::unprocessable(
+            "plan_source_required",
+            "no source",
+            json!({ "channels": [{ "scheme": "https" }] }),
+        ));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "plan_source_required");
+        assert_eq!(json["error"]["message"], "no source");
+        assert_eq!(json["error"]["channels"][0]["scheme"], "https");
     }
 
     #[tokio::test]

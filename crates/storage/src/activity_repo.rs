@@ -1610,6 +1610,7 @@ mod tests {
             updated_at: now,
             archived_at: None,
             source_brief: None,
+            source_ref: None,
         };
         let env = env_with_seq(Actor::user(), Event::PlanCreated { plan }, 1);
         repo.apply_event(&env).await.unwrap();

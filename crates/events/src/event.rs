@@ -546,6 +546,15 @@ pub enum Event {
         project_id: ProjectId,
         auto_append: daruma_domain::AutoAppendSettings,
         at: Timestamp,
+        /// Plan-source policy (ADR-0009): absent = unchanged (every event
+        /// before the field existed), `null` = key removed, object = new
+        /// policy.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "daruma_domain::deserialize_double_option"
+        )]
+        intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
     },
 
     // ── Async AI operations (§3.8.12 / CTM B.6) ──────────────────────────────
@@ -1297,6 +1306,7 @@ mod tests {
             updated_at: now,
             archived_at: None,
             source_brief: None,
+            source_ref: None,
         }
     }
 

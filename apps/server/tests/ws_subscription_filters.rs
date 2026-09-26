@@ -199,6 +199,7 @@ async fn seed_plan_with_task(
         updated_at: now,
         archived_at: None,
         source_brief: None,
+        source_ref: None,
     };
     plans.insert(&plan).await.unwrap();
     plans.add_task(plan.id, task_id, 0, &[]).await.unwrap();

@@ -48,6 +48,65 @@ pub struct AutoAppendPatch {
     pub human_log: Option<bool>,
 }
 
+/// Project policy for plan sources (ADR-0009), stored under the
+/// `intake_source` settings key. No stored key behaves as
+/// `IntakeSourcePolicy::default()`: `warn` with no channels.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntakeSourcePolicy {
+    pub mode: IntakeSourceMode,
+    /// Fallback ref when nothing else resolved, used literally (the cabinet
+    /// writes a concrete ref, e.g. `self://alice` for a solo project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derive: Vec<SourceDeriveRule>,
+    /// Allowed channels; empty = any scheme.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<SourceChannel>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntakeSourceMode {
+    /// Resolve the ref, never check it.
+    Off,
+    /// Create the plan, answer with a warning.
+    #[default]
+    Warn,
+    /// Reject the plan with `plan_source_required`.
+    Enforce,
+}
+
+/// Derive a ref from the work context: `pattern` (regex) is matched against
+/// the context value named by `from` (only `branch` today) and its groups
+/// `$1..$9` are substituted into `ref`; a rule whose template names a group
+/// that did not participate in the match does not fire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDeriveRule {
+    pub from: String,
+    pub pattern: String,
+    #[serde(rename = "ref")]
+    pub ref_template: String,
+}
+
+/// An allowed source channel: a URI scheme, optionally narrowed by a regex
+/// over the whole normalised ref.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceChannel {
+    pub scheme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The channel carries no content by reference, so the plan must carry
+    /// a `source_brief` note.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note_required: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use daruma_domain::{AgentSession, Plan, PlanTask, Run};
 use daruma_events::EventEnvelope;
-use daruma_shared::{AgentSessionId, PlanId, Result, RunId, TaskId};
+use daruma_shared::{AgentSessionId, PlanId, ProjectId, Result, RunId, TaskId};
 
 // ── Plan ──────────────────────────────────────────────────────────────────────
 
@@ -27,6 +27,14 @@ pub trait PlanRepository: Send + Sync {
     async fn list_plans_for_task(&self, task_id: TaskId) -> Result<Vec<PlanId>>;
 
     async fn list_children(&self, plan_id: PlanId) -> Result<Vec<Plan>>;
+
+    /// Earliest non-archived plan in the project with exactly this
+    /// normalised `source_ref` (ADR-0009 auto-parent).
+    async fn earliest_by_source_ref(
+        &self,
+        project_id: ProjectId,
+        source_ref: &str,
+    ) -> Result<Option<PlanId>>;
 
     /// Apply a persisted event to the projection (mirrors `TaskRepo::apply_event`).
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()>;
@@ -117,6 +125,13 @@ impl PlanRepository for PlanRepo {
     async fn list_plans_for_task(&self, task_id: TaskId) -> Result<Vec<PlanId>> {
         let plans = PlanRepo::list_plans_for_task(self, task_id).await?;
         Ok(plans.into_iter().map(|p| p.id).collect())
+    }
+    async fn earliest_by_source_ref(
+        &self,
+        project_id: ProjectId,
+        source_ref: &str,
+    ) -> Result<Option<PlanId>> {
+        PlanRepo::earliest_by_source_ref(self, project_id, source_ref).await
     }
     async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
         PlanRepo::apply_event(self, env).await

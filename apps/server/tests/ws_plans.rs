@@ -129,6 +129,7 @@ fn plan_created_env(project_id: ProjectId, seq: u64) -> EventEnvelope {
         updated_at: now,
         archived_at: None,
         source_brief: None,
+        source_ref: None,
     };
     EventEnvelope {
         seq,

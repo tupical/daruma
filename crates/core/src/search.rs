@@ -359,6 +359,7 @@ mod tests {
                         updated_at: now,
                         archived_at: None,
                         source_brief: None,
+                        source_ref: None,
                     },
                 },
             ))

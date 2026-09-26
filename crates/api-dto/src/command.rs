@@ -118,6 +118,14 @@ pub enum Command {
         project_id: ProjectId,
         #[serde(default)]
         auto_append: daruma_domain::AutoAppendPatch,
+        /// Plan-source policy (ADR-0009): absent = unchanged, `null` =
+        /// remove, object = replace whole.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "daruma_domain::deserialize_double_option"
+        )]
+        intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
     },
     UpdateProject {
         id: ProjectId,

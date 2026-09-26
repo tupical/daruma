@@ -22,7 +22,7 @@ impl PlanRepo {
     pub async fn get(&self, id: PlanId) -> Result<Option<Plan>> {
         let row = sqlx::query(
             "SELECT id, project_id, parent_plan_id, title, description, goal, \
-             success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+             success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
              FROM plans WHERE id = ?",
         )
         .bind(id.to_string())
@@ -42,7 +42,7 @@ impl PlanRepo {
             None => {
                 sqlx::query(
                     "SELECT id, project_id, parent_plan_id, title, description, goal, \
-                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
                      FROM plans WHERE project_id = ? ORDER BY created_at ASC",
                 )
                 .bind(project_id.to_string())
@@ -57,7 +57,7 @@ impl PlanRepo {
             Some([single]) => {
                 sqlx::query(
                     "SELECT id, project_id, parent_plan_id, title, description, goal, \
-                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
                      FROM plans WHERE project_id = ? AND status = ? ORDER BY created_at ASC",
                 )
                 .bind(project_id.to_string())
@@ -72,7 +72,7 @@ impl PlanRepo {
                     .join(", ");
                 let sql = format!(
                     "SELECT id, project_id, parent_plan_id, title, description, goal, \
-                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
                      FROM plans WHERE project_id = ? AND status IN ({placeholders}) ORDER BY created_at ASC"
                 );
                 let mut q = sqlx::query(&sql).bind(project_id.to_string());
@@ -92,7 +92,7 @@ impl PlanRepo {
             Some(s) => {
                 sqlx::query(
                     "SELECT id, project_id, parent_plan_id, title, description, goal, \
-                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
                      FROM plans WHERE status = ? ORDER BY created_at ASC",
                 )
                 .bind(plan_status_str(s))
@@ -102,7 +102,7 @@ impl PlanRepo {
             None => {
                 sqlx::query(
                     "SELECT id, project_id, parent_plan_id, title, description, goal, \
-                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+                     success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
                      FROM plans ORDER BY created_at ASC",
                 )
                 .fetch_all(&self.pool)
@@ -117,7 +117,7 @@ impl PlanRepo {
     pub async fn list_children(&self, parent_plan_id: PlanId) -> Result<Vec<Plan>> {
         let rows = sqlx::query(
             "SELECT id, project_id, parent_plan_id, title, description, goal, \
-             success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief \
+             success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
              FROM plans WHERE parent_plan_id = ? ORDER BY created_at ASC",
         )
         .bind(parent_plan_id.to_string())
@@ -134,7 +134,7 @@ impl PlanRepo {
     pub async fn list_plans_for_task(&self, task_id: TaskId) -> Result<Vec<Plan>> {
         let rows = sqlx::query(
             "SELECT p.id, p.project_id, p.parent_plan_id, p.title, p.description, p.goal, \
-             p.success_criteria_json, p.status, p.owner_json, p.created_at, p.updated_at, p.archived_at, p.source_brief \
+             p.success_criteria_json, p.status, p.owner_json, p.created_at, p.updated_at, p.archived_at, p.source_brief, p.source_ref \
              FROM plans p \
              JOIN plan_tasks pt ON pt.plan_id = p.id \
              WHERE pt.task_id = ? \
@@ -146,6 +146,30 @@ impl PlanRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         rows.iter().map(row_to_plan).collect()
+    }
+
+    /// Earliest non-archived plan (by `created_at`, then id) in the project
+    /// carrying exactly this normalised `source_ref` — the root a repeated
+    /// source attaches to (ADR-0009). Served by `idx_plans_source_ref`.
+    pub async fn earliest_by_source_ref(
+        &self,
+        project_id: ProjectId,
+        source_ref: &str,
+    ) -> Result<Option<PlanId>> {
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM plans WHERE project_id = ? AND source_ref = ? AND archived_at IS NULL \
+             ORDER BY created_at ASC, id ASC LIMIT 1",
+        )
+        .bind(project_id.to_string())
+        .bind(source_ref)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        id.map(|id| {
+            id.parse::<PlanId>()
+                .map_err(|e| CoreError::serde(e.to_string()))
+        })
+        .transpose()
     }
 
     // ── plan mutations ───────────────────────────────────────────────────────
@@ -571,6 +595,7 @@ impl PlanRepo {
             updated_at: now,
             archived_at: None,
             source_brief: Some(Self::INTAKE_MARKER.to_string()),
+            source_ref: None,
         }
     }
 
@@ -702,8 +727,8 @@ impl PlanRepo {
         sqlx::query(
             "INSERT OR REPLACE INTO plans \
              (id, project_id, parent_plan_id, title, description, goal, \
-              success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(plan.id.to_string())
         .bind(plan.project_id.to_string())
@@ -718,6 +743,7 @@ impl PlanRepo {
         .bind(plan.updated_at.to_rfc3339())
         .bind(archived_at)
         .bind(plan.source_brief.clone())
+        .bind(plan.source_ref.clone())
         .execute(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -768,6 +794,9 @@ fn row_to_plan(row: &sqlx::sqlite::SqliteRow) -> Result<Plan> {
     let source_brief: Option<String> = row
         .try_get("source_brief")
         .map_err(|e| CoreError::storage(e.to_string()))?;
+    let source_ref: Option<String> = row
+        .try_get("source_ref")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
 
     Ok(Plan {
         id: id
@@ -793,6 +822,7 @@ fn row_to_plan(row: &sqlx::sqlite::SqliteRow) -> Result<Plan> {
         updated_at: parse_ts(&updated_at_s)?,
         archived_at: archived_at_s.map(|s| parse_ts(&s)).transpose()?,
         source_brief,
+        source_ref,
     })
 }
 
@@ -877,6 +907,7 @@ mod tests {
             updated_at: now,
             archived_at: None,
             source_brief: None,
+            source_ref: None,
         }
     }
 
@@ -1014,6 +1045,57 @@ mod tests {
 
         let fetched = repo.get(plan_id).await.unwrap().expect("plan should exist");
         assert_eq!(fetched.source_brief.as_deref(), Some("brief text"));
+    }
+
+    #[tokio::test]
+    async fn plan_source_ref_projects_and_finds_earliest() {
+        use daruma_domain::NewPlan;
+
+        let (_db, repo) = make_repo().await;
+        let project_id = ProjectId::new();
+        let source = "https://gitlab.x/g/p/-/issues/1";
+        let mut ids = Vec::new();
+        for offset in [0, 1] {
+            let id = PlanId::new();
+            let mut new_plan = NewPlan::new("Plan", project_id, Actor::user());
+            new_plan.source_ref = Some(source.to_string());
+            let plan = new_plan.into_plan(id, time::now() + chrono::Duration::seconds(offset));
+            let env = EventEnvelope::new(Actor::user(), Event::PlanCreated { plan });
+            repo.apply_event(&env).await.unwrap();
+            ids.push(id);
+        }
+
+        let fetched = repo.get(ids[1]).await.unwrap().unwrap();
+        assert_eq!(fetched.source_ref.as_deref(), Some(source));
+        assert_eq!(
+            repo.earliest_by_source_ref(project_id, source)
+                .await
+                .unwrap(),
+            Some(ids[0])
+        );
+        assert_eq!(
+            repo.earliest_by_source_ref(ProjectId::new(), source)
+                .await
+                .unwrap(),
+            None,
+            "scoped to the project"
+        );
+
+        // An archived root no longer attracts children.
+        let env = EventEnvelope::new(
+            Actor::user(),
+            Event::PlanArchived {
+                plan_id: ids[0],
+                at: time::now(),
+            },
+        );
+        repo.apply_event(&env).await.unwrap();
+        assert_eq!(
+            repo.earliest_by_source_ref(project_id, source)
+                .await
+                .unwrap(),
+            Some(ids[1])
+        );
     }
 
     #[tokio::test]

@@ -421,7 +421,7 @@ impl CommandHandler {
 
     async fn handle_with_run_owner(
         &self,
-        cmd: Command,
+        mut cmd: Command,
         actor: Actor,
         authenticated_agent_id: Option<AgentId>,
         is_admin: bool,
@@ -469,6 +469,7 @@ impl CommandHandler {
         // ponytail: serialize commands per handler through projection updates;
         // shard by aggregate only if measured command contention requires it.
         // Reconciliation must not race task reopening or plan recomposition.
+        // ponytail: атомарность авто-parent держится на одном экземпляре handler; в облаке handler на запрос → гонка может дать два корня, дальше детерминированно выбирается ранний (created_at,id). Межпроцессный лок/UNIQUE — если это станет проблемой.
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
@@ -479,6 +480,22 @@ impl CommandHandler {
         // `source_event_id` to point at the real `PlanCreated` event id, which
         // only exists once envelopes are built below. Note the command now.
         let materialising = matches!(cmd, Command::MaterializePlan { .. });
+        // ADR-0009: resolve/check the plan source under the command lock, so
+        // the policy check, auto-parent lookup and plan creation are atomic.
+        // `CreatePlan` with `external_ref` is an internal idempotent producer:
+        // shape checks only, no policy.
+        let mut warnings = match &mut cmd {
+            Command::MaterializePlan { plan, .. }
+            | Command::CreatePlan {
+                plan,
+                external_ref: None,
+            } => self.resolve_plan_source(plan).await?,
+            Command::CreatePlan { plan, .. } => {
+                crate::plan_source::prepare_plan_source(plan)?;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        };
         let mut events = self.build_events(cmd, &actor).await?;
         for event in &mut events {
             if let Event::EvidenceRecorded { evidence } = event {
@@ -493,7 +510,6 @@ impl CommandHandler {
             });
         }
 
-        let mut warnings = Vec::new();
         // Rule-engine audit trail: a `RuleFired` event per acting rule. Only
         // warnings/blocks act, so `Allowed` decisions add nothing — an
         // unconstrained workspace stays silent (spec §1.5; task risk note).
@@ -1931,7 +1947,11 @@ impl CommandHandler {
             Command::UpdateProjectSettings {
                 project_id,
                 auto_append,
+                intake_source,
             } => {
+                if let Some(Some(policy)) = &intake_source {
+                    crate::plan_source::validate_policy(policy)?;
+                }
                 self.projects
                     .get(project_id)
                     .await?
@@ -1944,6 +1964,7 @@ impl CommandHandler {
                     project_id,
                     auto_append: current.apply(auto_append),
                     at: daruma_shared::time::now(),
+                    intake_source,
                 }])
             }
 
@@ -3891,6 +3912,25 @@ mod tests {
                 .unwrap_or_default();
             v.sort_by_key(|t| t.position);
             Ok(v)
+        }
+
+        async fn earliest_by_source_ref(
+            &self,
+            project_id: daruma_shared::ProjectId,
+            source_ref: &str,
+        ) -> daruma_shared::Result<Option<PlanId>> {
+            Ok(self
+                .plans
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|p| {
+                    p.project_id == project_id
+                        && p.archived_at.is_none()
+                        && p.source_ref.as_deref() == Some(source_ref)
+                })
+                .min_by_key(|p| (p.created_at, p.id.to_string()))
+                .map(|p| p.id))
         }
 
         async fn list_plans_for_task(&self, task_id: TaskId) -> daruma_shared::Result<Vec<PlanId>> {

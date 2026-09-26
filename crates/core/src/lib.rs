@@ -18,6 +18,7 @@ pub mod lifecycle_gate;
 pub mod path_lease;
 pub mod plan_concurrency;
 pub mod plan_readiness;
+mod plan_source;
 pub mod relation_enforcement;
 pub mod repos;
 pub mod rule_engine;

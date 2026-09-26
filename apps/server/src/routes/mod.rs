@@ -1982,22 +1982,41 @@ async fn get_project_settings(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {id}"))))?;
+    Ok(Json(project_settings_json(&state, id).await?))
+}
+
+/// Current settings body shared by GET and PATCH: `intake_source` is `null`
+/// when the project has no plan-source policy (behaves as `warn`).
+async fn project_settings_json(state: &AppState, id: ProjectId) -> Result<Value, ApiError> {
     let auto_append = state
         .project_settings
         .auto_append(id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(json!({ "auto_append": auto_append })))
+    // A policy this server cannot read (e.g. written by a newer version) is
+    // reported, not a 500: intake treats it as `warn` meanwhile.
+    Ok(match state.project_settings.intake_source(id).await {
+        Ok(intake_source) => json!({ "auto_append": auto_append, "intake_source": intake_source }),
+        Err(CoreError::Serde(e)) => json!({
+            "auto_append": auto_append,
+            "intake_source": null,
+            "intake_source_error": e,
+        }),
+        Err(e) => return Err(ApiError::from(e)),
+    })
 }
 
 #[derive(Deserialize)]
 struct ProjectSettingsPatchBody {
     #[serde(default)]
     auto_append: daruma_domain::AutoAppendPatch,
+    #[serde(default, deserialize_with = "daruma_domain::deserialize_double_option")]
+    intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
 }
 
 /// `PATCH /v1/projects/{id}/settings` — partial update of the auto-append
-/// toggles, dispatched through the command bus (event-sourced).
+/// toggles and/or the `intake_source` policy (`null` removes it),
+/// dispatched through the command bus (event-sourced).
 async fn patch_project_settings(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -2013,14 +2032,10 @@ async fn patch_project_settings(
             Command::UpdateProjectSettings {
                 project_id: id,
                 auto_append: body.auto_append,
+                intake_source: body.intake_source,
             },
             actor_from(&auth, None),
         )
-        .await
-        .map_err(ApiError::from)?;
-    let auto_append = state
-        .project_settings
-        .auto_append(id)
         .await
         .map_err(ApiError::from)?;
     let last = envs.last();
@@ -2028,7 +2043,7 @@ async fn patch_project_settings(
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
-        data: json!({ "auto_append": auto_append }),
+        data: project_settings_json(&state, id).await?,
         warnings: vec![],
         client_command_id: None,
     }))
@@ -5063,9 +5078,11 @@ async fn create_plan(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let envs = state
+    // Warnings carry the ADR-0009 source-policy findings (missing source,
+    // channel mismatch, auto-parent), same channel as materialize.
+    let outcome = state
         .commands
-        .dispatch(
+        .dispatch_with_warnings(
             Command::CreatePlan {
                 plan: body.plan,
                 external_ref: body.external_ref,
@@ -5074,6 +5091,7 @@ async fn create_plan(
         )
         .await
         .map_err(ApiError::from)?;
+    let envs = outcome.events;
     let plan_id = envs
         .iter()
         .find_map(|e| match &e.payload {
@@ -5089,7 +5107,7 @@ async fn create_plan(
             event_id: last.map(|e| e.id),
             event_seq: last.map(|e| e.seq),
             data: serde_json::json!({ "plan_id": plan_id }),
-            warnings: vec![],
+            warnings: outcome.warnings,
             client_command_id: None,
         }),
     ))
