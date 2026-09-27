@@ -37,6 +37,19 @@ impl Outbox {
         .execute(self.db.pool())
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
+        // Dead letters: events the server refused for good (a final 4xx).
+        // They stay in `desktop_outbox` for inspection but leave the queue.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS desktop_outbox_rejected (
+                outbox_id INTEGER PRIMARY KEY REFERENCES desktop_outbox(id),
+                status INTEGER NOT NULL,
+                code TEXT NOT NULL,
+                rejected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )",
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_desktop_outbox_pending
              ON desktop_outbox (flushed_at, origin_device_id, origin_seq)",
@@ -76,6 +89,7 @@ impl Outbox {
             "SELECT id, origin_device_id, origin_seq, envelope_json
              FROM desktop_outbox
              WHERE flushed_at IS NULL
+               AND id NOT IN (SELECT outbox_id FROM desktop_outbox_rejected)
              ORDER BY origin_device_id, origin_seq
              LIMIT ?",
         )
@@ -108,6 +122,40 @@ impl Outbox {
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(res.rows_affected() > 0)
+    }
+
+    /// Move an entry to the dead letters: the server refused it for good
+    /// (HTTP `status`, cloud error `code`), so it no longer blocks the queue.
+    pub async fn mark_rejected(&self, id: i64, status: u16, code: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO desktop_outbox_rejected (outbox_id, status, code)
+             VALUES (?, ?, ?)",
+        )
+        .bind(id)
+        .bind(status as i64)
+        .bind(code)
+        .execute(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Return every dead letter to the queue; how many came back.
+    pub async fn requeue_rejected(&self) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM desktop_outbox_rejected")
+            .execute(self.db.pool())
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(res.rows_affected())
+    }
+
+    /// How many events the server has refused so far.
+    pub async fn rejected_count(&self) -> Result<u64> {
+        let row = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM desktop_outbox_rejected")
+            .fetch_one(self.db.pool())
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(row.0.max(0) as u64)
     }
 }
 
@@ -184,5 +232,29 @@ mod tests {
         let pending = outbox.pending(10).await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].origin_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn requeue_rejected_returns_dead_letters_to_pending() {
+        let outbox = Outbox::new(Db::memory().await.unwrap());
+        outbox.ensure_schema().await.unwrap();
+        let envelope = EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: NewTask::new("refused"),
+            },
+        );
+        outbox.enqueue(DeviceId::new(), 1, envelope).await.unwrap();
+        let id = outbox.pending(10).await.unwrap()[0].id;
+        outbox
+            .mark_rejected(id, 403, "intake_source_admin_only")
+            .await
+            .unwrap();
+        assert!(outbox.pending(10).await.unwrap().is_empty());
+
+        assert_eq!(outbox.requeue_rejected().await.unwrap(), 1);
+        assert_eq!(outbox.pending(10).await.unwrap().len(), 1);
+        assert_eq!(outbox.rejected_count().await.unwrap(), 0);
+        assert_eq!(outbox.requeue_rejected().await.unwrap(), 0);
     }
 }

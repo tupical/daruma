@@ -94,7 +94,15 @@ pub async fn delete(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 }
 
 pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
-    let limit = parse_limit(args)?;
+    let (limit, retry_rejected) = parse_sync_args(args)?;
+    if retry_rejected {
+        let requeued = ctx
+            .local
+            .requeue_rejected()
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        println!("requeued {requeued} rejected event(s)");
+    }
     let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let stats = ctx
         .local
@@ -110,6 +118,17 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         "flushed {}/{} pending event(s), applied {}/{} remote event(s), server_seq={}",
         stats.flushed, stats.attempted, catch_up.applied, catch_up.fetched, catch_up.server_seq
     );
+    let rejected = ctx
+        .local
+        .rejected_count()
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if rejected > 0 {
+        println!(
+            "⚠ {rejected} event(s) rejected by the server (dead-lettered, {} this sync)",
+            stats.rejected
+        );
+    }
     Ok(())
 }
 
@@ -137,6 +156,16 @@ pub async fn devices(args: &[String]) -> anyhow::Result<()> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// `[--retry-rejected] [--limit N]` in any order.
+fn parse_sync_args(args: &[String]) -> anyhow::Result<(u32, bool)> {
+    let rest: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--retry-rejected")
+        .cloned()
+        .collect();
+    Ok((parse_limit(&rest)?, rest.len() != args.len()))
+}
+
 fn parse_limit(args: &[String]) -> anyhow::Result<u32> {
     if args.is_empty() {
         return Ok(100);
@@ -150,7 +179,7 @@ fn parse_limit(args: &[String]) -> anyhow::Result<u32> {
         }
         return Ok(limit);
     }
-    anyhow::bail!("usage: daruma sync [--limit N]")
+    anyhow::bail!("usage: daruma sync [--retry-rejected] [--limit N]")
 }
 
 fn parse_status(s: &str) -> anyhow::Result<Status> {
@@ -193,5 +222,25 @@ async fn parse_task_id(ctx: &Context, raw: &str) -> anyhow::Result<TaskId> {
         0 => anyhow::bail!("no task matches: {raw}"),
         1 => Ok(matches[0].id),
         _ => anyhow::bail!("ambiguous task prefix: {raw} ({} matches)", matches.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_args_take_retry_flag_in_any_order() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_sync_args(&args(&[])).unwrap(), (100, false));
+        assert_eq!(
+            parse_sync_args(&args(&["--retry-rejected"])).unwrap(),
+            (100, true)
+        );
+        assert_eq!(
+            parse_sync_args(&args(&["--limit", "5", "--retry-rejected"])).unwrap(),
+            (5, true)
+        );
+        assert!(parse_sync_args(&args(&["--retry"])).is_err());
     }
 }

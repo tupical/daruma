@@ -107,7 +107,7 @@ fn print_help() {
          add  \"<title>\" [--p0..--p3]          create a task\n  \
          done <id|prefix>                     mark complete\n  \
          delete <id|prefix>                   delete a task\n  \
-         sync [--limit N]                     flush offline events to server\n  \
+         sync [--retry-rejected] [--limit N]  flush offline events to server\n  \
          devices [revoke <device_id>]         list or revoke paired devices\n  \
          discover [--timeout <secs>]          scan LAN for daruma servers (mDNS)\n  \
          pair <daruma://pair?…>            pair with a server via QR/paste URL\n  \

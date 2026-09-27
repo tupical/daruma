@@ -49,6 +49,16 @@ impl LocalExecutor {
         flush::flush_pending(&self.outbox, sink, limit).await
     }
 
+    /// Put every dead letter back in the queue; how many came back.
+    pub async fn requeue_rejected(&self) -> Result<u64> {
+        self.outbox.requeue_rejected().await
+    }
+
+    /// Events the server refused for good (dead letters), all time.
+    pub async fn rejected_count(&self) -> Result<u64> {
+        self.outbox.rejected_count().await
+    }
+
     #[cfg(test)]
     async fn pending_outbox_len(&self) -> Result<usize> {
         self.outbox.pending(u32::MAX).await.map(|items| items.len())
