@@ -150,7 +150,7 @@ pub(crate) fn source_nodes(
 /// Shape checks every plan-creating command gets, with or without policy:
 /// the legacy-intake marker is reserved for storage, an explicit ref is
 /// normalised, `plan.source` becomes chain nodes (its ref is the explicit
-/// `source_ref`), and `git_context` is validated (returned, not stored).
+/// `source_ref`), and `git_context` is normalised and retained for task inheritance.
 pub(crate) fn prepare_plan_source(
     plan: &mut NewPlan,
     actor: &Actor,
@@ -179,13 +179,13 @@ pub(crate) fn prepare_plan_source(
             _ => plan.source_ref = Some(nearest.source_ref.clone()),
         }
     }
-    let git_context = plan
+    plan.git_context = plan
         .git_context
         .take()
         .map(GitContext::normalized)
         .transpose()
         .map_err(CoreError::validation)?;
-    Ok((git_context, nodes))
+    Ok((plan.git_context.clone(), nodes))
 }
 
 impl CommandHandler {

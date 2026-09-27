@@ -2254,6 +2254,7 @@ impl CommandHandler {
                 }
 
                 let project_id = plan.project_id;
+                let git_context = plan.git_context.take();
                 let now = time::now();
                 let mut new_plan = plan.into_plan(plan_id, now);
                 // Материализация принимает УЖЕ решённый план вместе с его
@@ -2322,6 +2323,17 @@ impl CommandHandler {
                         let task_id = task.id.unwrap_or_else(TaskId::new);
                         task.id = Some(task_id);
                         events.push(Event::TaskCreated { task });
+                        // NewTask has no git_context; inherit through the existing
+                        // update event in the same batch, only for new tasks.
+                        if let Some(context) = &git_context {
+                            events.push(Event::TaskUpdated {
+                                task_id,
+                                patch: daruma_domain::TaskPatch {
+                                    git_context: Some(Some(context.clone())),
+                                    ..Default::default()
+                                },
+                            });
+                        }
                         task_id
                     };
                     events.push(Event::PlanTaskAdded {

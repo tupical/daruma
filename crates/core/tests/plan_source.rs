@@ -138,6 +138,71 @@ fn codes(warnings: &[MutationWarning]) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn materialize_inherits_git_context_without_overwriting_reused_tasks() {
+    let s = stack().await;
+    let task_ids = [daruma_shared::TaskId::new(), daruma_shared::TaskId::new()];
+    let make = |branch: &str| {
+        let mut plan = s.new_plan();
+        plan.source = Some(SourceInput {
+            label: Some("Chat request".into()),
+            ..Default::default()
+        });
+        plan.git_context = Some(GitContext {
+            branch: Some(branch.into()),
+            ..Default::default()
+        });
+        Command::MaterializePlan {
+            plan,
+            tasks: task_ids
+                .iter()
+                .map(|id| NewTask {
+                    id: Some(*id),
+                    external_key: Some(id.to_string()),
+                    ..NewTask::new("Task")
+                })
+                .collect(),
+        }
+    };
+    s.handler
+        .handle(make(" feat/x "), Actor::user())
+        .await
+        .unwrap();
+    for id in task_ids {
+        let task = s.handler.tasks.get(id).await.unwrap().unwrap();
+        assert_eq!(task.git_context.unwrap().branch.as_deref(), Some("feat/x"));
+    }
+
+    // NewTask has no context field; give an existing task its own context.
+    s.handler
+        .handle(
+            Command::UpdateTask {
+                id: task_ids[0],
+                patch: daruma_domain::TaskPatch {
+                    git_context: Some(Some(GitContext {
+                        branch: Some("feat/own".into()),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let before = s.handler.tasks.get_many(&task_ids).await.unwrap();
+    let events = s
+        .handler
+        .handle(make("feat/other"), Actor::user())
+        .await
+        .unwrap();
+    assert!(events.iter().all(|e| !matches!(
+        e.payload,
+        Event::TaskCreated { .. } | Event::TaskUpdated { .. }
+    )));
+    assert_eq!(s.handler.tasks.get_many(&task_ids).await.unwrap(), before);
+}
+
+#[tokio::test]
 async fn explicit_ref_is_normalised_and_no_policy_warns_on_missing() {
     let s = stack().await;
     let mut plan = s.new_plan();
