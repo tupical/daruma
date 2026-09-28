@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks (ADR-0007): atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject (422 lists channels). Raw ideas go through the maturity pipeline where one is deployed.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. Raw ideas go through the idea pipeline where one is deployed.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -263,14 +263,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_update",
             "Update task",
-            "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; null clears). Under plan-only intake title/description are plan-owned (ADR-0007 Q1) — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
+            "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; null clears). Under plan-only intake title/description are plan-owned — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
             schema_update(),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
             "daruma_amend_plan_task",
             "Amend plan task",
-            "Amend the plan-owned fields (title/description/project_id) of a plan member task (ADR-0007 Q1). Required under plan-only intake (otherwise daruma_update also works). Pass plan_id, task_id and a patch of only plan-owned fields; status/priority/triage_state/due_at go through daruma_set_status, daruma_set_priority, daruma_update.",
+            "Amend the plan-owned fields (title/description/project_id) of a plan member task. Required under plan-only intake (otherwise daruma_update also works). Pass plan_id, task_id and a patch of only plan-owned fields; status/priority/triage_state/due_at go through daruma_set_status, daruma_set_priority, daruma_update.",
             schema_amend_plan_task(),
             Dom::Plans, D, C, Ann::WriteIdem,
         ),
@@ -432,7 +432,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_source_extend",
             "Extend plan source chain",
-            "Extend a plan's source chain (ADR-0009) with a source found above it — only one that the issue/e-mail body or the user states, never invented. Pass exactly one of `plan_id` / `ref`. A plan without a source takes `source` as its nearest node (no auto-parent); otherwise `upstream` (nearest first) attaches to the top node of the plan's chain, or to `ref`, which must be that top (else 409 names it). Returns the chain.",
+            "Extend a plan's source chain with a source found above it — only one that the issue/e-mail body or the user states, never invented. Pass exactly one of `plan_id` / `ref`. A plan without a source takes `source` as its nearest node (no auto-parent); otherwise `upstream` (nearest first) attaches to the top node of the plan's chain, or to `ref`, which must be that top (else 409 names it). Returns the chain.",
             schema_source_extend(),
             Dom::Plans, F, E, Ann::Write,
         ),
@@ -605,7 +605,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_add_task",
             "Attach task to plan",
-            "Recompose plans: attach an EXISTING (already materialized) task to another plan, optionally at a position with dependencies. Not intake — new tasks enter only via `daruma_plan_materialize` (ADR-0007).",
+            "Recompose plans: attach an EXISTING (already materialized) task to another plan, optionally at a position with dependencies. Not intake — new tasks enter only via `daruma_plan_materialize`.",
             schema_plan_add_task(),
             Dom::Plans, D, C, Ann::Write,
         ),

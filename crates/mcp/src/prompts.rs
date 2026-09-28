@@ -89,7 +89,7 @@ a markdown table.
 5. Do **not** invent IDs, statuses, or counts. If `daruma_list` fails,
    surface the error verbatim and stop.
 
-6. Do not write anything to `.omc/plans/` or markdown task files — this
+6. Do not write anything to local plan or markdown task files — this
    command is read-only.
 "#;
 
@@ -136,7 +136,7 @@ bar. Use the daruma MCP server.
    - Else if any `todo` task is ready → `→ next: run /daruma-next`.
    - Else if all done → `→ plan complete — run daruma_plan_set_status status=completed`.
 
-7. Read-only — never modify tasks here. Don't touch `.omc/plans/` or
+7. Read-only — never modify tasks here. Don't touch local or
    markdown plan files.
 "#;
 
