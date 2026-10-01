@@ -3935,6 +3935,17 @@ async fn mutation_warnings(
     state: &AppState,
     command: &Command,
 ) -> Result<Vec<MutationWarning>, CoreError> {
+    // Terminal transition of a task: warn when it was the plan's last open
+    // task but the plan will not auto-close.
+    match command {
+        Command::CompleteTask { id, .. }
+        | Command::SetStatus {
+            id,
+            status: Status::Done | Status::Cancelled,
+            ..
+        } => return plan_close_warnings(state, *id).await,
+        _ => {}
+    }
     let Command::SetStatus {
         id,
         status: Status::InProgress,
@@ -3971,6 +3982,122 @@ async fn mutation_warnings(
             "blockers": readiness.blockers,
         }),
     }])
+}
+
+/// Mirrors the auto-close conditions of `append_plan_reconciliations`
+/// (core/handler.rs) for the plans of `task_id`, assuming this task becomes
+/// terminal: all members terminal, all children closed. Only plans that are
+/// *ready* but stuck on a run (Active) or on `Draft` produce a warning.
+async fn plan_close_warnings(
+    state: &AppState,
+    task_id: TaskId,
+) -> Result<Vec<MutationWarning>, CoreError> {
+    let Some(task) = state.tasks.get(task_id).await? else {
+        return Ok(vec![]);
+    };
+    if task.status.is_terminal() {
+        return Ok(vec![]); // no transition, nothing closes
+    }
+    let plans = state.plans.as_ref() as &dyn PlanRepository;
+    let mut warnings = vec![];
+    for plan_id in plans.list_plans_for_task(task_id).await? {
+        let Some(plan) = plans.get(plan_id).await? else {
+            continue;
+        };
+        if plan.archived_at.is_some()
+            || !matches!(plan.status, PlanStatus::Draft | PlanStatus::Active)
+        {
+            continue;
+        }
+        let members = plans.list_plan_tasks_ordered(plan_id).await?;
+        let mut ready = !members.is_empty();
+        for member in members.iter().filter(|m| m.task_id != task_id) {
+            ready &= state
+                .tasks
+                .get(member.task_id)
+                .await?
+                .is_some_and(|t| t.status.is_terminal());
+        }
+        ready &= plans
+            .list_children(plan_id)
+            .await?
+            .iter()
+            .all(|c| matches!(c.status, PlanStatus::Completed | PlanStatus::Abandoned));
+        if !ready {
+            continue;
+        }
+        if plan.status == PlanStatus::Draft {
+            warnings.push(MutationWarning {
+                code: "plan_draft_no_autoclose".to_string(),
+                message: format!(
+                    "plan {plan_id} is draft and will not auto-close; activate it (set_status active) and then complete it explicitly"
+                ),
+                details: json!({ "plan_id": plan_id, "task_id": task_id, "plan_status": "draft" }),
+            });
+            continue;
+        }
+        let runs = state.runs.list_active_for_plan(plan_id).await?;
+        if !runs.is_empty() {
+            let run_ids: Vec<_> = runs.iter().map(|r| r.id).collect();
+            warnings.push(MutationWarning {
+                code: "plan_close_blocked_by_run".to_string(),
+                message: format!(
+                    "plan {plan_id} will not auto-close: {} run(s) still active; complete or abort them",
+                    run_ids.len()
+                ),
+                details: json!({
+                    "plan_id": plan_id,
+                    "task_id": task_id,
+                    "run_id": run_ids[0],
+                    "run_ids": run_ids,
+                }),
+            });
+        }
+    }
+    Ok(warnings)
+}
+
+/// `agent_has_open_tasks` for claim/drain: the agent already holds live
+/// claims on tasks that are still `in_progress`. Advisory only.
+async fn agent_open_tasks_warning(
+    state: &AppState,
+    agent_id: AgentId,
+) -> Result<Option<MutationWarning>, CoreError> {
+    let mut task_ids = vec![];
+    for claim in state.claims.list_active(None).await? {
+        if claim.agent_id == agent_id
+            && state
+                .tasks
+                .get(claim.task_id)
+                .await?
+                .is_some_and(|t| t.status == Status::InProgress)
+        {
+            task_ids.push(claim.task_id);
+        }
+    }
+    if task_ids.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(MutationWarning {
+        code: "agent_has_open_tasks".to_string(),
+        message: format!(
+            "agent already has {} task(s) in progress; complete or release them before taking more",
+            task_ids.len()
+        ),
+        details: json!({ "agent_id": agent_id, "count": task_ids.len(), "task_ids": task_ids }),
+    }))
+}
+
+/// Attach `warnings` to a drained task object (drain responses are the bare
+/// task, not a `MutationResponse`).
+fn with_warnings(
+    mut task: serde_json::Value,
+    warning: Option<MutationWarning>,
+) -> serde_json::Value {
+    if let (Some(w), Some(obj)) = (warning, task.as_object_mut()) {
+        obj.insert("warnings".to_string(), json!([w]));
+    }
+    task
 }
 
 #[derive(Deserialize)]
@@ -6098,8 +6225,13 @@ async fn drain_next_task(
     };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
+    let warning = agent_open_tasks_warning(&state, auth.agent_id)
+        .await
+        .map_err(ApiError::from)?;
     let task = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await?;
-    Ok(Json(task.unwrap_or(serde_json::Value::Null)))
+    Ok(Json(task.map_or(serde_json::Value::Null, |t| {
+        with_warnings(t, warning)
+    })))
 }
 
 #[derive(Deserialize)]
@@ -6178,6 +6310,9 @@ async fn project_ready_drain(
         None => None,
     };
 
+    let warning = agent_open_tasks_warning(&state, auth.agent_id)
+        .await
+        .map_err(ApiError::from)?;
     let plans = state
         .plans
         .list_by_project(project_id, Some(&[PlanStatus::Active]))
@@ -6199,7 +6334,7 @@ async fn project_ready_drain(
             None => start_drain_run(&state, &auth, plan.id).await?,
         };
         if let Some(task) = drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await? {
-            return Ok(Json(task));
+            return Ok(Json(with_warnings(task, warning)));
         }
     }
     Ok(Json(serde_json::Value::Null))
@@ -7050,6 +7185,9 @@ async fn acquire_claim(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
 
+    let warning = agent_open_tasks_warning(&state, auth.agent_id)
+        .await
+        .map_err(ApiError::from)?;
     // Atomic exclusive acquire: another agent's live claim blocks us.
     match state
         .commands
@@ -7094,7 +7232,7 @@ async fn acquire_claim(
                     "claim_id": claim_id,
                     "claim_expires_at": expires_at,
                 }),
-                warnings: vec![],
+                warnings: warning.into_iter().collect(),
                 client_command_id: None,
             }))
         }
