@@ -39,7 +39,7 @@ use daruma_auth::{
 };
 use daruma_core::{
     plan_concurrency::NextTaskResolver,
-    plan_readiness,
+    plan_readiness, plan_ready_to_close,
     repos::{ExternalRefRepository, PlanRepository},
     search::{FtsSearchProvider, SearchProvider, SearchQuery as CoreSearchQuery, SearchScope},
     Command, CommandEnvelope,
@@ -3984,10 +3984,9 @@ async fn mutation_warnings(
     }])
 }
 
-/// Mirrors the auto-close conditions of `append_plan_reconciliations`
-/// (core/handler.rs) for the plans of `task_id`, assuming this task becomes
-/// terminal: all members terminal, all children closed. Only plans that are
-/// *ready* but stuck on a run (Active) or on `Draft` produce a warning.
+/// For the plans of `task_id`, assuming this task becomes terminal: uses core's
+/// `plan_ready_to_close` (shared with `append_plan_reconciliations`). Only
+/// plans that are *ready* but stuck on a run (Active) or on `Draft` warn.
 async fn plan_close_warnings(
     state: &AppState,
     task_id: TaskId,
@@ -4009,21 +4008,21 @@ async fn plan_close_warnings(
         {
             continue;
         }
-        let members = plans.list_plan_tasks_ordered(plan_id).await?;
-        let mut ready = !members.is_empty();
-        for member in members.iter().filter(|m| m.task_id != task_id) {
-            ready &= state
-                .tasks
-                .get(member.task_id)
-                .await?
-                .is_some_and(|t| t.status.is_terminal());
+        // Same predicate as core's auto-close, with this task counted terminal.
+        let mut member_statuses = vec![];
+        for member in plans.list_plan_tasks_ordered(plan_id).await? {
+            member_statuses.push(if member.task_id == task_id {
+                Some(Status::Done)
+            } else {
+                state.tasks.get(member.task_id).await?.map(|t| t.status)
+            });
         }
-        ready &= plans
+        let child_statuses = plans
             .list_children(plan_id)
             .await?
-            .iter()
-            .all(|c| matches!(c.status, PlanStatus::Completed | PlanStatus::Abandoned));
-        if !ready {
+            .into_iter()
+            .map(|c| c.status);
+        if !plan_ready_to_close(member_statuses, child_statuses) {
             continue;
         }
         if plan.status == PlanStatus::Draft {
@@ -4058,14 +4057,19 @@ async fn plan_close_warnings(
 }
 
 /// `agent_has_open_tasks` for claim/drain: the agent already holds live
-/// claims on tasks that are still `in_progress`. Advisory only.
+/// claims on tasks that are still `in_progress`. `current` (the task this very
+/// call returns/claims, e.g. a re-drain of the agent's own task) is not "other"
+/// work and is excluded. Scoped to `project_id` when known. Advisory only.
 async fn agent_open_tasks_warning(
     state: &AppState,
     agent_id: AgentId,
+    project_id: Option<ProjectId>,
+    current: Option<TaskId>,
 ) -> Result<Option<MutationWarning>, CoreError> {
     let mut task_ids = vec![];
-    for claim in state.claims.list_active(None).await? {
+    for claim in state.claims.list_active(project_id).await? {
         if claim.agent_id == agent_id
+            && Some(claim.task_id) != current
             && state
                 .tasks
                 .get(claim.task_id)
@@ -4086,6 +4090,20 @@ async fn agent_open_tasks_warning(
         ),
         details: json!({ "agent_id": agent_id, "count": task_ids.len(), "task_ids": task_ids }),
     }))
+}
+
+/// Drain flavour: the task just returned (possibly the agent's own, re-drained
+/// after a crash/resume) is not counted as "other" open work.
+async fn drain_open_tasks_warning(
+    state: &AppState,
+    auth: &AuthContext,
+    project_id: Option<ProjectId>,
+    drained: &serde_json::Value,
+) -> Result<Option<MutationWarning>, ApiError> {
+    let current = serde_json::from_value::<TaskId>(drained["task_id"].clone()).ok();
+    agent_open_tasks_warning(state, auth.agent_id, project_id, current)
+        .await
+        .map_err(ApiError::from)
 }
 
 /// Attach `warnings` to a drained task object (drain responses are the bare
@@ -6225,13 +6243,17 @@ async fn drain_next_task(
     };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
-    let warning = agent_open_tasks_warning(&state, auth.agent_id)
+    let Some(task) = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await? else {
+        return Ok(Json(serde_json::Value::Null));
+    };
+    let project_id = state
+        .plans
+        .get(plan_id)
         .await
-        .map_err(ApiError::from)?;
-    let task = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await?;
-    Ok(Json(task.map_or(serde_json::Value::Null, |t| {
-        with_warnings(t, warning)
-    })))
+        .map_err(ApiError::from)?
+        .map(|p| p.project_id);
+    let warning = drain_open_tasks_warning(&state, &auth, project_id, &task).await?;
+    Ok(Json(with_warnings(task, warning)))
 }
 
 #[derive(Deserialize)]
@@ -6310,9 +6332,6 @@ async fn project_ready_drain(
         None => None,
     };
 
-    let warning = agent_open_tasks_warning(&state, auth.agent_id)
-        .await
-        .map_err(ApiError::from)?;
     let plans = state
         .plans
         .list_by_project(project_id, Some(&[PlanStatus::Active]))
@@ -6334,6 +6353,7 @@ async fn project_ready_drain(
             None => start_drain_run(&state, &auth, plan.id).await?,
         };
         if let Some(task) = drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await? {
+            let warning = drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;
             return Ok(Json(with_warnings(task, warning)));
         }
     }
@@ -7185,7 +7205,14 @@ async fn acquire_claim(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
 
-    let warning = agent_open_tasks_warning(&state, auth.agent_id)
+    // Re-claiming a task the agent already holds is a renewal, not extra work.
+    let project_id = state
+        .tasks
+        .get(body.task_id)
+        .await
+        .map_err(ApiError::from)?
+        .and_then(|t| t.project_id);
+    let warning = agent_open_tasks_warning(&state, auth.agent_id, project_id, Some(body.task_id))
         .await
         .map_err(ApiError::from)?;
     // Atomic exclusive acquire: another agent's live claim blocks us.

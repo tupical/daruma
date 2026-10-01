@@ -31,5 +31,5 @@ pub use lifecycle_gate::{
     DispatchOutcome, GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
 };
 pub use plan_concurrency::{detect_parent_cycle, NextTask, NextTaskResolver, MAX_PARENT_DEPTH};
-pub use plan_readiness::{can_start, plan_fanout, plan_graph};
+pub use plan_readiness::{can_start, plan_fanout, plan_graph, plan_ready_to_close};
 pub use rule_engine::RuleEngineGate;
