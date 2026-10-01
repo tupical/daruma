@@ -812,40 +812,25 @@ impl CommandHandler {
             if status != PlanStatus::Active || plan.archived_at.is_some() {
                 continue;
             }
-            let tasks = plans.list_plan_tasks_ordered(plan_id).await?;
-            // Empty plans are not evidence of completed work.
-            if tasks.is_empty() {
-                continue;
+            let mut member_statuses = vec![];
+            for member in plans.list_plan_tasks_ordered(plan_id).await? {
+                member_statuses.push(match self.tasks.get(member.task_id).await? {
+                    Some(task) => Some(task_statuses.get(&task.id).copied().unwrap_or(task.status)),
+                    None => None,
+                });
             }
-            let mut ready = true;
-            for member in tasks {
-                let Some(task) = self.tasks.get(member.task_id).await? else {
-                    ready = false;
-                    break;
-                };
-                if !task_statuses
-                    .get(&task.id)
-                    .copied()
-                    .unwrap_or(task.status)
-                    .is_terminal()
-                {
-                    ready = false;
-                    break;
-                }
-            }
-            if !ready {
-                continue;
-            }
-            let children = plans.list_children(plan_id).await?;
-            if children.iter().any(|child| {
-                !matches!(
+            let child_statuses = plans
+                .list_children(plan_id)
+                .await?
+                .into_iter()
+                .map(|child| {
                     plan_statuses
                         .get(&child.id)
                         .copied()
-                        .unwrap_or(child.status),
-                    PlanStatus::Completed | PlanStatus::Abandoned
-                )
-            }) {
+                        .unwrap_or(child.status)
+                })
+                .collect::<Vec<_>>();
+            if !crate::plan_readiness::plan_ready_to_close(member_statuses, child_statuses) {
                 continue;
             }
             if let Some(runs) = &self.runs {

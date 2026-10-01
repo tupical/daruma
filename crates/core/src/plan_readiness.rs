@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use daruma_domain::{
     Actor, CanStart, CanStartBlocker, CanStartRule, PlanFanoutWave, PlanGraph, PlanGraphEdge,
-    PlanGraphNode, RelationKind, Status, Task,
+    PlanGraphNode, PlanStatus, RelationKind, Status, Task,
 };
 use daruma_events::Event;
 use daruma_shared::{CoreError, PlanId, Result, TaskId};
@@ -12,6 +12,28 @@ use daruma_storage::{PlanRepo, RelationRepo, TaskRepo};
 
 use crate::handler::blocked_outcomes;
 use crate::lifecycle_gate::{derive_gate_checks, GateDecision, GateOverride, LifecycleGate};
+
+/// Pure "plan is ready to close" check shared by the core auto-close
+/// (`append_plan_reconciliations`) and the server's advisory warnings, so the
+/// two cannot drift. `member_statuses`: one entry per plan task (`None` =
+/// task row missing). Ready = at least one member (empty plans are not
+/// evidence of done work), every member terminal, every child plan
+/// `Completed`/`Abandoned`. Active-run and plan-status checks stay with callers.
+pub fn plan_ready_to_close(
+    member_statuses: impl IntoIterator<Item = Option<Status>>,
+    child_statuses: impl IntoIterator<Item = PlanStatus>,
+) -> bool {
+    let mut any = false;
+    for status in member_statuses {
+        if !status.is_some_and(|s| s.is_terminal()) {
+            return false;
+        }
+        any = true;
+    }
+    any && child_statuses
+        .into_iter()
+        .all(|c| matches!(c, PlanStatus::Completed | PlanStatus::Abandoned))
+}
 
 pub async fn plan_graph(
     plans: &PlanRepo,
