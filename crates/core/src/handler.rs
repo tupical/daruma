@@ -488,8 +488,12 @@ impl CommandHandler {
         // Source-chain upserts (and `PlanSourceSet`) ride ahead of the
         // mutation in the same batch.
         let (mut warnings, source_events) = match &mut cmd {
-            Command::MaterializePlan { plan, .. }
-            | Command::CreatePlan {
+            Command::MaterializePlan { plan, tasks } => {
+                let (mut warnings, events) = self.resolve_plan_source(plan, &actor).await?;
+                warnings.extend(crate::plan_source::plan_looks_raw(plan, tasks));
+                (warnings, events)
+            }
+            Command::CreatePlan {
                 plan,
                 external_ref: None,
             } => self.resolve_plan_source(plan, &actor).await?,

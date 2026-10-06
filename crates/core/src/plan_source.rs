@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use daruma_api_dto::MutationWarning;
 use daruma_domain::{
     normalize_source_ref, Actor, GitContext, IntakeSourceMode, IntakeSourcePolicy, NewPlan,
-    SourceChannel, SourceInput, SourceNode, SOURCE_CHAIN_MAX,
+    NewTask, SourceChannel, SourceInput, SourceNode, SOURCE_CHAIN_MAX,
 };
 use daruma_events::Event;
 use daruma_shared::{time, CoreError, PlanId, ProjectId, Result};
@@ -645,6 +645,43 @@ pub(crate) fn source_policy_findings(
         message,
         details: json!({ "channels": channels }),
     }])
+}
+
+/// Soft intake signal: a plan with no goal/success criteria, at most one
+/// task, and an exploratory title reads as raw material, not decided work.
+/// Deterministic, warn-only: never blocks the mutation.
+pub(crate) fn plan_looks_raw(plan: &NewPlan, tasks: &[NewTask]) -> Option<MutationWarning> {
+    const RAW_WORDS: [&str; 8] = [
+        "исследовать",
+        "подумать",
+        "разобраться",
+        "идея",
+        "explore",
+        "investigate",
+        "research",
+        "idea",
+    ];
+    let blank = |v: Option<&str>| v.map_or(true, |v| v.trim().is_empty());
+    if !blank(plan.goal.as_deref())
+        || plan
+            .success_criteria
+            .as_ref()
+            .is_some_and(|c| !c.is_empty())
+        || tasks.len() > 1
+    {
+        return None;
+    }
+    let exploratory = std::iter::once(plan.title.as_str())
+        .chain(tasks.iter().map(|t| t.title.as_str()))
+        .any(|t| {
+            let t = t.to_lowercase();
+            RAW_WORDS.iter().any(|w| t.contains(w))
+        });
+    exploratory.then(|| MutationWarning {
+        code: "plan_looks_raw".into(),
+        message: "plan has no goal or success_criteria, at most one task and an exploratory title: it looks like raw material — consider mcpbox_pipeline_run".into(),
+        details: json!({}),
+    })
 }
 
 #[cfg(test)]
