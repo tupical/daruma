@@ -788,3 +788,32 @@ async fn invalid_policy_is_rejected_and_null_removes_it() {
         .unwrap();
     assert!(s.settings.intake_source(s.project).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn raw_looking_plan_gets_plan_looks_raw_warning_only() {
+    let s = stack().await;
+    let raw = |plan: NewPlan, tasks: Vec<NewTask>| {
+        let h = &s.handler;
+        async move {
+            h.handle_with_warnings(Command::MaterializePlan { plan, tasks }, Actor::user())
+                .await
+                .unwrap()
+                .warnings
+        }
+    };
+    let mut p = s.new_plan();
+    p.title = "идея: подумать о кэше".into();
+    let w = raw(p, vec![NewTask::new("исследовать")]).await;
+    assert!(codes(&w).contains(&"plan_looks_raw"), "{w:?}");
+
+    // A goal, or more than one task, means decided work.
+    let mut p = s.new_plan();
+    p.title = "idea: cache".into();
+    p.goal = Some("ship cache".into());
+    let w = raw(p, vec![NewTask::new("explore")]).await;
+    assert!(!codes(&w).contains(&"plan_looks_raw"), "{w:?}");
+    let mut p = s.new_plan();
+    p.title = "idea: cache".into();
+    let w = raw(p, vec![NewTask::new("a"), NewTask::new("b")]).await;
+    assert!(!codes(&w).contains(&"plan_looks_raw"), "{w:?}");
+}
