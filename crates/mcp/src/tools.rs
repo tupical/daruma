@@ -506,14 +506,17 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "List audit findings",
             "List audit findings for a project (problems a server-side check raised: stale docs, stuck tasks, missing owners, …). Filter by `severity` (error|warn|info), `category`, or `status` (open|acknowledged|muted|resolved). Newest activity first.",
             schema_audit_findings(),
-            Dom::Coordination, F, E, Ann::Read,
+            // Default, not full: without it the only way to see findings is
+            // REST, which agents don't know about. Read-only; ack below is a
+            // ProjectWrite-gated, idempotent status flip.
+            Dom::Coordination, D, E, Ann::Read,
         ),
         tool(
             "daruma_audit_finding_ack",
             "Acknowledge/mute/resolve a finding",
             "Set the status of an audit finding (operator action): `open`, `acknowledged`, `muted`, or `resolved`. Use `acknowledged` to mark it seen, `muted` to silence it, `resolved` to close it.",
             schema_audit_finding_ack(),
-            Dom::Coordination, F, E, Ann::WriteIdem,
+            Dom::Coordination, D, E, Ann::WriteIdem,
         ),
         tool(
             "daruma_audit_stuck_tasks",
@@ -6418,8 +6421,8 @@ mod profile_tests {
         // directions means removing a tool also forces the doc edit.
         assert_eq!(
             default.len(),
-            33,
-            "default profile is {} tools — PROFILES.md documents 33; changing \
+            35,
+            "default profile is {} tools — PROFILES.md documents 35; changing \
              the set needs a deliberate budget decision and a doc edit, not a \
              guard bump",
             default.len()

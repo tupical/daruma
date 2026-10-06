@@ -6,7 +6,7 @@ user's request is even read. Profiles split the surface:
 
 | Profile | Tools | Audience |
 |---------|-------|----------|
-| `default` | 33 — compact, workflow-first | Everyday agent work: materialize (plan+tasks, plan-only intake) → execute → close |
+| `default` | 35 — compact, workflow-first | Everyday agent work: materialize (plan+tasks, plan-only intake) → execute → close |
 | `full` | complete catalogue | Power users, orchestrators, dashboards, backward compat |
 
 `full` is always a strict superset of `default`.
@@ -62,7 +62,7 @@ job — competing/overlapping alternatives stay in `full`:
 | Projects | project_list, project_use, workspace_info, healthz | project_create (rare), project_delete (destructive, two-step), workspace_resolve, workspace_list, project_move_workspace (registry ops) |
 | Plans | plan_materialize (the only task intake), plan_create, plan_get, plan_list, plan_add_task (attach an existing task, not intake), amend_plan_task (plan-owned task fields), plan_set_status, plan_progress, plan_drain_next | plan_update, plan_remove_task, plan_reorder, plan_archive, plan_delete, plan_next_task (superseded by drain_next), plan_graph, plan_fanout, bulk_attach_to_plan |
 | Runs | run_start, run_complete, run_abort, run_note_append | run_start_step, run_finish_step, run_log, run_notes_list (step-level tracing) |
-| Coordination | claim, release | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration), handoff_* (3; dispatch gates), audit_* (4; advisory hygiene) |
+| Coordination | claim, release, audit_findings, audit_finding_ack (findings must be reachable without REST; capability gating unchanged) | reserve_files, release_files, active_work, ready, ready_drain, doctor, suggest_files, inbox_pull, work_unit_* (5) (multi-agent orchestration), handoff_* (3; dispatch gates), audit_stuck_tasks / audit_duplicate_tasks / audit_unread_documents (advisory hygiene) |
 | Relations | link, relations | unlink (destructive) |
 | Lifecycle rules | evidence_submit, evidence_list | rule_create, rule_update, rule_disable, rule_list (defining rules is an admin act) |
 | Search/graph | — (plain `search` is in Tasks) | workspacegraph_* (5; competes with list/search for inventory questions) |

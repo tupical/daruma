@@ -102,8 +102,8 @@
 |---|---|---|---|---|
 | `daruma_evidence_submit` | Enhancing / усиливающие | `default` | Record lifecycle evidence | write |
 | `daruma_evidence_list` | Enhancing / усиливающие | `default` | List lifecycle evidence | read |
-| `daruma_audit_findings` | Enhancing / усиливающие | `full` | List audit findings | read |
-| `daruma_audit_finding_ack` | Enhancing / усиливающие | `full` | Acknowledge/mute/resolve a finding | write |
+| `daruma_audit_findings` | Enhancing / усиливающие | `default` | List audit findings | read |
+| `daruma_audit_finding_ack` | Enhancing / усиливающие | `default` | Acknowledge/mute/resolve a finding | write |
 | `daruma_audit_stuck_tasks` | Enhancing / усиливающие | `full` | Tasks stuck in a status | read |
 | `daruma_audit_duplicate_tasks` | Enhancing / усиливающие | `full` | Duplicate-task candidates | read |
 | `daruma_audit_unread_documents` | Enhancing / усиливающие | `full` | Documents not read recently | read |
