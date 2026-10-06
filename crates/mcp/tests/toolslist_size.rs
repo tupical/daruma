@@ -6,7 +6,10 @@ use serde_json::{json, Value};
 // Baseline: 22,951 measured bytes after slimming, rounded up with ~10% room for
 // new tools. If this trips, inspect the printed breakdown for prose growth
 // before raising the limit.
-const MAX_DEFAULT_TOOLS_LIST_BYTES: usize = 25_000;
+// 27,000: deliberate +2,000 for daruma_audit_findings / daruma_audit_finding_ack
+// entering the default profile (~1.2 KB measured), so findings are reachable
+// without the REST bypass.
+const MAX_DEFAULT_TOOLS_LIST_BYTES: usize = 27_000;
 
 struct ToolSize {
     name: String,
