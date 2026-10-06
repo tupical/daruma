@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. Raw ideas go through the idea pipeline where one is deployed.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. Raw ideas go through the idea pipeline, not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
