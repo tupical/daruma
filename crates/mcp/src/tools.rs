@@ -256,8 +256,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_get",
             "Get task",
-            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version.",
-            schema_bounded_read_ext("id", "Task identifier", true),
+            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version. `comments: true` also attaches the task's full comment list as `comments` (never trimmed by `max_tokens`, never replaced by the `unchanged` marker).",
+            schema_get_task(),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
@@ -1454,6 +1454,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_get" => {
             let id = required_string(&args, "id")?;
             let resp = client.get_json(&format!("/v1/tasks/{id}")).await?;
+            if args.get("comments").and_then(Value::as_bool) == Some(true) {
+                // Comments are attached after bounding so `max_tokens` only
+                // trims the description; dedup is skipped because the task
+                // version stamp does not cover comments.
+                let mut out = maybe_bounded(resp, &args, &id, "task description");
+                let comments = client
+                    .get_json(&format!("/v1/tasks/{id}/comments"))
+                    .await?;
+                out["comments"] = comments;
+                return Ok(out);
+            }
             let version_stamp = task_dedup_version(&resp);
             Ok(maybe_dedup(
                 client,
@@ -3157,6 +3168,16 @@ fn schema_with_id(field: &str) -> Value {
 /// so clients that do not understand the `unchanged` marker never see it.
 fn schema_bounded_read(field: &str, id_desc: &str) -> Value {
     schema_bounded_read_ext(field, id_desc, false)
+}
+
+fn schema_get_task() -> Value {
+    let mut schema = schema_bounded_read_ext("id", "Task identifier", true);
+    schema["properties"]["comments"] = json!({
+        "type":"boolean",
+        "default": false,
+        "description":"Default false; true adds `comments` (GET /v1/tasks/{id}/comments) to the result."
+    });
+    schema
 }
 
 fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Value {
