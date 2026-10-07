@@ -860,6 +860,15 @@ impl WorkspaceGraphRepo {
     /// (stronger = more negative) are emitted once, with `task_a < task_b` so a
     /// pair never appears twice. `limit` caps the candidate scan per task.
     ///
+    /// Both sides of a pair must be in an active status (anything other than
+    /// `done`/`cancelled`, read from `metadata_json.status`); a task already
+    /// closed cannot be meaningfully merged or re-linked, so a pair touching
+    /// one is not an actionable candidate. Without this filter the check
+    /// re-flags the same closed-task pairs on every audit run forever (the
+    /// finding is never auto-resolved because the detector keeps "seeing" it),
+    /// which silently buries the few pairs between still-open tasks that an
+    /// operator could actually act on.
+    ///
     /// Semantic (embedding) duplicates are explicitly out of scope; this is a
     /// cheap lexical pre-filter for a human or Cloud pass to confirm.
     pub async fn duplicate_task_candidates(
@@ -869,10 +878,13 @@ impl WorkspaceGraphRepo {
         limit: u32,
     ) -> Result<Vec<DuplicateTaskPair>> {
         self.ensure_schema().await?;
-        // All task nodes in the project (source_id = TaskId string, title).
+        // All active (non-done/cancelled) task nodes in the project (source_id =
+        // TaskId string, title).
         let tasks = sqlx::query(
             "SELECT source_id, title FROM workspacegraph_nodes \
-             WHERE kind = 'Task' AND project_id = ? ORDER BY source_id ASC",
+             WHERE kind = 'Task' AND project_id = ? \
+               AND COALESCE(json_extract(metadata_json, '$.status'), '') NOT IN ('done', 'cancelled') \
+             ORDER BY source_id ASC",
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -892,6 +904,7 @@ impl WorkspaceGraphRepo {
                  FROM workspacegraph_fts \
                  JOIN workspacegraph_nodes n ON n.id = workspacegraph_fts.node_id \
                  WHERE workspacegraph_fts MATCH ? \
+                   AND COALESCE(json_extract(n.metadata_json, '$.status'), '') NOT IN ('done', 'cancelled') \
                    AND n.kind = 'Task' AND n.project_id = ? AND n.source_id != ? \
                  ORDER BY rank ASC LIMIT ?",
             )
@@ -2111,6 +2124,54 @@ mod tests {
         assert_eq!(got, want_refs);
         // Canonical ordering: task_a < task_b.
         assert!(p.task_a < p.task_b);
+    }
+
+    #[tokio::test]
+    async fn duplicate_task_candidates_excludes_done_and_cancelled_tasks() {
+        let repo = repo().await;
+        let project_id = ProjectId::new();
+        let dup_a = TaskId::new();
+        let dup_b = TaskId::new();
+        let dup_c = TaskId::new();
+        for (id, title, status) in [
+            (dup_a, "Fix login button alignment", Status::Done),
+            (dup_b, "Fix the login button alignment bug", Status::Todo),
+            (dup_c, "Fix login button alignment issue", Status::Cancelled),
+        ] {
+            repo.apply_event(&env(
+                1,
+                Event::TaskCreated {
+                    task: NewTask {
+                        id: Some(id),
+                        project_id: Some(project_id),
+                        title: title.into(),
+                        description: Some(String::new()),
+                        status: Some(status),
+                        priority: Some(Priority::P2),
+                        triage_state: None,
+                        due_at: None,
+                        external_key: None,
+                        source_event_id: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        }
+
+        // Loose threshold so the lexically-close pairs would be captured if
+        // status filtering did not apply.
+        let pairs = repo
+            .duplicate_task_candidates(&project_id.to_string(), 0.0, 50)
+            .await
+            .unwrap();
+        // dup_a is done and dup_c is cancelled; only dup_b remains active, so
+        // no pair has two active sides and none should be emitted.
+        assert_eq!(
+            pairs.len(),
+            0,
+            "a pair touching a done/cancelled task is not actionable: {pairs:?}"
+        );
     }
 
     #[tokio::test]
