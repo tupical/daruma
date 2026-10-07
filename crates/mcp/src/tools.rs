@@ -354,7 +354,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_comment",
             "Comment on task",
-            "Add a comment to a task. Optional semantic `kind` (intent/progress/outcome/blocker/research).",
+            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected).",
             schema_comment(),
             Dom::Tasks, D, E, Ann::Write,
         ),
@@ -5536,9 +5536,21 @@ fn normalise_comment_kind(raw: &str) -> anyhow::Result<&'static str> {
         "outcome" => Ok("outcome"),
         "blocker" => Ok("blocker"),
         "research" => Ok("research"),
-        other => Err(anyhow::anyhow!(
-            "unknown comment kind: {other:?} (expected one of: intent, progress, outcome, blocker, research)"
-        )),
+        other => {
+            let hint = match other {
+                "handoff" | "summary" | "result" | "done" | "complete" | "completed" => {
+                    " — did you mean \"outcome\"?"
+                }
+                "note" | "update" | "status" | "info" => " — did you mean \"progress\"?",
+                "plan" | "start" | "planning" => " — did you mean \"intent\"?",
+                "blocked" | "block" | "failure" | "failed" => " — did you mean \"blocker\"?",
+                "review" | "finding" | "analysis" => " — did you mean \"research\"?",
+                _ => "",
+            };
+            Err(anyhow::anyhow!(
+                "unknown comment kind: {other:?} (expected one of: intent, progress, outcome, blocker, research){hint}"
+            ))
+        }
     }
 }
 
@@ -5616,6 +5628,20 @@ mod tests {
     fn normalise_comment_kind_rejects_unknown() {
         let err = normalise_comment_kind("bogus").unwrap_err().to_string();
         assert!(err.contains("unknown comment kind"));
+    }
+
+    #[test]
+    fn normalise_comment_kind_suggests_nearest_for_common_mistakes() {
+        for (bad, want) in [
+            ("handoff", "outcome"),
+            ("note", "progress"),
+            ("blocked", "blocker"),
+        ] {
+            let err = normalise_comment_kind(bad).unwrap_err().to_string();
+            assert!(err.contains(&format!("did you mean \"{want}\"")), "{err}");
+        }
+        let err = normalise_comment_kind("bogus").unwrap_err().to_string();
+        assert!(!err.contains("did you mean"), "{err}");
     }
 
     #[test]
