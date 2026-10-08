@@ -4,12 +4,27 @@ use std::str::FromStr;
 
 use crate::error::AiError;
 
-/// Wire protocol used by an OpenAI-compatible provider.
+/// Wire protocol used by the provider.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ApiProtocol {
     #[default]
     Responses,
     ChatCompletions,
+    /// Anthropic Messages API (`POST {base}/v1/messages`). Request building
+    /// and response parsing are not wired yet: the client rejects this
+    /// protocol with [`AiError::Config`] instead of falling back to Responses.
+    AnthropicMessages,
+}
+
+impl ApiProtocol {
+    /// Settings/env spelling of the protocol; inverse of [`FromStr`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Responses => "responses",
+            Self::ChatCompletions => "chat_completions",
+            Self::AnthropicMessages => "anthropic_messages",
+        }
+    }
 }
 
 impl FromStr for ApiProtocol {
@@ -19,8 +34,9 @@ impl FromStr for ApiProtocol {
         match value {
             "responses" => Ok(Self::Responses),
             "chat_completions" => Ok(Self::ChatCompletions),
+            "anthropic_messages" => Ok(Self::AnthropicMessages),
             _ => Err(AiError::Config(format!(
-                "OPENAI_API_PROTOCOL must be 'responses' or 'chat_completions', got '{value}'"
+                "OPENAI_API_PROTOCOL must be 'responses', 'chat_completions' or 'anthropic_messages', got '{value}'"
             ))),
         }
     }
@@ -106,6 +122,18 @@ impl AiConfig {
     pub fn chat_completions_url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
+
+    /// Build the full Anthropic Messages API endpoint URL.
+    ///
+    /// Anthropic's base is the bare host (`https://api.anthropic.com`) and the
+    /// version lives in the path, unlike OpenAI-style bases that already end
+    /// in `/v1`. Both spellings are accepted so a base copied either way does
+    /// not turn into `/v1/v1/messages`.
+    pub fn anthropic_messages_url(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        format!("{base}/v1/messages")
+    }
 }
 
 #[cfg(test)]
@@ -131,7 +159,14 @@ mod tests {
             "responses".parse::<ApiProtocol>().unwrap(),
             ApiProtocol::Responses
         );
-        for bad in ["chat-completions", "ChatCompletions", "", "chat"] {
+        for bad in [
+            "chat-completions",
+            "ChatCompletions",
+            "",
+            "chat",
+            "anthropic",
+            "messages",
+        ] {
             assert!(
                 bad.parse::<ApiProtocol>().is_err(),
                 "{bad:?} must not parse"
@@ -155,5 +190,46 @@ mod tests {
             cfg.chat_completions_url(),
             "https://api.openai.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn anthropic_messages_parses_and_round_trips() {
+        assert_eq!(
+            "anthropic_messages".parse::<ApiProtocol>().unwrap(),
+            ApiProtocol::AnthropicMessages
+        );
+        for protocol in [
+            ApiProtocol::Responses,
+            ApiProtocol::ChatCompletions,
+            ApiProtocol::AnthropicMessages,
+        ] {
+            assert_eq!(protocol.as_str().parse::<ApiProtocol>().unwrap(), protocol);
+        }
+    }
+
+    #[test]
+    fn anthropic_messages_url_does_not_double_the_version() {
+        let mut cfg = AiConfig {
+            api_key: "sk-ant-test".into(),
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-sonnet-5-5".into(),
+            api_protocol: ApiProtocol::AnthropicMessages,
+            reasoning_effort: None,
+            max_output_tokens: None,
+            request_timeout_seconds: None,
+        };
+        for base in [
+            "https://api.anthropic.com",
+            "https://api.anthropic.com/",
+            "https://api.anthropic.com/v1",
+            "https://api.anthropic.com/v1/",
+        ] {
+            cfg.base_url = base.into();
+            assert_eq!(
+                cfg.anthropic_messages_url(),
+                "https://api.anthropic.com/v1/messages",
+                "base {base:?}"
+            );
+        }
     }
 }
