@@ -565,7 +565,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_events_since",
             "Load events since seq",
-            "Load events with `seq > since`, capped at `limit` (default 100).",
+            "Load events after `seq`, capped at `limit` (default 25, max 1000). Page by passing the last returned `seq`.",
             schema_events_since(),
             Dom::Events, F, E, Ann::Read,
         ),
@@ -1978,13 +1978,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .get_json(&format!("/v1/events?since={since}&limit={limit}"))
                 .await
         }
-        "daruma_events_since" => {
-            let since = args.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
-            client
-                .get_json(&format!("/v1/events?since={since}&limit={limit}"))
-                .await
-        }
+        "daruma_events_since" => client.get_json(&events_since_path(&args)).await,
         "daruma_healthz" => client.get_json("/v1/healthz").await,
 
         // ── Plan tools (W3.2) ─────────────────────────────────────────────
@@ -3823,12 +3817,26 @@ fn urlencode(raw: &str) -> String {
     out
 }
 
+/// Default page of `daruma_events_since`. The REST `/v1/events` keeps its own
+/// default for device sync; only the agent-facing tool is kept small, since a
+/// 100-event page was the p95 oversized result in usage audits.
+const EVENTS_SINCE_DEFAULT_LIMIT: u64 = 25;
+
+fn events_since_path(args: &Map<String, Value>) -> String {
+    let since = args.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(EVENTS_SINCE_DEFAULT_LIMIT);
+    format!("/v1/events?since={since}&limit={limit}")
+}
+
 fn schema_events_since() -> Value {
     json!({
         "type":"object",
         "properties": {
             "seq":   {"type":"integer","minimum":0},
-            "limit": {"type":"integer","minimum":1,"maximum":1000}
+            "limit": {"type":"integer","minimum":1,"maximum":1000,"default":EVENTS_SINCE_DEFAULT_LIMIT}
         }
     })
 }
@@ -5559,6 +5567,20 @@ mod tests {
     use super::*;
 
     // ── mutation-response projection ────────────────────────────────────────
+
+    #[test]
+    fn events_since_defaults_to_small_page() {
+        assert_eq!(
+            events_since_path(&Map::new()),
+            "/v1/events?since=0&limit=25"
+        );
+        assert_eq!(
+            events_since_path(json!({"seq": 7, "limit": 500}).as_object().unwrap()),
+            "/v1/events?since=7&limit=500"
+        );
+        let schema = schema_events_since();
+        assert_eq!(schema["properties"]["limit"]["default"], json!(25));
+    }
 
     #[test]
     fn projection_strips_long_echo_but_keeps_short_enum_strings() {
