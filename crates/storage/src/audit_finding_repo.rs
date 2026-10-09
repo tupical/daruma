@@ -8,10 +8,18 @@
 //!
 //! - [`AuditFindingRepo::upsert`] — record one sighting. A fresh finding opens;
 //!   a repeat sighting (same `(project, check_key, entity)`) bumps `last_seen_at`
-//!   and refreshes the mutable fields, never inserting a duplicate.
+//!   and refreshes the mutable fields, never inserting a duplicate. The
+//!   operator's `acknowledged` / `muted` decision survives a repeat sighting;
+//!   only a `resolved` finding re-opens (the problem came back).
 //! - [`AuditFindingRepo::resolve_missing`] — after a check run, resolve every
-//!   still-open finding of a `check_key` in a project that was *not* seen this
-//!   run (auto-resolve). The caller passes the ids it upserted.
+//!   not-yet-resolved finding of a `check_key` in a project that was *not* seen
+//!   this run (auto-resolve), whatever its status — `acknowledged` / `muted`
+//!   included. The caller passes the ids it upserted.
+//!
+//! Lifecycle on repeat sightings: `open`/`acknowledged`/`muted` keep their
+//! status; `resolved` → `open` with `resolved_by`/`resolved_at` cleared. A
+//! muted finding that disappears resolves like any other; if it reappears
+//! later it re-opens — the mute applied to the earlier occurrence.
 
 use crate::parse_ts;
 use daruma_domain::{
@@ -44,15 +52,16 @@ impl AuditFindingRepo {
     /// Record a sighting of a finding, idempotent on `(project_id, check_key,
     /// entity tuple)`. On first sight a new row opens (`first_seen_at =
     /// last_seen_at = now`, status `Open`); on a repeat sight the existing row's
-    /// `last_seen_at` and the mutable descriptive fields are refreshed and the
-    /// row is re-opened if it had auto-resolved (the problem came back). Returns
-    /// the row's id either way.
+    /// `last_seen_at` and the mutable descriptive fields are refreshed. The
+    /// status is kept — an operator's `Acknowledged` / `Muted` is not undone by
+    /// the next check run — except `Resolved`, which re-opens with its resolved
+    /// metadata cleared (the problem came back). Returns the row's id either way.
     pub async fn upsert(&self, new: &NewFinding) -> Result<AuditFindingId> {
         let now = time::now();
         // Look up the existing row on the dedup key (NULLs coalesced to '' to
         // match migration 0041's unique index).
-        let existing: Option<(String, String)> = sqlx::query_as(
-            "SELECT id, status FROM audit_findings \
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM audit_findings \
              WHERE project_id = ? AND check_key = ? \
                AND COALESCE(plan_id, '') = ? AND COALESCE(task_id, '') = ? \
                AND COALESCE(document_id, '') = ? AND COALESCE(artifact_id, '') = ?",
@@ -67,14 +76,19 @@ impl AuditFindingRepo {
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
-        if let Some((id_str, _status)) = existing {
-            // Repeat sighting: refresh mutable fields, bump last_seen, and
-            // re-open (clear any prior auto-resolve — the problem is back).
+        if let Some((id_str,)) = existing {
+            // Repeat sighting: refresh mutable fields and bump last_seen. Only a
+            // resolved row re-opens (the problem is back); open / acknowledged /
+            // muted keep the status — and their NULL resolved metadata — so an
+            // operator decision outlives the next check run. The CASE keeps the
+            // read-decide-write in one statement.
             sqlx::query(
                 "UPDATE audit_findings \
                  SET category = ?, severity = ?, title = ?, detail = ?, remediation = ?, \
-                     source = ?, status = 'open', last_seen_at = ?, \
-                     resolved_by = NULL, resolved_at = NULL \
+                     source = ?, last_seen_at = ?, \
+                     status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END, \
+                     resolved_by = CASE WHEN status = 'resolved' THEN NULL ELSE resolved_by END, \
+                     resolved_at = CASE WHEN status = 'resolved' THEN NULL ELSE resolved_at END \
                  WHERE id = ?",
             )
             .bind(&new.category)
@@ -123,11 +137,12 @@ impl AuditFindingRepo {
         Ok(id)
     }
 
-    /// Auto-resolve: after a full check run, flip every still-open finding of
-    /// `check_key` in `project_id` that was *not* re-seen this run (its id is not
-    /// in `seen`) to `Resolved`. `resolved_by` records who ran the check. Returns
-    /// the number of findings resolved. With an empty `seen` slice every open
-    /// finding of the key resolves (the check found nothing this run).
+    /// Auto-resolve: after a full check run, flip every not-yet-resolved finding
+    /// of `check_key` in `project_id` (`Open`, `Acknowledged` or `Muted`) that was
+    /// *not* re-seen this run (its id is not in `seen`) to `Resolved`.
+    /// `resolved_by` records who ran the check. Returns the number of findings
+    /// resolved. With an empty `seen` slice every unresolved finding of the key
+    /// resolves (the check found nothing this run).
     pub async fn resolve_missing(
         &self,
         project_id: daruma_shared::ProjectId,
@@ -454,6 +469,97 @@ mod tests {
         let row = repo.get(id).await.unwrap().unwrap();
         assert_eq!(row.status, FindingStatus::Open);
         assert!(row.resolved_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn reupsert_keeps_operator_status_and_refreshes_fields() {
+        let repo = repo().await;
+        let project = ProjectId::new();
+        let actor = ActorRef::from_actor(&Actor::user());
+        for status in [
+            FindingStatus::Open,
+            FindingStatus::Acknowledged,
+            FindingStatus::Muted,
+        ] {
+            let mut f = sample(project, Some(TaskId::new()), "task.duplicate_candidate");
+            let id = repo.upsert(&f).await.unwrap();
+            repo.set_status(id, status, &actor, time::now())
+                .await
+                .unwrap();
+            let before = repo.get(id).await.unwrap().unwrap();
+
+            // Next audit pass re-sees the same problem with fresher wording.
+            f.detail = "detail v2".into();
+            f.severity = FindingSeverity::Error;
+            assert_eq!(repo.upsert(&f).await.unwrap(), id);
+
+            let row = repo.get(id).await.unwrap().unwrap();
+            assert_eq!(row.status, status, "repeat sighting must keep {status:?}");
+            assert_eq!(row.detail, "detail v2");
+            assert_eq!(row.severity, FindingSeverity::Error);
+            assert!(row.last_seen_at >= before.last_seen_at);
+            assert_eq!(row.first_seen_at, before.first_seen_at);
+            assert!(row.resolved_at.is_none() && row.resolved_by.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn reupsert_reopens_manually_resolved_finding() {
+        let repo = repo().await;
+        let project = ProjectId::new();
+        let f = sample(project, Some(TaskId::new()), "task.stuck");
+        let id = repo.upsert(&f).await.unwrap();
+        repo.set_status(
+            id,
+            FindingStatus::Resolved,
+            &ActorRef::from_actor(&Actor::user()),
+            time::now(),
+        )
+        .await
+        .unwrap();
+        let resolved = repo.get(id).await.unwrap().unwrap();
+        assert!(resolved.resolved_at.is_some() && resolved.resolved_by.is_some());
+
+        repo.upsert(&f).await.unwrap();
+        let row = repo.get(id).await.unwrap().unwrap();
+        assert_eq!(row.status, FindingStatus::Open);
+        assert!(row.resolved_at.is_none() && row.resolved_by.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_missing_resolves_vanished_muted_and_acknowledged() {
+        let repo = repo().await;
+        let project = ProjectId::new();
+        let actor = ActorRef::from_actor(&Actor::user());
+        let muted_f = sample(project, Some(TaskId::new()), "task.stuck");
+        let acked_f = sample(project, Some(TaskId::new()), "task.stuck");
+        let muted = repo.upsert(&muted_f).await.unwrap();
+        let acked = repo.upsert(&acked_f).await.unwrap();
+        repo.set_status(muted, FindingStatus::Muted, &actor, time::now())
+            .await
+            .unwrap();
+        repo.set_status(acked, FindingStatus::Acknowledged, &actor, time::now())
+            .await
+            .unwrap();
+
+        // The check no longer reproduces either: both resolve (C3 unchanged).
+        let n = repo
+            .resolve_missing(project, "task.stuck", &[], &actor, time::now())
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        for id in [muted, acked] {
+            let row = repo.get(id).await.unwrap().unwrap();
+            assert_eq!(row.status, FindingStatus::Resolved);
+            assert!(row.resolved_at.is_some());
+        }
+
+        // The problem comes back later: the old mute does not carry over.
+        repo.upsert(&muted_f).await.unwrap();
+        assert_eq!(
+            repo.get(muted).await.unwrap().unwrap().status,
+            FindingStatus::Open
+        );
     }
 
     #[tokio::test]
