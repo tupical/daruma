@@ -209,22 +209,15 @@ pub(crate) fn endpoint_and_body(
     }
 }
 
-/// Anthropic Messages is accepted in settings ahead of its reply parser. Fail
-/// loudly before any network call: falling back to another protocol's wire
-/// shape is the crossed-arm outage the functions here guard.
-fn anthropic_messages_not_wired() -> AiError {
-    AiError::Config("api_protocol 'anthropic_messages' is not supported by the client yet".into())
-}
-
 type ReplyParser = fn(&Value) -> Result<Vec<ResponseOutput>, AiError>;
 
-/// The parser that matches the protocol a reply was requested over, or why
-/// there is none. Split out for the same reason as [`endpoint_and_body`].
+/// The parser that matches the protocol a reply was requested over. Split out
+/// for the same reason as [`endpoint_and_body`].
 pub(crate) fn reply_parser(protocol: ApiProtocol) -> Result<ReplyParser, AiError> {
     match protocol {
         ApiProtocol::Responses => Ok(parse_outputs),
         ApiProtocol::ChatCompletions => Ok(parse_chat_outputs),
-        ApiProtocol::AnthropicMessages => Err(anthropic_messages_not_wired()),
+        ApiProtocol::AnthropicMessages => Ok(parse_anthropic_outputs),
     }
 }
 
@@ -496,6 +489,63 @@ fn parse_chat_outputs(json: &Value) -> Result<Vec<ResponseOutput>, AiError> {
     Ok(results)
 }
 
+fn parse_anthropic_outputs(json: &Value) -> Result<Vec<ResponseOutput>, AiError> {
+    // Same truncation trap as the other protocols: a `max_tokens` stop leaves a
+    // half-written `tool_use.input`, so name the setting instead of passing it on.
+    if json["stop_reason"] == "max_tokens" {
+        return Err(AiError::ParseFailed(
+            "response incomplete (max_tokens); increase max_output_tokens \
+             or ask for fewer items per call"
+                .into(),
+        ));
+    }
+
+    let blocks = json["content"]
+        .as_array()
+        .ok_or_else(|| AiError::ParseFailed("response missing 'content' array".into()))?;
+
+    let mut results = Vec::new();
+
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => {
+                if let Some(text) = block["text"].as_str() {
+                    results.push(ResponseOutput::Message(text.to_owned()));
+                }
+            }
+            Some("tool_use") => {
+                let name = block["name"]
+                    .as_str()
+                    .ok_or_else(|| AiError::ParseFailed("tool_use block missing name".into()))?;
+                // Anthropic sends `input` as an object; ToolCall carries the
+                // OpenAI-style JSON string that callers `from_str`.
+                let input = block
+                    .get("input")
+                    .filter(|input| input.is_object())
+                    .ok_or_else(|| {
+                        AiError::ParseFailed("tool_use block input must be a JSON object".into())
+                    })?;
+                results.push(ResponseOutput::ToolCall(ToolCall {
+                    name: name.to_owned(),
+                    arguments: input.to_string(),
+                }));
+            }
+            _ => {
+                // thinking, redacted_thinking and future block types carry
+                // nothing callers consume.
+            }
+        }
+    }
+
+    if results.is_empty() {
+        return Err(AiError::ParseFailed(
+            "anthropic response has neither text nor tool_use content".into(),
+        ));
+    }
+
+    Ok(results)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -621,30 +671,102 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_messages_reply_parser_fails_loudly_instead_of_falling_back() {
-        // Until the Messages parser lands, the reply must not be fed to a
-        // Responses or Chat parser.
-        let reply = json!({"content": [{"type": "text", "text": "hi"}]});
-        assert!(matches!(
-            parse_by_protocol(ApiProtocol::AnthropicMessages, &reply),
-            Err(AiError::Config(m)) if m.contains("anthropic_messages")
-        ));
+    fn anthropic_messages_selects_messages_parser() {
+        let anthropic_json = json!({"stop_reason": "end_turn", "content": [
+            {"type": "text", "text": "from anthropic"}
+        ]});
+        let out = parse_by_protocol(ApiProtocol::AnthropicMessages, &anthropic_json).unwrap();
+        assert!(matches!(&out[..], [ResponseOutput::Message(t)] if t == "from anthropic"));
+
+        // Crossed arms must fail in both directions, not return an empty list.
+        assert!(parse_by_protocol(ApiProtocol::Responses, &anthropic_json).is_err());
+        assert!(parse_by_protocol(ApiProtocol::ChatCompletions, &anthropic_json).is_err());
+        let responses_json = json!({"output": [{"type": "message", "content": [
+            {"type": "output_text", "text": "from responses"}
+        ]}]});
+        let chat_json = json!({"choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": "from chat"
+        }}]});
+        assert!(parse_by_protocol(ApiProtocol::AnthropicMessages, &responses_json).is_err());
+        assert!(parse_by_protocol(ApiProtocol::AnthropicMessages, &chat_json).is_err());
     }
 
     #[tokio::test]
-    async fn respond_without_reply_parser_fails_before_any_request() {
-        // A port nothing listens on: had a request gone out, the error would be
-        // a transport one, not Config.
+    async fn respond_over_anthropic_messages_round_trips_tool_use() {
+        use std::io::{Read, Write};
+
+        // One-shot HTTP stub: captures the request, answers with a Messages reply.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let reply = json!({
+                "id": "msg_1", "type": "message", "role": "assistant",
+                "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "report_status", "input": {"ok": true}}],
+                "usage": {"input_tokens": 5, "output_tokens": 7}
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+            String::from_utf8(raw).unwrap()
+        });
+
         let mut cfg = make_cfg(None);
         cfg.api_protocol = ApiProtocol::AnthropicMessages;
-        cfg.base_url = "http://127.0.0.1:9".into();
-        let err = OpenAiClient::new(cfg)
-            .respond(make_req("hi", vec![], None))
+        cfg.base_url = format!("http://{addr}");
+        // The dev host proxies loopback through HTTP_PROXY; the stub must be hit directly.
+        let http = OpenAiClient::http_client_builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let tool = json!({"type": "function", "name": "report_status",
+            "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}}});
+        let out = OpenAiClient::with_http_client(cfg, http)
+            .respond(make_req("status?", vec![tool], Some("required")))
             .await
-            .unwrap_err();
+            .unwrap();
+
+        let request = server.join().unwrap();
+        let head = request.to_ascii_lowercase();
+        assert!(request.starts_with("POST /v1/messages "), "{request}");
+        assert!(head.contains("x-api-key:"), "{request}");
         assert!(
-            matches!(&err, AiError::Config(m) if m.contains("anthropic_messages")),
-            "{err:?}"
+            head.contains(&format!("anthropic-version: {ANTHROPIC_VERSION}")),
+            "{request}"
+        );
+        assert!(!head.contains("authorization:"), "{request}");
+        let [ResponseOutput::ToolCall(call)] = &out[..] else {
+            panic!("unexpected outputs: {out:?}");
+        };
+        assert_eq!(call.name, "report_status");
+        assert_eq!(
+            serde_json::from_str::<Value>(&call.arguments).unwrap(),
+            json!({"ok": true})
         );
     }
 
@@ -923,5 +1045,84 @@ mod tests {
 
         let error = parse_chat_outputs(&json).unwrap_err().to_string();
         assert!(error.contains("max_output_tokens"));
+    }
+
+    #[test]
+    fn parse_anthropic_text_blocks_skip_thinking() {
+        let json = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "private", "signature": "sig"},
+                {"type": "text", "text": "Hello"},
+                {"type": "text", "text": "world"}
+            ],
+            "usage": {"input_tokens": 3, "output_tokens": 2}
+        });
+
+        let out = parse_anthropic_outputs(&json).unwrap();
+        assert!(matches!(
+            &out[..],
+            [ResponseOutput::Message(a), ResponseOutput::Message(b)] if a == "Hello" && b == "world"
+        ));
+    }
+
+    #[test]
+    fn parse_anthropic_tool_use_serializes_input_object_to_json_string() {
+        let input = json!({"verdicts": [{"pair_index": 1, "reason": "дубль \"A\""}], "ok": true});
+        let json = json!({
+            "stop_reason": "tool_use",
+            "content": [
+                {"type": "text", "text": "Calling the tool."},
+                {"type": "tool_use", "id": "toolu_1", "name": "report_duplicates", "input": input}
+            ]
+        });
+
+        let out = parse_anthropic_outputs(&json).unwrap();
+        let [ResponseOutput::Message(_), ResponseOutput::ToolCall(call)] = &out[..] else {
+            panic!("unexpected outputs: {out:?}");
+        };
+        assert_eq!(call.name, "report_duplicates");
+        assert_eq!(
+            serde_json::from_str::<Value>(&call.arguments).unwrap(),
+            input
+        );
+    }
+
+    #[test]
+    fn parse_anthropic_rejects_malformed_tool_use_and_empty_content() {
+        let no_input = json!({"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "report_status"}
+        ]});
+        assert!(parse_anthropic_outputs(&no_input).is_err());
+
+        let string_input = json!({"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "report_status", "input": "{}"}
+        ]});
+        assert!(parse_anthropic_outputs(&string_input).is_err());
+
+        let empty = json!({"stop_reason": "end_turn", "content": []});
+        assert!(parse_anthropic_outputs(&empty).is_err());
+        assert!(parse_anthropic_outputs(&json!({"stop_reason": "end_turn"})).is_err());
+    }
+
+    #[test]
+    fn parse_anthropic_max_tokens_names_token_budget_setting() {
+        // A truncated reply still carries a well-formed (but partial) input
+        // object; it must not reach the caller.
+        let json = json!({
+            "stop_reason": "max_tokens",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "report_status", "input": {}}
+            ]
+        });
+
+        let error = parse_anthropic_outputs(&json).unwrap_err();
+        assert!(
+            matches!(&error, AiError::ParseFailed(m) if m.contains("max_tokens") && m.contains("max_output_tokens")),
+            "{error:?}"
+        );
     }
 }
