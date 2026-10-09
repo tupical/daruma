@@ -178,7 +178,15 @@ pub(crate) fn endpoint_and_body(
             config.chat_completions_url(),
             build_chat_request_body(config, req)?,
         )),
+        ApiProtocol::AnthropicMessages => Err(anthropic_messages_not_wired()),
     }
+}
+
+/// Anthropic Messages is accepted in settings ahead of its request builder and
+/// reply parser. Fail loudly before any network call: falling back to another
+/// protocol's wire shape is the crossed-arm outage the functions here guard.
+fn anthropic_messages_not_wired() -> AiError {
+    AiError::Config("api_protocol 'anthropic_messages' is not supported by the client yet".into())
 }
 
 /// Parse a provider reply with the parser that matches the protocol it was
@@ -190,6 +198,7 @@ pub(crate) fn parse_by_protocol(
     match protocol {
         ApiProtocol::Responses => parse_outputs(json),
         ApiProtocol::ChatCompletions => parse_chat_outputs(json),
+        ApiProtocol::AnthropicMessages => Err(anthropic_messages_not_wired()),
     }
 }
 
@@ -483,6 +492,26 @@ mod tests {
         // return nothing — a quiet empty list is what makes such a bug survive.
         assert!(parse_by_protocol(ApiProtocol::ChatCompletions, &responses_json).is_err());
         assert!(parse_by_protocol(ApiProtocol::Responses, &chat_json).is_err());
+    }
+
+    #[test]
+    fn anthropic_messages_fails_loudly_instead_of_falling_back() {
+        // Until the Messages builder/parser land, the protocol must reject
+        // before any request is built — never reuse a Responses or Chat shape.
+        let req = make_req("hi", vec![], None);
+        let mut cfg = make_cfg(None);
+        cfg.api_protocol = ApiProtocol::AnthropicMessages;
+        let err = endpoint_and_body(&cfg, &req).unwrap_err();
+        assert!(
+            matches!(&err, AiError::Config(m) if m.contains("anthropic_messages")),
+            "{err:?}"
+        );
+
+        let reply = json!({"content": [{"type": "text", "text": "hi"}]});
+        assert!(matches!(
+            parse_by_protocol(ApiProtocol::AnthropicMessages, &reply),
+            Err(AiError::Config(_))
+        ));
     }
 
     #[test]
