@@ -1,6 +1,6 @@
 # MCP feature tiers
 
-АВТО-СГЕНЕРИРОВАНО из `crates/mcp/src/tools.rs` — не редактировать вручную; regenerate: `UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test feature_tiers_doc`
+АВТО-СГЕНЕРИРОВАНО из `crates/mcp/src/tools.rs` — не редактировать вручную; regenerate: `UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test it feature_tiers_doc`
 
 Рамка: [feature-tiers.md](../../../meisei-research/docs/canon/feature-tiers.md).
 

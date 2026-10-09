@@ -29,4 +29,4 @@ Draft, пустые и уже терминальные планы автомат
 это отдельное решение о продолжении исполнения.
 
 Реализация: `crates/core/src/handler.rs::append_plan_reconciliations`.
-Проверка: `cargo test -p daruma-core --test plan_reconciliation --no-fail-fast`.
+Проверка: `cargo test -p daruma-core --test it plan_reconciliation --no-fail-fast`.
