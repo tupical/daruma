@@ -13,7 +13,7 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 | Surface | Role |
 |---------|------|
-| `crates/ai-infra` | OpenAI Responses API client, provider abstraction, prompt engine, tool schemas |
+| `crates/ai-infra` | AI client (OpenAI Responses, Chat Completions, Anthropic Messages request side), provider abstraction, prompt engine, tool schemas |
 | `apps/server` | `POST /v1/ai/*` HTTP endpoints; the deprecated `analyze_complexity` shim lives in `apps/server/src/ai.rs` (prompts in `apps/server/prompts/*.toml`) |
 | MCP (`daruma mcp`) | `daruma_ai_analyze_complexity` for external agents |
 | MCP agents (Cursor, Claude) | Primary consumers — use MCP tools, not raw SQL |

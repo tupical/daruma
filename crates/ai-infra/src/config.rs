@@ -10,9 +10,9 @@ pub enum ApiProtocol {
     #[default]
     Responses,
     ChatCompletions,
-    /// Anthropic Messages API (`POST {base}/v1/messages`). Request building
-    /// and response parsing are not wired yet: the client rejects this
-    /// protocol with [`AiError::Config`] instead of falling back to Responses.
+    /// Anthropic Messages API (`POST {base}/v1/messages`). Response parsing
+    /// is not wired yet: the client rejects this protocol with
+    /// [`AiError::Config`] before sending, instead of falling back to Responses.
     AnthropicMessages,
 }
 
