@@ -1,4 +1,5 @@
-//! Low-level OpenAI Responses API client.
+//! Low-level client for OpenAI Responses, Chat Completions and Anthropic
+//! Messages APIs.
 //!
 //! `build_request_body` is `pub(crate)` and tested without network I/O.
 //! All JSON is built with `serde_json::json!` — no string concatenation.
@@ -139,12 +140,16 @@ impl OpenAiClient {
     /// Send a request through the configured protocol and parse the output list.
     pub async fn respond(&self, req: ResponseRequest) -> Result<Vec<ResponseOutput>, AiError> {
         let (url, body) = endpoint_and_body(&self.config, &req)?;
+        // Resolved before sending: a reply nobody can read must not cost a
+        // provider request.
+        let parse = reply_parser(self.config.api_protocol)?;
         debug!(%url, "sending AI request");
 
-        let resp = self
-            .http
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+        let mut request = self.http.post(url);
+        for (name, value) in auth_headers(&self.config) {
+            request = request.header(name, value);
+        }
+        let resp = request
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -157,7 +162,26 @@ impl OpenAiClient {
         }
 
         let json: Value = resp.json().await?;
-        parse_by_protocol(self.config.api_protocol, &json)
+        parse(&json)
+    }
+}
+
+/// Anthropic API version pinned in the `anthropic-version` header.
+pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Authentication headers for the configured protocol.
+///
+/// OpenAI-style providers take `Authorization: Bearer`; Anthropic rejects it
+/// and wants `x-api-key` plus a pinned `anthropic-version` instead.
+pub(crate) fn auth_headers(config: &AiConfig) -> Vec<(&'static str, String)> {
+    match config.api_protocol {
+        ApiProtocol::Responses | ApiProtocol::ChatCompletions => {
+            vec![("Authorization", format!("Bearer {}", config.api_key))]
+        }
+        ApiProtocol::AnthropicMessages => vec![
+            ("x-api-key", config.api_key.clone()),
+            ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+        ],
     }
 }
 
@@ -178,26 +202,28 @@ pub(crate) fn endpoint_and_body(
             config.chat_completions_url(),
             build_chat_request_body(config, req)?,
         )),
-        ApiProtocol::AnthropicMessages => Err(anthropic_messages_not_wired()),
+        ApiProtocol::AnthropicMessages => Ok((
+            config.anthropic_messages_url(),
+            build_anthropic_request_body(config, req)?,
+        )),
     }
 }
 
-/// Anthropic Messages is accepted in settings ahead of its request builder and
-/// reply parser. Fail loudly before any network call: falling back to another
-/// protocol's wire shape is the crossed-arm outage the functions here guard.
+/// Anthropic Messages is accepted in settings ahead of its reply parser. Fail
+/// loudly before any network call: falling back to another protocol's wire
+/// shape is the crossed-arm outage the functions here guard.
 fn anthropic_messages_not_wired() -> AiError {
     AiError::Config("api_protocol 'anthropic_messages' is not supported by the client yet".into())
 }
 
-/// Parse a provider reply with the parser that matches the protocol it was
-/// requested over. Split out for the same reason as [`endpoint_and_body`].
-pub(crate) fn parse_by_protocol(
-    protocol: ApiProtocol,
-    json: &Value,
-) -> Result<Vec<ResponseOutput>, AiError> {
+type ReplyParser = fn(&Value) -> Result<Vec<ResponseOutput>, AiError>;
+
+/// The parser that matches the protocol a reply was requested over, or why
+/// there is none. Split out for the same reason as [`endpoint_and_body`].
+pub(crate) fn reply_parser(protocol: ApiProtocol) -> Result<ReplyParser, AiError> {
     match protocol {
-        ApiProtocol::Responses => parse_outputs(json),
-        ApiProtocol::ChatCompletions => parse_chat_outputs(json),
+        ApiProtocol::Responses => Ok(parse_outputs),
+        ApiProtocol::ChatCompletions => Ok(parse_chat_outputs),
         ApiProtocol::AnthropicMessages => Err(anthropic_messages_not_wired()),
     }
 }
@@ -284,6 +310,85 @@ pub(crate) fn build_chat_request_body(
 
     if let Some(effort) = &config.reasoning_effort {
         obj["reasoning_effort"] = Value::String(effort.clone());
+    }
+
+    Ok(obj)
+}
+
+/// Build an Anthropic Messages request body from the provider-neutral request.
+///
+/// Limits of this first iteration:
+/// - `input` must be a plain string; it becomes the single user message. An
+///   array of OpenAI-style message objects is rejected rather than nested into
+///   an invalid `content`.
+/// - No `system` field: the neutral request carries no system part, so there
+///   is nothing to send there yet.
+/// - `reasoning_effort` is not sent: Anthropic has no such parameter, and
+///   extended thinking needs its own token budget.
+/// - `tool_choice` is omitted without tools — there is nothing to choose.
+pub(crate) fn build_anthropic_request_body(
+    config: &AiConfig,
+    req: &ResponseRequest,
+) -> Result<Value, AiError> {
+    let Some(input) = req.input.as_str() else {
+        return Err(AiError::Config(
+            "anthropic_messages supports only a plain string input".into(),
+        ));
+    };
+    let mut obj = json!({
+        "model": config.model,
+        "max_tokens": config.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
+        "messages": [{"role": "user", "content": input}],
+    });
+
+    if req.tools.is_empty() {
+        return Ok(obj);
+    }
+
+    obj["tools"] = Value::Array(
+        req.tools
+            .iter()
+            .map(|tool| {
+                if tool.get("type").and_then(Value::as_str) != Some("function") {
+                    return Err(AiError::Config(format!(
+                        "anthropic_messages does not support built-in tool {}",
+                        tool.get("type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                    )));
+                }
+                let Some(name) = tool.get("name").and_then(Value::as_str) else {
+                    return Err(AiError::Config(
+                        "anthropic_messages function tool requires name".into(),
+                    ));
+                };
+                let mut out = json!({
+                    "name": name,
+                    // Required by Anthropic; a parameterless function has none.
+                    "input_schema": tool
+                        .get("parameters")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"type": "object"})),
+                });
+                if let Some(description) = tool.get("description") {
+                    out["description"] = description.clone();
+                }
+                Ok(out)
+            })
+            .collect::<Result<Vec<_>, AiError>>()?,
+    );
+
+    if let Some(tc) = &req.tool_choice {
+        obj["tool_choice"] = match tc.as_str() {
+            "auto" => json!({"type": "auto"}),
+            "required" => json!({"type": "any"}),
+            "none" => json!({"type": "none"}),
+            other => {
+                return Err(AiError::Config(format!(
+                    "anthropic_messages does not support tool_choice '{other}'"
+                )))
+            }
+        };
     }
 
     Ok(obj)
@@ -398,6 +503,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn parse_by_protocol(
+        protocol: ApiProtocol,
+        json: &Value,
+    ) -> Result<Vec<ResponseOutput>, AiError> {
+        reply_parser(protocol)?(json)
+    }
+
     fn make_req(input: &str, tools: Vec<Value>, tool_choice: Option<&str>) -> ResponseRequest {
         ResponseRequest {
             input: Value::String(input.into()),
@@ -495,23 +607,145 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_messages_fails_loudly_instead_of_falling_back() {
-        // Until the Messages builder/parser land, the protocol must reject
-        // before any request is built — never reuse a Responses or Chat shape.
+    fn anthropic_messages_pairs_messages_url_with_messages_body() {
         let req = make_req("hi", vec![], None);
         let mut cfg = make_cfg(None);
         cfg.api_protocol = ApiProtocol::AnthropicMessages;
-        let err = endpoint_and_body(&cfg, &req).unwrap_err();
+        cfg.base_url = "https://api.anthropic.com".into();
+        let (url, body) = endpoint_and_body(&cfg, &req).unwrap();
+        assert_eq!(url, "https://api.anthropic.com/v1/messages");
+        assert_eq!(body["messages"], json!([{"role": "user", "content": "hi"}]));
+        assert_eq!(body["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS);
+        assert!(body.get("input").is_none(), "responses body on anthropic");
+        assert!(body.get("max_output_tokens").is_none());
+    }
+
+    #[test]
+    fn anthropic_messages_reply_parser_fails_loudly_instead_of_falling_back() {
+        // Until the Messages parser lands, the reply must not be fed to a
+        // Responses or Chat parser.
+        let reply = json!({"content": [{"type": "text", "text": "hi"}]});
+        assert!(matches!(
+            parse_by_protocol(ApiProtocol::AnthropicMessages, &reply),
+            Err(AiError::Config(m)) if m.contains("anthropic_messages")
+        ));
+    }
+
+    #[tokio::test]
+    async fn respond_without_reply_parser_fails_before_any_request() {
+        // A port nothing listens on: had a request gone out, the error would be
+        // a transport one, not Config.
+        let mut cfg = make_cfg(None);
+        cfg.api_protocol = ApiProtocol::AnthropicMessages;
+        cfg.base_url = "http://127.0.0.1:9".into();
+        let err = OpenAiClient::new(cfg)
+            .respond(make_req("hi", vec![], None))
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AiError::Config(m) if m.contains("anthropic_messages")),
             "{err:?}"
         );
+    }
 
-        let reply = json!({"content": [{"type": "text", "text": "hi"}]});
-        assert!(matches!(
-            parse_by_protocol(ApiProtocol::AnthropicMessages, &reply),
-            Err(AiError::Config(_))
-        ));
+    #[test]
+    fn auth_headers_follow_protocol() {
+        let mut cfg = make_cfg(None);
+        for protocol in [ApiProtocol::Responses, ApiProtocol::ChatCompletions] {
+            cfg.api_protocol = protocol;
+            assert_eq!(
+                auth_headers(&cfg),
+                vec![("Authorization", "Bearer sk-test".to_owned())]
+            );
+        }
+
+        // Anthropic answers Bearer with 401; the key must travel only in
+        // x-api-key.
+        cfg.api_protocol = ApiProtocol::AnthropicMessages;
+        assert_eq!(
+            auth_headers(&cfg),
+            vec![
+                ("x-api-key", "sk-test".to_owned()),
+                ("anthropic-version", "2023-06-01".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_anthropic_body_maps_tools_and_tool_choice() {
+        let tool = json!({
+            "type": "function",
+            "name": "report_status",
+            "description": "Report status",
+            "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+        });
+        let req = make_req("prompt", vec![tool], Some("required"));
+        let body = build_anthropic_request_body(&make_cfg(Some(256)), &req).unwrap();
+
+        assert_eq!(body["model"], "gpt-4.1");
+        assert_eq!(body["max_tokens"], 256);
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": "prompt"}])
+        );
+        assert!(body.get("system").is_none());
+        assert_eq!(
+            body["tools"],
+            json!([{
+                "name": "report_status",
+                "description": "Report status",
+                "input_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }])
+        );
+        assert_eq!(body["tool_choice"], json!({"type": "any"}));
+
+        for (choice, expected) in [("auto", "auto"), ("none", "none")] {
+            let tool = json!({"type": "function", "name": "f"});
+            let req = make_req("p", vec![tool], Some(choice));
+            let body = build_anthropic_request_body(&make_cfg(None), &req).unwrap();
+            assert_eq!(body["tool_choice"], json!({"type": expected}));
+            assert_eq!(body["tools"][0]["input_schema"], json!({"type": "object"}));
+        }
+    }
+
+    #[test]
+    fn build_anthropic_body_omits_optional_fields_when_unset() {
+        let mut cfg = make_cfg(None);
+        cfg.reasoning_effort = Some("low".into());
+        let body =
+            build_anthropic_request_body(&cfg, &make_req("p", vec![], Some("auto"))).unwrap();
+        assert_eq!(body["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS);
+        for field in [
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "reasoning_effort",
+            "system",
+        ] {
+            assert!(body.get(field).is_none(), "{field}: {body}");
+        }
+    }
+
+    #[test]
+    fn build_anthropic_body_rejects_what_it_cannot_express() {
+        let cfg = make_cfg(None);
+        let function = json!({"type": "function", "name": "f"});
+        let cases = [
+            make_req("p", vec![json!({"type": "web_search"})], None),
+            make_req("p", vec![json!({"type": "function"})], None),
+            make_req("p", vec![function], Some("required_all")),
+            ResponseRequest {
+                input: json!([{"role": "user", "content": "p"}]),
+                tools: vec![],
+                tool_choice: None,
+            },
+        ];
+        for req in cases {
+            assert!(matches!(
+                build_anthropic_request_body(&cfg, &req),
+                Err(AiError::Config(_))
+            ));
+        }
     }
 
     #[test]
