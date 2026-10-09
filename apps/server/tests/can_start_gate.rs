@@ -1,7 +1,7 @@
 //! `GET /v1/tasks/{id}/can_start` must consult the same lifecycle gate the
 //! `set_status in_progress` transition passes.
 //!
-//! The core-level coverage (`daruma-core`, `tests/rule_engine.rs`) hands the
+//! The core-level coverage (`daruma-core`, `tests/it/rule_engine.rs`) hands the
 //! gate to `can_start` by hand. This file covers the seam that decision is
 //! actually made on in production — the route reaching into
 //! `handler.lifecycle_gate` — because that is where the defect could quietly

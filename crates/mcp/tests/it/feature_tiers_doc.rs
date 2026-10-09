@@ -3,7 +3,7 @@ use std::{env, fs, path::PathBuf};
 use daruma_mcp::tools::{tool_definitions, Tier, ToolDefinition, ToolDomain};
 
 const STALE_MSG: &str =
-    "doc stale, run UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test feature_tiers_doc";
+    "doc stale, run UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test it feature_tiers_doc";
 
 #[test]
 fn feature_tiers_doc_matches_catalogue() {
@@ -29,7 +29,7 @@ fn build_markdown() -> String {
     let mut out = String::new();
 
     out.push_str("# MCP feature tiers\n\n");
-    out.push_str("АВТО-СГЕНЕРИРОВАНО из `crates/mcp/src/tools.rs` — не редактировать вручную; regenerate: `UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test feature_tiers_doc`\n\n");
+    out.push_str("АВТО-СГЕНЕРИРОВАНО из `crates/mcp/src/tools.rs` — не редактировать вручную; regenerate: `UPDATE_GOLDEN=1 cargo test -p daruma-mcp --test it feature_tiers_doc`\n\n");
     out.push_str(
         "Рамка: [feature-tiers.md](../../../meisei-research/docs/canon/feature-tiers.md).\n\n",
     );
