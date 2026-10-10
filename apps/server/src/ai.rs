@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use daruma_ai_infra::client::{OpenAiClient, ResponseOutput, ResponseRequest};
+use daruma_ai_infra::AiProvider;
 use daruma_ai_infra::prompts::PromptRegistry;
 use daruma_ai_infra::untrusted::wrap_untrusted;
 
@@ -115,8 +115,10 @@ fn build_prompt(tasks: &[TaskBrief]) -> String {
 /// `tasks` (when the model returns a row per input). Tasks the model
 /// omits from its response are simply absent in the returned vec.
 ///
+/// Goes through [`AiProvider`] like every other call site, so an observing or
+/// routing wrapper around the provider sees this call too.
 pub async fn analyze_complexity_batch(
-    client: &OpenAiClient,
+    provider: &dyn AiProvider,
     tasks: Vec<TaskBrief>,
 ) -> Result<Vec<ComplexityHint>, CoreError> {
     if tasks.is_empty() {
@@ -131,25 +133,9 @@ pub async fn analyze_complexity_batch(
     }
 
     let prompt = build_prompt(&tasks);
-    let req = ResponseRequest {
-        input: Value::String(prompt),
-        tools: vec![analyze_complexity_tool()],
-        tool_choice: Some("required".into()),
-    };
-
-    let outputs = client.respond(req).await.map_err(CoreError::from)?;
-    let tc = outputs
-        .into_iter()
-        .find_map(|o| match o {
-            ResponseOutput::ToolCall(tc) if tc.name == "report_complexity" => Some(tc),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            CoreError::ai("analyze_complexity_batch: model returned no report_complexity call")
-        })?;
-
-    let args: Value =
-        serde_json::from_str(&tc.arguments).map_err(|e| CoreError::serde(e.to_string()))?;
+    let args = provider
+        .generate_object(prompt, vec![analyze_complexity_tool()], "report_complexity")
+        .await?;
     let raw_hints = args["hints"]
         .as_array()
         .ok_or_else(|| CoreError::validation("report_complexity: missing 'hints' array"))?;
@@ -261,6 +247,68 @@ mod tests {
         assert!(prompt.contains(&b.to_string()));
         assert!(prompt.contains("Wire DB layer"));
         assert!(prompt.contains("two-line"));
+    }
+
+    /// Records what the batch asked the provider for and answers with a
+    /// canned `report_complexity` payload — no network, no `OpenAiClient`.
+    struct ScriptedProvider {
+        answer: Value,
+        asked: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AiProvider for ScriptedProvider {
+        async fn generate_text(&self, _prompt: String) -> Result<String, CoreError> {
+            Err(CoreError::ai("analyze_complexity_batch must not ask for text"))
+        }
+
+        async fn generate_object(
+            &self,
+            _prompt: String,
+            tools: Vec<Value>,
+            expected_tool: &str,
+        ) -> Result<Value, CoreError> {
+            self.asked.lock().unwrap().push((
+                tools[0]["name"].as_str().unwrap_or_default().to_owned(),
+                expected_tool.to_owned(),
+            ));
+            Ok(self.answer.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_goes_through_the_provider_trait() {
+        let known = TaskId::new();
+        let provider = ScriptedProvider {
+            answer: json!({"hints": [
+                {"task_id": known.to_string(), "score": 42, "recommended_subtasks": 3,
+                 "expansion_hint": " split by layer ", "reasoning": "r"},
+                {"task_id": TaskId::new().to_string(), "score": 5,
+                 "recommended_subtasks": 1, "expansion_hint": "", "reasoning": ""}
+            ]}),
+            asked: Default::default(),
+        };
+
+        let hints = analyze_complexity_batch(
+            &provider,
+            vec![TaskBrief {
+                task_id: known,
+                title: "Wire DB layer".into(),
+                description: String::new(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            provider.asked.lock().unwrap().as_slice(),
+            &[("report_complexity".to_owned(), "report_complexity".to_owned())]
+        );
+        // The invented task id is dropped; the known one is clamped and trimmed.
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].task_id, known);
+        assert_eq!(hints[0].score, 10);
+        assert_eq!(hints[0].expansion_hint, "split by layer");
     }
 
     #[test]
