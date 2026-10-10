@@ -97,3 +97,71 @@ async fn list_without_resolved_project_returns_project_selection() {
     assert!(result["projects"][0].get("description").is_none());
     assert_eq!(result["next_tool"]["name"], "daruma_project_use");
 }
+
+/// A repo registered twice (`Corporate game` + `corporate-game` / slug `-1`)
+/// splits its tasks across two ids. Both listings must point each copy at the
+/// other so an agent bound to one id does not silently miss the rest.
+async fn serve_duplicated_projects() -> (String, tokio::task::JoinHandle<()>) {
+    let router = Router::new().fallback(any(|req: Request<Body>| async move {
+        match req.uri().path() {
+            "/v1/projects" => (
+                StatusCode::OK,
+                axum::Json(json!([
+                    {"id": "prj_old", "title": "Corporate game", "slug": "corporate-game"},
+                    {"id": "prj_new", "title": "corporate-game", "slug": "corporate-game-1"},
+                    {"id": "prj_other", "title": "daruma", "slug": "daruma"}
+                ])),
+            ),
+            path => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": format!("unexpected request: {path}")})),
+            ),
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (base, handle)
+}
+
+#[tokio::test]
+async fn project_list_marks_same_title_projects_as_possible_duplicates() {
+    let (base, server) = serve_duplicated_projects().await;
+    let client = ApiClient::new(base, "test-token");
+    let result = call_tool(&client, "daruma_project_list", json!({}))
+        .await
+        .expect("daruma_project_list");
+    server.abort();
+
+    let projects = result.as_array().expect("project list stays an array");
+    assert_eq!(projects.len(), 3);
+    assert_eq!(projects[0]["possible_duplicates"][0]["id"], "prj_new");
+    assert_eq!(
+        projects[0]["possible_duplicates"][0]["slug"],
+        "corporate-game-1"
+    );
+    assert_eq!(projects[1]["possible_duplicates"][0]["id"], "prj_old");
+    assert_eq!(
+        projects[1]["possible_duplicates"].as_array().unwrap().len(),
+        1
+    );
+    assert!(projects[2].get("possible_duplicates").is_none());
+}
+
+#[tokio::test]
+async fn project_selection_marks_possible_duplicates() {
+    let (base, server) = serve_duplicated_projects().await;
+    let client = ApiClient::new(base, "test-token");
+    let result = call_tool(&client, "daruma_list", json!({"status": "active"}))
+        .await
+        .expect("daruma_list should return project selection");
+    server.abort();
+
+    assert_eq!(result["needs_project_selection"], true);
+    let projects = result["projects"].as_array().unwrap();
+    assert_eq!(projects[0]["possible_duplicates"][0]["id"], "prj_new");
+    assert_eq!(projects[1]["possible_duplicates"][0]["id"], "prj_old");
+    assert!(projects[2].get("possible_duplicates").is_none());
+}
