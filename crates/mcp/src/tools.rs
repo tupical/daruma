@@ -369,7 +369,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_list",
             "List projects",
-            "List every project (id, title, description).",
+            "List every project (id, title, description). Projects whose titles name the same thing (e.g. `Corporate game` and `corporate-game`) carry `possible_duplicates`: the other project ids. Tasks, plans and audit findings may be split between them — check every id before concluding history is missing.",
             empty_schema(),
             Dom::Projects, D, C, Ann::Read,
         ),
@@ -1632,7 +1632,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .join("&");
             client.get_json(&format!("/v1/search?{qs}")).await
         }
-        "daruma_project_list" => client.get_json("/v1/projects").await,
+        "daruma_project_list" => {
+            let mut projects = client.get_json("/v1/projects").await?;
+            mark_possible_duplicates(&mut projects);
+            Ok(projects)
+        }
         "daruma_project_create" => {
             let title = required_string(&args, "title")?;
             let description = args
@@ -4904,6 +4908,8 @@ async fn project_selection_response(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let mut projects = Value::Array(projects);
+    mark_possible_duplicates(&mut projects);
     Ok(json!({
         "needs_project_selection": true,
         "reason": "No default Daruma project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
@@ -4917,6 +4923,57 @@ async fn project_selection_response(
             }
         }
     }))
+}
+
+/// Flags projects that look like one project registered twice. A repo bound
+/// again before cloud-side slug adoption landed got a fresh project with a
+/// `-1` slug, so its tasks split across two ids and an agent bound to one id
+/// silently missed the other half. Grouping is by title with separators and
+/// case dropped (`Corporate game` == `corporate-game`) — the same equivalence
+/// the gateway applies to `project_slug`, extended to non-ASCII titles.
+/// Purely a hint: nothing is merged.
+fn mark_possible_duplicates(projects: &mut Value) {
+    let Some(items) = projects.as_array_mut() else {
+        return;
+    };
+    let key = |project: &Value| {
+        project
+            .get("title")
+            .and_then(Value::as_str)
+            .map(|title| {
+                title
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>()
+            })
+            .filter(|key| !key.is_empty())
+    };
+    let keys: Vec<Option<String>> = items.iter().map(key).collect();
+    let refs: Vec<Value> = items
+        .iter()
+        .map(|project| {
+            json!({
+                "id": project.get("id").cloned().unwrap_or(Value::Null),
+                "slug": project.get("slug").cloned().unwrap_or(Value::Null),
+                "title": project.get("title").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    for (i, item) in items.iter_mut().enumerate() {
+        let Some(own) = keys[i].as_deref() else {
+            continue;
+        };
+        let others: Vec<Value> = keys
+            .iter()
+            .enumerate()
+            .filter(|(j, other)| *j != i && other.as_deref() == Some(own))
+            .map(|(j, _)| refs[j].clone())
+            .collect();
+        if let (false, Some(obj)) = (others.is_empty(), item.as_object_mut()) {
+            obj.insert("possible_duplicates".into(), Value::Array(others));
+        }
+    }
 }
 
 fn view_arg(args: &Map<String, Value>, default: &str, allowed: &[&str]) -> anyhow::Result<String> {
