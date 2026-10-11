@@ -432,6 +432,95 @@ async fn plan_remove_task_supersedes_open_run_step_via_mcp() {
     assert_eq!(steps[0]["outcome"]["kind"], "superseded", "{timeline}");
 }
 
+// ── S3: run_complete checks the pass postconditions ─────────────────────────
+//
+// Reproduces 01a126e4 over MCP: the step is finished `done` while the task
+// never reached its handoff, so run_complete is refused and the run stays
+// active; after the handoff transition the same call succeeds.
+#[tokio::test]
+async fn run_complete_requires_step_handoff_via_mcp() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token);
+
+    let pid = create_project_via_mcp(&client, "Postcondition Project").await;
+    let materialized = call_tool(
+        &client,
+        "daruma_plan_materialize",
+        json!({ "plan": { "title": "Postcondition Plan", "project_id": pid }, "tasks": [ { "title": "Builder task" } ] }),
+    )
+    .await;
+    let created = |kind: &str, field: &str| -> String {
+        materialized["data"]
+            .as_array()
+            .and_then(|a| {
+                a.iter().find_map(|e| {
+                    let p = e.get("payload")?;
+                    (p.get("type")?.as_str()? == kind)
+                        .then(|| p.get(field)?.get("id")?.as_str().map(str::to_owned))?
+                })
+            })
+            .unwrap_or_else(|| panic!("{kind} in {materialized}"))
+    };
+    let plan_id = created("plan_created", "plan");
+    let task_id = created("task_created", "task");
+    let active = call_tool(
+        &client,
+        "daruma_plan_set_status",
+        json!({ "plan_id": plan_id, "status": "active" }),
+    )
+    .await;
+    assert_eq!(active["success"], true, "activate: {active}");
+
+    let run = call_tool(
+        &client,
+        "daruma_run_start",
+        json!({ "plan_id": plan_id, "agent_id": app.admin_agent_id.as_uuid().to_string() }),
+    )
+    .await;
+    let run_id = run["run_id"].as_str().expect("run_id").to_owned();
+    call_tool(
+        &client,
+        "daruma_run_start_step",
+        json!({ "run_id": run_id, "task_id": task_id }),
+    )
+    .await;
+    call_tool(
+        &client,
+        "daruma_run_finish_step",
+        json!({ "run_id": run_id, "task_id": task_id, "outcome": { "kind": "done" } }),
+    )
+    .await;
+
+    let refused = dispatch_request(
+        &client,
+        req(
+            "tools/call",
+            json!({ "name": "daruma_run_complete", "arguments": { "run_id": run_id } }),
+        ),
+    )
+    .await
+    .unwrap();
+    let refused = format!("{refused:?}");
+    assert!(refused.contains("run_postcondition_unmet"), "{refused}");
+    assert!(refused.contains(&task_id), "{refused}");
+    let timeline = client
+        .get_json(&format!("/v1/runs/{run_id}/timeline"))
+        .await
+        .unwrap();
+    assert_eq!(timeline["run"]["status"], "active", "{timeline}");
+
+    let handoff = call_tool(
+        &client,
+        "daruma_set_status",
+        json!({ "id": task_id, "status": "in_review" }),
+    )
+    .await;
+    assert_eq!(handoff["success"], true, "handoff: {handoff}");
+    let completed = call_tool(&client, "daruma_run_complete", json!({ "run_id": run_id })).await;
+    assert_eq!(completed["success"], true, "complete: {completed}");
+}
+
 #[tokio::test]
 async fn plan_status_override_reaches_http_and_returns_warning_via_mcp() {
     let app = TestAppBuilder::default()

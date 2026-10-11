@@ -854,7 +854,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_run_complete",
             "Complete run",
-            "Terminate a run successfully.",
+            "Terminate a run successfully. 409 run_postcondition_unmet while a step is open or a step finished done has no task handoff (in_review/done/reject/advance_pipeline) since it started.",
             schema_with_id("run_id"),
             Dom::Runs, D, E, Ann::WriteIdem,
         ),
