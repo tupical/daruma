@@ -17,14 +17,14 @@
 | Coordination | 0 | 24 | 1 |
 | Ai | 0 | 0 | 1 |
 | Events | 0 | 2 | 0 |
-| WorkspaceGraph | 0 | 0 | 16 |
+| WorkspaceGraph | 0 | 0 | 17 |
 | Runs | 0 | 8 | 0 |
 | Sessions | 0 | 0 | 7 |
 | Signals | 0 | 2 | 0 |
 | Relations | 0 | 3 | 0 |
 | Documents | 0 | 0 | 9 |
 | History | 0 | 0 | 6 |
-| ИТОГО | 19 | 61 | 49 |
+| ИТОГО | 19 | 61 | 50 |
 
 ## Plans
 
@@ -154,6 +154,7 @@
 | `daruma_role_artifact_propose` | Extending / расширяющие | `full` | Propose role artifact | write |
 | `daruma_role_artifact_set_status` | Extending / расширяющие | `full` | Set role artifact status | write |
 | `daruma_role_artifact_list` | Extending / расширяющие | `full` | List role artifacts | read |
+| `daruma_role_artifact_apply_patch` | Extending / расширяющие | `full` | Apply draft patch | write |
 | `daruma_workspacegraph_status` | Extending / расширяющие | `full` | WorkspaceGraph index health | read |
 | `daruma_workspacegraph_context` | Extending / расширяющие | `full` | Graph node neighborhood | read |
 | `daruma_workspacegraph_related` | Extending / расширяющие | `full` | Graph related nodes | read |

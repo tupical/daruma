@@ -606,3 +606,145 @@ async fn role_artifacts_flow_through_mcp_tools() {
     assert_eq!(plain["artifacts"].as_array().unwrap().len(), 3);
     assert_eq!(plain["artifacts"][0]["role_artifact"]["role"], "draft");
 }
+
+/// ADR-0011 п.6: the builder revalidates a draft patch's context anchor
+/// against the file as it is now. Shifted lines still apply exactly; a
+/// broken anchor or a line-addressed payload is a `regenerate` with no
+/// content, and the artifact status records the outcome.
+#[tokio::test]
+async fn draft_patch_anchor_is_revalidated_by_builder() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        "/v1/commands",
+        r#"{"command":{"type":"create_task","task":{"title":"Draft patch anchors e2e"}}}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create_task failed: {body}");
+    let task_id = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| {
+            let p = e.get("payload")?;
+            (p.get("type")?.as_str()? == "task_created")
+                .then(|| p["task"]["id"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .expect("task_created event");
+
+    let patch = json!({
+        "path": "src/lib.rs",
+        "edits": [{
+            "symbol": "fn run",
+            "before": ["fn run() -> u8 {"],
+            "old": ["    1"],
+            "new": ["    2"],
+            "after": ["}"]
+        }]
+    });
+    let propose = |payload: Value| {
+        let addr = addr;
+        let token = token.clone();
+        let task_id = task_id.clone();
+        async move {
+            let res = mcp_tool(
+                &addr,
+                &token,
+                "daruma_role_artifact_propose",
+                json!({"task_id": task_id, "role": "draft", "kind": "patch", "payload": payload}),
+            )
+            .await;
+            res["data"]["artifact"]["id"].as_str().unwrap().to_owned()
+        }
+    };
+    let good = propose(patch.clone()).await;
+    let stale = propose(patch.clone()).await;
+    let mut numbered = patch.clone();
+    numbered["edits"][0]["line"] = json!(3);
+    let numbered = propose(numbered).await;
+
+    let shifted = "// moved down\n\nfn run() -> u8 {\n    1\n}\n";
+    let dry = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_apply_patch",
+        json!({"artifact_id": good, "path": "src/lib.rs", "content": shifted, "dry_run": true}),
+    )
+    .await;
+    assert_eq!(dry["data"]["outcome"], "applied", "{dry}");
+    assert_eq!(dry["data"]["role_status"], "proposed");
+
+    // A wrong path is a request error, not a verdict: the draft stays proposed.
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{good}/apply-patch"),
+        r#"{"path":"src/main.rs","content":""}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let applied = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_apply_patch",
+        json!({"artifact_id": good, "path": "src/lib.rs", "content": shifted}),
+    )
+    .await;
+    assert_eq!(applied["data"]["outcome"], "applied", "{applied}");
+    assert_eq!(
+        applied["data"]["content"],
+        "// moved down\n\nfn run() -> u8 {\n    2\n}\n"
+    );
+
+    // The file already carries the change: the old anchor no longer matches.
+    let after_good = applied["data"]["content"].as_str().unwrap();
+    let regen = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_apply_patch",
+        json!({"artifact_id": stale, "path": "src/lib.rs", "content": after_good}),
+    )
+    .await;
+    assert_eq!(regen["data"]["outcome"], "regenerate", "{regen}");
+    assert_eq!(regen["data"]["reason"], "context_not_found");
+    assert!(regen["data"]["content"].is_null());
+
+    let invalid = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_apply_patch",
+        json!({"artifact_id": numbered, "path": "src/lib.rs", "content": shifted}),
+    )
+    .await;
+    assert_eq!(invalid["data"]["reason"], "invalid_patch", "{invalid}");
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{good}/apply-patch"),
+        r#"{"path":"src/lib.rs","content":""}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "applied is final: {body}");
+
+    let all = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_list",
+        json!({"task_id": task_id}),
+    )
+    .await;
+    let statuses: Vec<&str> = all["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, vec!["applied", "rejected", "rejected"]);
+}

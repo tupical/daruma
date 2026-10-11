@@ -780,6 +780,19 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_role_artifact_list(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
+        tool(
+            "daruma_role_artifact_apply_patch",
+            "Apply draft patch",
+            "Builder-side revalidation of a proposed draft patch (role artifact kind=patch, \
+             ADR-0011 п.6). Send the file's current `content`; the anchor (symbol + unchanged \
+             lines around the change, never line numbers) must match exactly once. On a \
+             match the result has outcome=applied and the patched `content` to write, and the \
+             artifact becomes applied; otherwise outcome=regenerate with the reason, no \
+             content, and the artifact becomes rejected — leave the file untouched and \
+             request a new draft. No fuzzy application. `dry_run` checks without status change.",
+            schema_role_artifact_apply_patch(),
+            Dom::WorkspaceGraph, F, X, Ann::Write,
+        ),
         // ── WorkspaceGraph ────────────────────────────────────────────────
         tool(
             "daruma_workspacegraph_status",
@@ -1491,9 +1504,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 // trims the description; dedup is skipped because the task
                 // version stamp does not cover comments.
                 let mut out = maybe_bounded(resp, &args, &id, "task description");
-                let comments = client
-                    .get_json(&format!("/v1/tasks/{id}/comments"))
-                    .await?;
+                let comments = client.get_json(&format!("/v1/tasks/{id}/comments")).await?;
                 out["comments"] = comments;
                 return Ok(out);
             }
@@ -3195,6 +3206,21 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 )
                 .await
         }
+        "daruma_role_artifact_apply_patch" => {
+            let artifact_id = required_string(&args, "artifact_id")?;
+            let path = required_string(&args, "path")?;
+            let content = required_string(&args, "content")?;
+            let dry_run = args
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            client
+                .post_json(
+                    &format!("/v1/artifacts/{artifact_id}/apply-patch"),
+                    json!({"path": path, "content": content, "dry_run": dry_run}),
+                )
+                .await
+        }
         "daruma_role_artifact_list" => {
             let task_id = required_string(&args, "task_id")?;
             let mut params = vec![format!("task_id={}", urlencode(&task_id))];
@@ -4509,6 +4535,19 @@ fn schema_role_artifact_set_status() -> Value {
             "status":      {"type":"string","enum":["applied","rejected","superseded"],"description":"New role status; only a proposed artifact can move."}
         },
         "required": ["artifact_id","status"]
+    })
+}
+
+fn schema_role_artifact_apply_patch() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Proposed role artifact with kind=patch."},
+            "path":        {"type":"string","description":"File being changed; must equal the patch's path."},
+            "content":     {"type":"string","description":"Current file content, read right before applying (may be empty)."},
+            "dry_run":     {"type":"boolean","description":"Only revalidate; keep the artifact proposed."}
+        },
+        "required": ["artifact_id","path","content"]
     })
 }
 

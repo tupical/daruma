@@ -8,6 +8,7 @@ pub mod comment;
 pub mod complexity;
 pub mod device;
 pub mod document;
+pub mod draft_patch;
 pub mod evidence;
 pub mod external_ref;
 pub mod field_ownership;
@@ -39,6 +40,7 @@ pub use comment::{Comment, CommentKind, CommentPatch, NewComment, TransitionComm
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;
 pub use document::{Document, DocumentKind, DocumentStatus, NewDocument};
+pub use draft_patch::{AnchorMismatch, AnchoredEdit, DraftPatch, DRAFT_PATCH_KIND};
 pub use evidence::{ActorRef, Evidence, EvidenceKind, EvidenceReach, NewEvidence};
 pub use external_ref::ExternalRef;
 pub use field_ownership::{plan_owned_patch_fields, FieldOwner, TaskField};
