@@ -45,10 +45,11 @@ use daruma_core::{
     Command, CommandEnvelope,
 };
 use daruma_domain::{
-    slugify_title, Actor, AgentSessionPlanStep, ArtifactRelationKind, ArtifactStatus, CommentKind,
-    CommentPatch, ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument,
-    NewPlan, Plan, PlanPatch, PlanStatus, RoleArtifactStatus, RunOutcome, SessionArtifactKind,
-    SignalKind, Status, Task, TaskPatch, TriageState, Verb, WorkUnitStatus,
+    slugify_title, Actor, AgentSessionPlanStep, AnchorMismatch, ArtifactRelationKind,
+    ArtifactStatus, CommentKind, CommentPatch, ComplexityHint, Document, DocumentKind, DraftPatch,
+    NewArtifact, NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus, RoleArtifactStatus,
+    RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState, Verb,
+    WorkUnitStatus, DRAFT_PATCH_KIND,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -202,6 +203,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
             "/artifacts/{id}/role-status",
             post(set_role_artifact_status),
         )
+        .route("/artifacts/{id}/apply-patch", post(apply_draft_patch))
         // ── Audit primitives ────────────────────────────────────────────────
         .route(
             "/audit/findings",
@@ -2728,6 +2730,100 @@ async fn set_role_artifact_status(
             to: body.status,
         },
         json!({ "artifact_id": artifact_id, "status": body.status.as_str() }),
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct ApplyDraftPatchBody {
+    /// Path of the file the builder is about to change.
+    path: String,
+    /// Current content of that file, read right before applying.
+    content: String,
+    /// Revalidate only: return the outcome without touching `role_status`.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// `POST /v1/artifacts/{id}/apply-patch` — builder-side revalidation of a
+/// proposed `kind=patch` role artifact (ADR-0011 п.6). The anchor is checked
+/// against the content the builder sends; on an exact unique match the
+/// response carries the patched content and the artifact becomes `applied`,
+/// otherwise the outcome is `regenerate` with the reason, no content is
+/// returned and the artifact becomes `rejected`. No fuzzy application.
+async fn apply_draft_patch(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<ApplyDraftPatchBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let artifact_id: ArtifactId = parse_id(id_str, "artifact id")?;
+    let artifact = state
+        .artifacts
+        .get(artifact_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("artifact {artifact_id}"))))?;
+    let Some(role) = artifact.role_artifact else {
+        return Err(ApiError::from(CoreError::validation(format!(
+            "artifact {artifact_id} is not a role artifact"
+        ))));
+    };
+    if role.kind != DRAFT_PATCH_KIND {
+        return Err(ApiError::from(CoreError::validation(format!(
+            "role artifact {artifact_id} has kind {}, expected {DRAFT_PATCH_KIND}",
+            role.kind
+        ))));
+    }
+    if role.status != RoleArtifactStatus::Proposed {
+        return Err(ApiError::from(CoreError::conflict(format!(
+            "role artifact {artifact_id} is {}, only proposed can be applied",
+            role.status.as_str()
+        ))));
+    }
+    let outcome = DraftPatch::from_payload(&role.payload)
+        .and_then(|patch| patch.apply(&body.path, &body.content));
+    // A caller pointing at the wrong file is a request error, not a verdict
+    // on the draft: the artifact stays proposed.
+    if let Err(AnchorMismatch::PathMismatch { expected, actual }) = &outcome {
+        return Err(ApiError::from(CoreError::validation(format!(
+            "draft patch targets {expected}, not {actual}"
+        ))));
+    }
+    let to = if outcome.is_ok() {
+        RoleArtifactStatus::Applied
+    } else {
+        RoleArtifactStatus::Rejected
+    };
+    let mut data = match &outcome {
+        Ok(content) => json!({"outcome": "applied", "content": content}),
+        Err(mismatch) => json!({
+            "outcome": "regenerate",
+            "reason": mismatch.code(),
+            "mismatch": mismatch,
+        }),
+    };
+    data["artifact_id"] = json!(artifact_id);
+    data["dry_run"] = json!(body.dry_run);
+    if body.dry_run {
+        data["role_status"] = json!(RoleArtifactStatus::Proposed.as_str());
+        return Ok(Json(MutationResponse {
+            success: true,
+            event_id: None,
+            event_seq: None,
+            data,
+            warnings: vec![],
+            client_command_id: None,
+        }));
+    }
+    data["role_status"] = json!(to.as_str());
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::SetRoleArtifactStatus { artifact_id, to },
+        data,
     )
     .await
 }

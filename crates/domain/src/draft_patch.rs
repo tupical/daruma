@@ -158,7 +158,10 @@ impl AnchoredEdit {
             }
         };
         let end = start + window.len();
-        if !lines[..end].iter().any(|l| l.contains(self.symbol.as_str())) {
+        if !lines[..end]
+            .iter()
+            .any(|l| l.contains(self.symbol.as_str()))
+        {
             return Err(AnchorMismatch::SymbolNotFound {
                 edit: index,
                 symbol: self.symbol.clone(),
@@ -213,7 +216,9 @@ impl Department {
     #[test]
     fn missing_context_is_a_mismatch_and_nothing_changes() {
         let changed = FILE.replace("headcount += 1", "headcount += 2");
-        let err = hire_fix().apply("src/game/hiring.rs", &changed).unwrap_err();
+        let err = hire_fix()
+            .apply("src/game/hiring.rs", &changed)
+            .unwrap_err();
         assert_eq!(err, AnchorMismatch::ContextNotFound { edit: 0 });
         assert_eq!(err.code(), "context_not_found");
     }
@@ -232,7 +237,10 @@ impl Department {
         let twice = format!("{FILE}{FILE}");
         assert_eq!(
             hire_fix().apply("src/game/hiring.rs", &twice).unwrap_err(),
-            AnchorMismatch::Ambiguous { edit: 0, matches: 2 }
+            AnchorMismatch::Ambiguous {
+                edit: 0,
+                matches: 2
+            }
         );
     }
 
@@ -240,7 +248,9 @@ impl Department {
     fn symbol_must_precede_the_window() {
         let renamed = FILE.replace("fn hire_employee", "fn recruit");
         assert_eq!(
-            hire_fix().apply("src/game/hiring.rs", &renamed).unwrap_err(),
+            hire_fix()
+                .apply("src/game/hiring.rs", &renamed)
+                .unwrap_err(),
             AnchorMismatch::SymbolNotFound {
                 edit: 0,
                 symbol: "fn hire_employee".into()
@@ -297,8 +307,8 @@ impl Department {
             edit.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
-            let err = DraftPatch::from_payload(&json!({"path": "a.rs", "edits": [edit]}))
-                .unwrap_err();
+            let err =
+                DraftPatch::from_payload(&json!({"path": "a.rs", "edits": [edit]})).unwrap_err();
             assert_eq!(err.code(), "invalid_patch", "{err:?}");
         }
     }
