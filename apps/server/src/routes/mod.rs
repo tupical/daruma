@@ -1039,6 +1039,7 @@ fn rollback_task_command(after: Value) -> Result<Command, ApiError> {
             due_at: Some(task.due_at),
             project_id: Some(task.project_id),
             git_context: Some(task.git_context),
+            pipeline_position: None,
         },
     })
 }
@@ -5128,6 +5129,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::DeleteTask { .. }
         | Command::SetStatus { .. }
         | Command::SetPriority { .. }
+        | Command::AdvancePipeline { .. }
         | Command::SplitTask { .. }
         | Command::BulkSetStatus { .. } => Capability::TaskWrite,
         Command::CreateProject { .. }

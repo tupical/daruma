@@ -180,6 +180,24 @@ impl TaskRepo {
         row.as_ref().map(row_to_task).transpose()
     }
 
+    /// ADR-0011 п.2: the task's `metadata_json.pipeline_position`, `None` for
+    /// a task that is not pipeline-managed (or does not exist).
+    pub async fn pipeline_position(
+        &self,
+        id: TaskId,
+    ) -> Result<Option<daruma_domain::PipelinePosition>> {
+        let raw: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT json_extract(metadata_json, '$.pipeline_position') FROM tasks WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        raw.flatten()
+            .map(|json| serde_json::from_str(&json).map_err(|e| CoreError::serde(e.to_string())))
+            .transpose()
+    }
+
     /// Look up a task by its external idempotency key (workspace-scoped —
     /// the whole database is one workspace, and `external_key` is unique
     /// among non-NULL values). Returns `None` when no task carries the key.
@@ -333,6 +351,9 @@ impl TaskRepo {
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
                     self.upsert_task_tx(&mut tx, &task).await?;
+                    if let Some(position) = &patch.pipeline_position {
+                        stamp_pipeline_position(&mut tx, *task_id, position).await?;
+                    }
                     insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
@@ -850,6 +871,25 @@ fn stamp_last_change(task: &mut Task, envelope: &EventEnvelope) {
 /// is pure audit telemetry read only by the "stuck in status" query — so it is
 /// written here, in the same transaction as the row, rather than threaded
 /// through every `Task` constructor.
+/// ADR-0011 п.2: write `metadata_json.pipeline_position`, keeping other keys.
+async fn stamp_pipeline_position(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: TaskId,
+    position: &daruma_domain::PipelinePosition,
+) -> Result<()> {
+    let value = serde_json::to_string(position).map_err(|e| CoreError::storage(e.to_string()))?;
+    sqlx::query(
+        "UPDATE tasks SET metadata_json = json_set(COALESCE(metadata_json, '{}'), \
+         '$.pipeline_position', json(?)) WHERE id = ?",
+    )
+    .bind(value)
+    .bind(task_id.to_string())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(())
+}
+
 async fn stamp_status_changed_at(
     tx: &mut Transaction<'_, Sqlite>,
     task_id: TaskId,

@@ -12,6 +12,7 @@ pub mod evidence;
 pub mod external_ref;
 pub mod field_ownership;
 pub mod handoff;
+pub mod pipeline;
 pub mod plan;
 pub mod project;
 pub mod project_settings;
@@ -39,6 +40,9 @@ pub use evidence::{ActorRef, Evidence, EvidenceKind, EvidenceReach, NewEvidence}
 pub use external_ref::ExternalRef;
 pub use field_ownership::{plan_owned_patch_fields, FieldOwner, TaskField};
 pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};
+pub use pipeline::{
+    canonical_status, direct_status_write_allowed, PipelinePosition, PIPELINE_POSITION_KEY,
+};
 pub use plan::{
     deserialize_double_option, normalize_source_ref, CanStart, CanStartBlocker, CanStartRule,
     NewPlan, Plan, PlanFanoutWave, PlanGraph, PlanGraphEdge, PlanGraphNode, PlanPatch,
