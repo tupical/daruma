@@ -228,6 +228,42 @@ repeats the call instead of guessing:
 Launcher readback (S8) treats `success: true` with or without `already_*` as
 the same postcondition and still reads the run and task back.
 
+### Launcher readback (S8)
+
+The cron launchers (`~/.hermes/scripts/mcpbox_*.sh`) reach the tracker through
+one shared helper, `~/.hermes/scripts/mcpbox_tracker.py` (task
+`01a12b83-25e5-70a2-be19-23d8ef5122ac`; tests in
+`~/.hermes/scripts/tests/test_mcpbox_tracker.py`). The draft readback uses it
+today; builder/reviewer handoff checks (S9/S10) build on it.
+
+- **Exit code 0 is not success.** A call succeeds only when stdout parses as
+  JSON with no error: a non-zero exit, a timeout, empty or unparseable stdout
+  (a lost response), a JSON-RPC `error`, `isError` / `result.isError`, an
+  `error` key in the mcporter envelope (`{server, tool, error, issue}`, which
+  mcporter may print with exit 0) and `success: false` are all failures,
+  classified by kind.
+- **Retries.** `429` (rate limited) and timeout / transport / `5xx` / lost
+  response are retried with bounded pauses of 3, 6, 15 and 30 s, then the call
+  fails. Validation errors, `401`, `403` and other tool errors (e.g. `409`)
+  are never retried.
+- **Ambiguous mutation.** When a mutating call may have executed (timeout,
+  transport, `5xx`, lost response), the helper first runs the caller's
+  readback; if it shows the effect, the call counts as done and is not
+  repeated. A mutation without a readback is not repeated blindly — it fails.
+  `429` means the request was not executed, so it is retried directly.
+- **Identifiers.** `task_id`, `run_id` and `claim.agent_id` come only from the
+  structured claim response (`drain_next` / `current_claim`), never from a
+  title or prose. They are verified by `daruma_get`: the task must read back
+  `in_progress` with the same `current_claim` agent, run and claim. A claim
+  response without a task or run id is incomplete — the pass is failed, not
+  successful.
+- **Secrets.** The helper never reads token files; error text is redacted
+  (`MCPBOX_STATIC_PAT`, `Bearer …`, `token=…`) before it is logged.
+
+The helper is deterministic and needs no AI provider; with a provider the
+models drive the same calls, but the launcher decides success only from these
+checks.
+
 ### Matrix
 
 | Pass | Task transition proving the attempt | Step outcome | Run end |
