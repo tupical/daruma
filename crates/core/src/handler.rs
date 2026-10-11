@@ -895,6 +895,94 @@ impl CommandHandler {
         )))
     }
 
+    /// Pass completion contract (EXECUTOR-LOOP §«Pass completion contract»,
+    /// postconditions 1–3): a run completes only when none of its steps is
+    /// open and every step finished `done` is backed by a handoff transition
+    /// of its task recorded after the step started. Reads the committed
+    /// `run_steps` and `activity` projections, so the decision does not depend
+    /// on which handler instance appended the steps or the transitions.
+    /// Runs without steps (research, plan inspection) stay compatible.
+    async fn ensure_run_postconditions(
+        &self,
+        run_id: RunId,
+        runs: &dyn RunRepository,
+    ) -> Result<()> {
+        for step in runs.list_steps(run_id).await? {
+            let task_id = step.task_id;
+            if step.finished_at.is_none() {
+                return Err(CoreError::conflict(format!(
+                    "run_postcondition_unmet: run {run_id} still has an open step for task \
+                     {task_id}; finish it with run_finish_step (done after the handoff \
+                     transition, failed otherwise) before run_complete"
+                )));
+            }
+            let done = step
+                .outcome
+                .as_ref()
+                .and_then(|o| o.get("kind"))
+                .and_then(|k| k.as_str())
+                == Some("done");
+            if done
+                && !self
+                    .handoff_recorded_since(task_id, step.started_at)
+                    .await?
+            {
+                return Err(CoreError::conflict(format!(
+                    "run_postcondition_unmet: run {run_id} step for task {task_id} finished \
+                     done, but the task has no handoff transition (in_review, done, review \
+                     reject in_review→todo, or advance_pipeline) since the step started at {}; \
+                     record the transition first, or finish the step failed and abort the run",
+                    step.started_at.to_rfc3339()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the task's history holds a handoff transition at or after
+    /// `since`: a status change into `in_review`/`done`, a review reject
+    /// `in_review → todo`, or a pipeline position change (`AdvancePipeline`,
+    /// the only status path of a pipeline-managed task). A later reject or
+    /// reopen does not erase an earlier handoff.
+    async fn handoff_recorded_since(
+        &self,
+        task_id: TaskId,
+        since: daruma_shared::Timestamp,
+    ) -> Result<bool> {
+        let mut cursor = None;
+        loop {
+            let (rows, next, has_more) = self
+                .activity
+                .list_for_task(task_id, cursor, 500, None)
+                .await?;
+            for row in rows.iter().filter(|r| r.occurred_at >= since) {
+                let handoff = match row.field.as_deref() {
+                    Some("status") => {
+                        let to = row.new_value.as_deref();
+                        to == Some(Status::InReview.as_str())
+                            || to == Some(Status::Done.as_str())
+                            || (row.old_value.as_deref() == Some(Status::InReview.as_str())
+                                && to == Some(Status::Todo.as_str()))
+                    }
+                    _ => row
+                        .new_value
+                        .as_deref()
+                        .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+                        .is_some_and(|patch| {
+                            patch.get("pipeline_position").is_some_and(|p| !p.is_null())
+                        }),
+                };
+                if handoff {
+                    return Ok(true);
+                }
+            }
+            if !has_more {
+                return Ok(false);
+            }
+            cursor = next;
+        }
+    }
+
     /// The task an `AdvancePipeline`/`ClosePipelineStage` acts on; a cancelled
     /// task has left its pipeline.
     async fn pipeline_task(&self, id: TaskId) -> Result<Task> {
@@ -2921,10 +3009,11 @@ impl CommandHandler {
             }
 
             Command::CompleteRun { run_id } => {
-                let run = self
+                let runs = self
                     .runs
                     .as_ref()
-                    .ok_or_else(|| CoreError::storage("run repository not configured"))?
+                    .ok_or_else(|| CoreError::storage("run repository not configured"))?;
+                let run = runs
                     .get(run_id)
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("run {run_id}")))?;
@@ -2932,6 +3021,8 @@ impl CommandHandler {
                 if run.status != RunStatus::Active {
                     return Err(CoreError::conflict("run is not active"));
                 }
+                self.ensure_run_postconditions(run_id, runs.as_ref())
+                    .await?;
 
                 let now = time::now();
                 Ok(vec![Event::RunCompleted { run_id, at: now }])
