@@ -44,7 +44,8 @@ pub use external_ref::ExternalRef;
 pub use field_ownership::{plan_owned_patch_fields, FieldOwner, TaskField};
 pub use handoff::{HandoffContract, HandoffStatus, NewHandoffContract};
 pub use pipeline::{
-    canonical_status, direct_status_write_allowed, PipelinePosition, PIPELINE_POSITION_KEY,
+    canonical_status, direct_status_write_allowed, fan_in_blocks, FanIn, PipelinePosition,
+    MAX_STAGE_FANOUT, PIPELINE_POSITION_KEY,
 };
 pub use plan::{
     deserialize_double_option, normalize_source_ref, CanStart, CanStartBlocker, CanStartRule,

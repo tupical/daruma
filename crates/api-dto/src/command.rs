@@ -75,6 +75,18 @@ pub enum Command {
         id: TaskId,
         position: daruma_domain::PipelinePosition,
     },
+    /// ADR-0011 п.4: one parallel instance of the task's current stage
+    /// (`stage_index`) reports its part closed. Records the instance in the
+    /// position's fan-in and never writes the status itself. When this report
+    /// closes the barrier and `then` is given, the task advances to `then`
+    /// through the same derivation as `AdvancePipeline` — exactly once.
+    ClosePipelineStage {
+        id: TaskId,
+        stage_index: u32,
+        instance: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        then: Option<daruma_domain::PipelinePosition>,
+    },
 
     // ── Bulk task commands (§3.7.7 / LIN B.7) ─────────────────────────────────
     /// Atomically set the same status on up to 50 tasks. Duplicate ids are
@@ -609,6 +621,7 @@ impl Command {
             Command::SetStatus { .. } => "set_status",
             Command::SetPriority { .. } => "set_priority",
             Command::AdvancePipeline { .. } => "advance_pipeline",
+            Command::ClosePipelineStage { .. } => "close_pipeline_stage",
             Command::BulkSetStatus { .. } => "bulk_set_status",
             Command::BulkAttachToPlan { .. } => "bulk_attach_to_plan",
             Command::CreateProject { .. } => "create_project",
