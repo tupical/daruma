@@ -337,6 +337,11 @@ pub struct TaskPatch {
         deserialize_with = "crate::plan::deserialize_double_option"
     )]
     pub git_context: Option<Option<GitContext>>,
+    /// ADR-0011 п.2: new pipeline position, stored in the task's
+    /// `metadata_json` (not a [`Task`] field). Set only by the
+    /// `advance_pipeline` command; `update_task` rejects it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_position: Option<crate::pipeline::PipelinePosition>,
 }
 
 impl TaskPatch {
@@ -349,6 +354,7 @@ impl TaskPatch {
             && self.due_at.is_none()
             && self.project_id.is_none()
             && self.git_context.is_none()
+            && self.pipeline_position.is_none()
     }
 
     pub fn apply(self, task: &mut Task) {

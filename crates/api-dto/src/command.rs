@@ -67,6 +67,14 @@ pub enum Command {
         id: TaskId,
         priority: Priority,
     },
+    /// ADR-0011 п.2: move a task to `position` in its workflow_policy and set
+    /// the canonical status derived from it
+    /// (`daruma_domain::canonical_status`). The only status write accepted
+    /// for a pipeline-managed task besides cancelling.
+    AdvancePipeline {
+        id: TaskId,
+        position: daruma_domain::PipelinePosition,
+    },
 
     // ── Bulk task commands (§3.7.7 / LIN B.7) ─────────────────────────────────
     /// Atomically set the same status on up to 50 tasks. Duplicate ids are
@@ -571,6 +579,7 @@ impl Command {
             Command::DeleteTask { .. } => "delete_task",
             Command::SetStatus { .. } => "set_status",
             Command::SetPriority { .. } => "set_priority",
+            Command::AdvancePipeline { .. } => "advance_pipeline",
             Command::BulkSetStatus { .. } => "bulk_set_status",
             Command::BulkAttachToPlan { .. } => "bulk_attach_to_plan",
             Command::CreateProject { .. } => "create_project",

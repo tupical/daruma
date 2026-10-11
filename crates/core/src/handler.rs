@@ -873,6 +873,35 @@ impl CommandHandler {
         actor: &Actor,
         now: daruma_shared::Timestamp,
     ) -> Result<Vec<Event>> {
+        self.ensure_direct_status_write(task.id, to).await?;
+        self.status_transition_events(task, to, actor, now).await
+    }
+
+    /// ADR-0011 п.2: a pipeline-managed task (one with
+    /// `metadata_json.pipeline_position`) changes canonical status only via
+    /// `Command::AdvancePipeline`; direct writes are rejected except
+    /// cancelling. Tasks without a position are unaffected.
+    async fn ensure_direct_status_write(&self, id: TaskId, to: Status) -> Result<()> {
+        let position = self.tasks.pipeline_position(id).await?;
+        if daruma_domain::direct_status_write_allowed(position.as_ref(), to) {
+            return Ok(());
+        }
+        let position = position.expect("rejected only for a managed task");
+        Err(CoreError::conflict(format!(
+            "pipeline_managed: task {id} is at workflow_policy stage {} ({}); its \
+             status is derived from the pipeline position and changes only through \
+             advance_pipeline (direct writes allow only cancelled)",
+            position.stage_index, position.role
+        )))
+    }
+
+    async fn status_transition_events(
+        &self,
+        task: &Task,
+        to: Status,
+        actor: &Actor,
+        now: daruma_shared::Timestamp,
+    ) -> Result<Vec<Event>> {
         let id = task.id;
         if task.status == to {
             return Ok(vec![]);
@@ -1506,10 +1535,19 @@ impl CommandHandler {
                     },
                     _ => patch,
                 };
-                self.tasks
+                if patch.pipeline_position.is_some() {
+                    return Err(CoreError::validation(
+                        "pipeline_position is set only by advance_pipeline (ADR-0011)",
+                    ));
+                }
+                let task = self
+                    .tasks
                     .get(id)
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
+                if let Some(status) = patch.status.filter(|s| *s != task.status) {
+                    self.ensure_direct_status_write(id, status).await?;
+                }
                 Ok(vec![Event::TaskUpdated { task_id: id, patch }])
             }
 
@@ -1522,6 +1560,7 @@ impl CommandHandler {
                 if task.status == Status::Done {
                     return Err(CoreError::conflict("task already done"));
                 }
+                self.ensure_direct_status_write(id, Status::Done).await?;
 
                 // Blocker check (W2.2): reject if any active blocker exists.
                 if let Some(relations) = &self.relations {
@@ -1736,6 +1775,36 @@ impl CommandHandler {
                         preview,
                     });
                 }
+                Ok(events)
+            }
+
+            Command::AdvancePipeline { id, position } => {
+                position.validate().map_err(CoreError::validation)?;
+                let task = self
+                    .tasks
+                    .get(id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
+                if task.status == Status::Cancelled {
+                    return Err(CoreError::conflict(format!(
+                        "pipeline_cancelled: task {id} is cancelled"
+                    )));
+                }
+                if self.tasks.pipeline_position(id).await?.as_ref() == Some(&position) {
+                    return Ok(vec![]); // idempotent repeat
+                }
+                let to = daruma_domain::canonical_status(&position);
+                let mut events = vec![Event::TaskUpdated {
+                    task_id: id,
+                    patch: daruma_domain::TaskPatch {
+                        pipeline_position: Some(position),
+                        ..Default::default()
+                    },
+                }];
+                events.extend(
+                    self.status_transition_events(&task, to, actor, time::now())
+                        .await?,
+                );
                 Ok(events)
             }
 
