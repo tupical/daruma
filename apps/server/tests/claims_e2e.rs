@@ -657,6 +657,79 @@ async fn abort_and_fail_share_owner_guard_and_release_run_claims() {
     );
 }
 
+// S4 (pass completion contract, postcondition 4): a launcher that lost the
+// response repeats run_finish_step / run_complete. The owner's repeat is a
+// no-op success flagged `already_*` with no event; another agent and a
+// failed/aborted run keep the conflict.
+#[tokio::test]
+async fn owner_retry_after_lost_response_is_noop_and_foreign_retry_conflicts() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, _) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan_id, &task_id).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{run_id}/step/start"),
+        &format!(r#"{{"task_id":"{task_id}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "step start: {response}");
+
+    let finish = format!(r#"{{"task_id":"{task_id}","outcome":{{"kind":"failed","reason":"x"}}}}"#);
+    for already in [false, true] {
+        let (status, response) = post_json(
+            &h.router,
+            &owner_token,
+            &format!("/v1/runs/{run_id}/step/finish"),
+            &finish,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "step finish: {response}");
+        assert_eq!(response["data"]["already_finished"], already, "{response}");
+    }
+    assert_eq!(h.state.runs.list_steps(run_id).await.unwrap().len(), 1);
+
+    let complete = format!("/v1/runs/{run_id}/complete");
+    let (status, response) = post_json(&h.router, &owner_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::OK, "complete: {response}");
+    assert_eq!(response["data"]["already_completed"], false, "{response}");
+    assert!(response["event_id"].is_string(), "{response}");
+    let (status, response) = post_json(&h.router, &owner_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::OK, "owner retry: {response}");
+    assert_eq!(response["data"]["already_completed"], true, "{response}");
+    assert!(response["event_id"].is_null(), "{response}");
+    let (status, response) = post_json(&h.router, &foreign_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::CONFLICT, "foreign retry: {response}");
+
+    let aborted = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{aborted}/abort"),
+        r#"{"reason":"blocked"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "abort: {response}");
+    let (status, response) = post_json(
+        &h.router,
+        &owner_token,
+        &format!("/v1/runs/{aborted}/complete"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "aborted complete: {response}");
+    assert_eq!(
+        h.state.runs.get(aborted).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Aborted
+    );
+}
+
 #[tokio::test]
 async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutation() {
     let h = test_app().await;

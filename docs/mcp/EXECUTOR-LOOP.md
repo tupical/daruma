@@ -76,6 +76,7 @@ Rules:
 | Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
 | `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). |
+| Response of `run_complete` / `run_finish_step` lost | Repeat the same call with the same token. Success with `data.already_completed` / `data.already_finished = true` and `event_id: null` means the first call landed — see [Idempotent retry](#idempotent-retry-s4). |
 
 ## Related tools
 
@@ -143,7 +144,8 @@ independent review of this section.
 
 - `CompleteRun` checks only `run.status == Active`; it reads neither steps nor
   task history and has no owner check (`record_run_terminal` guards only
-  `FailRun`/`AbortRun`).
+  `FailRun`/`AbortRun`). S3 added the step postconditions and S4 the owner
+  retry no-op; an active run's completion still has no owner check.
 - `RunFinishStep` records any outcome for any `task_id`; `{kind:"done"}` does
   not require a task transition.
 - The hosted step-loop detector (ADR-0008) reads only finished steps
@@ -200,6 +202,31 @@ serving the workspace (hosted tenant cache, cabinet bus); a transition not yet
 committed makes it reject, never accept, and the caller retries. A
 `run_start_step` racing a `run_complete` through *another* instance is not
 excluded by this read; S5 (`run.orphaned`) reports such a step.
+
+### Idempotent retry (S4)
+
+Postcondition 4 below is enforced by `CompleteRun` and `RunFinishStep` (task
+`01a12b83-25e4-7072-830d-2e71a3c8a139`), so a launcher that lost a response
+repeats the call instead of guessing:
+
+- `POST /v1/runs/{id}/complete` (`daruma_run_complete`) is dispatched with
+  the token identity. On a run already `Completed` whose owner
+  (`run_claim_owners`, written by the owned `run_start` / `drain_next`) is the
+  caller, it returns `200` with `data: {run_id, already_completed: true}`,
+  `event_id: null`, and appends nothing; the postconditions are not
+  re-evaluated. A first, real completion returns `already_completed: false`
+  and the `RunCompleted` event id.
+- Any other agent (admin included), an unauthenticated caller, and a
+  `Failed`/`Aborted` run still get `409 run is not active`; failed/aborted
+  never turn into completed.
+- `POST /v1/runs/{id}/step/finish` (`daruma_run_finish_step`) is a no-op when
+  the task's latest attempt in the run is already closed with exactly the
+  requested outcome: `data.already_finished: true`, `event_id: null`, no
+  synthetic attempt row. A finish without an open attempt and with a
+  different outcome keeps the recorded behaviour (a closed synthetic row).
+
+Launcher readback (S8) treats `success: true` with or without `already_*` as
+the same postcondition and still reads the run and task back.
 
 ### Matrix
 
