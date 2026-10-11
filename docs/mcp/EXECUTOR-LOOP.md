@@ -75,6 +75,7 @@ Rules:
 | Claim expired | Re-call `plan_next_task` with fresh TTL or `daruma_claim`. |
 | Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
+| `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). |
 
 ## Related tools
 
@@ -173,6 +174,32 @@ row; `RunStepFinished` closes the latest open row of that task. Because the
 current step is now real, `RemovePlanTask` on a task that is an active run's
 open step emits `TaskContested` + `RunStepFinished{superseded}` (§3.7) instead
 of silently skipping it.
+
+### Enforcement in `CompleteRun` (S3)
+
+Postconditions 1–3 below are enforced by `CompleteRun` (task
+`01a12b83-25e4-7072-830d-2e6fc816be77`). Before `RunCompleted` is built the
+handler reads `list_steps(run_id)` and, for every step finished `{kind:"done"}`,
+the task's `activity` history at or after the step's `started_at`. It rejects
+with a conflict `run_postcondition_unmet: run <run_id> …task <task_id>…` (HTTP
+409) — and appends nothing — when
+
+- a step is still open (`finished_at IS NULL`), or
+- a `done` step has no handoff transition since it started: a status change
+  into `in_review` or `done`, a review reject `in_review → todo`, or (for a
+  pipeline-managed task) an `advance_pipeline` position change, which may keep
+  the canonical status unchanged (draft → builder).
+
+The window has only a lower bound, so a transition recorded after
+`run_finish_step` but before `run_complete` (the usual launcher order) counts,
+and a later REVIEW REJECT or reopen does not erase it. Steps finished with any
+other outcome (`failed`, `superseded`, `human_completed`) and runs with no
+steps complete as before. The check reads committed projections, not
+in-process state, so it gives the same answer through any handler instance
+serving the workspace (hosted tenant cache, cabinet bus); a transition not yet
+committed makes it reject, never accept, and the caller retries. A
+`run_start_step` racing a `run_complete` through *another* instance is not
+excluded by this read; S5 (`run.orphaned`) reports such a step.
 
 ### Matrix
 
