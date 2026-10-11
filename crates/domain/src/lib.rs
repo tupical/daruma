@@ -39,8 +39,8 @@ pub use audit_finding::{
 pub use comment::{Comment, CommentKind, CommentPatch, NewComment, TransitionComment};
 pub use complexity::{ComplexityHint, TaskBrief};
 pub use device::Device;
-pub use draft_patch::{AnchorMismatch, AnchoredEdit, DraftPatch, DRAFT_PATCH_KIND};
 pub use document::{Document, DocumentKind, DocumentStatus, NewDocument};
+pub use draft_patch::{AnchorMismatch, AnchoredEdit, DraftPatch, DRAFT_PATCH_KIND};
 pub use evidence::{ActorRef, Evidence, EvidenceKind, EvidenceReach, NewEvidence};
 pub use external_ref::ExternalRef;
 pub use field_ownership::{plan_owned_patch_fields, FieldOwner, TaskField};
