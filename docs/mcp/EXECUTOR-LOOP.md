@@ -162,6 +162,18 @@ independent review of this section.
   produced its handoff". The task reaches `done` only through the reviewer
   (or a human), never because a step or run ended `Done`.
 
+### Step projection in core
+
+Core reads attempts through `RunRepository` over the existing `run_steps`
+projection (no extra table): `list_steps(run_id)` returns the steps in start
+order (`started_at`, then `id`), and `current_step_task(run_id)` returns the
+task of the latest step with `finished_at IS NULL` in that order, or `None`
+when the run has no open step. A repeated attempt of the same task is a new
+row; `RunStepFinished` closes the latest open row of that task. Because the
+current step is now real, `RemovePlanTask` on a task that is an active run's
+open step emits `TaskContested` + `RunStepFinished{superseded}` (§3.7) instead
+of silently skipping it.
+
 ### Matrix
 
 | Pass | Task transition proving the attempt | Step outcome | Run end |

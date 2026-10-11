@@ -259,12 +259,30 @@ impl RunRepo {
         Ok(())
     }
 
-    /// Return the task currently being executed by the run.
-    ///
-    /// The `runs` table does not yet track the active step — returns `None`
-    /// until a `current_task_id` column is added in a future migration.
-    pub async fn current_step_task(&self, _run_id: RunId) -> Result<Option<daruma_shared::TaskId>> {
-        Ok(None)
+    /// Return the task currently being executed by the run: the latest open
+    /// `run_steps` row (`finished_at IS NULL`), ordered by `started_at` then
+    /// `id` like [`Self::list_steps`]. `None` when the run has no steps or
+    /// every step is closed.
+    pub async fn current_step_task(&self, run_id: RunId) -> Result<Option<TaskId>> {
+        let row = sqlx::query(
+            "SELECT task_id FROM run_steps \
+             WHERE run_id = ? AND finished_at IS NULL \
+             ORDER BY started_at DESC, id DESC LIMIT 1",
+        )
+        .bind(run_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        row.map(|r| {
+            let task_id: String = r
+                .try_get("task_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            task_id
+                .parse::<TaskId>()
+                .map_err(|e| CoreError::serde(e.to_string()))
+        })
+        .transpose()
     }
 
     // ── mutations ────────────────────────────────────────────────────────────
@@ -681,5 +699,81 @@ mod tests {
 
         let fetched = repo.get(run_id).await.unwrap().unwrap();
         assert_eq!(fetched.status, RunStatus::Aborted);
+    }
+
+    fn step_started(run_id: RunId, task_id: TaskId, at: Timestamp) -> EventEnvelope {
+        EventEnvelope::new(
+            Actor::user(),
+            Event::RunStepStarted {
+                run_id,
+                task_id,
+                at,
+            },
+        )
+    }
+
+    fn step_finished(run_id: RunId, task_id: TaskId, at: Timestamp) -> EventEnvelope {
+        EventEnvelope::new(
+            Actor::user(),
+            Event::RunStepFinished {
+                run_id,
+                task_id,
+                outcome: RunOutcome::Done,
+                at,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn current_step_task_tracks_open_closed_and_repeated_steps() {
+        let (_db, repo) = make_repo().await;
+        let run = make_run(RunId::new(), PlanId::new());
+        let run_id = run.id;
+        repo.start(&run).await.unwrap();
+        let t0 = time::now();
+        let at = |s: i64| t0 + chrono::Duration::seconds(s);
+        let (a, b) = (TaskId::new(), TaskId::new());
+
+        // No steps yet.
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), None);
+
+        // Open step.
+        repo.apply_event(&step_started(run_id, a, at(1)))
+            .await
+            .unwrap();
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), Some(a));
+
+        // Closed step.
+        repo.apply_event(&step_finished(run_id, a, at(2)))
+            .await
+            .unwrap();
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), None);
+
+        // Repeated step of the same task within the run.
+        repo.apply_event(&step_started(run_id, a, at(3)))
+            .await
+            .unwrap();
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), Some(a));
+
+        // A later open step wins over an earlier open one.
+        repo.apply_event(&step_started(run_id, b, at(4)))
+            .await
+            .unwrap();
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), Some(b));
+        repo.apply_event(&step_finished(run_id, b, at(5)))
+            .await
+            .unwrap();
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), Some(a));
+        repo.apply_event(&step_finished(run_id, a, at(6)))
+            .await
+            .unwrap();
+        assert_eq!(repo.current_step_task(run_id).await.unwrap(), None);
+
+        let steps = repo.list_steps(run_id).await.unwrap();
+        assert_eq!(steps.len(), 3);
+        assert!(steps.iter().all(|s| s.finished_at.is_some()));
+
+        // Other runs are not affected.
+        assert_eq!(repo.current_step_task(RunId::new()).await.unwrap(), None);
     }
 }

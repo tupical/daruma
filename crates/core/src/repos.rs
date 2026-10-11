@@ -7,7 +7,7 @@
 //! held as its concrete `daruma-storage` type instead.
 
 use async_trait::async_trait;
-use daruma_domain::{AgentSession, Plan, PlanTask, Run, SourceNode};
+use daruma_domain::{AgentSession, Plan, PlanTask, Run, RunStep, SourceNode};
 use daruma_events::EventEnvelope;
 use daruma_shared::{AgentSessionId, PlanId, ProjectId, Result, RunId, TaskId};
 
@@ -57,6 +57,10 @@ pub trait RunRepository: Send + Sync {
 
     /// Return all runs in `Active` status for the given plan.
     async fn list_active_for_plan(&self, plan_id: PlanId) -> Result<Vec<Run>>;
+
+    /// Steps of the run in start order (oldest first), read from the
+    /// existing `run_steps` projection.
+    async fn list_steps(&self, run_id: RunId) -> Result<Vec<RunStep>>;
 
     /// Return the `task_id` that the run is currently executing
     /// (i.e. the most recent `RunStepStarted` not yet closed by
@@ -159,6 +163,9 @@ impl RunRepository for RunRepo {
     async fn list_active_for_plan(&self, plan_id: PlanId) -> Result<Vec<Run>> {
         RunRepo::list_active_for_plan(self, plan_id).await
     }
+    async fn list_steps(&self, run_id: RunId) -> Result<Vec<RunStep>> {
+        RunRepo::list_steps(self, run_id).await
+    }
     async fn current_step_task(&self, run_id: RunId) -> Result<Option<TaskId>> {
         RunRepo::current_step_task(self, run_id).await
     }
@@ -199,5 +206,75 @@ impl ExternalRefRepository for ExternalRefRepo {
     async fn apply_event(&self, _env: &EventEnvelope) -> Result<()> {
         // No events currently update the external_refs projection.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daruma_domain::{Actor, RunOutcome, RunStatus};
+    use daruma_events::Event;
+    use daruma_shared::{time, AgentId};
+    use daruma_storage::Db;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn run_repository_exposes_storage_steps() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let runs: Arc<dyn RunRepository> = Arc::new(RunRepo::new(db.pool().clone()));
+        let run_id = RunId::new();
+        let t0 = time::now();
+        let at = |s: i64| t0 + chrono::Duration::seconds(s);
+        let apply = |payload| {
+            let runs = runs.clone();
+            async move {
+                runs.apply_event(&EventEnvelope::new(Actor::user(), payload))
+                    .await
+            }
+        };
+        apply(Event::RunStarted {
+            run: Run {
+                id: run_id,
+                plan_id: PlanId::new(),
+                agent_id: AgentId::new(),
+                parent_run_id: None,
+                started_at: t0,
+                ended_at: None,
+                status: RunStatus::Active,
+                outcome: None,
+                last_activity_at: None,
+                unresponsive_at: None,
+                stale_at: None,
+            },
+        })
+        .await
+        .unwrap();
+        let task_id = TaskId::new();
+
+        apply(Event::RunStepStarted {
+            run_id,
+            task_id,
+            at: at(1),
+        })
+        .await
+        .unwrap();
+        assert_eq!(runs.current_step_task(run_id).await.unwrap(), Some(task_id));
+        let steps = runs.list_steps(run_id).await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].finished_at.is_none());
+
+        apply(Event::RunStepFinished {
+            run_id,
+            task_id,
+            outcome: RunOutcome::Done,
+            at: at(2),
+        })
+        .await
+        .unwrap();
+        assert_eq!(runs.current_step_task(run_id).await.unwrap(), None);
+        let steps = runs.list_steps(run_id).await.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].outcome, Some(serde_json::json!({"kind": "done"})));
     }
 }
