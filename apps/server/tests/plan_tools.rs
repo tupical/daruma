@@ -362,6 +362,76 @@ async fn plan_tool_surface_smoke() {
     assert_eq!(archive["success"], true, "archive must succeed: {archive}");
 }
 
+// ── S2: removing a task that is a run's open step supersedes that step ──────
+//
+// Before S2 `current_step_task` was always `None` on the SQLite projection,
+// so `plan_remove_task` never noticed the open step and left it dangling.
+#[tokio::test]
+async fn plan_remove_task_supersedes_open_run_step_via_mcp() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token);
+
+    let pid = create_project_via_mcp(&client, "Step Project").await;
+    let materialized = call_tool(
+        &client,
+        "daruma_plan_materialize",
+        json!({ "plan": { "title": "Step Plan", "project_id": pid }, "tasks": [ { "title": "Step task" } ] }),
+    )
+    .await;
+    let created = |kind: &str, field: &str| -> String {
+        materialized["data"]
+            .as_array()
+            .and_then(|a| {
+                a.iter().find_map(|e| {
+                    let p = e.get("payload")?;
+                    (p.get("type")?.as_str()? == kind)
+                        .then(|| p.get(field)?.get("id")?.as_str().map(str::to_owned))?
+                })
+            })
+            .unwrap_or_else(|| panic!("{kind} in {materialized}"))
+    };
+    let plan_id = created("plan_created", "plan");
+    let task_id = created("task_created", "task");
+    let active = call_tool(
+        &client,
+        "daruma_plan_set_status",
+        json!({ "plan_id": plan_id, "status": "active" }),
+    )
+    .await;
+    assert_eq!(active["success"], true, "activate: {active}");
+
+    let run = call_tool(
+        &client,
+        "daruma_run_start",
+        json!({ "plan_id": plan_id, "agent_id": app.admin_agent_id.as_uuid().to_string() }),
+    )
+    .await;
+    let run_id = run["run_id"].as_str().expect("run_id").to_owned();
+    call_tool(
+        &client,
+        "daruma_run_start_step",
+        json!({ "run_id": run_id, "task_id": task_id }),
+    )
+    .await;
+
+    let remove = call_tool(
+        &client,
+        "daruma_plan_remove_task",
+        json!({ "plan_id": plan_id, "task_id": task_id }),
+    )
+    .await;
+    assert_eq!(remove["success"], true, "remove: {remove}");
+    let timeline = client
+        .get_json(&format!("/v1/runs/{run_id}/timeline"))
+        .await
+        .unwrap();
+    let steps = timeline["steps"].as_array().expect("steps in timeline");
+    assert_eq!(steps.len(), 1, "{timeline}");
+    assert!(steps[0]["finished_at"].is_string(), "{timeline}");
+    assert_eq!(steps[0]["outcome"]["kind"], "superseded", "{timeline}");
+}
+
 #[tokio::test]
 async fn plan_status_override_reaches_http_and_returns_warning_via_mcp() {
     let app = TestAppBuilder::default()
