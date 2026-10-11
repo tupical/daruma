@@ -7,6 +7,7 @@ mod delete_task_plan_cascade;
 mod document_commands;
 mod handoff_commands;
 mod lifecycle_gate;
+mod pipeline_fan_in;
 mod plan_cycle;
 mod plan_reconciliation;
 mod plan_reparent;

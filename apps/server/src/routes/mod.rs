@@ -5285,6 +5285,7 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::SetStatus { .. }
         | Command::SetPriority { .. }
         | Command::AdvancePipeline { .. }
+        | Command::ClosePipelineStage { .. }
         | Command::SplitTask { .. }
         | Command::BulkSetStatus { .. } => Capability::TaskWrite,
         Command::CreateProject { .. }

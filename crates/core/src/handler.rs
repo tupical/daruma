@@ -895,6 +895,47 @@ impl CommandHandler {
         )))
     }
 
+    /// The task an `AdvancePipeline`/`ClosePipelineStage` acts on; a cancelled
+    /// task has left its pipeline.
+    async fn pipeline_task(&self, id: TaskId) -> Result<Task> {
+        let task = self
+            .tasks
+            .get(id)
+            .await?
+            .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
+        if task.status == Status::Cancelled {
+            return Err(CoreError::conflict(format!(
+                "pipeline_cancelled: task {id} is cancelled"
+            )));
+        }
+        Ok(task)
+    }
+
+    /// ADR-0011 п.2: the single status derivation of a pipeline-managed task
+    /// — record `position` and move to `canonical_status(position)`. Callers
+    /// check the fan-in barrier first (ADR-0011 п.4).
+    async fn advance_pipeline_events(
+        &self,
+        task: &Task,
+        position: daruma_domain::PipelinePosition,
+        actor: &Actor,
+    ) -> Result<Vec<Event>> {
+        validate_pipeline_target(&position)?;
+        let to = daruma_domain::canonical_status(&position);
+        let mut events = vec![Event::TaskUpdated {
+            task_id: task.id,
+            patch: daruma_domain::TaskPatch {
+                pipeline_position: Some(position),
+                ..Default::default()
+            },
+        }];
+        events.extend(
+            self.status_transition_events(task, to, actor, time::now())
+                .await?,
+        );
+        Ok(events)
+    }
+
     async fn status_transition_events(
         &self,
         task: &Task,
@@ -1779,21 +1820,45 @@ impl CommandHandler {
             }
 
             Command::AdvancePipeline { id, position } => {
-                position.validate().map_err(CoreError::validation)?;
-                let task = self
-                    .tasks
-                    .get(id)
-                    .await?
-                    .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
-                if task.status == Status::Cancelled {
-                    return Err(CoreError::conflict(format!(
-                        "pipeline_cancelled: task {id} is cancelled"
-                    )));
-                }
-                if self.tasks.pipeline_position(id).await?.as_ref() == Some(&position) {
+                validate_pipeline_target(&position)?;
+                let task = self.pipeline_task(id).await?;
+                let current = self.tasks.pipeline_position(id).await?;
+                if current.as_ref() == Some(&position) {
                     return Ok(vec![]); // idempotent repeat
                 }
-                let to = daruma_domain::canonical_status(&position);
+                if let Some(blocked) = current.as_ref().and_then(daruma_domain::fan_in_blocks) {
+                    return Err(CoreError::conflict(blocked));
+                }
+                self.advance_pipeline_events(&task, position, actor).await
+            }
+
+            Command::ClosePipelineStage {
+                id,
+                stage_index,
+                instance,
+                then,
+            } => {
+                let task = self.pipeline_task(id).await?;
+                let Some(mut position) = self.tasks.pipeline_position(id).await? else {
+                    return Err(CoreError::conflict(format!(
+                        "pipeline_unmanaged: task {id} has no pipeline position"
+                    )));
+                };
+                if position.stage_index != stage_index && !position.complete {
+                    return Err(CoreError::conflict(format!(
+                        "stale_stage: task {id} is at stage {} ({}), not {stage_index}",
+                        position.stage_index, position.role
+                    )));
+                }
+                if let Some(then) = &then {
+                    validate_pipeline_target(then)?;
+                }
+                let fan_in = position
+                    .close_instance(&instance)
+                    .map_err(CoreError::conflict)?;
+                if fan_in == daruma_domain::FanIn::Repeat {
+                    return Ok(vec![]); // the instance already reported
+                }
                 let mut events = vec![Event::TaskUpdated {
                     task_id: id,
                     patch: daruma_domain::TaskPatch {
@@ -1801,10 +1866,12 @@ impl CommandHandler {
                         ..Default::default()
                     },
                 }];
-                events.extend(
-                    self.status_transition_events(&task, to, actor, time::now())
-                        .await?,
-                );
+                // Only the report that closes the barrier advances, so the
+                // stage moves exactly once; the command lock serializes the
+                // racing last reports.
+                if let (daruma_domain::FanIn::Closed, Some(then)) = (fan_in, then) {
+                    events.extend(self.advance_pipeline_events(&task, then, actor).await?);
+                }
                 Ok(events)
             }
 
@@ -4076,6 +4143,18 @@ fn redelivered_create_events(
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
+
+/// A position set by the pipeline caller starts with an empty fan-in: only
+/// `close_pipeline_stage` records closed instances (ADR-0011 п.4).
+fn validate_pipeline_target(position: &daruma_domain::PipelinePosition) -> Result<()> {
+    position.validate().map_err(CoreError::validation)?;
+    if !position.closed.is_empty() {
+        return Err(CoreError::validation(
+            "pipeline_position.closed is filled only by close_pipeline_stage",
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
