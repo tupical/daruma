@@ -21,6 +21,7 @@ mod rule_engine;
 mod run_liveness;
 mod run_notes;
 mod run_postconditions;
+mod run_retry;
 mod semantic_events;
 mod set_status_comment;
 mod source_chain;

@@ -6831,7 +6831,11 @@ async fn run_finish_step(
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
-        data: serde_json::json!({ "run_id": run_id, "task_id": body.task_id }),
+        data: serde_json::json!({
+            "run_id": run_id,
+            "task_id": body.task_id,
+            "already_finished": envs.is_empty(),
+        }),
         warnings: vec![],
         client_command_id: None,
     }))
@@ -6847,15 +6851,22 @@ async fn complete_run(
     let run_id = parse_id(id_str, "run id")?;
     let envs = state
         .commands
-        .dispatch(Command::CompleteRun { run_id }, actor_from(&auth, None))
+        .dispatch_authenticated(
+            Command::CompleteRun { run_id },
+            actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
         .await
         .map_err(ApiError::from)?;
     let last = envs.last();
+    // An owner retry of an already completed run appends nothing (pass
+    // completion contract, postcondition 4).
     Ok(Json(MutationResponse {
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
-        data: serde_json::json!({ "run_id": run_id }),
+        data: serde_json::json!({ "run_id": run_id, "already_completed": envs.is_empty() }),
         warnings: vec![],
         client_command_id: None,
     }))

@@ -591,6 +591,24 @@ impl AgentClaimRepo {
         }
     }
 
+    /// Authenticated owner of a run, if it was started through an owned
+    /// endpoint. The row outlives `RunCompleted`, so it identifies the owner
+    /// of a completed run when its `CompleteRun` is retried.
+    pub async fn run_owner(&self, run_id: RunId) -> Result<Option<AgentId>> {
+        let owner: Option<String> =
+            sqlx::query_scalar("SELECT agent_id FROM run_claim_owners WHERE run_id = ?")
+                .bind(run_id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        owner
+            .map(|id| {
+                id.parse()
+                    .map_err(|e| CoreError::storage(format!("invalid persisted agent id: {e}")))
+            })
+            .transpose()
+    }
+
     /// Persist `RunStarted` and its authenticated owner atomically.
     pub async fn record_run_started(
         &self,

@@ -472,6 +472,15 @@ impl CommandHandler {
         // ponytail: атомарность авто-parent держится на одном экземпляре handler; в облаке handler на запрос → гонка может дать два корня, дальше детерминированно выбирается ранний (created_at,id). Межпроцессный лок/UNIQUE — если это станет проблемой.
         // ponytail: то же для цепочки источников (ADR-0009): два handler-а могут одновременно связать один узел с разными upstream — проекция COALESCE оставит первую связь, а проигравший получит не ту цепочку без сигнала (warning/409 не будет). Лечится тем же межпроцессным локом.
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
+        if self
+            .is_completed_run_retry(&cmd, authenticated_agent_id)
+            .await?
+        {
+            return Ok(DispatchOutcome {
+                events: vec![],
+                warnings: vec![],
+            });
+        }
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let owned_terminal = authenticated_agent_id.is_some()
@@ -937,6 +946,28 @@ impl CommandHandler {
             }
         }
         Ok(())
+    }
+
+    /// Pass completion contract, postcondition 4: a `CompleteRun` repeated by
+    /// the authenticated owner of an already `Completed` run (lost response)
+    /// is a no-op success. Any other caller, an unauthenticated one, or a
+    /// `Failed`/`Aborted` run falls through to the regular `run is not
+    /// active` conflict.
+    async fn is_completed_run_retry(
+        &self,
+        cmd: &Command,
+        authenticated_agent_id: Option<AgentId>,
+    ) -> Result<bool> {
+        let (Command::CompleteRun { run_id }, Some(caller), Some(runs), Some(claims)) =
+            (cmd, authenticated_agent_id, &self.runs, &self.claims)
+        else {
+            return Ok(false);
+        };
+        let completed = runs
+            .get(*run_id)
+            .await?
+            .is_some_and(|run| run.status == RunStatus::Completed);
+        Ok(completed && claims.run_owner(*run_id).await? == Some(caller))
     }
 
     /// Whether the task's history holds a handoff transition at or after
@@ -2992,12 +3023,30 @@ impl CommandHandler {
                 task_id,
                 outcome,
             } => {
-                self.runs
+                let runs = self
+                    .runs
                     .as_ref()
-                    .ok_or_else(|| CoreError::storage("run repository not configured"))?
-                    .get(run_id)
+                    .ok_or_else(|| CoreError::storage("run repository not configured"))?;
+                runs.get(run_id)
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("run {run_id}")))?;
+
+                // A retry after a lost response: the task's latest attempt is
+                // already closed with this exact outcome. Recording it again
+                // would add a synthetic attempt to the timeline.
+                let latest = runs
+                    .list_steps(run_id)
+                    .await?
+                    .into_iter()
+                    .rev()
+                    .find(|step| step.task_id == task_id);
+                if let Some(step) = latest.filter(|s| s.finished_at.is_some()) {
+                    let requested = serde_json::to_value(&outcome)
+                        .map_err(|e| CoreError::serde(e.to_string()))?;
+                    if step.outcome == Some(requested) {
+                        return Ok(vec![]);
+                    }
+                }
 
                 let now = time::now();
                 Ok(vec![Event::RunStepFinished {
