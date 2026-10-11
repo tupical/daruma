@@ -44,6 +44,70 @@ impl ArtifactStatus {
     }
 }
 
+/// Status of a role artifact (ADR-0011 п.3) — a second axis, independent of
+/// the registry [`ArtifactStatus`] lifecycle. Only `proposed` moves:
+/// `proposed → applied | rejected | superseded`; the other three are final.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleArtifactStatus {
+    /// Offered by a role; the next role may take or ignore it.
+    #[default]
+    Proposed,
+    /// Replaced by a later generation of the same (task, role, kind).
+    Superseded,
+    /// Taken by the consuming role.
+    Applied,
+    /// Explicitly declined by the consuming role.
+    Rejected,
+}
+
+impl RoleArtifactStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RoleArtifactStatus::Proposed => "proposed",
+            RoleArtifactStatus::Superseded => "superseded",
+            RoleArtifactStatus::Applied => "applied",
+            RoleArtifactStatus::Rejected => "rejected",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "proposed" => Some(Self::Proposed),
+            "superseded" => Some(Self::Superseded),
+            "applied" => Some(Self::Applied),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+
+    /// Allowed transitions: only out of `proposed`, never back into it.
+    pub fn can_transition_to(self, to: Self) -> bool {
+        self == Self::Proposed && to != Self::Proposed
+    }
+}
+
+/// Structured result of a workflow role (ADR-0011 п.3), stored on a registry
+/// [`Artifact`] row rather than in a separate table. `generation` is the
+/// 1-based sequence within `(task_id, role, kind)`; parallel instances of a
+/// role each get their own generation, so several may be `proposed` at once.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RoleArtifact {
+    pub role: String,
+    pub kind: String,
+    pub generation: i64,
+    pub status: RoleArtifactStatus,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+impl RoleArtifact {
+    /// Canonical registry URI of a role artifact.
+    pub fn uri(task_id: TaskId, role: &str, kind: &str, generation: i64) -> String {
+        format!("artifact://task/{task_id}/role/{role}/{kind}/{generation}")
+    }
+}
+
 /// A named, versioned resource in the registry.
 ///
 /// The `uri` is the canonical address used in lease targets and
@@ -72,6 +136,10 @@ pub struct Artifact {
     /// Fencing token of the lease that last committed a write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_write_token: Option<i64>,
+    /// Set only for role artifacts (ADR-0011 п.3); plain registry artifacts
+    /// and events recorded before the field existed carry `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_artifact: Option<RoleArtifact>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -169,8 +237,51 @@ impl NewArtifact {
             project_id: self.project_id,
             version: None,
             last_write_token: None,
+            role_artifact: None,
             created_at: now,
             updated_at: now,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_status_transitions_only_out_of_proposed() {
+        use RoleArtifactStatus::*;
+        for to in [Applied, Rejected, Superseded] {
+            assert!(Proposed.can_transition_to(to));
+        }
+        assert!(!Proposed.can_transition_to(Proposed));
+        for from in [Applied, Rejected, Superseded] {
+            for to in [Proposed, Applied, Rejected, Superseded] {
+                assert!(!from.can_transition_to(to), "{from:?} -> {to:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn role_status_round_trips() {
+        use RoleArtifactStatus::*;
+        for s in [Proposed, Superseded, Applied, Rejected] {
+            assert_eq!(RoleArtifactStatus::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(RoleArtifactStatus::parse("pending"), None);
+    }
+
+    #[test]
+    fn artifact_without_role_field_still_deserializes() {
+        let json = serde_json::json!({
+            "id": ArtifactId::new(),
+            "uri": "artifact://api/users",
+            "title": "t",
+            "status": "pending",
+            "created_at": "2026-10-11T00:00:00Z",
+            "updated_at": "2026-10-11T00:00:00Z",
+        });
+        let a: Artifact = serde_json::from_value(json).unwrap();
+        assert!(a.role_artifact.is_none());
     }
 }

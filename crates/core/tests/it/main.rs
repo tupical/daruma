@@ -15,6 +15,7 @@ mod relations_cycle;
 mod relations_enforcement;
 mod relations_link;
 mod relations_was_blocking;
+mod role_artifacts;
 mod rule_engine;
 mod run_liveness;
 mod run_notes;

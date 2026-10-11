@@ -5,7 +5,10 @@
 //! cannot commit writes after losing its lease.
 
 use crate::{parse_ts, WorkLeaseRepo};
-use daruma_domain::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus};
+use daruma_domain::{
+    Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus, RoleArtifact,
+    RoleArtifactStatus,
+};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, ArtifactId, CoreError, ProjectId, Result, TaskId};
 use sqlx::{Row, SqlitePool};
@@ -85,6 +88,68 @@ impl ArtifactRepo {
         rows.iter().map(row_to_artifact).collect()
     }
 
+    /// Role artifacts of one task (ADR-0011 п.3), optionally narrowed to a
+    /// role, kind and/or role status — e.g. "all `kind=patch status=proposed`
+    /// for task N". Ordered by `(role, kind, generation)`.
+    pub async fn list_role_artifacts(
+        &self,
+        task_id: TaskId,
+        role: Option<&str>,
+        kind: Option<&str>,
+        status: Option<RoleArtifactStatus>,
+    ) -> Result<Vec<Artifact>> {
+        let mut conditions = vec!["role IS NOT NULL", "task_id = ?"];
+        if role.is_some() {
+            conditions.push("role = ?");
+        }
+        if kind.is_some() {
+            conditions.push("role_kind = ?");
+        }
+        if status.is_some() {
+            conditions.push("role_status = ?");
+        }
+        let sql = select_sql(&format!(
+            "WHERE {} ORDER BY role, role_kind, role_generation",
+            conditions.join(" AND ")
+        ));
+        let mut q = sqlx::query(&sql).bind(task_id.to_string());
+        if let Some(r) = role {
+            q = q.bind(r);
+        }
+        if let Some(k) = kind {
+            q = q.bind(k);
+        }
+        if let Some(st) = status {
+            q = q.bind(st.as_str());
+        }
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_artifact).collect()
+    }
+
+    /// Next generation for `(task_id, role, kind)`: one past the highest
+    /// recorded, starting at 1. Callers serialize through the command handler.
+    pub async fn next_role_generation(
+        &self,
+        task_id: TaskId,
+        role: &str,
+        kind: &str,
+    ) -> Result<i64> {
+        let max: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(role_generation) FROM artifacts \
+             WHERE role IS NOT NULL AND task_id = ? AND role = ? AND role_kind = ?",
+        )
+        .bind(task_id.to_string())
+        .bind(role)
+        .bind(kind)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(max.unwrap_or(0) + 1)
+    }
+
     pub async fn relations_for(&self, id: ArtifactId) -> Result<Vec<ArtifactRelation>> {
         let rows = sqlx::query(
             "SELECT id, from_id, to_id, kind, created_at FROM artifact_relations
@@ -145,6 +210,22 @@ impl ArtifactRepo {
                     .execute(&self.pool)
                     .await
                     .map_err(|e| CoreError::storage(e.to_string()))?;
+                Ok(())
+            }
+
+            Event::RoleArtifactStatusChanged {
+                artifact_id, to, ..
+            } => {
+                sqlx::query(
+                    "UPDATE artifacts SET role_status = ?, updated_at = ? \
+                     WHERE id = ? AND role IS NOT NULL",
+                )
+                .bind(to.as_str())
+                .bind(at.to_rfc3339())
+                .bind(artifact_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
                 Ok(())
             }
 
@@ -261,11 +342,13 @@ impl ArtifactRepo {
     }
 
     async fn upsert(&self, a: &Artifact) -> Result<()> {
+        let role = a.role_artifact.as_ref();
         sqlx::query(
             "INSERT OR REPLACE INTO artifacts \
              (id, uri, title, description, status, owner_agent_id, task_id, project_id, \
-              version, last_write_token, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              version, last_write_token, created_at, updated_at, \
+              role, role_kind, role_generation, role_status, role_payload_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(a.id.to_string())
         .bind(&a.uri)
@@ -279,6 +362,11 @@ impl ArtifactRepo {
         .bind(a.last_write_token)
         .bind(a.created_at.to_rfc3339())
         .bind(a.updated_at.to_rfc3339())
+        .bind(role.map(|r| r.role.as_str()))
+        .bind(role.map(|r| r.kind.as_str()))
+        .bind(role.map(|r| r.generation))
+        .bind(role.map(|r| r.status.as_str()))
+        .bind(role.map(|r| r.payload.to_string()))
         .execute(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -291,7 +379,8 @@ impl ArtifactRepo {
 fn select_sql(filter: &str) -> String {
     format!(
         "SELECT id, uri, title, description, status, owner_agent_id, task_id, project_id, \
-         version, last_write_token, created_at, updated_at FROM artifacts {filter}"
+         version, last_write_token, created_at, updated_at, \
+         role, role_kind, role_generation, role_status, role_payload_json FROM artifacts {filter}"
     )
 }
 
@@ -311,6 +400,27 @@ fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
     let project: Option<String> = col(r, "project_id")?;
     let created: String = col(r, "created_at")?;
     let updated: String = col(r, "updated_at")?;
+    let role: Option<String> = col(r, "role")?;
+    let role_artifact = match role {
+        None => None,
+        Some(role) => {
+            let status_s: String = col::<Option<String>>(r, "role_status")?.unwrap_or_default();
+            let payload: Option<String> = col(r, "role_payload_json")?;
+            Some(RoleArtifact {
+                role,
+                kind: col::<Option<String>>(r, "role_kind")?.unwrap_or_default(),
+                generation: col::<Option<i64>>(r, "role_generation")?.unwrap_or_default(),
+                status: RoleArtifactStatus::parse(&status_s).ok_or_else(|| {
+                    CoreError::serde(format!("unknown role artifact status: {status_s}"))
+                })?,
+                payload: payload
+                    .map(|p| serde_json::from_str(&p))
+                    .transpose()
+                    .map_err(|e| CoreError::serde(e.to_string()))?
+                    .unwrap_or_default(),
+            })
+        }
+    };
 
     Ok(Artifact {
         id: id
@@ -335,6 +445,7 @@ fn row_to_artifact(r: &sqlx::sqlite::SqliteRow) -> Result<Artifact> {
             .map_err(|e: uuid::Error| CoreError::serde(e.to_string()))?,
         version: col(r, "version")?,
         last_write_token: col(r, "last_write_token")?,
+        role_artifact,
         created_at: parse_ts(&created)?,
         updated_at: parse_ts(&updated)?,
     })
@@ -403,6 +514,7 @@ mod tests {
             project_id: None,
             version: None,
             last_write_token: None,
+            role_artifact: None,
             created_at: now,
             updated_at: now,
         }
