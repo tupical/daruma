@@ -4339,7 +4339,7 @@ mod tests {
     #[derive(Default)]
     struct MemRunRepo {
         runs: Mutex<HashMap<RunId, Run>>,
-        current_steps: Mutex<HashMap<RunId, TaskId>>,
+        steps: Mutex<HashMap<RunId, Vec<daruma_domain::RunStep>>>,
     }
 
     #[async_trait]
@@ -4359,8 +4359,28 @@ mod tests {
                 .collect())
         }
 
+        async fn list_steps(
+            &self,
+            run_id: RunId,
+        ) -> daruma_shared::Result<Vec<daruma_domain::RunStep>> {
+            Ok(self
+                .steps
+                .lock()
+                .unwrap()
+                .get(&run_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
         async fn current_step_task(&self, run_id: RunId) -> daruma_shared::Result<Option<TaskId>> {
-            Ok(self.current_steps.lock().unwrap().get(&run_id).copied())
+            // Steps are kept in start order, so the last open one is current.
+            Ok(self.steps.lock().unwrap().get(&run_id).and_then(|steps| {
+                steps
+                    .iter()
+                    .rev()
+                    .find(|s| s.finished_at.is_none())
+                    .map(|s| s.task_id)
+            }))
         }
 
         async fn list_unresponsive_candidates(
@@ -4385,12 +4405,37 @@ mod tests {
                     self.runs.lock().unwrap().insert(run.id, run.clone());
                 }
                 Event::RunStepStarted {
-                    run_id, task_id, ..
+                    run_id,
+                    task_id,
+                    at,
                 } => {
-                    self.current_steps.lock().unwrap().insert(*run_id, *task_id);
+                    self.steps.lock().unwrap().entry(*run_id).or_default().push(
+                        daruma_domain::RunStep {
+                            task_id: *task_id,
+                            started_at: *at,
+                            finished_at: None,
+                            outcome: None,
+                        },
+                    );
                 }
-                Event::RunStepFinished { run_id, .. } => {
-                    self.current_steps.lock().unwrap().remove(run_id);
+                Event::RunStepFinished {
+                    run_id,
+                    task_id,
+                    outcome,
+                    at,
+                } => {
+                    // Mirrors the storage projection: close the latest open
+                    // step of this task.
+                    let mut steps = self.steps.lock().unwrap();
+                    if let Some(step) = steps.get_mut(run_id).and_then(|steps| {
+                        steps
+                            .iter_mut()
+                            .rev()
+                            .find(|s| s.task_id == *task_id && s.finished_at.is_none())
+                    }) {
+                        step.finished_at = Some(*at);
+                        step.outcome = serde_json::to_value(outcome).ok();
+                    }
                 }
                 Event::RunCompleted { run_id, at } => {
                     if let Some(r) = self.runs.lock().unwrap().get_mut(run_id) {
