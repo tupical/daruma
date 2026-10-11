@@ -847,14 +847,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_run_finish_step",
             "Finish run step",
-            "Mark the completion of a task step with an outcome.",
+            "Mark the completion of a task step with an outcome. Repeating it with the outcome the latest closed attempt already holds is a no-op (data.already_finished=true).",
             schema_run_finish_step(),
             Dom::Runs, F, E, Ann::Write,
         ),
         tool(
             "daruma_run_complete",
             "Complete run",
-            "Terminate a run successfully. 409 run_postcondition_unmet while a step is open or a step finished done has no task handoff (in_review/done/reject/advance_pipeline) since it started.",
+            "Terminate a run successfully. 409 run_postcondition_unmet while a step is open or a step finished done has no task handoff (in_review/done/reject/advance_pipeline) since it started. The owner repeating it on an already completed run gets success with data.already_completed=true and no new event; others and failed/aborted runs get 409.",
             schema_with_id("run_id"),
             Dom::Runs, D, E, Ann::WriteIdem,
         ),
