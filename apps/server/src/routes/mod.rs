@@ -47,8 +47,8 @@ use daruma_core::{
 use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, ArtifactRelationKind, ArtifactStatus, CommentKind,
     CommentPatch, ComplexityHint, Document, DocumentKind, NewArtifact, NewComment, NewDocument,
-    NewPlan, Plan, PlanPatch, PlanStatus, RunOutcome, SessionArtifactKind, SignalKind, Status,
-    Task, TaskPatch, TriageState, Verb, WorkUnitStatus,
+    NewPlan, Plan, PlanPatch, PlanStatus, RoleArtifactStatus, RunOutcome, SessionArtifactKind,
+    SignalKind, Status, Task, TaskPatch, TriageState, Verb, WorkUnitStatus,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -194,6 +194,14 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/artifacts/{id}/impact", get(artifact_impact))
         .route("/artifact-relations", post(add_artifact_relation))
         .route("/artifact-relations/remove", post(remove_artifact_relation))
+        .route(
+            "/role-artifacts",
+            get(list_role_artifacts).post(propose_role_artifact),
+        )
+        .route(
+            "/artifacts/{id}/role-status",
+            post(set_role_artifact_status),
+        )
         // ── Audit primitives ────────────────────────────────────────────────
         .route(
             "/audit/findings",
@@ -2568,6 +2576,7 @@ async fn list_artifacts(
                 "version": a.version,
                 "project_id": a.project_id,
                 "task_id": a.task_id,
+                "role_artifact": a.role_artifact,
                 "created_at": a.created_at,
                 "updated_at": a.updated_at,
             })
@@ -2575,6 +2584,152 @@ async fn list_artifacts(
         .collect();
 
     Ok(Json(json!({ "artifacts": items })))
+}
+
+/// Query for `GET /v1/role-artifacts` (ADR-0011 п.3). `task_id` is required;
+/// `kind` here is the role-artifact kind, not the URI scheme of
+/// `GET /v1/artifacts`.
+#[derive(Deserialize)]
+struct RoleArtifactListQuery {
+    task_id: String,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// `GET /v1/role-artifacts` — role artifacts of one task, e.g. all
+/// `kind=patch status=proposed`, ordered by (role, kind, generation).
+async fn list_role_artifacts(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Query(q): Query<RoleArtifactListQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let task_id = parse_id(q.task_id.as_str(), "task id")?;
+    let status = match q.status.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => Some(RoleArtifactStatus::parse(raw).ok_or_else(|| {
+            ApiError::from(CoreError::validation(format!(
+                "invalid role artifact status: {raw}"
+            )))
+        })?),
+        None => None,
+    };
+    let artifacts = state
+        .artifacts
+        .list_role_artifacts(
+            task_id,
+            q.role.as_deref().filter(|s| !s.is_empty()),
+            q.kind.as_deref().filter(|s| !s.is_empty()),
+            status,
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let items: Vec<Value> = artifacts
+        .into_iter()
+        .filter_map(|a| {
+            let r = a.role_artifact?;
+            Some(json!({
+                "id": a.id,
+                "uri": a.uri,
+                "title": a.title,
+                "task_id": a.task_id,
+                "project_id": a.project_id,
+                "role": r.role,
+                "kind": r.kind,
+                "generation": r.generation,
+                "status": r.status.as_str(),
+                "payload": r.payload,
+                "created_at": a.created_at,
+                "updated_at": a.updated_at,
+            }))
+        })
+        .collect();
+    Ok(Json(json!({ "artifacts": items })))
+}
+
+#[derive(Deserialize)]
+struct ProposeRoleArtifactBody {
+    task_id: TaskId,
+    role: String,
+    kind: String,
+    #[serde(default)]
+    payload: Value,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    supersedes: Option<ArtifactId>,
+}
+
+/// `POST /v1/role-artifacts` — record a role's structured result as a
+/// `proposed` registry artifact with the next generation of
+/// (task, role, kind).
+async fn propose_role_artifact(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Json(body): Json<ProposeRoleArtifactBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::ProjectWrite)
+        .map_err(ApiError::from_missing_cap)?;
+    let envs = state
+        .commands
+        .dispatch(
+            Command::ProposeRoleArtifact {
+                task_id: body.task_id,
+                role: body.role,
+                kind: body.kind,
+                payload: body.payload,
+                title: body.title,
+                supersedes: body.supersedes,
+                artifact_id: None,
+            },
+            actor_from(&auth, None),
+        )
+        .await
+        .map_err(ApiError::from)?;
+    let artifact = envs.iter().find_map(|e| match &e.payload {
+        Event::ArtifactRegistered { artifact } => Some(artifact.clone()),
+        _ => None,
+    });
+    let last = envs.last();
+    Ok(Json(MutationResponse {
+        success: true,
+        event_id: last.map(|e| e.id),
+        event_seq: last.map(|e| e.seq),
+        data: json!({ "artifact": artifact }),
+        warnings: vec![],
+        client_command_id: None,
+    }))
+}
+
+#[derive(Deserialize)]
+struct SetRoleArtifactStatusBody {
+    status: RoleArtifactStatus,
+}
+
+/// `POST /v1/artifacts/{id}/role-status` — move a role artifact out of
+/// `proposed` (`applied` / `rejected` / `superseded`). Other transitions are
+/// rejected with 409; repeating the current status is a no-op.
+async fn set_role_artifact_status(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+    Path(id_str): Path<String>,
+    Json(body): Json<SetRoleArtifactStatusBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let artifact_id = parse_id(id_str, "artifact id")?;
+    dispatch_artifact_mutation(
+        &auth,
+        &state,
+        Command::SetRoleArtifactStatus {
+            artifact_id,
+            to: body.status,
+        },
+        json!({ "artifact_id": artifact_id, "status": body.status.as_str() }),
+    )
+    .await
 }
 
 /// `POST /v1/artifacts` — register a new artifact (event-sourced via the
@@ -5151,7 +5306,9 @@ fn capability_for_command(cmd: &Command) -> Capability {
         | Command::AddArtifactRelation { .. }
         | Command::RemoveArtifactRelation { .. }
         | Command::AssignArtifactOwner { .. }
-        | Command::ChangeArtifactStatus { .. } => Capability::ProjectWrite,
+        | Command::ChangeArtifactStatus { .. }
+        | Command::ProposeRoleArtifact { .. }
+        | Command::SetRoleArtifactStatus { .. } => Capability::ProjectWrite,
         Command::RecordAgentAction { .. } => Capability::AgentDispatch,
         Command::AddComment { .. }
         | Command::EditComment { .. }

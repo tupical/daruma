@@ -2,8 +2,8 @@ use daruma_domain::{
     Actor, AgentAction, AgentSession, AgentSessionPlanStep, Artifact, ArtifactRelation,
     ArtifactRelationKind, ArtifactStatus, Comment, CommentPatch, CompletionNote, Document,
     DocumentStatus, Evidence, HandoffContract, NewTask, Plan, PlanPatch, PlanStatus, Priority,
-    Project, RelationKind, Rule, Run, RunOutcome, SessionArtifact, Status, TaskPatch, WorkLease,
-    WorkUnit,
+    Project, RelationKind, RoleArtifactStatus, Rule, Run, RunOutcome, SessionArtifact, Status,
+    TaskPatch, WorkLease, WorkUnit,
 };
 use daruma_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, ClaimId, CommentId, DeviceId,
@@ -816,6 +816,16 @@ pub enum Event {
         at: Timestamp,
     },
 
+    /// The role status of a role artifact changed (ADR-0011 п.3), e.g.
+    /// `proposed → applied`. Emitted by `Command::SetRoleArtifactStatus` and,
+    /// for the superseded generation, by `Command::ProposeRoleArtifact`.
+    RoleArtifactStatusChanged {
+        artifact_id: ArtifactId,
+        from: RoleArtifactStatus,
+        to: RoleArtifactStatus,
+        at: Timestamp,
+    },
+
     // ── Lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md §1) ─────────────────────
     /// A lifecycle rule was created. Carries the full rule for replay.
     RuleCreated {
@@ -1025,6 +1035,7 @@ impl Event {
             Event::ArtifactDeprecated { .. } => "artifact_deprecated",
             Event::ArtifactRelationAdded { .. } => "artifact_relation_added",
             Event::ArtifactRelationRemoved { .. } => "artifact_relation_removed",
+            Event::RoleArtifactStatusChanged { .. } => "role_artifact_status_changed",
             // Lifecycle rules
             Event::RuleCreated { .. } => "rule_created",
             Event::RuleUpdated { .. } => "rule_updated",
@@ -1226,7 +1237,8 @@ impl Event {
             | Event::ArtifactWriteCommitted { .. }
             | Event::ArtifactDeprecated { .. }
             | Event::ArtifactRelationAdded { .. }
-            | Event::ArtifactRelationRemoved { .. } => Channel::Artifacts,
+            | Event::ArtifactRelationRemoved { .. }
+            | Event::RoleArtifactStatusChanged { .. } => Channel::Artifacts,
 
             // ── Rules channel (lifecycle rules + evidence registry) ───────────
             Event::RuleCreated { .. }

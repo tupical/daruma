@@ -7,8 +7,8 @@
 use daruma_domain::{
     AgentAction, AgentSessionPlanStep, ArtifactRelationKind, ArtifactStatus, CommentPatch,
     CompletionNote, NewArtifact, NewComment, NewDocument, NewPlan, NewTask, PlanPatch, PlanStatus,
-    Priority, RelationKind, RunOutcome, SessionArtifactKind, SignalKind, Status, TaskPatch,
-    TransitionComment, WorkLease,
+    Priority, RelationKind, RoleArtifactStatus, RunOutcome, SessionArtifactKind, SignalKind,
+    Status, TaskPatch, TransitionComment, WorkLease,
 };
 use daruma_shared::{
     AgentId, AgentSessionId, ArtifactId, ClaimId, CommentId, DocumentId, HandoffId, PlanId,
@@ -567,6 +567,35 @@ pub enum Command {
         artifact_id: ArtifactId,
         to: ArtifactStatus,
     },
+
+    // ── Role artifacts (ADR-0011 п.3) ─────────────────────────────────────────
+    /// Record a role's structured result for a task as a registry artifact
+    /// with `role_status = proposed` and the next generation of
+    /// `(task_id, role, kind)`. `supersedes` marks that earlier proposed
+    /// artifact of the same (task, role, kind) `superseded`; parallel
+    /// instances that omit it stay proposed side by side.
+    ProposeRoleArtifact {
+        task_id: TaskId,
+        role: String,
+        kind: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supersedes: Option<ArtifactId>,
+        /// Pre-assigned id for idempotent offline replay; generated if absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_id: Option<ArtifactId>,
+    },
+
+    /// Move a role artifact out of `proposed`: `applied`, `rejected` or
+    /// `superseded`. Any other transition is rejected; repeating the current
+    /// status is a no-op.
+    SetRoleArtifactStatus {
+        artifact_id: ArtifactId,
+        to: RoleArtifactStatus,
+    },
 }
 
 impl Command {
@@ -659,6 +688,8 @@ impl Command {
             Command::RemoveArtifactRelation { .. } => "remove_artifact_relation",
             Command::AssignArtifactOwner { .. } => "assign_artifact_owner",
             Command::ChangeArtifactStatus { .. } => "change_artifact_status",
+            Command::ProposeRoleArtifact { .. } => "propose_role_artifact",
+            Command::SetRoleArtifactStatus { .. } => "set_role_artifact_status",
         }
     }
 }

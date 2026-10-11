@@ -28,7 +28,10 @@ pub mod work_unit;
 
 pub use activity::{Activity, Verb};
 pub use agent::{Actor, AgentAction, AgentActionKind};
-pub use artifact::{Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus, NewArtifact};
+pub use artifact::{
+    Artifact, ArtifactRelation, ArtifactRelationKind, ArtifactStatus, NewArtifact, RoleArtifact,
+    RoleArtifactStatus,
+};
 pub use audit_finding::{
     AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus, NewFinding,
 };

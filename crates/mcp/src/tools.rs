@@ -751,6 +751,35 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             schema_artifact_impact(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
+        // ── Role artifacts (ADR-0011 п.3) ─────────────────────────────────
+        tool(
+            "daruma_role_artifact_propose",
+            "Propose role artifact",
+            "Record a workflow role's structured result for a task (e.g. role=draft kind=patch) \
+             as a registry artifact with status `proposed` and the next generation of \
+             (task, role, kind). Parallel instances each get their own generation and stay \
+             proposed side by side; pass `supersedes` to retire one earlier proposed artifact \
+             of the same (task, role, kind). Use instead of a role prefix in a comment.",
+            schema_role_artifact_propose(),
+            Dom::WorkspaceGraph, F, X, Ann::Write,
+        ),
+        tool(
+            "daruma_role_artifact_set_status",
+            "Set role artifact status",
+            "Move a role artifact out of `proposed`: `applied`, `rejected` or `superseded`. \
+             Other transitions are rejected; repeating the current status is a no-op.",
+            schema_role_artifact_set_status(),
+            Dom::WorkspaceGraph, F, X, Ann::WriteIdem,
+        ),
+        tool(
+            "daruma_role_artifact_list",
+            "List role artifacts",
+            "Role artifacts of one task, optionally filtered by role, kind and status — \
+             e.g. all `kind=patch status=proposed` the next role should consider. \
+             Returns id, role, kind, generation, status and payload.",
+            schema_role_artifact_list(),
+            Dom::WorkspaceGraph, F, X, Ann::Read,
+        ),
         // ── WorkspaceGraph ────────────────────────────────────────────────
         tool(
             "daruma_workspacegraph_status",
@@ -3141,6 +3170,43 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             };
             client.get_json(&path).await
         }
+        "daruma_role_artifact_propose" => {
+            let task_id = required_string(&args, "task_id")?;
+            let role = required_string(&args, "role")?;
+            let kind = required_string(&args, "kind")?;
+            let mut body = json!({"task_id": task_id, "role": role, "kind": kind});
+            if let Some(payload) = args.get("payload") {
+                body["payload"] = payload.clone();
+            }
+            for key in ["title", "supersedes"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    body[key] = json!(v);
+                }
+            }
+            client.post_json("/v1/role-artifacts", body).await
+        }
+        "daruma_role_artifact_set_status" => {
+            let artifact_id = required_string(&args, "artifact_id")?;
+            let status = required_string(&args, "status")?;
+            client
+                .post_json(
+                    &format!("/v1/artifacts/{artifact_id}/role-status"),
+                    json!({"status": status}),
+                )
+                .await
+        }
+        "daruma_role_artifact_list" => {
+            let task_id = required_string(&args, "task_id")?;
+            let mut params = vec![format!("task_id={}", urlencode(&task_id))];
+            for key in ["role", "kind", "status"] {
+                if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
+                    params.push(format!("{key}={}", urlencode(v)));
+                }
+            }
+            client
+                .get_json(&format!("/v1/role-artifacts?{}", params.join("&")))
+                .await
+        }
 
         other => anyhow::bail!("unknown tool: {other}"),
     }
@@ -4417,6 +4483,45 @@ fn schema_artifact_list() -> Value {
                 "description":"Filter by lifecycle status."
             }
         }
+    })
+}
+
+fn schema_role_artifact_propose() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "task_id":    {"type":"string","description":"Task the result belongs to."},
+            "role":       {"type":"string","description":"Workflow role that produced it: draft, scout, builder, reviewer, research, …  [A-Za-z0-9_.-]."},
+            "kind":       {"type":"string","description":"Result kind, e.g. patch, review, plan, findings. [A-Za-z0-9_.-]."},
+            "payload":    {"description":"Structured result (any JSON). Draft patches use context anchors, not line numbers (ADR-0011 п.6)."},
+            "title":      {"type":"string","description":"Optional title; defaults to `<role> <kind> #<generation>`."},
+            "supersedes": {"type":"string","description":"Id of an earlier proposed artifact of the same (task, role, kind) to mark superseded."}
+        },
+        "required": ["task_id","role","kind"]
+    })
+}
+
+fn schema_role_artifact_set_status() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Role artifact id."},
+            "status":      {"type":"string","enum":["applied","rejected","superseded"],"description":"New role status; only a proposed artifact can move."}
+        },
+        "required": ["artifact_id","status"]
+    })
+}
+
+fn schema_role_artifact_list() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "task_id": {"type":"string","description":"Task whose role artifacts to list."},
+            "role":    {"type":"string","description":"Filter by role."},
+            "kind":    {"type":"string","description":"Filter by kind."},
+            "status":  {"type":"string","enum":["proposed","superseded","applied","rejected"],"description":"Filter by role status."}
+        },
+        "required": ["task_id"]
     })
 }
 

@@ -3703,6 +3703,151 @@ impl CommandHandler {
                     at: time::now(),
                 }])
             }
+
+            // ── Role artifacts (ADR-0011 п.3) ──────────────────────────────────
+            Command::ProposeRoleArtifact {
+                task_id,
+                role,
+                kind,
+                payload,
+                title,
+                supersedes,
+                artifact_id,
+            } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                let role = role.trim().to_string();
+                let kind = kind.trim().to_string();
+                for (field, value) in [("role", &role), ("kind", &kind)] {
+                    if value.is_empty() {
+                        return Err(CoreError::validation(format!(
+                            "role artifact {field} must not be empty"
+                        )));
+                    }
+                    // Both are URI segments: keep them path-safe.
+                    if !value
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+                    {
+                        return Err(CoreError::validation(format!(
+                            "role artifact {field} must use [A-Za-z0-9_.-] only: {value}"
+                        )));
+                    }
+                }
+                let task = self
+                    .tasks
+                    .get(task_id)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("task {task_id} not found")))?;
+                let superseded = match supersedes {
+                    None => None,
+                    Some(prev_id) => {
+                        let prev = repo.get(prev_id).await?.ok_or_else(|| {
+                            CoreError::not_found(format!("artifact {prev_id} not found"))
+                        })?;
+                        let same_slot = prev.task_id == Some(task_id)
+                            && prev
+                                .role_artifact
+                                .as_ref()
+                                .is_some_and(|r| r.role == role && r.kind == kind);
+                        if !same_slot {
+                            return Err(CoreError::validation(format!(
+                                "artifact {prev_id} is not a {role}/{kind} role artifact of task {task_id}"
+                            )));
+                        }
+                        let from = prev.role_artifact.map(|r| r.status).unwrap_or_default();
+                        if !from.can_transition_to(daruma_domain::RoleArtifactStatus::Superseded) {
+                            return Err(CoreError::conflict(format!(
+                                "role artifact {prev_id} is {}, only proposed can be superseded",
+                                from.as_str()
+                            )));
+                        }
+                        Some(prev_id)
+                    }
+                };
+                let generation = repo.next_role_generation(task_id, &role, &kind).await?;
+                let uri = daruma_domain::RoleArtifact::uri(task_id, &role, &kind, generation);
+                if repo.get_by_uri(&uri).await?.is_some() {
+                    return Err(CoreError::conflict(format!(
+                        "artifact with uri {uri} already registered"
+                    )));
+                }
+                let now = time::now();
+                let id = artifact_id.unwrap_or_else(daruma_shared::ArtifactId::new);
+                let record = daruma_domain::Artifact {
+                    id,
+                    uri,
+                    title: title
+                        .map(|t| t.trim().to_string())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| format!("{role} {kind} #{generation}")),
+                    description: String::new(),
+                    // The payload is present at registration: the registry
+                    // lifecycle is `committed` from the start.
+                    status: daruma_domain::ArtifactStatus::Committed,
+                    owner_agent_id: None,
+                    task_id: Some(task_id),
+                    project_id: task.project_id,
+                    version: None,
+                    last_write_token: None,
+                    role_artifact: Some(daruma_domain::RoleArtifact {
+                        role,
+                        kind,
+                        generation,
+                        status: daruma_domain::RoleArtifactStatus::Proposed,
+                        payload,
+                    }),
+                    created_at: now,
+                    updated_at: now,
+                };
+                let mut events = vec![Event::ArtifactRegistered { artifact: record }];
+                if let Some(prev_id) = superseded {
+                    events.push(Event::RoleArtifactStatusChanged {
+                        artifact_id: prev_id,
+                        from: daruma_domain::RoleArtifactStatus::Proposed,
+                        to: daruma_domain::RoleArtifactStatus::Superseded,
+                        at: now,
+                    });
+                    events.push(Event::ArtifactRelationAdded {
+                        relation: ArtifactRelation {
+                            id: daruma_shared::ArtifactRelationId::new(),
+                            from_id: id,
+                            to_id: prev_id,
+                            kind: daruma_domain::ArtifactRelationKind::Supersedes,
+                            created_at: now,
+                        },
+                    });
+                }
+                Ok(events)
+            }
+
+            Command::SetRoleArtifactStatus { artifact_id, to } => {
+                let repo = require_artifacts(&self.artifacts)?;
+                let current = repo.get(artifact_id).await?.ok_or_else(|| {
+                    CoreError::not_found(format!("artifact {artifact_id} not found"))
+                })?;
+                let Some(role_artifact) = current.role_artifact else {
+                    return Err(CoreError::validation(format!(
+                        "artifact {artifact_id} is not a role artifact"
+                    )));
+                };
+                let from = role_artifact.status;
+                if from == to {
+                    return Ok(vec![]);
+                }
+                if !from.can_transition_to(to) {
+                    return Err(CoreError::conflict(format!(
+                        "role artifact transition {} -> {} is not allowed",
+                        from.as_str(),
+                        to.as_str()
+                    )));
+                }
+                Ok(vec![Event::RoleArtifactStatusChanged {
+                    artifact_id,
+                    from,
+                    to,
+                    at: time::now(),
+                }])
+            }
         }
     }
 }

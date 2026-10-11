@@ -28,6 +28,7 @@ fn artifact(uri: &str, project_id: Option<ProjectId>) -> Artifact {
         project_id,
         version: None,
         last_write_token: None,
+        role_artifact: None,
         created_at: now,
         updated_at: now,
     }
@@ -484,4 +485,124 @@ async fn impact_unknown_artifact_is_404() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// ADR-0011 п.3 over the real HTTP + MCP surface: two parallel drafts stay
+/// proposed side by side, the builder takes one and supersedes the other,
+/// and a final role status cannot move again.
+#[tokio::test]
+async fn role_artifacts_flow_through_mcp_tools() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
+
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        "/v1/commands",
+        r#"{"command":{"type":"create_task","task":{"title":"Role artifacts e2e"}}}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create_task failed: {body}");
+    let task_id = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| {
+            let p = e.get("payload")?;
+            (p.get("type")?.as_str()? == "task_created")
+                .then(|| p["task"]["id"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .expect("task_created event");
+
+    let mut drafts = vec![];
+    for n in 1..=2 {
+        let res = mcp_tool(
+            &addr,
+            &token,
+            "daruma_role_artifact_propose",
+            json!({
+                "task_id": task_id,
+                "role": "draft",
+                "kind": "patch",
+                "payload": {"file": "src/lib.rs", "anchor": "fn run", "variant": n}
+            }),
+        )
+        .await;
+        let artifact = &res["data"]["artifact"];
+        assert_eq!(artifact["role_artifact"]["generation"], n, "{res}");
+        drafts.push(artifact["id"].as_str().unwrap().to_owned());
+    }
+
+    let listed = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_list",
+        json!({"task_id": task_id, "kind": "patch", "status": "proposed"}),
+    )
+    .await;
+    let ids: Vec<&str> = listed["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, drafts.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(listed["artifacts"][1]["payload"]["variant"], 2);
+
+    mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_set_status",
+        json!({"artifact_id": drafts[0], "status": "applied"}),
+    )
+    .await;
+    let builder = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_propose",
+        json!({"task_id": task_id, "role": "draft", "kind": "patch", "supersedes": drafts[1]}),
+    )
+    .await;
+    assert_eq!(
+        builder["data"]["artifact"]["role_artifact"]["generation"],
+        3
+    );
+
+    let all = mcp_tool(
+        &addr,
+        &token,
+        "daruma_role_artifact_list",
+        json!({"task_id": task_id}),
+    )
+    .await;
+    let statuses: Vec<&str> = all["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, vec!["applied", "superseded", "proposed"]);
+
+    // applied is final: the REST surface answers 409.
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/role-status", drafts[0]),
+        r#"{"status":"rejected"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Role artifacts stay visible in the plain registry list.
+    let plain = mcp_tool(
+        &addr,
+        &token,
+        "daruma_artifact_list",
+        json!({"task_id": task_id}),
+    )
+    .await;
+    assert_eq!(plain["artifacts"].as_array().unwrap().len(), 3);
+    assert_eq!(plain["artifacts"][0]["role_artifact"]["role"], "draft");
 }
