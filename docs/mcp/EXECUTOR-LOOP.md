@@ -233,8 +233,9 @@ the same postcondition and still reads the run and task back.
 The cron launchers (`~/.hermes/scripts/mcpbox_*.sh`) reach the tracker through
 one shared helper, `~/.hermes/scripts/mcpbox_tracker.py` (task
 `01a12b83-25e5-70a2-be19-23d8ef5122ac`; tests in
-`~/.hermes/scripts/tests/test_mcpbox_tracker.py`). The draft readback uses it
-today; builder/reviewer handoff checks (S9/S10) build on it.
+`~/.hermes/scripts/tests/test_mcpbox_tracker.py`). The draft readback
+and the builder handoff check (S9, below) use it; the reviewer check (S10)
+builds on it.
 
 - **Exit code 0 is not success.** A call succeeds only when stdout parses as
   JSON with no error: a non-zero exit, a timeout, empty or unparseable stdout
@@ -263,6 +264,48 @@ today; builder/reviewer handoff checks (S9/S10) build on it.
 The helper is deterministic and needs no AI provider; with a provider the
 models drive the same calls, but the launcher decides success only from these
 checks.
+
+### Builder handoff postconditions (S9)
+
+`mcpbox_autonomous.sh` decides the outcome of a builder pass outside the model
+(task `01a12b83-25e5-70a2-be19-23ee076229df`; `verify-builder` in
+`mcpbox_tracker.py`, scenarios in `tests/test_mcpbox_cycle.py`). The
+`RESULT_CLAIMED_TITLE` / `RESULT_NO_CLAIM` marker is only the model's claim;
+it no longer makes a pass successful on its own.
+
+- **Window.** Under the repository lock, before the model starts, the launcher
+  finds the head of `daruma_events_since` (gallop + bisection from the hint in
+  `last.seq`, then one page) and stores it. If the event log is unreachable
+  the model is not started and nothing is claimed.
+- **IDs from the server.** After the engine exits, `run_started` and
+  `agent_claimed` events of the window are filtered by the PAT's
+  `mcp_agent_id` (`daruma_workspace_info`). Exactly one task and one run is a
+  pass; task, run and claim ids come from those events, the title from
+  `daruma_get`.
+- **Postconditions** (all must hold): the task reads back `in_review` or
+  `done` — or the window shows this pass's handoff followed by a later
+  transition out of `in_review` (a review verdict); the handoff transition is
+  in the window; a pipeline-managed task (`pipeline_position`) moved through
+  `AdvancePipeline` (`task_updated.pipeline_position` right before the status
+  change), not a direct status write; the run is `completed` with no open
+  step; no claim is held; `work/<task-id>` exists on `origin` and the local
+  branch equals it; the checkout is clean; if the branch moves the
+  `vendor/oss` pin, that SHA is the head of `work/<task-id>` or `main` in the
+  vendor origin.
+- **Failure** prints `Builder pass INCOMPLETE` with the failed conditions and
+  the task/run/claim ids, exit 1. A tracker error during verification prints
+  `UNVERIFIED`, exit 1.
+- **Safe repeat.** Only an already declared handoff is finished: when the task
+  is already `in_review`/`done` by a transition of this pass, the launcher
+  closes the open step with `done`, releases its claim and completes the run
+  (each a mutation with readback, S8), then re-checks. It never changes task
+  status and never sets `done`.
+- **NO_CLAIM** is accepted only when the window has no run and no claim of
+  this agent; `RESULT_NO_CLAIM` with a created run/claim, or a claim marker
+  without one on the server, is incomplete.
+
+Both operating modes run the same deterministic checks; an AI provider only
+drives the model that produces the pass.
 
 ### Matrix
 
