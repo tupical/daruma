@@ -132,7 +132,9 @@ pub struct FindingEntity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditFinding {
     pub id: AuditFindingId,
-    pub project_id: ProjectId,
+    /// `None` = workspace-scope finding (a signal not attributable to one
+    /// project, e.g. MCP telemetry without verified routing).
+    pub project_id: Option<ProjectId>,
     #[serde(default, flatten)]
     pub entity: FindingEntity,
     /// Stable check identity for idempotency, e.g. `doc.unread`.
@@ -162,7 +164,8 @@ pub struct AuditFinding {
 /// last_seen_at = now`, a repeat sighting bumps `last_seen_at` on the existing row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewFinding {
-    pub project_id: ProjectId,
+    /// `None` = workspace-scope finding; see [`AuditFinding::project_id`].
+    pub project_id: Option<ProjectId>,
     #[serde(default, flatten)]
     pub entity: FindingEntity,
     pub check_key: String,
@@ -226,7 +229,7 @@ mod tests {
     fn finding_entity_flattens_onto_finding() {
         let f = AuditFinding {
             id: AuditFindingId::new(),
-            project_id: ProjectId::new(),
+            project_id: Some(ProjectId::new()),
             entity: FindingEntity {
                 task_id: Some(TaskId::new()),
                 ..Default::default()

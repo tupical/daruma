@@ -2636,7 +2636,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Audit primitives ─────────────────────────────────────────────
         "daruma_audit_findings" => {
             let project_id = required_string(&args, "project_id")?;
-            let mut qs = vec![format!("project_id={project_id}")];
+            let mut qs = vec![if project_id == "workspace" {
+                "scope=workspace".to_string()
+            } else {
+                format!("project_id={project_id}")
+            }];
             for key in ["severity", "category", "status"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
                     qs.push(format!("{key}={v}"));
@@ -3414,7 +3418,7 @@ fn schema_audit_findings() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "project_id": {"type":"string","description":"Project to list findings for."},
+            "project_id": {"type":"string","description":"Project to list findings for, or `workspace` for workspace-scope findings."},
             "severity": {"type":"string","enum":["error","warn","info"],"description":"Filter by severity."},
             "category": {"type":"string","description":"Filter by category bucket."},
             "status": {"type":"string","enum":["open","acknowledged","muted","resolved"],"description":"Filter by status."}

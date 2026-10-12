@@ -62,11 +62,11 @@ impl AuditFindingRepo {
         // match migration 0041's unique index).
         let existing: Option<(String,)> = sqlx::query_as(
             "SELECT id FROM audit_findings \
-             WHERE project_id = ? AND check_key = ? \
+             WHERE COALESCE(project_id, '') = ? AND check_key = ? \
                AND COALESCE(plan_id, '') = ? AND COALESCE(task_id, '') = ? \
                AND COALESCE(document_id, '') = ? AND COALESCE(artifact_id, '') = ?",
         )
-        .bind(new.project_id.to_string())
+        .bind(entity_key(&new.project_id))
         .bind(&new.check_key)
         .bind(entity_key(&new.entity.plan_id))
         .bind(entity_key(&new.entity.task_id))
@@ -117,7 +117,7 @@ impl AuditFindingRepo {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL, NULL)",
         )
         .bind(id.to_string())
-        .bind(new.project_id.to_string())
+        .bind(new.project_id.map(|i| i.to_string()))
         .bind(new.entity.plan_id.map(|i| i.to_string()))
         .bind(new.entity.task_id.map(|i| i.to_string()))
         .bind(new.entity.document_id.map(|i| i.to_string()))
@@ -151,6 +151,31 @@ impl AuditFindingRepo {
         resolved_by: &ActorRef,
         now: Timestamp,
     ) -> Result<u64> {
+        self.resolve_missing_in(Some(project_id), check_key, seen, resolved_by, now)
+            .await
+    }
+
+    /// [`Self::resolve_missing`] for workspace-scope findings (`project_id IS
+    /// NULL`). Project findings of the same `check_key` are untouched.
+    pub async fn resolve_missing_workspace(
+        &self,
+        check_key: &str,
+        seen: &[AuditFindingId],
+        resolved_by: &ActorRef,
+        now: Timestamp,
+    ) -> Result<u64> {
+        self.resolve_missing_in(None, check_key, seen, resolved_by, now)
+            .await
+    }
+
+    async fn resolve_missing_in(
+        &self,
+        project_id: Option<daruma_shared::ProjectId>,
+        check_key: &str,
+        seen: &[AuditFindingId],
+        resolved_by: &ActorRef,
+        now: Timestamp,
+    ) -> Result<u64> {
         // Build a NOT IN (?, ?, …) exclusion. SQLite has no array binding, so we
         // assemble placeholders for the (typically small) seen set.
         let placeholders = if seen.is_empty() {
@@ -162,12 +187,12 @@ impl AuditFindingRepo {
         let sql = format!(
             "UPDATE audit_findings \
              SET status = 'resolved', resolved_by = ?, resolved_at = ? \
-             WHERE project_id = ? AND check_key = ? AND status != 'resolved' {placeholders}"
+             WHERE project_id IS ? AND check_key = ? AND status != 'resolved' {placeholders}"
         );
         let mut q = sqlx::query(&sql)
             .bind(resolved_by.kind.clone())
             .bind(now.to_rfc3339())
-            .bind(project_id.to_string())
+            .bind(project_id.map(|i| i.to_string()))
             .bind(check_key);
         for id in seen {
             q = q.bind(id.to_string());
@@ -233,14 +258,28 @@ impl AuditFindingRepo {
         project_id: daruma_shared::ProjectId,
         filter: &FindingFilter,
     ) -> Result<Vec<AuditFinding>> {
+        self.list_in(Some(project_id), filter).await
+    }
+
+    /// Workspace-scope findings only (`project_id IS NULL`), same ordering
+    /// and filters as [`Self::list`].
+    pub async fn list_workspace(&self, filter: &FindingFilter) -> Result<Vec<AuditFinding>> {
+        self.list_in(None, filter).await
+    }
+
+    async fn list_in(
+        &self,
+        project_id: Option<daruma_shared::ProjectId>,
+        filter: &FindingFilter,
+    ) -> Result<Vec<AuditFinding>> {
         let rows = sqlx::query(&select_sql(
-            "WHERE project_id = ? \
+            "WHERE project_id IS ? \
                AND (? IS NULL OR severity = ?) \
                AND (? IS NULL OR category = ?) \
                AND (? IS NULL OR status = ?) \
              ORDER BY last_seen_at DESC, id DESC",
         ))
-        .bind(project_id.to_string())
+        .bind(project_id.map(|i| i.to_string()))
         .bind(filter.severity.map(|s| s.as_str()))
         .bind(filter.severity.map(|s| s.as_str()))
         .bind(filter.category.as_deref())
@@ -278,7 +317,7 @@ fn row_to_finding(row: &sqlx::sqlite::SqliteRow) -> Result<AuditFinding> {
 
     Ok(AuditFinding {
         id: parse_id(row, "id")?,
-        project_id: parse_id(row, "project_id")?,
+        project_id: parse_opt_id(row, "project_id")?,
         entity: FindingEntity {
             plan_id: parse_opt_id(row, "plan_id")?,
             task_id: parse_opt_id(row, "task_id")?,
@@ -347,7 +386,7 @@ mod tests {
 
     fn sample(project: ProjectId, task: Option<TaskId>, check: &str) -> NewFinding {
         NewFinding {
-            project_id: project,
+            project_id: Some(project),
             entity: FindingEntity {
                 task_id: task,
                 ..Default::default()
@@ -624,5 +663,56 @@ mod tests {
             )
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn workspace_scope_dedups_and_is_isolated_from_projects() {
+        let repo = repo().await;
+        let actor = ActorRef::from_actor(&Actor::user());
+        let project = ProjectId::new();
+        let mut ws = sample(project, None, "usage.redundant_pair");
+        ws.project_id = None;
+        let in_project = sample(project, None, "usage.redundant_pair");
+
+        let ws_id = repo.upsert(&ws).await.unwrap();
+        assert_eq!(
+            repo.upsert(&ws).await.unwrap(),
+            ws_id,
+            "one live workspace row"
+        );
+        let p_id = repo.upsert(&in_project).await.unwrap();
+        assert_ne!(ws_id, p_id, "workspace and project findings are distinct");
+
+        let ws_rows = repo
+            .list_workspace(&FindingFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(ws_rows.len(), 1);
+        assert_eq!(ws_rows[0].project_id, None);
+        let p_rows = repo.list(project, &FindingFilter::default()).await.unwrap();
+        assert_eq!(p_rows.len(), 1);
+        assert_eq!(p_rows[0].project_id, Some(project));
+
+        // Workspace auto-resolve leaves the project finding alone and back.
+        let resolved = repo
+            .resolve_missing_workspace("usage.redundant_pair", &[], &actor, time::now())
+            .await
+            .unwrap();
+        assert_eq!(resolved, 1);
+        assert_eq!(
+            repo.get(p_id).await.unwrap().unwrap().status,
+            FindingStatus::Open
+        );
+        repo.resolve_missing(project, "usage.redundant_pair", &[], &actor, time::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get(ws_id).await.unwrap().unwrap().status,
+            FindingStatus::Resolved
+        );
+        assert_eq!(
+            repo.get(p_id).await.unwrap().unwrap().status,
+            FindingStatus::Resolved
+        );
     }
 }

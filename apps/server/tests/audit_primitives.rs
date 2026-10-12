@@ -131,6 +131,41 @@ async fn finding_upsert_is_idempotent_and_filterable() {
 }
 
 #[tokio::test]
+async fn workspace_scope_lists_separately_from_projects() {
+    let app = TestAppBuilder::default().build().await;
+    let token = app.admin_token.clone();
+    let project_id = create_project(&app.router, &token).await;
+    let body = json!({ "finding": {
+        "project_id": project_id, "check_key": "usage.redundant_pair",
+        "category": "usage", "severity": "warn", "title": "MCP: usage.redundant_pair"
+    }})
+    .to_string();
+    let (s, rec) = json_post(app.router.clone(), &token, "/v1/audit/findings", &body).await;
+    assert_eq!(s, StatusCode::OK, "record: {rec}");
+    assert!(rec["finding"]["project_id"].as_str().is_some());
+
+    // A project finding never shows up in the workspace scope.
+    let (s, ws) = json_get(
+        app.router.clone(),
+        &token,
+        "/v1/audit/findings?scope=workspace",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "workspace list: {ws}");
+    assert_eq!(ws["findings"].as_array().unwrap().len(), 0);
+
+    // Exactly one of project_id / scope=workspace.
+    for uri in [
+        "/v1/audit/findings".to_string(),
+        "/v1/audit/findings?scope=other".to_string(),
+        format!("/v1/audit/findings?project_id={project_id}&scope=workspace"),
+    ] {
+        let (s, err) = json_get(app.router.clone(), &token, &uri).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{uri}: {err}");
+    }
+}
+
+#[tokio::test]
 async fn resolve_missing_auto_resolves_unseen_findings() {
     let app = TestAppBuilder::default().build().await;
     let token = app.admin_token.clone();
