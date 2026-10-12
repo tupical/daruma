@@ -353,9 +353,61 @@ is only the model's claim.
   `set_status` means the status did not change; the reviewer reads the task
   back and repeats with a short comment.
 
-The launcher never mutates the tracker for a review pass and touches git only
-with `git fetch` of the refs it checks. Both operating modes run the same
-deterministic checks.
+The launcher never mutates the tracker to decide a verdict and touches git only
+with `git fetch` of the refs it checks; the only tracker writes are the S11
+recovery of an abandoned run (normally none: review passes open no run). Both
+operating modes run the same deterministic checks.
+
+### Abandoned pass recovery (S11)
+
+Both launchers close a pass whose process ended without a handoff (task
+`01a12b83-25e5-70a2-be19-2404d2524358`; `pending-write` / `recover-pass` in
+`mcpbox_tracker.py`, scenarios in `tests/test_mcpbox_cycle.py`).
+
+- **Pending window.** Right after the window head is stored, the launcher
+  writes `pending.json` in its log directory: role, `start_seq`, its own pid
+  and that pid's start time, the model log. The file is removed only when the
+  outcome is final (verified pass, or recovery finished).
+- **Finally and trap.** The model runs as a child under `wait`, so `TERM`,
+  `INT` and `HUP` reach the launcher's trap at once (bash defers a trap until a
+  foreground child exits). The trap stops the child, then runs the same path as
+  a normal exit. Verification (S9/S10) runs for every exit code, including
+  `124` and a network failure; a reviewer verdict proven by the server is a
+  success even if the engine timed out afterwards. When verification fails,
+  `recover-pass --owner-exited` runs on the window: the child has exited, so
+  the owner is proven dead.
+- **Next preflight.** `SIGKILL` and `oom-kill` cannot be trapped. A
+  `pending.json` that survives is handled before the smoke check and before the
+  new window head: under the lock, a launcher pid that is gone (or reused with
+  another start time) is proven dead. A live owner — or a tracker error — keeps
+  the file and stops the pass (`Preflight INCOMPLETE`, nothing claimed).
+- **What recovery does.** Only to `Active` runs whose `run_started` in the
+  window carries this PAT's `mcp_agent_id`, for each task of the run's open
+  steps (or of the pass's claims when no step was started):
+  - task `in_review`/`done` with this pass's handoff transition in the window —
+    the S9 safe repeat (step `done`, release, `CompleteRun`);
+  - otherwise one `blocker` comment `LAUNCHER BLOCKER: launcher_abandoned
+    run=<run_id>` with the log path and the git state (`work/<task-id>` on
+    origin, dirty file count), the open step finished
+    `{kind:"failed", reason:"launcher_abandoned"}`, the task moved
+    `in_progress → todo` (no other status is ever changed, `done` is never
+    reopened), then `AbortRun{reason:"launcher_abandoned"}`, which releases the
+    run's claims. No new status is introduced.
+- **No bypass of rights.** A fresh claim of another agent on the task, a run
+  of another agent on the pass's tasks, or a `403`/validation refusal yields
+  only a `LAUNCHER_FINDING` comment (kind `progress`) and an explicit
+  incomplete result (`Recovery INCOMPLETE` / exit 1); no `force`, no
+  `override_reason`, no retry of the refused call. An expired foreign claim
+  does not block recovery.
+- **Repeat is a no-op.** Every write is checked against the window first
+  (comment key, open step count, task status, run state) and is a mutation with
+  readback (S8), so a repeated recovery after a lost response adds nothing.
+- **Limit.** The window has no upper bound: the PAT agent must be used only by
+  the launchers under `mcpbox-repo.lock`, otherwise an interactive run started
+  inside a stale window could be taken for the pass's own.
+
+Both operating modes behave the same: recovery reads events and projections and
+needs no AI provider.
 
 ### Matrix
 
@@ -365,6 +417,7 @@ deterministic checks.
 | Reviewer accept | `in_review → done` after attempt start | `done` | `CompleteRun` |
 | Review reject | `in_review → todo` after attempt start, with a reject comment | `done` (the review attempt succeeded) | `CompleteRun` |
 | Builder blocked | `in_progress → todo` with a `blocker` comment | `failed{reason}` | `AbortRun` |
+| Abandoned pass (launcher, S11) | `in_progress → todo` with a `launcher_abandoned` blocker; other statuses untouched | `failed{launcher_abandoned}` | `AbortRun{launcher_abandoned}` |
 | Cancel | task `cancelled` by owner | `superseded` or `failed{reason}` | `AbortRun` / `FailRun` |
 | Failed attempt | none required | `failed{reason}` | `FailRun` / `AbortRun` |
 | Superseded (task left plan, human completed) | none required | `superseded` / `human_completed` | as today |
