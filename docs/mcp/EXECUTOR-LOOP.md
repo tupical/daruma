@@ -409,6 +409,47 @@ Both launchers close a pass whose process ended without a handoff (task
 Both operating modes behave the same: recovery reads events and projections and
 needs no AI provider.
 
+### Fault-injection check and rollout (S13)
+
+One corporate-game scenario checks the whole contract end to end (task
+`01a12b83-25e5-70a2-be19-242ee941fb36`; `crates/cloud-api/tests/it/fault_injection_scenario.rs`
+in the hosted repository, run with `cargo test -p cloud-api --test it
+fault_injection_scenario:: -- --nocapture` and `TEST_DATABASE_URL`). Five
+builder passes go through `/v1/mcp`, the 15-minute incident pass and
+`/v1/audit/run`, one fault each:
+
+| Fault | Expected result |
+|-------|-----------------|
+| Handoff `set_status` never called | `run_complete` → `409 run_postcondition_unmet`; run `active`, task `in_progress` until the real handoff |
+| Handoff refused (`400`: comment over 4 KiB; `daruma_comment` with `id` instead of `task_id`) | status unchanged; `run_complete` refused as above |
+| Mutations applied, responses lost and repeated | `already_finished` / `already_completed: true`, one `run_completed` |
+| Builder killed mid-step | two ticks: one open `run.orphaned`, one `[Audit]` task naming the run; the owner's `run_abort` resolves it on the next tick |
+| Legitimate REVIEW REJECT after a handoff | task `todo`, no `task.status_drift` (also past the 10-minute grace) |
+
+No tick or audit changes a task status, and tasks of another project keep
+status and `updated_at`. The scenario runs without an AI provider and with a
+fake one (a counting stub); the outcome is identical, and the stub gets no
+call from the passes or the ticks (only the full audit's AI checks may ask
+it). The launcher side (S8–S11: lost response, `400` after merge, missing
+handoff, abandoned pass) is covered by `~/.hermes/scripts/tests/`.
+
+Rollout:
+
+1. **Observe on old runs.** Runs completed before the S3 server are never
+   re-checked by `CompleteRun`; they are only read by `run.orphaned` and
+   `task.status_drift`, which signal in `[Audit]` and repair nothing.
+   Historical statuses are corrected by a human per finding, outside this
+   contract.
+2. **Hard gate for new runs.** The `CompleteRun` postconditions (S3) and the
+   idempotent retry (S4) apply to every completion after the deploy; there is
+   no switch to observe-only. A launcher that sees `run_postcondition_unmet`
+   hands off (or fails the step) and repeats the call.
+3. **Order.** Deploy the server only after the independent review of this
+   plan; then watch the first ticks' `[Audit]` reports for false positives
+   before relying on the launcher checks (S8–S11), which are already live and
+   decide success from server state only.
+4. **Not in scope.** Production deploy and the repair of historical statuses.
+
 ### Matrix
 
 | Pass | Task transition proving the attempt | Step outcome | Run end |
