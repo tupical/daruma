@@ -1178,6 +1178,33 @@ impl CommandHandler {
             .collect())
     }
 
+    /// Shared command-boundary guard for the existing Draft/Active lifecycle.
+    /// Non-live documents may be cleaned up without resolving a missing anchor.
+    async fn require_live_document_anchor(
+        &self,
+        status: daruma_domain::DocumentStatus,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        if matches!(
+            status,
+            daruma_domain::DocumentStatus::Draft | daruma_domain::DocumentStatus::Active
+        ) {
+            let task_id =
+                task_id.ok_or_else(|| CoreError::validation("live document requires a task_id"))?;
+            let task = self
+                .tasks
+                .get(task_id)
+                .await?
+                .ok_or_else(|| CoreError::not_found(format!("task {task_id}")))?;
+            if task.status.is_terminal() {
+                return Err(CoreError::validation(
+                    "live document requires a non-terminal task",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Return the first active run_id for a plan, if any.
     async fn active_run_for_plan(&self, plan_id: PlanId) -> Option<RunId> {
         let run_repo = self.runs.as_ref()?;
@@ -1811,6 +1838,16 @@ impl CommandHandler {
                     .get(id)
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("task {id}")))?;
+
+                // Reject before any relation rows or events are changed. Use
+                // the same live-document selection as closure and the sweep.
+                if let Some(documents) = &self.documents {
+                    if !documents.list_live_by_task(id).await?.is_empty() {
+                        return Err(CoreError::validation(
+                            "cannot delete a task anchoring live documents; archive or reanchor them first",
+                        ));
+                    }
+                }
 
                 let now = time::now();
                 let mut events: Vec<Event> = Vec::new();
@@ -3495,6 +3532,11 @@ impl CommandHandler {
                 if self.tasks.get(task_id).await?.is_none() {
                     return Err(CoreError::not_found(format!("task {task_id}")));
                 }
+                self.require_live_document_anchor(
+                    new_doc.status.unwrap_or_default(),
+                    Some(task_id),
+                )
+                .await?;
                 let document = daruma_domain::NewDocument {
                     id: Some(id),
                     project_id: new_doc.project_id,
@@ -3568,6 +3610,8 @@ impl CommandHandler {
                 status,
             } => {
                 let doc = require_document(&self.documents, document_id).await?;
+                self.require_live_document_anchor(status, doc.task_id)
+                    .await?;
                 if doc.status == status {
                     return Ok(vec![]); // no-op — same status
                 }
@@ -3589,6 +3633,8 @@ impl CommandHandler {
                         return Err(CoreError::not_found(format!("task {task_id}")));
                     }
                 }
+                self.require_live_document_anchor(doc.status, task_id)
+                    .await?;
                 if doc.task_id == task_id {
                     return Ok(vec![]); // no-op — link unchanged
                 }

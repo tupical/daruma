@@ -302,6 +302,33 @@ viable slice целевой vision-таксономии
 | `replaced` | зарезервирован («superseded by a newer document»); ядро пока не эмитит |
 | — | `used`, `needs_review`, `accepted` осознанно отложены (расширение аддитивно: статус хранится TEXT) |
 
+#### Инвариант живого якоря документа
+
+`Draft` и `Active` — живые статусы (тот же набор, который выбирают
+`list_live_by_task` и orphan sweep). `CreateDocument`, `SetDocumentStatus`
+и `LinkDocumentToTask` проверяют их в общем guard ядра: `task_id` обязателен,
+задача должна существовать и не быть `Done`/`Cancelled`. Проверка идёт до
+идемпотентного no-op; legacy active orphan нельзя подтвердить повторным
+`set_status active` или неизменённой ссылкой. REST и MCP направляют эти
+мутации в тот же command handler; recommendation rules не ослабляют guard.
+
+- Unlink живого документа и relink к terminal-задаче отклоняются без событий.
+  Reanchor к существующей non-terminal задаче допустим. Совместимость проекта
+  ссылки не ужесточается этим изменением: прежний core разрешал ссылку на
+  задачу другого проекта или без проекта.
+- `DeleteTask` отклоняется, если `list_live_by_task` не пуст, **до** изменения
+  relations, plan membership и записи событий. Сначала явно архивируйте либо
+  переякорьте документы; удаление после этого сохраняет settled evidence.
+- Завершение задачи по-прежнему переводит её живые документы в `Frozen`,
+  отмена — в `Archived`. `Frozen` остаётся читаемым settled artifact; новая
+  активация требует живого якоря. Новый `Frozen` документ можно создать на
+  существующей terminal-задаче, но не новый `Draft`/`Active`.
+- Архивация и иные non-live переходы не требуют существования старого якоря:
+  legacy orphan с `task_id = NULL` либо ghost id можно очистить обоими
+  archive-командами. Архивный orphan можно привязать к живой задаче и затем
+  активировать. Sweep остаётся backstop для legacy/direct projection edits,
+  а не заменой command-time validation.
+
 **Artifact registry** (`ArtifactStatus`, crates/domain/src/artifact.rs) —
 отдельная шкала из 4 статусов (`pending/active/committed/deprecated`):
 реестр версионирует ресурсы, а не
