@@ -280,9 +280,17 @@ impl LifecycleGate for RuleEngineGate {
         // learns the exact evidence that satisfies each requirement without
         // a trial-and-error loop (the custom rule `message` does not carry
         // the requirement type, let alone the evidence kind/scope).
+        // The rejection reason rides along (e.g. which document version a
+        // `latest` ack must carry), since it is not derivable from the rule.
         let unblock: Vec<serde_json::Value> = blocked
             .iter()
-            .map(|(rule, _)| unblock_hint(rule, &chain, check.trigger))
+            .map(|(rule, reason)| {
+                let mut hint = unblock_hint(rule, &chain, check.trigger);
+                if let (Some(reason), Some(hint)) = (reason, hint.as_object_mut()) {
+                    hint.insert("reason".into(), json!(reason));
+                }
+                hint
+            })
             .collect();
         let (first, reason) = &blocked[0];
         Ok((
@@ -307,7 +315,8 @@ impl LifecycleGate for RuleEngineGate {
 /// the evidence proving it line up without translation (spec §1.3). The target
 /// narrows the match (e.g. the document a `read_artifact` rule names); `None`
 /// means any evidence of that kind in scope satisfies the rule. Empty field
-/// lists and `latest` are normalized to no additional constraint.
+/// lists are normalized to no additional constraint; `latest` is resolved by
+/// the evidence repo against the document's current version.
 fn requirement_evidence(
     req: &Requirement,
 ) -> (
@@ -324,7 +333,7 @@ fn requirement_evidence(
             EvidenceKind::DocumentReadAck,
             Some(doc_ref.clone()),
             None,
-            (min_version != "latest").then_some(min_version.as_str()),
+            Some(min_version.as_str()),
         ),
         Requirement::IndependentTestVerification {
             source_revision, ..
