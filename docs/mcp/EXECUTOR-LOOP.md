@@ -307,6 +307,56 @@ it no longer makes a pass successful on its own.
 Both operating modes run the same deterministic checks; an AI provider only
 drives the model that produces the pass.
 
+### Reviewer verdict postconditions (S10)
+
+`mcpbox_review.sh` decides the outcome of a review pass outside the model
+(task `01a12b83-25e5-70a2-be19-23f033bd0465`; `verify-review` in
+`mcpbox_tracker.py`, scenarios in `tests/test_mcpbox_cycle.py`). A non-empty
+log is no longer a success, and the final marker
+`REVIEW_RESULT: accept|reject|escalate <task-id> [root=<sha>] [vendor/oss=<sha>]`
+is only the model's claim.
+
+- **Window.** Same as S9: under the lock, before the model starts, the
+  launcher stores the head of `daruma_events_since` (hint in the review log
+  directory's `last.seq`). An unreachable event log means the model is not
+  started.
+- **Reviewed task.** The task moved out of `in_review` in the window, or the
+  task named by the marker; exactly one is allowed. Without a marker the
+  verdict is inferred from the server transition; a marker contradicting the
+  transition is incomplete.
+- **Accept** (all must hold): the task reads back `done`; the window holds
+  `in_review → done`; a comment starting with `REVIEW ACCEPT` was added in the
+  window; `work/<task-id>` exists on the root `origin` and is an ancestor of
+  the published `origin/main` (read with `ls-remote`), and every claimed SHA is
+  too; local `main` is not ahead of `origin/main`; the checkout is clean. When
+  root `origin/main` pins `vendor/oss`: the pin is on the vendor
+  `origin/main`; a vendor `work/<task-id>` and a claimed vendor SHA are merged
+  into the vendor `origin/main` *and* covered by the pin (otherwise *parent pin
+  missing*); if the task touched vendor, the pin equals the vendor
+  `origin/main` (the `chore(oss): pin reviewed merge` commit); vendor local
+  `main` is published and its checkout is clean.
+- **Reject**: the task reads back `todo`, the window holds `in_review → todo`
+  and a comment starting with `REVIEW REJECT` (the persisted blocker).
+  **Escalate**: `inbox` by readback and transition. Both require clean
+  checkouts.
+- **Queue empty** (`REVIEW: очередь пуста`) is accepted only when the pass
+  moved nothing out of `in_review` and `daruma_list status=in_review` is empty;
+  the launcher then exits 0 silently (nothing to deliver).
+- **Merge without readback** — pushed merge but `set_status` rejected (for
+  example a 400 on an oversized comment) or never called — is `REVIEW
+  INCOMPLETE`, exit 1. A lost response to the model does not matter: the
+  server state decides. A tracker error during verification prints
+  `REVIEW UNVERIFIED`, exit 1.
+- **Atomic transition comment.** The prompt splits the full verdict (a
+  separate `daruma_comment`, any length) from the status transition, whose
+  `comment` is omitted or at most 4096 UTF-8 bytes. A validation error on
+  `set_status` means the status did not change; the reviewer reads the task
+  back and repeats with a short comment.
+
+The launcher never mutates the tracker for a review pass and touches git only
+with `git fetch` of the refs it checks. Both operating modes run the same
+deterministic checks.
+
 ### Matrix
 
 | Pass | Task transition proving the attempt | Step outcome | Run end |
