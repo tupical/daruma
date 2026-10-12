@@ -531,7 +531,33 @@ async fn link_document_to_task_validates_and_roundtrips() {
         .unwrap();
     assert!(envs.is_empty(), "same-link set is a no-op");
 
-    // Unlink back to project level.
+    // A live document cannot lose its anchor; rejection preserves the link.
+    let before = documents.get(doc_id).await.unwrap().unwrap();
+    let seq = handler.store.latest_seq().await.unwrap();
+    let err = handler
+        .handle(
+            Command::LinkDocumentToTask {
+                document_id: doc_id,
+                task_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoreError::Validation { .. }));
+    assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
+    assert_eq!(documents.get(doc_id).await.unwrap().unwrap(), before);
+
+    // Archived cleanup may still unlink.
+    handler
+        .handle(
+            Command::ArchiveDocument {
+                document_id: doc_id,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
     handler
         .handle(
             Command::LinkDocumentToTask {
@@ -542,8 +568,7 @@ async fn link_document_to_task_validates_and_roundtrips() {
         )
         .await
         .unwrap();
-    let doc = documents.get(doc_id).await.unwrap().unwrap();
-    assert_eq!(doc.task_id, None);
+    assert_eq!(documents.get(doc_id).await.unwrap().unwrap().task_id, None);
 }
 
 #[tokio::test]
@@ -603,6 +628,357 @@ async fn create_document_with_lifecycle_metadata() {
     assert_eq!(doc.task_id, Some(task_id));
     assert_eq!(doc.trigger_kind.as_deref(), Some("before_start_rule"));
     assert_eq!(doc.consumer.as_deref(), Some("reviewer"));
+}
+
+// ── Live anchor mutation closure (task 01a13085) ───────────────────────────
+
+#[tokio::test]
+async fn terminal_anchor_rejects_live_creation() {
+    use daruma_domain::{DocumentStatus, Status};
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    for terminal in [Status::Done, Status::Cancelled] {
+        let task_id = create_task(&handler, project_id, "terminal").await;
+        handler
+            .handle(
+                Command::BulkSetStatus {
+                    ids: vec![task_id],
+                    status: terminal,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        for status in [
+            None,
+            Some(DocumentStatus::Draft),
+            Some(DocumentStatus::Active),
+        ] {
+            let seq = handler.store.latest_seq().await.unwrap();
+            let err = handler
+                .handle(
+                    Command::CreateDocument {
+                        new_doc: NewDocument {
+                            id: None,
+                            project_id,
+                            kind: DocumentKind::Interview,
+                            title: "Must not be live".into(),
+                            content: None,
+                            status,
+                            task_id: Some(task_id),
+                            trigger_kind: None,
+                            consumer: None,
+                        },
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(err, CoreError::Validation { .. }), "{err:?}");
+            assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
+        }
+        // Settled evidence can still be created against an existing terminal task.
+        handler
+            .handle(
+                Command::CreateDocument {
+                    new_doc: NewDocument {
+                        id: None,
+                        project_id,
+                        kind: DocumentKind::Interview,
+                        title: "Evidence".into(),
+                        content: Some("readable".into()),
+                        status: Some(DocumentStatus::Frozen),
+                        task_id: Some(task_id),
+                        trigger_kind: None,
+                        consumer: None,
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+    }
+    let docs = documents
+        .list_by_project(project_id, None, true)
+        .await
+        .unwrap();
+    assert_eq!(docs.len(), 2);
+    assert!(docs
+        .iter()
+        .all(|d| d.status == DocumentStatus::Frozen && d.content == "readable"));
+}
+
+#[tokio::test]
+async fn terminal_anchor_rejects_live_relink() {
+    use daruma_domain::{DocumentStatus, Status};
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let doc_id = create_doc(&handler, project_id, DocumentKind::Interview, "live").await;
+    for terminal in [Status::Done, Status::Cancelled] {
+        let task_id = create_task(&handler, project_id, "terminal").await;
+        handler
+            .handle(
+                Command::BulkSetStatus {
+                    ids: vec![task_id],
+                    status: terminal,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        for status in [DocumentStatus::Active, DocumentStatus::Draft] {
+            handler
+                .handle(
+                    Command::SetDocumentStatus {
+                        document_id: doc_id,
+                        status,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            let before = documents.get(doc_id).await.unwrap().unwrap();
+            let seq = handler.store.latest_seq().await.unwrap();
+            let err = handler
+                .handle(
+                    Command::LinkDocumentToTask {
+                        document_id: doc_id,
+                        task_id: Some(task_id),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(err, CoreError::Validation { .. }));
+            assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
+            assert_eq!(documents.get(doc_id).await.unwrap().unwrap(), before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn reactivation_requires_live_anchor_even_for_legacy_rows() {
+    use daruma_domain::{DocumentStatus, Status};
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    let done = create_task(&handler, project_id, "done").await;
+    let cancelled = create_task(&handler, project_id, "cancelled").await;
+    for (task_id, status) in [(done, Status::Done), (cancelled, Status::Cancelled)] {
+        handler
+            .handle(
+                Command::BulkSetStatus {
+                    ids: vec![task_id],
+                    status,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+    }
+    for anchor in [
+        None,
+        Some(daruma_shared::TaskId::new()),
+        Some(done),
+        Some(cancelled),
+    ] {
+        for initial in [
+            DocumentStatus::Archived,
+            DocumentStatus::Frozen,
+            DocumentStatus::Active,
+        ] {
+            let legacy = NewDocument {
+                id: None,
+                project_id,
+                kind: DocumentKind::HumanLog,
+                title: "Legacy".into(),
+                content: Some("evidence".into()),
+                status: Some(initial),
+                task_id: anchor,
+                trigger_kind: None,
+                consumer: None,
+            }
+            .into_document(DocumentId::new(), daruma_shared::time::now());
+            let doc_id = legacy.id;
+            documents
+                .apply_event(&daruma_events::EventEnvelope::new(
+                    Actor::user(),
+                    Event::DocumentCreated { document: legacy },
+                ))
+                .await
+                .unwrap();
+            for status in [DocumentStatus::Active, DocumentStatus::Draft] {
+                let before = documents.get(doc_id).await.unwrap().unwrap();
+                let seq = handler.store.latest_seq().await.unwrap();
+                let err = handler
+                    .handle(
+                        Command::SetDocumentStatus {
+                            document_id: doc_id,
+                            status,
+                        },
+                        Actor::user(),
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(
+                        err,
+                        CoreError::Validation { .. } | CoreError::NotFound { .. }
+                    ),
+                    "{err:?}"
+                );
+                assert_eq!(
+                    handler.store.latest_seq().await.unwrap(),
+                    seq,
+                    "rejection emits no events"
+                );
+                assert_eq!(documents.get(doc_id).await.unwrap().unwrap(), before);
+            }
+            // Both cleanup APIs must work even when the old task is gone.
+            handler
+                .handle(
+                    Command::SetDocumentStatus {
+                        document_id: doc_id,
+                        status: DocumentStatus::Archived,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            handler
+                .handle(
+                    Command::ArchiveDocument {
+                        document_id: doc_id,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                documents.get(doc_id).await.unwrap().unwrap().content,
+                "evidence"
+            );
+            // An archived orphan can be repaired, then reactivated.
+            let live = create_task(&handler, project_id, "repair").await;
+            handler
+                .handle(
+                    Command::LinkDocumentToTask {
+                        document_id: doc_id,
+                        task_id: Some(live),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            handler
+                .handle(
+                    Command::SetDocumentStatus {
+                        document_id: doc_id,
+                        status: DocumentStatus::Active,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                documents.get(doc_id).await.unwrap().unwrap().status,
+                DocumentStatus::Active
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn delete_live_anchor_is_rejected_before_relation_side_effects() {
+    use daruma_domain::DocumentStatus;
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+    for status in [DocumentStatus::Active, DocumentStatus::Draft] {
+        let task_id = create_task(&handler, project_id, "anchor").await;
+        let downstream = create_task(&handler, project_id, "downstream").await;
+        handler
+            .handle(
+                Command::LinkTasks {
+                    from: task_id,
+                    to: downstream,
+                    kind: daruma_domain::RelationKind::Blocks,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let doc_id = create_doc_for_task(
+            &handler,
+            project_id,
+            DocumentKind::Interview,
+            "live",
+            task_id,
+        )
+        .await;
+        handler
+            .handle(
+                Command::SetDocumentStatus {
+                    document_id: doc_id,
+                    status,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let before = documents.get(doc_id).await.unwrap().unwrap();
+        let seq = handler.store.latest_seq().await.unwrap();
+        let err = handler
+            .handle(Command::DeleteTask { id: task_id }, Actor::user())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation { .. }), "{err:?}");
+        assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
+        assert!(handler.tasks.get(task_id).await.unwrap().is_some());
+        assert_eq!(
+            handler
+                .relations
+                .as_ref()
+                .unwrap()
+                .list_by_task(task_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(documents.get(doc_id).await.unwrap().unwrap(), before);
+        // Explicit archive, then delete: settled evidence remains readable.
+        handler
+            .handle(
+                Command::ArchiveDocument {
+                    document_id: doc_id,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        handler
+            .handle(Command::DeleteTask { id: task_id }, Actor::user())
+            .await
+            .unwrap();
+        assert!(handler.tasks.get(task_id).await.unwrap().is_none());
+        assert_eq!(
+            documents.get(doc_id).await.unwrap().unwrap().status,
+            DocumentStatus::Archived
+        );
+        // Reopening after actual deletion is still blocked.
+        assert!(matches!(
+            handler
+                .handle(
+                    Command::SetDocumentStatus {
+                        document_id: doc_id,
+                        status: DocumentStatus::Active
+                    },
+                    Actor::user()
+                )
+                .await
+                .unwrap_err(),
+            CoreError::NotFound { .. }
+        ));
+    }
 }
 
 // ── Document-task anchor barrier (task 019f6ad2) ────────────────────────────
@@ -871,18 +1247,18 @@ async fn sweep_archives_documents_whose_task_is_terminal() {
         "precondition: cascade already froze the doc on completion"
     );
 
-    // Bypass the barrier the same way an operator-applied DB fix or a crash
-    // between the task transition and the cascade would: flip the document
-    // back to `Active` after the task is already terminal, simulating a
-    // document that re-entered a live status post-closure.
-    handler
-        .handle(
-            Command::SetDocumentStatus {
-                document_id: doc_id,
-                status: daruma_domain::DocumentStatus::Active,
-            },
+    // Simulate an operator-applied legacy projection edit, not a command:
+    // SetDocumentStatus now rejects live statuses on terminal anchors.
+    documents
+        .apply_event(&daruma_events::EventEnvelope::new(
             Actor::user(),
-        )
+            Event::DocumentStatusChanged {
+                document_id: doc_id,
+                from: daruma_domain::DocumentStatus::Frozen,
+                to: daruma_domain::DocumentStatus::Active,
+                at: daruma_shared::time::now(),
+            },
+        ))
         .await
         .unwrap();
     assert_eq!(

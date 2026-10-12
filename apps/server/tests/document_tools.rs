@@ -317,6 +317,102 @@ async fn doc_create_without_task_id_is_rejected() {
     );
 }
 
+/// Compatibility coverage: the real MCP → REST path reaches the core guard.
+#[tokio::test]
+async fn live_anchor_guard_roundtrips_through_mcp_and_rest() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token.clone());
+    let pid = create_project_via_mcp(&client, "Anchor guard").await;
+    let task_id = create_task_via_mcp(&client, &pid, "anchor").await;
+    let doc_id =
+        create_doc_via_mcp_for_task(&client, &pid, "interview", "evidence", &task_id).await;
+    let handler = app.state.commands.handler();
+
+    for (name, arguments) in [
+        (
+            "daruma_doc_link_task",
+            json!({ "document_id": doc_id, "task_id": null }),
+        ),
+        ("daruma_delete", json!({ "id": task_id })),
+    ] {
+        let seq = handler.store.latest_seq().await.unwrap();
+        let resp = dispatch_request(
+            &client,
+            req(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            ),
+        )
+        .await
+        .unwrap();
+        let error = resp.error.expect("live anchor mutation must fail");
+        assert!(error.message.contains("400"), "{error:?}");
+        assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
+    }
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(doc["document"]["status"], "active");
+    assert_eq!(doc["document"]["task_id"], task_id);
+
+    handler
+        .handle(
+            daruma_core::Command::CompleteTask {
+                id: task_id.parse().unwrap(),
+                note: None,
+            },
+            daruma_domain::Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(doc["document"]["status"], "frozen");
+    for (name, arguments) in [
+        (
+            "daruma_doc_set_status",
+            json!({ "document_id": doc_id, "status": "active" }),
+        ),
+        (
+            "daruma_doc_create",
+            json!({ "project_id": pid, "task_id": task_id, "kind": "interview", "title": "must fail" }),
+        ),
+    ] {
+        let seq = handler.store.latest_seq().await.unwrap();
+        let resp = dispatch_request(
+            &client,
+            req(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            ),
+        )
+        .await
+        .unwrap();
+        let error = resp.error.expect("terminal anchor must not become live");
+        assert!(error.message.contains("400"), "{error:?}");
+        assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
+    }
+    call_tool(
+        &client,
+        "daruma_doc_archive",
+        json!({ "document_id": doc_id }),
+    )
+    .await;
+    call_tool(
+        &client,
+        "daruma_doc_link_task",
+        json!({ "document_id": doc_id, "task_id": null }),
+    )
+    .await;
+    let resp = dispatch_request(&client, req("tools/call", json!({ "name": "daruma_doc_set_status", "arguments": { "document_id": doc_id, "status": "active" } }))).await.unwrap();
+    assert!(resp
+        .error
+        .expect("orphan reactivation must fail")
+        .message
+        .contains("400"));
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(doc["document"]["status"], "archived");
+    assert!(doc["document"].get("task_id").is_none());
+}
+
 /// All protocol-level tests drive the complete catalogue explicitly; the
 /// compact `default` profile has its own dedicated coverage in
 /// `mcp_dispatch.rs::profiles`.

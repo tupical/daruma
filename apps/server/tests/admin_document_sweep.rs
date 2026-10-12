@@ -74,14 +74,18 @@ async fn admin_sweep_archives_orphans_through_the_event_log() {
         )
         .await
         .unwrap();
-    handler
-        .handle(
-            Command::SetDocumentStatus {
-                document_id: doc_id,
-                status: DocumentStatus::Active,
-            },
+    // Legacy/operator-written projection state, not a permitted command.
+    app.state
+        .documents
+        .apply_event(&daruma_events::EventEnvelope::new(
             Actor::user(),
-        )
+            Event::DocumentStatusChanged {
+                document_id: doc_id,
+                from: DocumentStatus::Frozen,
+                to: DocumentStatus::Active,
+                at: daruma_shared::time::now(),
+            },
+        ))
         .await
         .unwrap();
 
