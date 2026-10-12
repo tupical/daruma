@@ -3144,7 +3144,12 @@ fn parse_finding_status(s: &str) -> Result<daruma_domain::FindingStatus, ApiErro
 
 #[derive(Deserialize)]
 struct FindingListQuery {
-    project_id: String,
+    #[serde(default)]
+    project_id: Option<String>,
+    /// `workspace` lists workspace-scope findings (`project_id = null`);
+    /// requires `project_id` to be absent.
+    #[serde(default)]
+    scope: Option<String>,
     #[serde(default)]
     severity: Option<String>,
     #[serde(default)]
@@ -3154,7 +3159,8 @@ struct FindingListQuery {
 }
 
 /// `GET /v1/audit/findings?project_id=&severity=&category=&status=` — list
-/// findings in a project, newest activity first. Read access (default profile).
+/// findings in a project, newest activity first. `?scope=workspace` instead of
+/// `project_id` lists workspace-scope findings. Read access (default profile).
 async fn list_audit_findings(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -3162,17 +3168,26 @@ async fn list_audit_findings(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = parse_project_id(&q.project_id)?;
     let filter = daruma_storage::FindingFilter {
         severity: q.severity.as_deref().map(parse_severity).transpose()?,
         category: q.category,
         status: q.status.as_deref().map(parse_finding_status).transpose()?,
     };
-    let findings = state
-        .audit_findings
-        .list(project_id, &filter)
-        .await
-        .map_err(ApiError::from)?;
+    let findings = match (q.project_id.as_deref(), q.scope.as_deref()) {
+        (Some(project_id), None) => {
+            state
+                .audit_findings
+                .list(parse_project_id(project_id)?, &filter)
+                .await
+        }
+        (None, Some("workspace")) => state.audit_findings.list_workspace(&filter).await,
+        _ => {
+            return Err(ApiError::from(CoreError::validation(
+                "pass either project_id or scope=workspace",
+            )))
+        }
+    }
+    .map_err(ApiError::from)?;
     Ok(Json(json!({ "findings": findings })))
 }
 
@@ -3261,7 +3276,7 @@ async fn record_audit_finding(
         None => daruma_domain::FindingSource::Script,
     };
     let new = daruma_domain::NewFinding {
-        project_id: parse_project_id(&f.project_id)?,
+        project_id: Some(parse_project_id(&f.project_id)?),
         entity: daruma_domain::FindingEntity {
             plan_id: parse_opt_id(&f.plan_id, "plan id")?,
             task_id: parse_opt_id(&f.task_id, "task id")?,

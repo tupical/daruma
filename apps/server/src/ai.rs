@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use daruma_ai_infra::AiProvider;
 use daruma_ai_infra::prompts::PromptRegistry;
 use daruma_ai_infra::untrusted::wrap_untrusted;
+use daruma_ai_infra::AiProvider;
 
 /// Hard cap on tasks per batch. Keeps prompt size predictable and the
 /// model's per-task attention non-degenerate. Callers with more tasks
@@ -259,7 +259,9 @@ mod tests {
     #[async_trait::async_trait]
     impl AiProvider for ScriptedProvider {
         async fn generate_text(&self, _prompt: String) -> Result<String, CoreError> {
-            Err(CoreError::ai("analyze_complexity_batch must not ask for text"))
+            Err(CoreError::ai(
+                "analyze_complexity_batch must not ask for text",
+            ))
         }
 
         async fn generate_object(
@@ -302,7 +304,10 @@ mod tests {
 
         assert_eq!(
             provider.asked.lock().unwrap().as_slice(),
-            &[("report_complexity".to_owned(), "report_complexity".to_owned())]
+            &[(
+                "report_complexity".to_owned(),
+                "report_complexity".to_owned()
+            )]
         );
         // The invented task id is dropped; the known one is clamped and trimmed.
         assert_eq!(hints.len(), 1);
