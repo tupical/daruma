@@ -127,9 +127,32 @@ struct Condition {
 ```
 
 **Носитель task-переходов.** Событие смены статуса несёт только id задачи;
-rule engine достаёт из строки задачи `project_id` (project-правила входят в
-цепочку scope, §2) и заголовок для `title_prefix`. `plan_id` для задачи в
-цепочку пока не попадает — plan-scope правила на `task.before_*` не действуют.
+rule engine достаёт из строки задачи `project_id` и заголовок для
+`title_prefix`, а из `PlanRepository.list_plans_for_task` — **все** memberships.
+Для каждого membership собирается цепочка `tenant → project → ancestor plans
+(от корня) → member plan → task`. Если у задачи нет project, берётся project
+membership-плана; явный project задачи сохраняет приоритет. Несвязанные планы
+проверяются отдельно: правило/evidence соседнего плана не переопределяет и не
+удовлетворяет правило другой ветви. Требуется пройти каждую ветвь; одинаковая
+сработавшая rule-id возвращается один раз. Порядок memberships стабилизирован
+по id, не выбирается «первый владелец». Ослабление внутри каждой цепочки
+по-прежнему подчиняется §2.3, включая task-scope overrides.
+
+Тот же gate обслуживает direct `SetStatus`, `CompleteTask`, `BulkSetStatus`,
+переходы через drain и dry-run `can_start`; rejection сохраняет status и
+комментарии, но оставляет существующий `RuleFired(blocked)` audit. No-plan
+задачи сохраняют цепочку `tenant → project? → task`. Run-start использует
+plan из события, run-complete восстанавливает его из `RunRepository`; оба
+проходят тот же resolver ancestors. `RunStartStep`/`RunFinishStep` сами по
+себе не меняют status задачи и не являются `task.before_*` триггерами.
+Recommendation остаётся warning, а не hard block; non-overridable required
+по-прежнему нельзя пройти через `force + override_reason`.
+
+**Риск включения.** Ранее сохранённые plan-rules на task-триггерах, а также
+ancestor-rules и scoped run-completion policies теперь реально применяются.
+Перед rollout нужен read-only inventory live rules/memberships; не отключайте
+required-политики ради совместимости. Проверка scope не меняет существующую
+семантику freshness evidence (`latest` не ужесточается этим исправлением).
 
 **Reserved-политика:** reserved-поля входят в контракт (имена зарезервированы),
 но правило, использующее их, отклоняется валидацией ядра v1 с понятной ошибкой —

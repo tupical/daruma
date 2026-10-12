@@ -60,6 +60,7 @@ async fn stack() -> Stack {
     let comments = Arc::new(CommentRepo::new(pool.clone()));
     let activity = Arc::new(ActivityRepo::new(pool.clone()));
     let plans = Arc::new(PlanRepo::new(pool.clone()));
+    let runs = Arc::new(daruma_storage::RunRepo::new(pool.clone()));
     let rules = Arc::new(RuleRepo::new(pool.clone()));
     let evidence = Arc::new(EvidenceRepo::new(pool.clone()));
     let relations = Arc::new(RelationRepo::new(pool.clone()));
@@ -67,6 +68,8 @@ async fn stack() -> Stack {
     let gate: Arc<dyn LifecycleGate> = Arc::new(RuleEngineGate::with_evidence(
         rules.clone(),
         evidence.clone(),
+        plans.clone(),
+        runs.clone(),
     ));
 
     let handler = CommandHandler::new(
@@ -78,6 +81,7 @@ async fn stack() -> Stack {
         EventBus::default(),
     )
     .with_plans(plans)
+    .with_runs(runs)
     .with_rules(rules.clone())
     .with_evidence(evidence.clone())
     .with_documents(documents)
@@ -197,7 +201,515 @@ fn is_blocked(err: &CoreError, fragment: &str) -> bool {
     msg.contains("rule_blocked") && msg.contains(fragment)
 }
 
+async fn attach_task(stack: &Stack, plan: PlanId, task: TaskId) {
+    stack
+        .handler
+        .handle(
+            Command::AddPlanTask {
+                plan_id: plan,
+                task_id: task,
+                position: None,
+                depends_on: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+}
+
+fn wire_command(value: serde_json::Value) -> Command {
+    serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test]
+async fn plan_membership_required_read_blocks_direct_command_without_mutation() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let plan = create_plan(&stack, project).await;
+    let task = create_task(&stack, "HUD clock").await;
+    attach_task(&stack, plan, task).await;
+    stack
+        .handler
+        .handle(
+            wire_command(serde_json::json!({
+                "type": "set_status", "id": task, "status": "todo"
+            })),
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let doc = daruma_shared::DocumentId::new();
+    stack
+        .handler
+        .handle(
+            wire_command(serde_json::json!({
+                "type": "create_document", "new_doc": {
+                    "id": doc, "project_id": project, "kind": "human_log",
+                    "title": "HUD design", "content": "current design", "task_id": task
+                }
+            })),
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let mut rule = new_rule(
+        "hud-design-read",
+        RuleScope::Plan { id: plan },
+        RuleTrigger::TaskBeforeStart,
+        Requirement::ReadArtifact {
+            doc_ref: doc.to_string(),
+            min_version: "latest".into(),
+        },
+        RuleMode::Required,
+        false,
+    );
+    rule.condition = Some(Condition {
+        title_prefix: Some(vec!["HUD".into()]),
+        ..Default::default()
+    });
+    install(&stack, rule).await;
+    let before = stack.handler.tasks.get(task).await.unwrap().unwrap();
+    let comments = stack.handler.comments.list_for_task(task).await.unwrap();
+    for force in [false, true] {
+        let err = stack
+            .handler
+            .handle(
+                wire_command(serde_json::json!({
+                    "type": "set_status", "id": task, "status": "in_progress",
+                    "force": force, "override_reason": "explicit emergency override",
+                    "comment": { "kind": "progress", "body": "must not persist on rejection" }
+                })),
+                Actor::user(),
+            )
+            .await
+            .expect_err("plan required read must reject direct transition");
+        assert!(matches!(err, CoreError::Conflict(_)), "{err}");
+        assert!(is_blocked(&err, "hud-design-read"), "{err}");
+        assert_eq!(
+            stack.handler.tasks.get(task).await.unwrap().unwrap(),
+            before
+        );
+        assert_eq!(
+            stack.handler.comments.list_for_task(task).await.unwrap(),
+            comments
+        );
+    }
+    assert!(!stack.can_start(task).await.ready);
+    let mut ack = new_evidence(
+        EvidenceKind::DocumentReadAck,
+        RuleScope::Task { id: task },
+        Some(&doc.to_string()),
+    );
+    ack.doc_version = Some("1".into());
+    record_evidence(&stack, ack).await;
+    assert!(stack.can_start(task).await.ready);
+    stack
+        .handler
+        .handle(
+            wire_command(serde_json::json!({
+                "type": "set_status", "id": task, "status": "in_progress"
+            })),
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::InProgress
+    );
+}
+
 // ── Example 3: completion-note blocks task.before_complete ──────────────────────
+
+#[tokio::test]
+async fn plan_membership_gates_completion_and_bulk_atomically() {
+    let stack = stack().await;
+    let plan = create_plan(&stack, ProjectId::new()).await;
+    let task = create_task(&stack, "Member").await;
+    let unrelated = create_task(&stack, "No plan").await;
+    attach_task(&stack, plan, task).await;
+    for trigger in [
+        RuleTrigger::TaskBeforeStart,
+        RuleTrigger::TaskBeforeComplete,
+    ] {
+        install(
+            &stack,
+            new_rule(
+                &format!("plan-note-{trigger:?}"),
+                RuleScope::Plan { id: plan },
+                trigger,
+                Requirement::CompletionNote {
+                    required_fields: vec![],
+                },
+                RuleMode::Required,
+                false,
+            ),
+        )
+        .await;
+    }
+    for command in [
+        serde_json::json!({"type":"complete_task", "id":task, "note":{"reason":"blocked completion"}}),
+        serde_json::json!({"type":"bulk_set_status", "ids":[unrelated,task], "status":"done"}),
+        serde_json::json!({"type":"bulk_set_status", "ids":[unrelated,task], "status":"in_progress"}),
+    ] {
+        let err = stack
+            .handler
+            .handle(wire_command(command), Actor::user())
+            .await
+            .expect_err("plan rule blocks every status ingress");
+        assert!(is_blocked(&err, "plan-note"), "{err}");
+        for id in [task, unrelated] {
+            assert_eq!(
+                stack.handler.tasks.get(id).await.unwrap().unwrap().status,
+                Status::Inbox
+            );
+            assert!(stack
+                .handler
+                .comments
+                .list_for_task(id)
+                .await
+                .unwrap()
+                .is_empty());
+        }
+    }
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::CompletionNote,
+            RuleScope::Task { id: task },
+            None,
+        ),
+    )
+    .await;
+    stack
+        .handler
+        .handle(
+            Command::BulkSetStatus {
+                ids: vec![unrelated, task],
+                status: Status::Done,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn plan_membership_siblings_cannot_override_or_supply_each_others_evidence() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    let mut child = NewPlan::new("Child", project, Actor::user());
+    child.parent_plan_id = Some(parent);
+    let events = stack
+        .handler
+        .handle(
+            Command::CreatePlan {
+                plan: child,
+                external_ref: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let Event::PlanCreated { plan: child } = &events[0].payload else {
+        panic!("plan")
+    };
+    let sibling = create_plan(&stack, project).await;
+    let task = create_task(&stack, "Two memberships").await;
+    attach_task(&stack, child.id, task).await;
+    attach_task(&stack, parent, task).await;
+    attach_task(&stack, sibling, task).await;
+    let required = new_rule(
+        "same-key",
+        RuleScope::Plan { id: parent },
+        RuleTrigger::TaskBeforeStart,
+        Requirement::ImpactCheck {
+            target: "release".into(),
+            required_fields: vec![],
+        },
+        RuleMode::Required,
+        true,
+    );
+    install(&stack, required).await;
+    install(
+        &stack,
+        new_rule(
+            "same-key",
+            RuleScope::Plan { id: sibling },
+            RuleTrigger::TaskBeforeStart,
+            Requirement::OwnerRequired,
+            RuleMode::Off,
+            true,
+        ),
+    )
+    .await;
+    let start =
+        || wire_command(serde_json::json!({"type":"set_status","id":task,"status":"in_progress"}));
+    let err = stack
+        .handler
+        .handle(start(), Actor::user())
+        .await
+        .expect_err("parent rule applies through child membership, despite sibling off");
+    assert!(is_blocked(&err, "same-key"), "{err}");
+    assert_eq!(unblock_hints(&err).len(), 1, "shared parent rule acts once");
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::ImpactAssessment,
+            RuleScope::Plan { id: sibling },
+            Some("release"),
+        ),
+    )
+    .await;
+    assert!(
+        stack.handler.handle(start(), Actor::user()).await.is_err(),
+        "sibling evidence must not satisfy another branch"
+    );
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::ImpactAssessment,
+            RuleScope::Plan { id: parent },
+            Some("release"),
+        ),
+    )
+    .await;
+    stack.handler.handle(start(), Actor::user()).await.unwrap();
+}
+
+#[tokio::test]
+async fn plan_membership_preserves_inner_scope_override_policy_and_no_plan() {
+    for override_allowed in [false, true] {
+        let stack = stack().await;
+        let plan = create_plan(&stack, ProjectId::new()).await;
+        let task = create_task(&stack, "Member").await;
+        let unrelated = create_task(&stack, "Unrelated").await;
+        attach_task(&stack, plan, task).await;
+        install(
+            &stack,
+            new_rule(
+                "policy",
+                RuleScope::Plan { id: plan },
+                RuleTrigger::TaskBeforeStart,
+                Requirement::OwnerRequired,
+                RuleMode::Required,
+                override_allowed,
+            ),
+        )
+        .await;
+        install(
+            &stack,
+            new_rule(
+                "policy",
+                RuleScope::Task { id: task },
+                RuleTrigger::TaskBeforeStart,
+                Requirement::OwnerRequired,
+                RuleMode::Off,
+                true,
+            ),
+        )
+        .await;
+        let result = stack
+            .handler
+            .handle(
+                wire_command(
+                    serde_json::json!({"type":"set_status","id":task,"status":"in_progress"}),
+                ),
+                Actor::user(),
+            )
+            .await;
+        assert_eq!(result.is_ok(), override_allowed);
+        stack
+            .handler
+            .handle(
+                wire_command(
+                    serde_json::json!({"type":"set_status","id":unrelated,"status":"in_progress"}),
+                ),
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn plan_membership_run_start_and_complete_share_plan_ancestry() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    let mut child = NewPlan::new("Run child", project, Actor::user());
+    child.parent_plan_id = Some(parent);
+    let events = stack
+        .handler
+        .handle(
+            Command::CreatePlan {
+                plan: child,
+                external_ref: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let Event::PlanCreated { plan: child } = &events[0].payload else {
+        panic!("plan")
+    };
+    stack
+        .handler
+        .handle(
+            Command::SetPlanStatus {
+                plan_id: child.id,
+                status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    for (key, trigger) in [
+        ("run-start", RuleTrigger::RunBeforeExecute),
+        ("run-complete", RuleTrigger::RunBeforeComplete),
+    ] {
+        install(
+            &stack,
+            new_rule(
+                key,
+                RuleScope::Plan { id: parent },
+                trigger,
+                Requirement::ReadArtifact {
+                    doc_ref: format!("{key}.md"),
+                    min_version: "latest".into(),
+                },
+                RuleMode::Required,
+                false,
+            ),
+        )
+        .await;
+    }
+    let start = || Command::StartRun {
+        plan_id: child.id,
+        agent_id: daruma_shared::AgentId::new(),
+        parent_run_id: None,
+    };
+    let err = stack
+        .handler
+        .handle(start(), Actor::user())
+        .await
+        .expect_err("ancestor run start rule");
+    assert!(is_blocked(&err, "run-start"), "{err}");
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Plan { id: parent },
+            Some("run-start.md"),
+        ),
+    )
+    .await;
+    let events = stack.handler.handle(start(), Actor::user()).await.unwrap();
+    let run = events
+        .iter()
+        .find_map(|e| {
+            if let Event::RunStarted { run } = &e.payload {
+                Some(run.id)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let err = stack
+        .handler
+        .handle(Command::CompleteRun { run_id: run }, Actor::user())
+        .await
+        .expect_err("completion must resolve run plan too");
+    assert!(is_blocked(&err, "run-complete"), "{err}");
+    assert_eq!(
+        stack
+            .handler
+            .runs
+            .as_ref()
+            .unwrap()
+            .get(run)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        daruma_domain::RunStatus::Active
+    );
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Plan { id: parent },
+            Some("run-complete.md"),
+        ),
+    )
+    .await;
+    stack
+        .handler
+        .handle(Command::CompleteRun { run_id: run }, Actor::user())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn plan_membership_recommendations_remain_advisory_and_deduplicated() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let first = create_plan(&stack, project).await;
+    let second = create_plan(&stack, project).await;
+    let task = create_task(&stack, "Advisory member").await;
+    attach_task(&stack, first, task).await;
+    attach_task(&stack, second, task).await;
+    for (key, scope) in [
+        ("tenant-advice", RuleScope::Tenant),
+        ("plan-advice", RuleScope::Plan { id: first }),
+    ] {
+        install(
+            &stack,
+            new_rule(
+                key,
+                scope,
+                RuleTrigger::TaskBeforeStart,
+                Requirement::OwnerRequired,
+                RuleMode::Recommendation,
+                false,
+            ),
+        )
+        .await;
+    }
+    let readiness = stack.can_start(task).await;
+    assert!(readiness.ready);
+    assert_eq!(readiness.rule_warnings.len(), 2);
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            wire_command(serde_json::json!({
+                "type":"set_status", "id":task, "status":"in_progress"
+            })),
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.warnings.len(), 2);
+    assert_eq!(
+        outcome
+            .events
+            .iter()
+            .filter(|e| matches!(&e.payload, Event::RuleFired { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        outcome
+            .events
+            .iter()
+            .filter(|e| matches!(&e.payload, Event::OperationalMetricRecorded { .. }))
+            .count(),
+        2
+    );
+}
 
 #[tokio::test]
 async fn example3_completion_note_required_blocks_complete() {

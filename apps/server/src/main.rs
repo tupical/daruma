@@ -167,6 +167,8 @@ async fn main() -> anyhow::Result<()> {
         .with_lifecycle_gate(Arc::new(daruma_core::RuleEngineGate::with_evidence(
             rules.clone(),
             evidence.clone(),
+            plans.clone(),
+            runs.clone(),
         )))
         .with_relations(relations.clone())
         .with_search_provider(Arc::new(FtsSearchProvider::new(
