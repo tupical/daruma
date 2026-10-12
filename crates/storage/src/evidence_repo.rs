@@ -133,7 +133,12 @@ impl EvidenceRepo {
     /// kind's semantic reach*, and no further.
     ///
     /// Up to 20 live candidates per scope are checked for required non-empty
-    /// fields and a numeric minimum document version. Required fields are read
+    /// fields and the document version. A numeric `min_version` is a minimum;
+    /// `latest` with a `target` naming a versioned document demands an ack of
+    /// exactly its current `entity_versions` number, targeted at that document
+    /// (spec §1.3: a stale or untargeted read does not count). `latest` for a
+    /// target with no recorded versions keeps the legacy any-version match.
+    /// Required fields are read
     /// from `payload` first; only when a key is absent there, `reason`, `actor`,
     /// `doc_version`, and `target` fall back to their top-level columns. The
     /// first valid candidate satisfies the requirement; otherwise the rejection
@@ -146,6 +151,27 @@ impl EvidenceRepo {
         required_fields: Option<&[String]>,
         min_version: Option<&str>,
     ) -> Result<EvidenceCheck> {
+        let version_rule = match min_version {
+            None => VersionRule::Any,
+            Some("latest") => match target {
+                Some(doc_ref) => match self.current_document_version(doc_ref).await? {
+                    Some(current) => VersionRule::Latest(current),
+                    None => VersionRule::Any,
+                },
+                None => VersionRule::Any,
+            },
+            Some(version) => match parse_version(version) {
+                Some(minimum) => VersionRule::AtLeast(minimum),
+                None => {
+                    return Ok(EvidenceCheck {
+                        satisfied: false,
+                        reason: Some(format!(
+                            "rule min_version `{version}` is invalid; expected an integer with optional v/V prefix"
+                        )),
+                    })
+                }
+            },
+        };
         let mut reason = None;
         for scope in reachable(chain, kind.reach()) {
             let check = self
@@ -155,7 +181,7 @@ impl EvidenceRepo {
                     kind,
                     target,
                     required_fields,
-                    min_version,
+                    version_rule,
                 )
                 .await?;
             if check.satisfied {
@@ -164,6 +190,12 @@ impl EvidenceRepo {
             if reason.is_none() {
                 reason = check.reason;
             }
+        }
+        if let (None, VersionRule::Latest(current), Some(doc_ref)) = (&reason, version_rule, target)
+        {
+            reason = Some(format!(
+                "requires a document_read_ack targeting `{doc_ref}` with doc_version {current} (current document version, min_version=latest)"
+            ));
         }
         Ok(EvidenceCheck {
             satisfied: false,
@@ -178,13 +210,15 @@ impl EvidenceRepo {
         kind: EvidenceKind,
         target: Option<&str>,
         required_fields: Option<&[String]>,
-        min_version: Option<&str>,
+        version_rule: VersionRule,
     ) -> Result<EvidenceCheck> {
         // `target` filter: when the requirement names a target, accept evidence
-        // that names the same target OR no target at all.
-        let target_clause = match target {
-            Some(_) => "AND (target = ? OR target IS NULL)",
-            None => "",
+        // that names the same target OR no target at all — except for a
+        // `latest` read, where only an ack of this very document proves it.
+        let target_clause = match (target, version_rule) {
+            (Some(_), VersionRule::Latest(_)) => "AND target = ?",
+            (Some(_), _) => "AND (target = ? OR target IS NULL)",
+            (None, _) => "",
         };
         let scope_clause = if scope_id.is_some() {
             "scope_id = ?"
@@ -210,20 +244,6 @@ impl EvidenceRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
 
-        let parsed_min_version = match min_version.filter(|version| *version != "latest") {
-            Some(version) => match parse_version(version) {
-                Some(version) => Some(version),
-                None => {
-                    return Ok(EvidenceCheck {
-                        satisfied: false,
-                        reason: Some(format!(
-                            "rule min_version `{version}` is invalid; expected an integer with optional v/V prefix"
-                        )),
-                    })
-                }
-            },
-            None => None,
-        };
         let mut reason = None;
         for row in rows {
             if let Some(fields) = required_fields.filter(|fields| !fields.is_empty()) {
@@ -260,21 +280,40 @@ impl EvidenceRepo {
                     continue;
                 }
             }
-            if let Some(minimum) = parsed_min_version {
-                let version: Option<String> = row.try_get("doc_version").map_err(map_row_err)?;
-                let Some(actual) = version.as_deref().and_then(parse_version) else {
-                    reason.get_or_insert_with(|| {
-                        format!(
-                            "evidence doc_version is missing or invalid; expected an integer >= {minimum} with optional v/V prefix"
-                        )
-                    });
-                    continue;
-                };
-                if actual < minimum {
-                    reason.get_or_insert_with(|| {
-                        format!("evidence doc_version {actual} is older than required {minimum}")
-                    });
-                    continue;
+            match version_rule {
+                VersionRule::Any => {}
+                VersionRule::AtLeast(minimum) => {
+                    let version: Option<String> =
+                        row.try_get("doc_version").map_err(map_row_err)?;
+                    let Some(actual) = version.as_deref().and_then(parse_version) else {
+                        reason.get_or_insert_with(|| {
+                            format!(
+                                "evidence doc_version is missing or invalid; expected an integer >= {minimum} with optional v/V prefix"
+                            )
+                        });
+                        continue;
+                    };
+                    if actual < minimum {
+                        reason.get_or_insert_with(|| {
+                            format!(
+                                "evidence doc_version {actual} is older than required {minimum}"
+                            )
+                        });
+                        continue;
+                    }
+                }
+                VersionRule::Latest(current) => {
+                    let version: Option<String> =
+                        row.try_get("doc_version").map_err(map_row_err)?;
+                    if version.as_deref().and_then(parse_version) != Some(current) {
+                        reason.get_or_insert_with(|| {
+                            format!(
+                                "evidence doc_version {} is not the current document version {current} required by min_version=latest; re-read the document and record a new document_read_ack with doc_version {current}",
+                                version.as_deref().unwrap_or("<missing>")
+                            )
+                        });
+                        continue;
+                    }
                 }
             }
             return Ok(EvidenceCheck {
@@ -286,6 +325,26 @@ impl EvidenceRepo {
             satisfied: false,
             reason,
         })
+    }
+
+    /// Current `entity_versions` number of the document `doc_ref` names, or
+    /// `None` when `doc_ref` is not a versioned document (e.g. a file name).
+    /// Accepts both the bare UUID and the `doc_`-prefixed id.
+    async fn current_document_version(&self, doc_ref: &str) -> Result<Option<u64>> {
+        let entity_id = if doc_ref.starts_with("doc_") {
+            doc_ref.to_string()
+        } else {
+            format!("doc_{doc_ref}")
+        };
+        let current: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(version_number) FROM entity_versions \
+             WHERE entity_type = 'document' AND entity_id = ?",
+        )
+        .bind(entity_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(current.and_then(|version| u64::try_from(version).ok()))
     }
 
     /// Apply a persisted evidence event to the projection.
@@ -348,6 +407,14 @@ impl EvidenceRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
     }
+}
+
+/// How a candidate's `doc_version` is judged (resolved once per gate check).
+#[derive(Clone, Copy)]
+enum VersionRule {
+    Any,
+    AtLeast(u64),
+    Latest(u64),
 }
 
 fn parse_version(version: &str) -> Option<u64> {
@@ -658,6 +725,183 @@ mod tests {
                 "doc_version={version:?}"
             );
         }
+    }
+
+    /// A document with `appends + replaces + 1` versions (create is v1), plus
+    /// evidence and document repos over the same database.
+    async fn versioned_doc(
+        appends: usize,
+        replaces: usize,
+    ) -> (
+        Db,
+        EvidenceRepo,
+        crate::DocumentRepo,
+        daruma_shared::DocumentId,
+    ) {
+        use daruma_domain::{DocumentKind, NewDocument};
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let evidence = EvidenceRepo::new(db.pool().clone());
+        let documents = crate::DocumentRepo::new(db.pool().clone());
+        let id = daruma_shared::DocumentId::new();
+        let doc = NewDocument {
+            id: None,
+            project_id: ProjectId::new(),
+            kind: DocumentKind::Interview,
+            title: "Policy".into(),
+            content: Some("v1 body".into()),
+            status: None,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
+        }
+        .into_document(id, daruma_shared::time::now());
+        let mut events = vec![Event::DocumentCreated { document: doc }];
+        for n in 0..appends {
+            events.push(Event::DocumentContentAppended {
+                document_id: id,
+                append: format!("appended {n}"),
+                at: daruma_shared::time::now(),
+            });
+        }
+        for n in 0..replaces {
+            events.push(Event::DocumentContentReplaced {
+                document_id: id,
+                content: format!("replaced {n}"),
+                at: daruma_shared::time::now(),
+            });
+        }
+        for ev in events {
+            documents
+                .apply_event(&EventEnvelope::new(Actor::user(), ev))
+                .await
+                .unwrap();
+        }
+        (db, evidence, documents, id)
+    }
+
+    fn doc_ref(id: daruma_shared::DocumentId) -> String {
+        id.to_string().trim_start_matches("doc_").to_string()
+    }
+
+    async fn ack(repo: &EvidenceRepo, target: Option<&str>, version: &str) -> EvidenceId {
+        let mut evidence = sample(RuleScope::Tenant, EvidenceKind::DocumentReadAck, target);
+        evidence.doc_version = Some(version.to_string());
+        let id = evidence.id;
+        apply(repo, Event::EvidenceRecorded { evidence }).await;
+        id
+    }
+
+    async fn latest(repo: &EvidenceRepo, target: &str) -> EvidenceCheck {
+        repo.has_live_evidence(
+            &[RuleScope::Tenant],
+            EvidenceKind::DocumentReadAck,
+            Some(target),
+            None,
+            Some("latest"),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn latest_rejects_stale_ack_after_replace_and_append() {
+        for (appends, replaces) in [(0, 1), (1, 0), (2, 1)] {
+            let (_db, repo, _docs, id) = versioned_doc(appends, replaces).await;
+            let current = 1 + appends + replaces;
+            let target = doc_ref(id);
+            ack(&repo, Some(&target), "1").await;
+
+            let stale = latest(&repo, &target).await;
+            assert!(!stale.satisfied, "stale v1 ack must not satisfy v{current}");
+            let reason = stale.reason.unwrap();
+            assert!(
+                reason.contains(&format!("current document version {current}")),
+                "{reason}"
+            );
+
+            ack(&repo, Some(&target), &format!("v{current}")).await;
+            assert!(latest(&repo, &target).await.satisfied);
+            // A rule naming the prefixed id resolves the same current version.
+            let prefixed = id.to_string();
+            ack(&repo, Some(&prefixed), "1").await;
+            assert!(!latest(&repo, &prefixed).await.satisfied);
+            ack(&repo, Some(&prefixed), &current.to_string()).await;
+            assert!(latest(&repo, &prefixed).await.satisfied);
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_accepts_current_ack_of_unchanged_document() {
+        let (_db, repo, _docs, id) = versioned_doc(0, 0).await;
+        let target = doc_ref(id);
+        assert!(!latest(&repo, &target).await.satisfied);
+        ack(&repo, Some(&target), "1").await;
+        assert!(latest(&repo, &target).await.satisfied);
+    }
+
+    #[tokio::test]
+    async fn latest_isolates_document_identity() {
+        let (db, repo, docs, id) = versioned_doc(0, 1).await;
+        let target = doc_ref(id);
+        // A sibling document at the same version number, acked by its own id.
+        let sibling = daruma_shared::DocumentId::new();
+        let sibling_doc = daruma_domain::NewDocument {
+            id: None,
+            project_id: ProjectId::new(),
+            kind: daruma_domain::DocumentKind::Interview,
+            title: "Sibling".into(),
+            content: None,
+            status: None,
+            task_id: None,
+            trigger_kind: None,
+            consumer: None,
+        }
+        .into_document(sibling, daruma_shared::time::now());
+        docs.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::DocumentCreated {
+                document: sibling_doc,
+            },
+        ))
+        .await
+        .unwrap();
+        ack(&repo, Some(&doc_ref(sibling)), "2").await;
+        // Untargeted ack carrying the right number proves nothing about *this* doc.
+        ack(&repo, None, "2").await;
+        let check = latest(&repo, &target).await;
+        assert!(!check.satisfied);
+        assert!(check
+            .reason
+            .unwrap()
+            .contains(&format!("targeting `{target}`")));
+        drop(db);
+    }
+
+    #[tokio::test]
+    async fn latest_honours_supersede_of_current_ack() {
+        let (_db, repo, _docs, id) = versioned_doc(0, 1).await;
+        let target = doc_ref(id);
+        let current = ack(&repo, Some(&target), "2").await;
+        assert!(latest(&repo, &target).await.satisfied);
+        let replacement = ack(&repo, Some(&target), "1").await;
+        apply(
+            &repo,
+            Event::EvidenceSuperseded {
+                evidence_id: current,
+                superseded_by: replacement,
+                at: daruma_shared::time::now(),
+            },
+        )
+        .await;
+        assert!(!latest(&repo, &target).await.satisfied);
+    }
+
+    #[tokio::test]
+    async fn latest_for_unversioned_ref_keeps_legacy_match() {
+        let repo = repo().await;
+        ack(&repo, None, "1").await;
+        assert!(latest(&repo, "architecture.md").await.satisfied);
     }
 
     #[tokio::test]

@@ -1078,6 +1078,161 @@ async fn read_artifact_min_version_is_enforced_numerically() {
     }
 }
 
+/// Corporate-game repro (task 01a130e4): a task-scoped, non-overridable
+/// `read_artifact` rule with `min_version = latest` names a real document. A
+/// v1 ack must stop counting once the document changes — through replace or
+/// append — and the blocked start (plain or force + reason) leaves the task,
+/// its comments and the event log untouched. A fresh ack of the current
+/// version unblocks it.
+#[tokio::test]
+async fn read_artifact_latest_rejects_an_ack_of_a_superseded_document_version() {
+    for append in [false, true] {
+        let stack = stack().await;
+        let task = create_task(&stack, "Follow the policy").await;
+        let envs = stack
+            .handler
+            .handle(
+                Command::CreateDocument {
+                    new_doc: daruma_domain::NewDocument {
+                        id: None,
+                        project_id: ProjectId::new(),
+                        kind: daruma_domain::DocumentKind::Interview,
+                        title: "Policy".into(),
+                        content: Some("version one".into()),
+                        status: None,
+                        task_id: Some(task),
+                        trigger_kind: None,
+                        consumer: None,
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .expect("create document");
+        let Event::DocumentCreated { document } = &envs[0].payload else {
+            panic!("expected DocumentCreated");
+        };
+        let doc_id = document.id;
+        // Clients name the document by its bare id, as the MCP surface prints it.
+        let doc_ref = serde_json::to_value(doc_id)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        install(
+            &stack,
+            new_rule(
+                "read-policy-latest",
+                RuleScope::Task { id: task },
+                RuleTrigger::TaskBeforeStart,
+                Requirement::ReadArtifact {
+                    doc_ref: doc_ref.clone(),
+                    min_version: "latest".into(),
+                },
+                RuleMode::Required,
+                false,
+            ),
+        )
+        .await;
+        let mut ack_v1 = new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Task { id: task },
+            Some(&doc_ref),
+        );
+        ack_v1.doc_version = Some("1".into());
+        record_evidence(&stack, ack_v1).await;
+        assert!(stack.can_start(task).await.ready, "v1 ack of v1 is current");
+
+        let change = if append {
+            Command::AppendDocumentContent {
+                document_id: doc_id,
+                append: "version two addendum".into(),
+            }
+        } else {
+            Command::ReplaceDocumentContent {
+                document_id: doc_id,
+                content: "version two".into(),
+            }
+        };
+        stack.handler.handle(change, Actor::user()).await.unwrap();
+
+        let seq_before = stack.handler.store.latest_seq().await.unwrap();
+        let comments_before = stack
+            .handler
+            .comments
+            .list_for_task(task)
+            .await
+            .unwrap()
+            .len();
+        let err = start(&stack, task)
+            .await
+            .expect_err("a stale v1 ack must not satisfy latest");
+        assert!(is_blocked(&err, "read-policy-latest"), "got: {err}");
+        assert!(
+            err.to_string().contains("current document version 2"),
+            "got: {err}"
+        );
+        let err = stack
+            .handler
+            .handle(
+                Command::SetStatus {
+                    id: task,
+                    status: Status::InProgress,
+                    force: true,
+                    override_reason: Some("I read it last week".into()),
+                    comment: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .expect_err("force + reason must not bypass a non-overridable rule");
+        assert!(is_blocked(&err, "read-policy-latest"), "got: {err}");
+        assert!(!stack.can_start(task).await.ready);
+        assert_eq!(
+            stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+            Status::Inbox
+        );
+        // A block appends only its `rule_*` audit trail — never a task mutation.
+        let since = stack
+            .handler
+            .store
+            .load_since(seq_before, 100)
+            .await
+            .unwrap();
+        assert!(
+            since
+                .iter()
+                .all(|env| env.payload.kind().starts_with("rule_")),
+            "unexpected events: {:?}",
+            since
+                .iter()
+                .map(|env| env.payload.kind())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stack
+                .handler
+                .comments
+                .list_for_task(task)
+                .await
+                .unwrap()
+                .len(),
+            comments_before
+        );
+
+        let mut ack_v2 = new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Task { id: task },
+            Some(&doc_ref),
+        );
+        ack_v2.doc_version = Some("2".into());
+        record_evidence(&stack, ack_v2).await;
+        start(&stack, task)
+            .await
+            .expect("a current ack must satisfy latest");
+    }
+}
+
 // ── can_start agrees with the gate ──────────────────────────────────────────────
 //
 // `can_start` exists to answer "may I start this task". Before the gate was
