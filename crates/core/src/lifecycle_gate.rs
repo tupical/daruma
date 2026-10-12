@@ -94,6 +94,13 @@ pub struct GateCheck {
     /// transitions the rule engine resolves it (with `project_id`) from the
     /// persisted task, since the status event carries only the id.
     pub task_title: Option<String>,
+    /// Memberships added for this task by the same unpersisted event batch.
+    #[serde(skip)]
+    pub pending_memberships: Vec<PlanId>,
+    /// Creation facts needed to walk staged plans before projections exist.
+    /// (plan id, project id, parent id); not precomputed inheritance chains.
+    #[serde(skip)]
+    pub pending_plans: Vec<(PlanId, ProjectId, Option<PlanId>)>,
 }
 
 impl GateCheck {

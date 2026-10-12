@@ -217,6 +217,44 @@ async fn attach_task(stack: &Stack, plan: PlanId, task: TaskId) {
         .unwrap();
 }
 
+#[tokio::test]
+async fn pending_materialization_inherits_task_created_rule_atomically() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    install(&stack, new_rule(
+        "ancestor-task-create", RuleScope::Plan { id: parent }, RuleTrigger::TaskCreated,
+        Requirement::ReadArtifact { doc_ref: "design.md".into(), min_version: "1".into() },
+        RuleMode::Required, false,
+    )).await;
+    let task = TaskId::new();
+    let command = || wire_command(serde_json::json!({
+        "type": "materialize_plan",
+        "plan": NewPlan { parent_plan_id: Some(parent), ..NewPlan::new("Child", project, Actor::user()) },
+        "tasks": [{ "id": task, "title": "New member" }]
+    }));
+    let before_seq = stack.handler.store.latest_seq().await.unwrap();
+    let before_parent = stack.handler.plans.as_ref().unwrap().get(parent).await.unwrap();
+    let err = stack.handler.handle(command(), Actor::user()).await
+        .expect_err("pending membership must carry ancestor task.created policy");
+    assert!(is_blocked(&err, "ancestor-task-create"), "{err}");
+    assert_eq!(stack.handler.store.latest_seq().await.unwrap(), before_seq);
+    assert_eq!(stack.handler.plans.as_ref().unwrap().get(parent).await.unwrap(), before_parent);
+    assert!(stack.handler.tasks.get(task).await.unwrap().is_none());
+    assert!(stack.handler.plans.as_ref().unwrap().list_plans_for_task(task).await.unwrap().is_empty());
+    assert!(stack.handler.comments.list_for_task(task).await.unwrap().is_empty());
+    let mut ack = new_evidence(EvidenceKind::DocumentReadAck, RuleScope::Plan { id: parent }, Some("design.md"));
+    ack.doc_version = Some("1".into());
+    record_evidence(&stack, ack).await;
+    let events = stack.handler.handle(command(), Actor::user()).await.unwrap();
+    let child = events.iter().find_map(|e| match &e.payload {
+        Event::PlanCreated { plan } => Some(plan.id), _ => None,
+    }).unwrap();
+    assert_eq!(stack.handler.plans.as_ref().unwrap().list_plans_for_task(task).await.unwrap(), vec![child]);
+    assert_eq!(stack.handler.tasks.get(task).await.unwrap().unwrap().status, Status::Todo);
+    assert_eq!(stack.handler.plans.as_ref().unwrap().get(child).await.unwrap().unwrap().parent_plan_id, Some(parent));
+}
+
 fn wire_command(value: serde_json::Value) -> Command {
     serde_json::from_value(value).unwrap()
 }
