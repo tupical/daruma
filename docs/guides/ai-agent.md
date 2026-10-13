@@ -13,7 +13,7 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 | Surface | Role |
 |---------|------|
-| `crates/ai-infra` | AI client (OpenAI Responses, Chat Completions, Anthropic Messages request side), provider abstraction, prompt engine, tool schemas |
+| `crates/ai-infra` | AI client (OpenAI Responses, Chat Completions, Anthropic Messages), provider abstraction, prompt engine, tool schemas |
 | `apps/server` | `POST /v1/ai/*` HTTP endpoints; the deprecated `analyze_complexity` shim lives in `apps/server/src/ai.rs` (prompts in `apps/server/prompts/*.toml`) |
 | MCP (`daruma mcp`) | `daruma_ai_analyze_complexity` for external agents |
 | MCP agents (Cursor, Claude) | Primary consumers — use MCP tools, not raw SQL |
@@ -26,6 +26,8 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 - Plan executor: `daruma_plan_progress`, `daruma_plan_next_task`, `daruma_run_*`
 
 Canonical schemas live in code; when the wire format changes, update `crates/ai-infra` and MCP tool descriptors together.
+
+Anthropic Messages requests mark the last tool schema with `cache_control: {"type": "ephemeral"}`, so the tool prefix shared by every call of one kind is prompt-cached; the per-call user message is not marked, since a cache write costs more than plain input. Each Anthropic reply logs its `usage` (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`) at `info` as `anthropic usage`, which is how the cache hit rate is measured.
 
 ## Further reading
 

@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{config::AiConfig, config::ApiProtocol, error::AiError};
 
@@ -162,8 +162,47 @@ impl OpenAiClient {
         }
 
         let json: Value = resp.json().await?;
+        if self.config.api_protocol == ApiProtocol::AnthropicMessages {
+            if let Some(usage) = anthropic_usage(&json) {
+                info!(
+                    model = %self.config.model,
+                    input_tokens = usage.input_tokens,
+                    cache_creation_input_tokens = usage.cache_creation_input_tokens,
+                    cache_read_input_tokens = usage.cache_read_input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "anthropic usage"
+                );
+            }
+        }
         parse(&json)
     }
+}
+
+/// Token accounting of one Anthropic Messages reply, cache split included.
+///
+/// `input_tokens` counts only the uncached part of the prompt; the cached
+/// prefix is billed separately as a write (`cache_creation_input_tokens`) or a
+/// read (`cache_read_input_tokens`). Logged so the effect of
+/// [`anthropic_cache_control`] can be measured per call.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AnthropicUsage {
+    pub input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Read `usage` from an Anthropic reply. Missing counters — older or
+/// Anthropic-compatible gateways omit the cache ones — read as zero.
+pub(crate) fn anthropic_usage(json: &Value) -> Option<AnthropicUsage> {
+    let usage = json.get("usage")?.as_object()?;
+    let count = |field: &str| usage.get(field).and_then(Value::as_u64).unwrap_or(0);
+    Some(AnthropicUsage {
+        input_tokens: count("input_tokens"),
+        cache_creation_input_tokens: count("cache_creation_input_tokens"),
+        cache_read_input_tokens: count("cache_read_input_tokens"),
+        output_tokens: count("output_tokens"),
+    })
 }
 
 /// Anthropic API version pinned in the `anthropic-version` header.
@@ -308,6 +347,12 @@ pub(crate) fn build_chat_request_body(
     Ok(obj)
 }
 
+/// Cache breakpoint Anthropic puts at the end of the prefix it should cache.
+/// `ephemeral` is the default five-minute cache, refreshed on every hit.
+pub(crate) fn anthropic_cache_control() -> Value {
+    json!({"type": "ephemeral"})
+}
+
 /// Build an Anthropic Messages request body from the provider-neutral request.
 ///
 /// Limits of this first iteration:
@@ -319,6 +364,13 @@ pub(crate) fn build_chat_request_body(
 /// - `reasoning_effort` is not sent: Anthropic has no such parameter, and
 ///   extended thinking needs its own token budget.
 /// - `tool_choice` is omitted without tools — there is nothing to choose.
+///
+/// Prompt caching: the last tool carries [`anthropic_cache_control`], so the
+/// tool schemas — identical for every call of one kind — are cached as the
+/// request prefix. The user message is deliberately not marked: it differs per
+/// call, and a cache write costs more than plain input, so caching it would
+/// raise the price of every one-off prompt. A prefix below the model's minimum
+/// cacheable length is simply not cached; the request is still valid.
 pub(crate) fn build_anthropic_request_body(
     config: &AiConfig,
     req: &ResponseRequest,
@@ -370,6 +422,12 @@ pub(crate) fn build_anthropic_request_body(
             })
             .collect::<Result<Vec<_>, AiError>>()?,
     );
+    if let Some(last) = obj["tools"]
+        .as_array_mut()
+        .and_then(|tools| tools.last_mut())
+    {
+        last["cache_control"] = anthropic_cache_control();
+    }
 
     if let Some(tc) = &req.tool_choice {
         obj["tool_choice"] = match tc.as_str() {
@@ -724,7 +782,8 @@ mod tests {
                 "id": "msg_1", "type": "message", "role": "assistant",
                 "stop_reason": "tool_use",
                 "content": [{"type": "tool_use", "id": "toolu_1", "name": "report_status", "input": {"ok": true}}],
-                "usage": {"input_tokens": 5, "output_tokens": 7}
+                "usage": {"input_tokens": 5, "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 1200, "output_tokens": 7}
             })
             .to_string();
             write!(
@@ -760,6 +819,13 @@ mod tests {
             "{request}"
         );
         assert!(!head.contains("authorization:"), "{request}");
+        let sent: Value =
+            serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            sent["tools"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "{sent}"
+        );
         let [ResponseOutput::ToolCall(call)] = &out[..] else {
             panic!("unexpected outputs: {out:?}");
         };
@@ -816,7 +882,8 @@ mod tests {
             json!([{
                 "name": "report_status",
                 "description": "Report status",
-                "input_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+                "input_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+                "cache_control": {"type": "ephemeral"}
             }])
         );
         assert_eq!(body["tool_choice"], json!({"type": "any"}));
@@ -828,6 +895,62 @@ mod tests {
             assert_eq!(body["tool_choice"], json!({"type": expected}));
             assert_eq!(body["tools"][0]["input_schema"], json!({"type": "object"}));
         }
+    }
+
+    #[test]
+    fn build_anthropic_body_caches_tool_prefix_but_not_the_prompt() {
+        // One breakpoint after the last tool caches every tool schema; a mark on
+        // an earlier tool would leave the rest of the stable prefix uncached.
+        let tools = ["first", "second", "third"]
+            .map(|name| json!({"type": "function", "name": name}))
+            .to_vec();
+        let body =
+            build_anthropic_request_body(&make_cfg(None), &make_req("p", tools, Some("required")))
+                .unwrap();
+        let marks: Vec<_> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool.get("cache_control").cloned())
+            .collect();
+        assert_eq!(marks, [None, None, Some(json!({"type": "ephemeral"}))]);
+        // The per-call prompt stays a plain string: marking it would pay the
+        // cache-write premium on input that is never read back.
+        assert_eq!(body["messages"], json!([{"role": "user", "content": "p"}]));
+        assert!(body.get("cache_control").is_none(), "{body}");
+
+        let body =
+            build_anthropic_request_body(&make_cfg(None), &make_req("p", vec![], None)).unwrap();
+        assert!(!body.to_string().contains("cache_control"), "{body}");
+    }
+
+    #[test]
+    fn anthropic_usage_reads_cache_split_and_defaults_missing_counters() {
+        let json = json!({"usage": {
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 1500,
+            "output_tokens": 40
+        }});
+        assert_eq!(
+            anthropic_usage(&json),
+            Some(AnthropicUsage {
+                input_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 1500,
+                output_tokens: 40,
+            })
+        );
+        // A compatible gateway without caching reports only the basic pair.
+        assert_eq!(
+            anthropic_usage(&json!({"usage": {"input_tokens": 5, "output_tokens": 7}})),
+            Some(AnthropicUsage {
+                input_tokens: 5,
+                output_tokens: 7,
+                ..Default::default()
+            })
+        );
+        assert_eq!(anthropic_usage(&json!({"content": []})), None);
     }
 
     #[test]
