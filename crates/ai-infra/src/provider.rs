@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use daruma_shared::CoreError;
 use serde_json::Value;
 
-use crate::client::{OpenAiClient, ResponseOutput, ResponseRequest};
+use crate::client::{OpenAiClient, ResponseOutput, ResponseRequest, SYSTEM_SEPARATOR};
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
@@ -45,6 +45,25 @@ pub trait AiProvider: Send + Sync {
         tools: Vec<Value>,
         expected_tool: &str,
     ) -> Result<Value, CoreError>;
+
+    /// [`Self::generate_object`] with a stable `system` part kept apart from
+    /// the per-call `prompt`, so a provider that caches prompt prefixes can
+    /// cache it. The default sends both as one prompt, system first — the
+    /// same text a provider without a system channel would have seen.
+    async fn generate_object_with_system(
+        &self,
+        system: String,
+        prompt: String,
+        tools: Vec<Value>,
+        expected_tool: &str,
+    ) -> Result<Value, CoreError> {
+        self.generate_object(
+            format!("{system}{SYSTEM_SEPARATOR}{prompt}"),
+            tools,
+            expected_tool,
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -54,6 +73,7 @@ impl AiProvider for OpenAiClient {
             input: Value::String(prompt),
             tools: vec![],
             tool_choice: None,
+            system: None,
         };
         let outputs = self.respond(req).await.map_err(CoreError::from)?;
         outputs
@@ -71,10 +91,34 @@ impl AiProvider for OpenAiClient {
         tools: Vec<Value>,
         expected_tool: &str,
     ) -> Result<Value, CoreError> {
+        self.object_call(None, prompt, tools, expected_tool).await
+    }
+
+    async fn generate_object_with_system(
+        &self,
+        system: String,
+        prompt: String,
+        tools: Vec<Value>,
+        expected_tool: &str,
+    ) -> Result<Value, CoreError> {
+        self.object_call(Some(system), prompt, tools, expected_tool)
+            .await
+    }
+}
+
+impl OpenAiClient {
+    async fn object_call(
+        &self,
+        system: Option<String>,
+        prompt: String,
+        tools: Vec<Value>,
+        expected_tool: &str,
+    ) -> Result<Value, CoreError> {
         let req = ResponseRequest {
             input: Value::String(prompt),
             tools,
             tool_choice: Some("required".into()),
+            system,
         };
         let outputs = self.respond(req).await.map_err(CoreError::from)?;
         let tc = outputs
@@ -158,6 +202,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v["title"], "Buy milk");
+    }
+
+    /// The default keeps every provider without a system channel working:
+    /// it sees the same text, system part first.
+    #[tokio::test]
+    async fn default_generate_object_with_system_prepends_system() {
+        let p = FakeProvider::new("", serde_json::json!({"ok": true}));
+        let v = p
+            .generate_object_with_system("RULES".into(), "per-call".into(), vec![], "report")
+            .await
+            .unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(
+            p.captured_prompts.lock().unwrap().as_slice(),
+            &["RULES\n\nper-call"]
+        );
     }
 
     /// Trait-object form must work — the type-erased path is the one

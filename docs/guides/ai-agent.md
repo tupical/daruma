@@ -27,7 +27,7 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 Canonical schemas live in code; when the wire format changes, update `crates/ai-infra` and MCP tool descriptors together.
 
-Anthropic Messages requests mark the last tool schema with `cache_control: {"type": "ephemeral"}`, so the tool prefix shared by every call of one kind is prompt-cached; the per-call user message is not marked, since a cache write costs more than plain input. Each Anthropic reply logs its `usage` (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`) at `info` as `anthropic usage`, which is how the cache hit rate is measured.
+Anthropic Messages requests mark the last tool schema with `cache_control: {"type": "ephemeral"}`, so the tool prefix shared by every call of one kind is prompt-cached. Stable instructions go through `AiProvider::generate_object_with_system` (`ResponseRequest.system`): Anthropic receives them as a `system` text block with its own `cache_control` breakpoint, so the cached prefix covers tools and instructions together; the OpenAI Responses and Chat Completions protocols get the system text prepended to the input (`<system>\n\n<input>`), keeping the request shape providers were verified with. Providers that do not override the method see the same concatenated prompt. The per-call user message is not marked, since a cache write costs more than plain input. Each Anthropic reply logs its `usage` (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`) at `info` as `anthropic usage`, which is how the cache hit rate is measured.
 
 ## Further reading
 
