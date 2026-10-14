@@ -1090,6 +1090,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Follow-up work goes into its plan, a new subject gets its own plan,
+    /// and the plan source is the nearest one — the same two rules in both
+    /// policy bodies.
+    #[test]
+    fn policy_bodies_route_follow_ups_into_their_plan() {
+        for body in [CLAUDE_POLICY_BODY, codex_policy_body()] {
+            for rule in [
+                "Same subject as an existing\n   plan",
+                "`plan.id` — a completed plan reopens",
+                "another subject gets\n   its own plan even on the same branch or source",
+                "`plan_choice_required` pick by subject, not by branch or source.",
+                "`plan.source` is the nearest source of this request",
+                "with `upstream` to the issue — not the broadest umbrella.",
+            ] {
+                assert!(body.contains(rule), "missing rule: {rule}");
+            }
+        }
+    }
+
     #[test]
     fn cursor_config_uses_remote_mcp_url_and_bearer_header() {
         let config = cursor_mcp_config("http://localhost:8080/", "ta_svc_test");
