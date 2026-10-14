@@ -108,6 +108,9 @@ impl Stack {
     ) -> Result<(Plan, Vec<MutationWarning>), CoreError> {
         let mut plan = NewPlan::new("Plan", self.project, Actor::user());
         plan.source = source;
+        // Chain mechanics, not the continuation choice: every plan here is
+        // deliberately new (plan_choice_required is covered in plan_source).
+        plan.separate = true;
         let outcome = self
             .handler
             .handle_with_warnings(

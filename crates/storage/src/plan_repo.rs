@@ -261,6 +261,55 @@ impl PlanRepo {
         rows.iter().map(row_to_plan).collect()
     }
 
+    /// Draft, active or completed non-archived plans in the project that a
+    /// new plan may continue (`plan_choice_required`), most recently updated
+    /// first: their `source_ref` is one of `chain_refs` (the incoming chain,
+    /// nearest up to the top) or lies below `chain_refs[0]`, or one of their
+    /// tasks carries `branch` (and `repo`, when given) in its git context.
+    /// The age window for completed plans is the caller's.
+    pub async fn continuation_candidates(
+        &self,
+        project_id: ProjectId,
+        chain_refs: &[String],
+        repo: Option<&str>,
+        branch: Option<&str>,
+    ) -> Result<Vec<Plan>> {
+        let chain =
+            serde_json::to_string(chain_refs).map_err(|e| CoreError::serde(e.to_string()))?;
+        let rows = sqlx::query(
+            "WITH RECURSIVE down(ref, depth) AS ( \
+               SELECT value, 0 FROM json_each(?) WHERE key = 0 \
+               UNION \
+               SELECT s.ref, d.depth + 1 FROM down d JOIN sources s ON s.upstream_ref = d.ref \
+               WHERE d.depth + 1 < ? \
+             ) \
+             SELECT p.id, p.project_id, p.parent_plan_id, p.title, p.description, p.goal, \
+             p.success_criteria_json, p.status, p.owner_json, p.created_at, p.updated_at, p.archived_at, p.source_brief, p.source_ref \
+             FROM plans p WHERE p.project_id = ? AND p.archived_at IS NULL \
+             AND p.status IN ('draft', 'active', 'completed') \
+             AND (p.source_ref IN (SELECT value FROM json_each(?)) \
+               OR p.source_ref IN (SELECT ref FROM down) \
+               OR (? IS NOT NULL AND EXISTS ( \
+                 SELECT 1 FROM plan_tasks pt JOIN tasks t ON t.id = pt.task_id \
+                 WHERE pt.plan_id = p.id \
+                 AND json_extract(t.git_context, '$.branch') = ? \
+                 AND (? IS NULL OR json_extract(t.git_context, '$.repo') = ?)))) \
+             ORDER BY p.updated_at DESC, p.id DESC",
+        )
+        .bind(&chain)
+        .bind(SOURCE_CHAIN_MAX as i64)
+        .bind(project_id.to_string())
+        .bind(&chain)
+        .bind(branch)
+        .bind(branch)
+        .bind(repo)
+        .bind(repo)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.iter().map(row_to_plan).collect()
+    }
+
     /// `source_ref` and every node whose chain passes through it, with the
     /// longest distance below it; traversal bounded by [`SOURCE_CHAIN_MAX`].
     pub async fn source_descendants(&self, source_ref: &str) -> Result<(Vec<String>, usize)> {

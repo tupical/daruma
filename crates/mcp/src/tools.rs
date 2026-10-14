@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. To add follow-up tasks to an existing plan pass `plan.id` (no title); it keeps its project and source. Raw ideas go through the idea pipeline, not here.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. To add follow-up tasks to an existing plan pass `plan.id` (no title); it keeps its project and source. Plans on the same branch/source chain give `plan_choice_required`: same subject → `plan.id`, else `plan.separate`. Raw ideas go through the idea pipeline, not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -1510,6 +1510,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(criteria) = plan_args.get("success_criteria") {
                 plan["success_criteria"] = criteria.clone();
+            }
+            if plan_args.get("separate").and_then(Value::as_bool) == Some(true) {
+                plan["separate"] = json!(true);
             }
             apply_plan_source(&plan_args, &mut plan)?;
             let tasks = args
@@ -3522,6 +3525,7 @@ fn schema_plan_materialize() -> Value {
                 "type":"object",
                 "properties": {
                     "id": {"type":"string","description":"Existing plan to append to (follow-ups of its issue/branch): completed reopens, abandoned/archived refuse."},
+                    "separate": {"type":"boolean","description":"New plan beside `plan_choice_required` candidates."},
                     "title": {"type":"string","description":"Required unless `id` is given."},
                     "description": {"type":"string"},
                     "goal": {"type":"string"},
