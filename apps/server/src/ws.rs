@@ -13,6 +13,9 @@
 //!   * `Resync { from_seq, dropped }` when the broadcast receiver lags.
 //!   * Heartbeat: server `Ping` every 25 s; closes the socket if the
 //!     client misses two consecutive pongs.
+//!   * `?visibility=mine` on the upgrade: only events the principal authored
+//!     or about its own tasks, the same rule as the cloud task journal. The
+//!     principal is the embedding host's [`HostPrincipal`], else the token's.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,10 +25,12 @@ use axum::{
         ws::{CloseFrame, Message, WebSocket},
         Query, State, WebSocketUpgrade,
     },
-    response::IntoResponse,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Extension, Json,
 };
 use daruma_auth::{
-    verify_bearer, AuthContext, Capabilities, Capability, ProjectFilter, TokenStore,
+    verify_bearer, AuthContext, Capabilities, Capability, HostPrincipal, ProjectFilter, TokenStore,
 };
 use daruma_domain::Actor;
 use daruma_events::{Channel, Event, EventEnvelope};
@@ -51,6 +56,9 @@ const BEARER_PROTOCOL_PREFIX: &str = "bearer.";
 pub struct WsAuthQuery {
     #[serde(default)]
     pub token: Option<String>,
+    /// `mine` | `all` (default). Anything else is rejected before upgrade.
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 /// Axum route handler — upgrades the HTTP connection to a WebSocket.
@@ -58,16 +66,38 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Query(auth): Query<WsAuthQuery>,
-) -> impl IntoResponse {
+    host: Option<Extension<HostPrincipal>>,
+) -> Response {
+    let mine = match auth.visibility.as_deref().map(str::trim) {
+        None | Some("") | Some("all") => false,
+        Some("mine") => true,
+        Some(other) => {
+            let body = serde_json::json!({
+                "error": {
+                    "code": "validation",
+                    "message": format!("unknown visibility: {other} (expected mine or all)"),
+                }
+            });
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
+    };
+    let host = host.map(|Extension(HostPrincipal(id))| id);
     let protocol_token = token_from_protocols(&ws);
     let token = protocol_token.or(auth.token);
     ws.protocols([WS_PROTOCOL])
-        .on_upgrade(|socket| handle_socket(socket, state, token))
+        .on_upgrade(move |socket| handle_socket(socket, state, token, mine, host))
+        .into_response()
 }
 
 // ── Per-connection loop ───────────────────────────────────────────────────────
 
-async fn handle_socket(socket: WebSocket, state: AppState, token: Option<String>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    token: Option<String>,
+    mine: bool,
+    host: Option<AgentId>,
+) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     // 1. Authenticate.
@@ -83,6 +113,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: Option<String>
             return;
         }
     };
+    let mine = mine.then(|| host.or(auth_ctx.principal_id).unwrap_or(auth_ctx.agent_id));
     let device_id = auth_ctx.device_id;
     if let Some(device_id) = device_id {
         state.hub.device_connected(device_id);
@@ -188,7 +219,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, token: Option<String>
                                 parent_plan,
                             }) => {
                                 match SubscriptionFilters::parse(assignee, verb, parent_plan) {
-                                    Ok(filters) => {
+                                    Ok(mut filters) => {
+                                        filters.mine = mine;
                                         // Cancel any previous live forwarder.
                                         if let Some(h) = live_task.take() {
                                             h.abort();
@@ -381,7 +413,8 @@ async fn handle_subscribe(
         let mut shown = Vec::with_capacity(filtered_history.len());
         for env in filtered_history {
             if event_passes(&env, &project_filter, &channel_filter, caps, &state.tasks).await
-                && event_matches_filters(&env, &filters, &state.plans, &state.claims).await
+                && event_matches_filters(&env, &filters, &state.tasks, &state.plans, &state.claims)
+                    .await
             {
                 shown.push(env);
             }
@@ -413,7 +446,7 @@ async fn handle_subscribe(
             if !event_passes(env, &project_filter, &channel_filter, caps, &tasks).await {
                 continue;
             }
-            if !event_matches_filters(env, &filters, &plans, &claims).await {
+            if !event_matches_filters(env, &filters, &tasks, &plans, &claims).await {
                 continue;
             }
             // Wire type takes ownership — clone the envelope out of the Arc.
@@ -794,6 +827,9 @@ pub(crate) struct SubscriptionFilters {
     pub(crate) assignee: Option<AgentId>,
     pub(crate) verb: Option<String>,
     pub(crate) parent_plan: Option<PlanId>,
+    /// Principal of a `?visibility=mine` connection; set from the upgrade,
+    /// never from the `Subscribe` frame.
+    pub(crate) mine: Option<AgentId>,
 }
 
 impl SubscriptionFilters {
@@ -823,12 +859,16 @@ impl SubscriptionFilters {
             assignee,
             verb,
             parent_plan,
+            mine: None,
         })
     }
 
     /// `true` when no narrowing filter is set — short-circuit hot path.
     fn is_noop(&self) -> bool {
-        self.assignee.is_none() && self.verb.is_none() && self.parent_plan.is_none()
+        self.assignee.is_none()
+            && self.verb.is_none()
+            && self.parent_plan.is_none()
+            && self.mine.is_none()
     }
 }
 
@@ -838,6 +878,7 @@ impl SubscriptionFilters {
 pub(crate) async fn event_matches_filters(
     env: &EventEnvelope,
     filters: &SubscriptionFilters,
+    tasks: &Arc<TaskRepo>,
     plans: &Arc<PlanRepo>,
     claims: &Arc<AgentClaimRepo>,
 ) -> bool {
@@ -871,6 +912,18 @@ pub(crate) async fn event_matches_filters(
             && !task_is_claimed_by(task_id, want, claims).await
         {
             return false;
+        }
+    }
+
+    // mine — the principal wrote the event, or the event is about its task.
+    if let Some(me) = filters.mine {
+        if env.actor.principal_id() != Some(me) {
+            let Some(task_id) = env.payload.target_task() else {
+                return false;
+            };
+            if !tasks.is_mine(task_id, me).await.unwrap_or(false) {
+                return false;
+            }
         }
     }
 

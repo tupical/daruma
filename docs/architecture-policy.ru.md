@@ -66,3 +66,8 @@ Pre-cascade `plan_tasks` — ручной SQL при необходимости,
 `GET /v1/ws`, `Hello` + `Subscribe`; полный набор каналов — `Channel`
 в `crates/events/src/event.rs` (Tasks, Comments, AgentStatus, Presence,
 Webhooks, Plans, Runs, Documents, AiOps, WorkUnits, Artifacts, Rules).
+`?visibility=mine` на апгрейде оставляет в снимке и live-ленте только
+события, записанные принципалом, и события его задач (создал, завершил или
+держит живой claim, чьё `agent_claimed` записал он). Принципал — `HostPrincipal`
+встраивающего хоста (аккаунт облака), иначе `agent_id` токена;
+`all`/без параметра — лента без изменений, иное значение — 400 до апгрейда.
