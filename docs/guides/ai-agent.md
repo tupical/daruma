@@ -22,6 +22,7 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 - `ai_analyze_complexity` (deprecated shim)
 - Intake (new tasks): `daruma_plan_materialize` — the only path (plan-only intake); `daruma_create`/`daruma_capture`/`daruma_capture_batch` are removed from the catalogue and return a bridge error naming the replacement
+- Follow-up tasks for an existing plan (same issue/branch): `daruma_plan_materialize` with `plan.id` (no title) — the tasks are appended after the plan's last one, the plan keeps its title, project and source (a different incoming source is commented on each new task); a completed plan is reopened, an abandoned/archived one refuses
 - Task mutations (existing tasks): `set_status`, `complete`, `split`, `comment`, plans/runs/claims
 - Plan executor: `daruma_plan_progress`, `daruma_plan_next_task`, `daruma_run_*`
 

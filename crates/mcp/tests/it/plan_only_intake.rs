@@ -7,6 +7,8 @@
 //!      шлёт POST /v1/commands с {"type":"materialize_plan", plan, tasks}.
 //!   3. `plan_materialize_requires_tasks` — пустой/отсутствующий `tasks` — ошибка
 //!      до какого-либо запроса.
+//!   4. `plan_materialize_appends_by_plan_id` — `plan.id` без title: проект и
+//!      title берутся из плана, в команду уходит `plan_id`.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,18 +23,25 @@ struct Captured {
     body: Value,
 }
 
-/// Router that records every request (any HTTP method) and returns 200 `{}`.
+/// Router that records every request (any HTTP method) and returns 200 `{}`
+/// — except `GET /v1/plans/{id}`, which answers a stored plan.
 fn recording_router(capture: Arc<Mutex<Vec<Captured>>>) -> Router {
     Router::new().fallback(any(move |req: Request<Body>| {
         let capture = capture.clone();
         async move {
             let path = req.uri().path().to_string();
+            let reply = match path.strip_prefix("/v1/plans/") {
+                Some(id) if req.method() == axum::http::Method::GET => json!({
+                    "plan": {"id": id, "project_id": "prj_plan", "title": "Stored plan"}
+                }),
+                _ => json!({}),
+            };
             let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
                 .await
                 .unwrap_or_default();
             let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             capture.lock().unwrap().push(Captured { path, body });
-            (StatusCode::OK, axum::Json(json!({})))
+            (StatusCode::OK, axum::Json(reply))
         }
     }))
 }
@@ -260,4 +269,53 @@ async fn source_extend_forwards_arguments() {
     assert_eq!(captured[0].body["ref"], "mailto:c@acme.ru");
     assert_eq!(captured[0].body["upstream"][0]["label"], "Call");
     assert!(captured[0].body.get("plan_id").is_none());
+}
+
+/// `plan.id` appends to an existing plan: no title needed, the project (and
+/// title) come from `GET /v1/plans/{id}`, the command carries `plan_id`, and
+/// source/git_context still pass through for the server to compare.
+#[tokio::test]
+async fn plan_materialize_appends_by_plan_id() {
+    let (result, captured) = with_recording_server(
+        "daruma_plan_materialize",
+        json!({
+            "plan": {
+                "id": "pln_1",
+                "source": {"ref": "https://gitlab.x/g/p/-/issues/7"},
+                "git_context": {"branch": "7_fix_login"}
+            },
+            "tasks": [{"title": "follow-up"}]
+        }),
+    )
+    .await;
+    result.expect("append must succeed");
+
+    assert_eq!(captured[0].path, "/v1/plans/pln_1");
+    let command = &captured
+        .iter()
+        .find(|c| c.path == "/v1/commands")
+        .expect("materialize must POST /v1/commands")
+        .body["command"];
+    assert_eq!(command["type"], "materialize_plan");
+    assert_eq!(command["plan_id"], "pln_1");
+    assert_eq!(command["plan"]["project_id"], "prj_plan");
+    assert_eq!(command["plan"]["title"], "Stored plan");
+    assert_eq!(
+        command["plan"]["source"]["ref"],
+        "https://gitlab.x/g/p/-/issues/7"
+    );
+    assert_eq!(command["plan"]["git_context"]["branch"], "7_fix_login");
+    assert_eq!(command["tasks"][0]["title"], "follow-up");
+
+    // Without `plan.id` the title stays mandatory and nothing is sent.
+    let (result, captured) = with_recording_server(
+        "daruma_plan_materialize",
+        json!({"plan": {"project_id": "prj_1"}, "tasks": [{"title": "t"}]}),
+    )
+    .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("`plan.title` is required"));
+    assert!(captured.is_empty());
 }

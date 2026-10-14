@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. Raw ideas go through the idea pipeline, not here.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. To add follow-up tasks to an existing plan pass `plan.id` (no title); it keeps its project and source. Raw ideas go through the idea pipeline, not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -1452,20 +1452,51 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let title = plan_args
                 .get("title")
                 .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`plan.title` is required"))?;
-            // NewPlan.project_id is mandatory: take it from the plan object or
-            // resolve the repo-scoped default project (same idiom as list/get).
-            let project_id = match plan_args.get("project_id").and_then(|v| v.as_str()) {
-                Some(pid) => pid.to_string(),
-                None => match resolve_project_filter(client, &args, false, false, true).await? {
-                    ProjectFilter::Project(pid) => pid,
-                    ProjectFilter::None | ProjectFilter::All => {
-                        return Err(anyhow::anyhow!(
-                            "`plan.project_id` is required (no unambiguous repo project resolved)"
-                        ))
-                    }
-                },
+                .filter(|s| !s.trim().is_empty());
+            // `plan.id` appends the tasks to that existing plan: the server
+            // takes its project and ignores the other plan fields, so `title`
+            // is optional and the project comes from the plan itself.
+            let existing_plan = match plan_args.get("id").and_then(|v| v.as_str()) {
+                Some(id) => Some((
+                    id.to_string(),
+                    client.get_json(&format!("/v1/plans/{id}")).await?,
+                )),
+                None => None,
+            };
+            let (title, project_id) = match &existing_plan {
+                Some((id, resp)) => {
+                    let project_id = resp
+                        .pointer("/plan/project_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("plan {id}: response has no project_id"))?;
+                    let stored_title = resp.pointer("/plan/title").and_then(Value::as_str);
+                    (
+                        title.or(stored_title).unwrap_or_default().to_string(),
+                        project_id.to_string(),
+                    )
+                }
+                None => {
+                    let title = title
+                        .ok_or_else(|| anyhow::anyhow!("`plan.title` is required"))?
+                        .to_string();
+                    // NewPlan.project_id is mandatory: take it from the plan
+                    // object or resolve the repo-scoped default project (same
+                    // idiom as list/get).
+                    let project_id = match plan_args.get("project_id").and_then(|v| v.as_str()) {
+                        Some(pid) => pid.to_string(),
+                        None => match resolve_project_filter(client, &args, false, false, true)
+                            .await?
+                        {
+                            ProjectFilter::Project(pid) => pid,
+                            ProjectFilter::None | ProjectFilter::All => {
+                                return Err(anyhow::anyhow!(
+                                "`plan.project_id` is required (no unambiguous repo project resolved)"
+                            ))
+                            }
+                        },
+                    };
+                    (title, project_id)
+                }
             };
             let mut plan = json!({
                 "title": title,
@@ -1488,13 +1519,15 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .ok_or_else(|| {
                     anyhow::anyhow!("`tasks` (non-empty array of {{title, ...}}) is required")
                 })?;
-            client
-                .post_command(json!({
-                    "type": "materialize_plan",
-                    "plan": plan,
-                    "tasks": tasks,
-                }))
-                .await
+            let mut command = json!({
+                "type": "materialize_plan",
+                "plan": plan,
+                "tasks": tasks,
+            });
+            if let Some((id, _)) = existing_plan {
+                command["plan_id"] = json!(id);
+            }
+            client.post_command(command).await
         }
         "daruma_get" => {
             let id = required_string(&args, "id")?;
@@ -3488,7 +3521,8 @@ fn schema_plan_materialize() -> Value {
             "plan": {
                 "type":"object",
                 "properties": {
-                    "title": {"type":"string"},
+                    "id": {"type":"string","description":"Existing plan to append to (follow-ups of its issue/branch): completed reopens, abandoned/archived refuse."},
+                    "title": {"type":"string","description":"Required unless `id` is given."},
                     "description": {"type":"string"},
                     "goal": {"type":"string"},
                     "success_criteria": {"type":"array","items":{"type":"string"}},
@@ -3497,8 +3531,7 @@ fn schema_plan_materialize() -> Value {
                     "source": {"type":"object","description":"{ref: URI, label, occurred_at, note, upstream: [nodes, nearest first]}"},
                     "git_context": {"type":"object","description":"{repo, branch, head_sha, mr_url}"},
                     "project_id": {"type":"string","description":"Project; omit to infer from the repo."}
-                },
-                "required":["title"]
+                }
             },
             "tasks": {
                 "type":"array",

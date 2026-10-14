@@ -111,6 +111,7 @@ impl Stack {
                 Command::MaterializePlan {
                     plan,
                     tasks: vec![NewTask::new("t")],
+                    plan_id: None,
                 },
                 actor,
             )
@@ -161,6 +162,7 @@ async fn materialize_inherits_git_context_without_overwriting_reused_tasks() {
                     ..NewTask::new("Task")
                 })
                 .collect(),
+            plan_id: None,
         }
     };
     s.handler
@@ -795,10 +797,17 @@ async fn raw_looking_plan_gets_plan_looks_raw_warning_only() {
     let raw = |plan: NewPlan, tasks: Vec<NewTask>| {
         let h = &s.handler;
         async move {
-            h.handle_with_warnings(Command::MaterializePlan { plan, tasks }, Actor::user())
-                .await
-                .unwrap()
-                .warnings
+            h.handle_with_warnings(
+                Command::MaterializePlan {
+                    plan,
+                    tasks,
+                    plan_id: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap()
+            .warnings
         }
     };
     let mut p = s.new_plan();
