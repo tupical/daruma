@@ -157,6 +157,29 @@ async fn plan_materialize_requires_tasks() {
     }
 }
 
+/// `plan.separate: true` reaches the command (the caller chose a new plan
+/// next to `plan_choice_required` candidates); omitted or false is not sent.
+#[tokio::test]
+async fn plan_materialize_passes_separate_only_when_true() {
+    for (separate, expected) in [
+        (Some(json!(true)), json!(true)),
+        (Some(json!(false)), Value::Null),
+        (None, Value::Null),
+    ] {
+        let mut plan = json!({"title": "Resolver", "project_id": "prj_1"});
+        if let Some(value) = separate {
+            plan["separate"] = value;
+        }
+        let (result, captured) = with_recording_server(
+            "daruma_plan_materialize",
+            json!({"plan": plan, "tasks": [{"title": "t"}]}),
+        )
+        .await;
+        result.unwrap();
+        assert_eq!(captured[0].body["command"]["plan"]["separate"], expected);
+    }
+}
+
 /// ADR-0009: `plan.source` (the chain's nearest node) and
 /// `plan.git_context` pass through; wrong shapes fail before any request.
 #[tokio::test]
