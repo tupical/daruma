@@ -5,7 +5,7 @@ use crate::parse_ts;
 use chrono::{DateTime, Utc};
 use daruma_domain::{Priority, Status, Task, TriageState};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{CoreError, EventId, ProjectId, Result, TaskId};
+use daruma_shared::{AgentId, CoreError, EventId, ProjectId, Result, TaskId};
 use serde_json::Value;
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
@@ -178,6 +178,30 @@ impl TaskRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         row.as_ref().map(row_to_task).transpose()
+    }
+
+    /// "Mine" for one task: `principal` created or completed it, or holds a
+    /// live claim whose `agent_claimed` event it authored. The claim row is
+    /// keyed by the token's `agent_id`, so ownership goes through the event
+    /// actor — the host's principal (cloud account) for gateway calls.
+    pub async fn is_mine(&self, id: TaskId, principal: AgentId) -> Result<bool> {
+        let principal = principal.as_uuid().to_string();
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.id = ?1 AND ( \
+             json_extract(t.created_by_json, '$.id') = ?2 \
+             OR json_extract(t.completed_by_json, '$.id') = ?2 \
+             OR EXISTS (SELECT 1 FROM agent_claims c JOIN events e \
+               ON e.kind = 'agent_claimed' \
+               AND 'clm_' || json_extract(e.payload_json, '$.claim_id') = c.claim_id \
+               WHERE c.task_id = t.id AND c.expires_at > ?3 \
+               AND json_extract(e.actor_json, '$.id') = ?2)))",
+        )
+        .bind(id.to_string())
+        .bind(principal)
+        .bind(Utc::now().to_rfc3339())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))
     }
 
     /// ADR-0011 п.2: the task's `metadata_json.pipeline_position`, `None` for
