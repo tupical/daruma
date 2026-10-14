@@ -50,6 +50,10 @@ pub enum AiError {
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// A Message Batch failed as a whole or for one of its requests.
+    #[error("message batch: {0}")]
+    Batch(String),
+
     /// The model returned a message without the expected tool call.
     #[error("no tool call in response")]
     NoToolCall,
