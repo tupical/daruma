@@ -114,6 +114,7 @@ impl Stack {
                 Command::MaterializePlan {
                     plan,
                     tasks: vec![NewTask::new("t")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -554,6 +555,7 @@ async fn replay_rebuilds_the_same_chain() {
             Command::MaterializePlan {
                 plan,
                 tasks: vec![NewTask::new("t")],
+                plan_id: None,
             },
             Actor::user(),
         )

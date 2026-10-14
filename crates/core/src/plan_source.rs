@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use daruma_api_dto::MutationWarning;
 use daruma_domain::{
     normalize_source_ref, Actor, GitContext, IntakeSourceMode, IntakeSourcePolicy, NewPlan,
-    NewTask, SourceChannel, SourceInput, SourceNode, SOURCE_CHAIN_MAX,
+    NewTask, Plan, SourceChannel, SourceInput, SourceNode, SOURCE_CHAIN_MAX,
 };
 use daruma_events::Event;
 use daruma_shared::{time, CoreError, PlanId, ProjectId, Result};
@@ -19,6 +19,8 @@ use crate::{plan_concurrency::detect_parent_cycle, CommandHandler};
 const MAX_PATTERN_LEN: usize = 512;
 const MAX_DERIVE_RULES: usize = 32;
 const MAX_CHANNELS: usize = 32;
+/// A brief recorded on appended tasks is cut here; the comment stays small.
+const APPENDED_BRIEF_MAX: usize = 2000;
 
 fn compile(pattern: &str, what: &str) -> Result<Regex> {
     if pattern.chars().count() > MAX_PATTERN_LEN {
@@ -223,6 +225,56 @@ impl CommandHandler {
         let (events, kept) = self.plan_source_events(plan, nodes, actor).await?;
         warnings.extend(kept);
         Ok((warnings, events))
+    }
+
+    /// Appending tasks to an existing plan keeps that plan's source: an
+    /// incoming source ref/label or brief that differs from it is returned as
+    /// a note for the new tasks instead of being dropped. `None` when the
+    /// request repeats the plan's own source (or carries none).
+    pub(crate) async fn appended_source_note(
+        &self,
+        plan: &Plan,
+        incoming: &NewPlan,
+    ) -> Result<Option<String>> {
+        fn given(value: Option<&str>) -> Option<&str> {
+            value.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let source = incoming.source.as_ref();
+        let incoming_ref = given(source.and_then(|s| s.source_ref.as_deref()))
+            .or(given(incoming.source_ref.as_deref()))
+            .map(normalized)
+            .transpose()?;
+        let stored_label = match (&plan.source_ref, &self.plans) {
+            (Some(source_ref), Some(plans)) => plans
+                .get_source(source_ref)
+                .await?
+                .and_then(|node| node.label),
+            _ => None,
+        };
+        let mut lines = Vec::new();
+        if let Some(source_ref) = incoming_ref.filter(|r| plan.source_ref.as_ref() != Some(r)) {
+            lines.push(format!("Source: {source_ref}"));
+        }
+        if let Some(label) = given(source.and_then(|s| s.label.as_deref()))
+            .filter(|l| given(stored_label.as_deref()) != Some(*l))
+        {
+            lines.push(format!("Source label: {label}"));
+        }
+        if let Some(brief) = given(incoming.source_brief.as_deref())
+            .filter(|b| given(plan.source_brief.as_deref()) != Some(*b))
+        {
+            let brief: String = brief.chars().take(APPENDED_BRIEF_MAX).collect();
+            lines.push(format!("Brief: {brief}"));
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Added to plan {} from a source other than the plan's own (`{}`, kept).\n{}",
+            plan.id,
+            plan.source_ref.as_deref().unwrap_or("none"),
+            lines.join("\n")
+        )))
     }
 
     /// Nodes to write for a new plan: the client chain, or — when the ref
