@@ -506,6 +506,9 @@ impl CommandHandler {
                 plan_id: None,
             } => {
                 let (mut warnings, events) = self.resolve_plan_source(plan, &actor).await?;
+                if !plan.separate {
+                    self.require_plan_choice(plan, &events).await?;
+                }
                 warnings.extend(crate::plan_source::plan_looks_raw(plan, tasks));
                 (warnings, events)
             }

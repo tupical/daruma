@@ -419,6 +419,11 @@ pub struct NewPlan {
     /// the nodes are written as `SourceUpserted`, not stored on the plan.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::source::SourceInput>,
+    /// Intake-only: the caller has checked the plans this one could continue
+    /// (same branch or source chain) and creates a new plan anyway. Without
+    /// it, materialize answers `plan_choice_required` when such plans exist.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub separate: bool,
 }
 
 impl NewPlan {
@@ -436,6 +441,7 @@ impl NewPlan {
             source_ref: None,
             git_context: None,
             source: None,
+            separate: false,
         }
     }
 
