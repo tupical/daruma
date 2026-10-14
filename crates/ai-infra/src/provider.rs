@@ -23,7 +23,8 @@ use async_trait::async_trait;
 use daruma_shared::CoreError;
 use serde_json::Value;
 
-use crate::client::{OpenAiClient, ResponseOutput, ResponseRequest, SYSTEM_SEPARATOR};
+use crate::client::{BatchWait, OpenAiClient, ResponseOutput, ResponseRequest, SYSTEM_SEPARATOR};
+use crate::config::ApiProtocol;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
@@ -63,6 +64,36 @@ pub trait AiProvider: Send + Sync {
             expected_tool,
         )
         .await
+    }
+
+    /// Many independent [`Self::generate_object_with_system`] calls sharing
+    /// one `system`, `tools` and `expected_tool` — one-turn mass judgments of
+    /// an offline pass (scheduled audit). Item `i` answers `prompts[i]`.
+    ///
+    /// A provider with a batch API may send them as one batch: cheaper, but it
+    /// can take minutes, so interactive paths must not call this. The default
+    /// makes the calls one by one, so a provider without batches (and every
+    /// test double) answers exactly as before.
+    async fn generate_objects_batch(
+        &self,
+        system: String,
+        prompts: Vec<String>,
+        tools: Vec<Value>,
+        expected_tool: &str,
+    ) -> Vec<Result<Value, CoreError>> {
+        let mut out = Vec::with_capacity(prompts.len());
+        for prompt in prompts {
+            out.push(
+                self.generate_object_with_system(
+                    system.clone(),
+                    prompt,
+                    tools.clone(),
+                    expected_tool,
+                )
+                .await,
+            );
+        }
+        out
     }
 }
 
@@ -104,6 +135,48 @@ impl AiProvider for OpenAiClient {
         self.object_call(Some(system), prompt, tools, expected_tool)
             .await
     }
+
+    /// Anthropic: one Message Batch for two or more prompts. A batch that
+    /// fails as a whole (not created, not ended in time, results unreadable)
+    /// falls back to the one-by-one calls, so the pass still gets its answers
+    /// at the normal price. Other protocols have no batches and call one by one.
+    async fn generate_objects_batch(
+        &self,
+        system: String,
+        prompts: Vec<String>,
+        tools: Vec<Value>,
+        expected_tool: &str,
+    ) -> Vec<Result<Value, CoreError>> {
+        if self.config().api_protocol == ApiProtocol::AnthropicMessages && prompts.len() > 1 {
+            let reqs: Vec<ResponseRequest> = prompts
+                .iter()
+                .map(|prompt| object_request(Some(system.clone()), prompt.clone(), tools.clone()))
+                .collect();
+            match self.respond_batch(&reqs, BatchWait::default()).await {
+                Ok(results) => {
+                    return results
+                        .into_iter()
+                        .map(|outputs| {
+                            tool_arguments(outputs.map_err(CoreError::from)?, expected_tool)
+                        })
+                        .collect();
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    prompts = prompts.len(),
+                    "anthropic batch failed, falling back to one call per prompt"
+                ),
+            }
+        }
+        let mut out = Vec::with_capacity(prompts.len());
+        for prompt in prompts {
+            out.push(
+                self.object_call(Some(system.clone()), prompt, tools.clone(), expected_tool)
+                    .await,
+            );
+        }
+        out
+    }
 }
 
 impl OpenAiClient {
@@ -114,22 +187,34 @@ impl OpenAiClient {
         tools: Vec<Value>,
         expected_tool: &str,
     ) -> Result<Value, CoreError> {
-        let req = ResponseRequest {
-            input: Value::String(prompt),
-            tools,
-            tool_choice: Some("required".into()),
-            system,
-        };
-        let outputs = self.respond(req).await.map_err(CoreError::from)?;
-        let tc = outputs
-            .into_iter()
-            .find_map(|o| match o {
-                ResponseOutput::ToolCall(tc) if tc.name == expected_tool => Some(tc),
-                _ => None,
-            })
-            .ok_or_else(|| CoreError::ai(format!("provider returned no {expected_tool} call")))?;
-        serde_json::from_str(&tc.arguments).map_err(|e| CoreError::serde(e.to_string()))
+        let outputs = self
+            .respond(object_request(system, prompt, tools))
+            .await
+            .map_err(CoreError::from)?;
+        tool_arguments(outputs, expected_tool)
     }
+}
+
+/// The request of one structured tool-call completion.
+fn object_request(system: Option<String>, prompt: String, tools: Vec<Value>) -> ResponseRequest {
+    ResponseRequest {
+        input: Value::String(prompt),
+        tools,
+        tool_choice: Some("required".into()),
+        system,
+    }
+}
+
+/// Parsed arguments of the first `expected_tool` call among the outputs.
+fn tool_arguments(outputs: Vec<ResponseOutput>, expected_tool: &str) -> Result<Value, CoreError> {
+    let tc = outputs
+        .into_iter()
+        .find_map(|o| match o {
+            ResponseOutput::ToolCall(tc) if tc.name == expected_tool => Some(tc),
+            _ => None,
+        })
+        .ok_or_else(|| CoreError::ai(format!("provider returned no {expected_tool} call")))?;
+    serde_json::from_str(&tc.arguments).map_err(|e| CoreError::serde(e.to_string()))
 }
 
 /// Test doubles for the [`AiProvider`] trait, shared across crates.
@@ -217,6 +302,25 @@ mod tests {
         assert_eq!(
             p.captured_prompts.lock().unwrap().as_slice(),
             &["RULES\n\nper-call"]
+        );
+    }
+
+    #[tokio::test]
+    async fn default_generate_objects_batch_calls_one_by_one_in_order() {
+        let p = FakeProvider::new("", serde_json::json!({"ok": true}));
+        let results = p
+            .generate_objects_batch(
+                "RULES".into(),
+                vec!["a".into(), "b".into()],
+                vec![],
+                "report",
+            )
+            .await;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.as_ref().unwrap()["ok"] == true));
+        assert_eq!(
+            p.captured_prompts.lock().unwrap().as_slice(),
+            &["RULES\n\na", "RULES\n\nb"]
         );
     }
 

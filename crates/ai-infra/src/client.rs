@@ -206,6 +206,197 @@ impl OpenAiClient {
     }
 }
 
+/// How long [`OpenAiClient::respond_batch`] waits for a Message Batch and how
+/// often it asks.
+///
+/// Anthropic finishes most batches within the hour and guarantees only 24
+/// hours, so the wait is bounded: a batch still running at the deadline is
+/// cancelled and the caller gets an error it can fall back from. The default
+/// suits an offline pass (scheduled audit) — nothing interactive should ever
+/// wait on a batch.
+#[derive(Clone, Copy, Debug)]
+pub struct BatchWait {
+    pub poll_interval: Duration,
+    pub deadline: Duration,
+}
+
+impl Default for BatchWait {
+    fn default() -> Self {
+        Self {
+            poll_interval: Duration::from_secs(10),
+            deadline: Duration::from_secs(15 * 60),
+        }
+    }
+}
+
+impl OpenAiClient {
+    /// Send many independent one-turn requests as one Anthropic Message Batch
+    /// (half the price of the same calls made one by one) and wait for them.
+    ///
+    /// The outer `Err` means the batch as a whole failed — not created, not
+    /// finished by [`BatchWait::deadline`] (then it is cancelled), results
+    /// unreadable — and nothing was answered. Otherwise item `i` is the reply
+    /// to `reqs[i]`, each one parsed exactly as [`Self::respond`] parses it; a
+    /// request the batch errored, cancelled or let expire is an `Err` of its
+    /// own. Only `anthropic_messages` has batches: the other protocols get a
+    /// configuration error before any request is sent.
+    pub async fn respond_batch(
+        &self,
+        reqs: &[ResponseRequest],
+        wait: BatchWait,
+    ) -> Result<Vec<Result<Vec<ResponseOutput>, AiError>>, AiError> {
+        if self.config.api_protocol != ApiProtocol::AnthropicMessages {
+            return Err(AiError::Config(
+                "message batches need api_protocol anthropic_messages".into(),
+            ));
+        }
+        let body = build_anthropic_batch_body(&self.config, reqs)?;
+        let batches_url = self.config.anthropic_batches_url();
+        let created = self
+            .anthropic_call(self.http.post(&batches_url).json(&body))
+            .await?;
+        let id = created["id"]
+            .as_str()
+            .ok_or_else(|| AiError::Batch(format!("created batch has no id: {created}")))?
+            .to_owned();
+        info!(batch_id = %id, requests = reqs.len(), model = %self.config.model, "anthropic batch created");
+
+        let started = std::time::Instant::now();
+        let mut batch = created;
+        while batch["processing_status"] != "ended" {
+            if started.elapsed() >= wait.deadline {
+                // Best effort: an uncancelled batch still finishes and bills,
+                // but the caller has already moved on without its answers.
+                if let Err(error) = self
+                    .anthropic_call(self.http.post(format!("{batches_url}/{id}/cancel")))
+                    .await
+                {
+                    tracing::warn!(batch_id = %id, %error, "anthropic batch cancel failed");
+                }
+                return Err(AiError::Batch(format!(
+                    "batch {id} not ended within {}s, cancelled",
+                    wait.deadline.as_secs()
+                )));
+            }
+            tokio::time::sleep(wait.poll_interval).await;
+            batch = self
+                .anthropic_call(self.http.get(format!("{batches_url}/{id}")))
+                .await?;
+        }
+
+        let results_url = batch["results_url"]
+            .as_str()
+            .ok_or_else(|| AiError::Batch(format!("ended batch {id} has no results_url")))?;
+        let mut request = self.http.get(results_url);
+        for (name, value) in auth_headers(&self.config) {
+            request = request.header(name, value);
+        }
+        let resp = request.send().await?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let message = resp.text().await.unwrap_or_default();
+            return Err(AiError::Api { status, message });
+        }
+        let jsonl = resp.text().await?;
+        let results = parse_anthropic_batch_results(&jsonl, reqs.len())?;
+        for message in results.iter().flatten() {
+            if let Some(usage) = anthropic_usage(message) {
+                info!(
+                    model = %self.config.model,
+                    batch_id = %id,
+                    input_tokens = usage.input_tokens,
+                    cache_creation_input_tokens = usage.cache_creation_input_tokens,
+                    cache_read_input_tokens = usage.cache_read_input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "anthropic usage"
+                );
+            }
+        }
+        Ok(results
+            .into_iter()
+            .map(|result| result.and_then(|message| parse_anthropic_outputs(&message)))
+            .collect())
+    }
+
+    pub(crate) fn config(&self) -> &AiConfig {
+        &self.config
+    }
+
+    /// One authenticated JSON call to the Anthropic API; non-2xx is an error.
+    async fn anthropic_call(&self, mut request: reqwest::RequestBuilder) -> Result<Value, AiError> {
+        for (name, value) in auth_headers(&self.config) {
+            request = request.header(name, value);
+        }
+        let resp = request.send().await?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let message = resp.text().await.unwrap_or_default();
+            return Err(AiError::Api { status, message });
+        }
+        Ok(resp.json().await?)
+    }
+}
+
+/// `custom_id` of request `i` in a batch. Anthropic returns results in any
+/// order, so this is how a result finds its request.
+fn batch_custom_id(i: usize) -> String {
+    format!("req-{i}")
+}
+
+/// The Message Batch create body: request `i` carries [`batch_custom_id`]`(i)`
+/// and exactly the body [`OpenAiClient::respond`] would send for it, cache
+/// breakpoints included.
+pub(crate) fn build_anthropic_batch_body(
+    config: &AiConfig,
+    reqs: &[ResponseRequest],
+) -> Result<Value, AiError> {
+    let requests = reqs
+        .iter()
+        .enumerate()
+        .map(|(i, req)| {
+            Ok(json!({
+                "custom_id": batch_custom_id(i),
+                "params": build_anthropic_request_body(config, req)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, AiError>>()?;
+    Ok(json!({ "requests": requests }))
+}
+
+/// Split the results JSONL of an ended batch into one entry per request, in
+/// request order: the `message` of a succeeded request, otherwise an error
+/// naming what happened to it. A request the file does not mention is an error
+/// too — it was never answered.
+pub(crate) fn parse_anthropic_batch_results(
+    jsonl: &str,
+    n: usize,
+) -> Result<Vec<Result<Value, AiError>>, AiError> {
+    let mut out: Vec<Option<Result<Value, AiError>>> = (0..n).map(|_| None).collect();
+    for line in jsonl.lines().filter(|line| !line.trim().is_empty()) {
+        let item: Value = serde_json::from_str(line)?;
+        let index = item["custom_id"]
+            .as_str()
+            .and_then(|id| id.strip_prefix("req-"))
+            .and_then(|i| i.parse::<usize>().ok())
+            .filter(|i| *i < n)
+            .ok_or_else(|| AiError::Batch(format!("result for an unknown request: {line}")))?;
+        let result = &item["result"];
+        out[index] = Some(match result["type"].as_str() {
+            Some("succeeded") => Ok(result["message"].clone()),
+            Some("errored") => Err(AiError::Batch(format!(
+                "request errored: {}",
+                result["error"]
+            ))),
+            Some(other) => Err(AiError::Batch(format!("request {other}"))),
+            None => Err(AiError::Batch(format!("result without type: {line}"))),
+        });
+    }
+    Ok(out
+        .into_iter()
+        .map(|result| result.unwrap_or_else(|| Err(AiError::Batch("request has no result".into()))))
+        .collect())
+}
+
 /// Token accounting of one Anthropic Messages reply, cache split included.
 ///
 /// `input_tokens` counts only the uncached part of the prompt; the cached
@@ -1410,5 +1601,283 @@ mod tests {
             matches!(&error, AiError::ParseFailed(m) if m.contains("max_tokens") && m.contains("max_output_tokens")),
             "{error:?}"
         );
+    }
+
+    // ── Message Batches ──────────────────────────────────────────────────────
+
+    /// Answers one connection per canned `(status, body)` in order and returns
+    /// every raw request it read. `replies` gets the stub address so a reply
+    /// can point back at it (`results_url`).
+    fn scripted_anthropic_stub(
+        replies: impl FnOnce(std::net::SocketAddr) -> Vec<(u16, String)>,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let replies = replies(addr);
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, reply) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+                requests.push(String::from_utf8(raw).unwrap());
+            }
+            requests
+        });
+        (addr, server)
+    }
+
+    fn request_line(raw: &str) -> &str {
+        raw.lines().next().unwrap_or_default()
+    }
+
+    fn request_body(raw: &str) -> Value {
+        serde_json::from_str(&raw[raw.find("\r\n\r\n").unwrap() + 4..]).unwrap()
+    }
+
+    fn tool_message(name: &str, input: Value) -> Value {
+        json!({
+            "id": "msg", "type": "message", "role": "assistant", "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "toolu", "name": name, "input": input}],
+            "usage": {"input_tokens": 3, "output_tokens": 4}
+        })
+    }
+
+    #[test]
+    fn batch_body_wraps_each_request_body_under_its_custom_id() {
+        let mut cfg = make_cfg(None);
+        cfg.api_protocol = ApiProtocol::AnthropicMessages;
+        let tool = json!({"type": "function", "name": "report"});
+        let reqs: Vec<ResponseRequest> = ["a", "b"]
+            .iter()
+            .map(|input| ResponseRequest {
+                input: Value::String((*input).into()),
+                tools: vec![tool.clone()],
+                tool_choice: Some("required".into()),
+                system: Some("RULES".into()),
+            })
+            .collect();
+        let body = build_anthropic_batch_body(&cfg, &reqs).unwrap();
+        let requests = body["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (i, (item, req)) in requests.iter().zip(&reqs).enumerate() {
+            assert_eq!(item["custom_id"], format!("req-{i}"));
+            // Same body as a direct call — cache breakpoints included.
+            assert_eq!(
+                item["params"],
+                build_anthropic_request_body(&cfg, req).unwrap()
+            );
+        }
+        assert_eq!(
+            requests[1]["params"]["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn batch_results_follow_request_order_and_name_every_failure() {
+        let jsonl = [
+            json!({"custom_id": "req-2", "result": {"type": "expired"}}),
+            json!({"custom_id": "req-0", "result": {"type": "succeeded", "message": {"id": "m0"}}}),
+            json!({"custom_id": "req-1", "result": {"type": "errored", "error": {"type": "error", "error": {"type": "overloaded_error"}}}}),
+        ]
+        .map(|v| v.to_string())
+        .join("\n");
+        let results = parse_anthropic_batch_results(&jsonl, 4).unwrap();
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].as_ref().unwrap()["id"], "m0");
+        assert!(
+            matches!(&results[1], Err(AiError::Batch(m)) if m.contains("overloaded_error")),
+            "{:?}",
+            results[1]
+        );
+        assert!(matches!(&results[2], Err(AiError::Batch(m)) if m.contains("expired")));
+        assert!(matches!(&results[3], Err(AiError::Batch(m)) if m.contains("no result")));
+
+        let unknown = json!({"custom_id": "req-9", "result": {"type": "expired"}}).to_string();
+        assert!(matches!(
+            parse_anthropic_batch_results(&unknown, 4),
+            Err(AiError::Batch(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn respond_batch_creates_polls_and_reads_results_over_http() {
+        let (addr, server) = scripted_anthropic_stub(|addr| {
+            let results = [
+                json!({"custom_id": "req-1", "result": {"type": "succeeded", "message": tool_message("report", json!({"n": 1}))}}),
+                json!({"custom_id": "req-0", "result": {"type": "succeeded", "message": tool_message("report", json!({"n": 0}))}}),
+            ]
+            .map(|v| v.to_string())
+            .join("\n");
+            vec![
+                (200, json!({"id": "msgbatch_1", "processing_status": "in_progress"}).to_string()),
+                (200, json!({"id": "msgbatch_1", "processing_status": "in_progress"}).to_string()),
+                (
+                    200,
+                    json!({"id": "msgbatch_1", "processing_status": "ended",
+                           "results_url": format!("http://{addr}/v1/messages/batches/msgbatch_1/results")})
+                    .to_string(),
+                ),
+                (200, results),
+            ]
+        });
+        let reqs: Vec<ResponseRequest> = ["first", "second"]
+            .iter()
+            .map(|input| {
+                make_req(
+                    input,
+                    vec![json!({"type": "function", "name": "report"})],
+                    Some("required"),
+                )
+            })
+            .collect();
+        let wait = BatchWait {
+            poll_interval: Duration::from_millis(5),
+            deadline: Duration::from_secs(30),
+        };
+        let results = anthropic_stub_client(addr)
+            .respond_batch(&reqs, wait)
+            .await
+            .unwrap();
+        let args: Vec<String> = results
+            .into_iter()
+            .map(|outputs| match outputs.unwrap().pop() {
+                Some(ResponseOutput::ToolCall(tc)) => tc.arguments,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(args, [r#"{"n":0}"#, r#"{"n":1}"#]);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests.iter().map(|r| request_line(r)).collect::<Vec<_>>(),
+            [
+                "POST /v1/messages/batches HTTP/1.1",
+                "GET /v1/messages/batches/msgbatch_1 HTTP/1.1",
+                "GET /v1/messages/batches/msgbatch_1 HTTP/1.1",
+                "GET /v1/messages/batches/msgbatch_1/results HTTP/1.1",
+            ]
+        );
+        for raw in &requests {
+            let lower = raw.to_ascii_lowercase();
+            assert!(lower.contains("x-api-key: sk-test"), "{raw}");
+            assert!(lower.contains("anthropic-version: 2023-06-01"), "{raw}");
+        }
+        let created = request_body(&requests[0]);
+        assert_eq!(created["requests"][0]["custom_id"], "req-0");
+        assert_eq!(
+            created["requests"][1]["params"]["messages"],
+            json!([{"role": "user", "content": "second"}])
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_batch_cancels_a_batch_past_its_deadline() {
+        let (addr, server) = scripted_anthropic_stub(|_| {
+            vec![
+                (
+                    200,
+                    json!({"id": "msgbatch_2", "processing_status": "in_progress"}).to_string(),
+                ),
+                (
+                    200,
+                    json!({"id": "msgbatch_2", "processing_status": "canceling"}).to_string(),
+                ),
+            ]
+        });
+        let reqs = vec![make_req("x", vec![], None), make_req("y", vec![], None)];
+        let wait = BatchWait {
+            poll_interval: Duration::from_millis(5),
+            deadline: Duration::ZERO,
+        };
+        let error = anthropic_stub_client(addr)
+            .respond_batch(&reqs, wait)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, AiError::Batch(m) if m.contains("msgbatch_2") && m.contains("cancelled")),
+            "{error:?}"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(
+            request_line(&requests[1]),
+            "POST /v1/messages/batches/msgbatch_2/cancel HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_batch_refuses_protocols_without_batches_before_any_request() {
+        let client = OpenAiClient::new(make_cfg(None));
+        let error = client
+            .respond_batch(&[make_req("x", vec![], None)], BatchWait::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AiError::Config(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn objects_batch_falls_back_to_one_call_per_prompt_when_the_batch_fails() {
+        use crate::AiProvider;
+
+        let (addr, server) = scripted_anthropic_stub(|_| {
+            vec![
+                (
+                    500,
+                    json!({"type": "error", "error": {"type": "api_error"}}).to_string(),
+                ),
+                (200, tool_message("report", json!({"n": "a"})).to_string()),
+                (200, tool_message("report", json!({"n": "b"})).to_string()),
+            ]
+        });
+        let tool = json!({"type": "function", "name": "report"});
+        let results = anthropic_stub_client(addr)
+            .generate_objects_batch(
+                "RULES".into(),
+                vec!["a".into(), "b".into()],
+                vec![tool],
+                "report",
+            )
+            .await;
+        let args: Vec<Value> = results.into_iter().map(Result::unwrap).collect();
+        assert_eq!(args, [json!({"n": "a"}), json!({"n": "b"})]);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            request_line(&requests[0]),
+            "POST /v1/messages/batches HTTP/1.1"
+        );
+        for (raw, prompt) in requests[1..].iter().zip(["a", "b"]) {
+            assert_eq!(request_line(raw), "POST /v1/messages HTTP/1.1");
+            let sent = request_body(raw);
+            assert_eq!(sent["messages"][0]["content"], prompt);
+            assert_eq!(sent["system"][0]["text"], "RULES");
+        }
     }
 }

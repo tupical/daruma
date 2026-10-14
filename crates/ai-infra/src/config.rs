@@ -134,6 +134,11 @@ impl AiConfig {
         let base = base.strip_suffix("/v1").unwrap_or(base);
         format!("{base}/v1/messages")
     }
+
+    /// Anthropic Message Batches endpoint, next to [`Self::anthropic_messages_url`].
+    pub fn anthropic_batches_url(&self) -> String {
+        format!("{}/batches", self.anthropic_messages_url())
+    }
 }
 
 #[cfg(test)]

@@ -38,7 +38,7 @@ pub mod untrusted;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 
-pub use client::{OpenAiClient, ResponseOutput, ResponseRequest, ToolCall};
+pub use client::{BatchWait, OpenAiClient, ResponseOutput, ResponseRequest, ToolCall};
 pub use config::{AiConfig, ApiProtocol};
 pub use error::AiError;
 pub use prompts::{render_variant, PromptFile};
