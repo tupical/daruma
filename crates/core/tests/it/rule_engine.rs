@@ -2462,3 +2462,71 @@ async fn document_linked_requires_a_live_bound_document() {
         .await
         .expect("live bound document satisfies the rule");
 }
+
+// ── Plan membership must gate direct task transitions ───────────────────────
+//
+// AUD/ATT: a rule scoped to a plan only fires today if the triggering event
+// already carries `plan_id` (e.g. a plan-materialize path). A task that is a
+// *member* of that plan but transitions via a direct `SetStatus` command
+// never resolves its plan membership, so the plan-scoped rule is silently
+// skipped — the same requirement blocks at `RuleScope::Project`, so this is
+// a real gap in the inheritance chain, not an intentional narrower reach.
+#[tokio::test]
+async fn plan_scoped_rule_blocks_task_start_via_direct_set_status() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        new_rule(
+            "plan-auth-impact-check",
+            RuleScope::Plan { id: plan },
+            RuleTrigger::TaskBeforeStart,
+            Requirement::ImpactCheck {
+                target: "auth-module".into(),
+                required_fields: vec!["risk_level".into()],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Touch auth").await;
+    stack
+        .handler
+        .handle(
+            Command::BulkAttachToPlan {
+                plan_id: plan,
+                task_ids: vec![task],
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("attach task to plan");
+
+    // Direct transition — does NOT go through plan-materialize machinery.
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::InProgress,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("plan-scoped rule must still block a direct task transition");
+    assert!(
+        is_blocked(&err, "plan-auth-impact-check message"),
+        "got: {err}"
+    );
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Inbox,
+        "blocked before persist — task unchanged"
+    );
+}

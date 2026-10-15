@@ -159,6 +159,7 @@ impl LifecycleGate for RuleEngineGate {
         // Task transitions carry only the task id: resolve its project (scope
         // chain) and title (`title_prefix`) from the persisted row.
         let mut resolved;
+        let mut task_plan_ids: Vec<daruma_shared::PlanId> = Vec::new();
         let check = match check.task_id {
             Some(task_id) if check.project_id.is_none() || check.task_title.is_none() => {
                 resolved = check.clone();
@@ -166,12 +167,29 @@ impl LifecycleGate for RuleEngineGate {
                     resolved.project_id = resolved.project_id.or(project_id);
                     resolved.task_title.get_or_insert(title);
                 }
+                // Same gap as project_id above: a direct task transition
+                // never carries plan_id, so a plan-scoped rule on a plan
+                // this task is a member of would silently never fire. A
+                // task can belong to several plans (or none) — check all.
+                if resolved.plan_id.is_none() {
+                    task_plan_ids = self.rules.task_plan_ids(task_id).await?;
+                }
                 &resolved
             }
             _ => check,
         };
         let chain = Self::scope_chain(check);
-        let candidates = self.rules.effective_rules(&chain, trigger).await?;
+        let mut candidates = self.rules.effective_rules(&chain, trigger).await?;
+        for plan_id in &task_plan_ids {
+            let mut plan_check = check.clone();
+            plan_check.plan_id = Some(*plan_id);
+            let plan_chain = Self::scope_chain(&plan_check);
+            for rule in self.rules.effective_rules(&plan_chain, trigger).await? {
+                if !candidates.iter().any(|r| r.id == rule.id) {
+                    candidates.push(rule);
+                }
+            }
+        }
 
         let mut warnings = Vec::new();
         let mut blocked: Vec<(&Rule, Option<String>)> = Vec::new();
