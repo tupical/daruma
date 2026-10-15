@@ -70,6 +70,7 @@ fn set_policy(project: ProjectId, policy: Option<IntakeSourcePolicy>) -> Command
         project_id: project,
         auto_append: AutoAppendPatch::default(),
         intake_source: Some(policy),
+        audit: None,
     }
 }
 
@@ -779,6 +780,7 @@ async fn invalid_policy_is_rejected_and_null_removes_it() {
                     human_log: None,
                 },
                 intake_source: None,
+                audit: None,
             },
             Actor::user(),
         )

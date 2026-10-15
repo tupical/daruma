@@ -176,6 +176,7 @@ async fn toggles_disable_appends_and_persist() {
                     human_log: Some(false),
                 },
                 intake_source: None,
+                audit: None,
             },
             Actor::user(),
         )
@@ -210,6 +211,7 @@ async fn toggles_disable_appends_and_persist() {
                     human_log: Some(true),
                 },
                 intake_source: None,
+                audit: None,
             },
             Actor::user(),
         )
@@ -308,4 +310,49 @@ async fn settings_endpoint_shapes() {
         serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["data"]["auto_append"]["interview"], false);
     assert_eq!(body["data"]["auto_append"]["human_log"], true);
+    assert!(body["data"]["audit"].is_null(), "no audit thresholds yet");
+
+    let patch_settings = |payload: serde_json::Value| {
+        Request::builder()
+            .method(Method::PATCH)
+            .uri(format!("/v1/projects/{project}/settings"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", h.admin_token))
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    };
+    // `audit` is replaced whole and echoed back; auto_append is untouched.
+    let audit = json!({"usage_p95_bytes": 32768, "usage_retention": {"error_rate_pp": 1}});
+    let res = h
+        .router
+        .clone()
+        .oneshot(patch_settings(json!({ "audit": audit })))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["data"]["audit"], audit);
+    assert_eq!(body["data"]["auto_append"]["interview"], false);
+
+    // A non-object is a validation error, the stored value stays.
+    let res = h
+        .router
+        .clone()
+        .oneshot(patch_settings(json!({ "audit": 32768 })))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // `null` removes it.
+    let res = h
+        .router
+        .clone()
+        .oneshot(patch_settings(json!({ "audit": null })))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(body["data"]["audit"].is_null());
 }

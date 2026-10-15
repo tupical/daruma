@@ -32,6 +32,11 @@ use crate::lifecycle_gate::{
 };
 use daruma_events::event::RuleDecision as EventRuleDecision;
 
+/// Validator for the `audit` project setting, see
+/// [`CommandHandler::with_audit_settings_validator`].
+pub type AuditSettingsValidator =
+    Arc<dyn Fn(&serde_json::Value) -> std::result::Result<(), String> + Send + Sync>;
+
 /// Processes commands: validate → build events → persist → apply → publish.
 pub struct CommandHandler {
     pub store: Arc<dyn EventStore>,
@@ -57,6 +62,11 @@ pub struct CommandHandler {
     /// minimal test harnesses; when absent, defaults apply and the settings
     /// command is rejected.
     pub project_settings: Option<Arc<ProjectSettingsRepo>>,
+    /// Extra check of the `audit` settings object before it is stored. OSS
+    /// only requires a JSON object; the hosted audit engine knows the keys
+    /// and plugs its validator here, because the engine falls back to
+    /// defaults on unreadable settings and a typo would go unnoticed.
+    pub audit_settings_validator: Option<AuditSettingsValidator>,
     /// WorkUnit projection (P3). `None` until wired by the server.
     pub work_units: Option<Arc<WorkUnitRepo>>,
     pub handoffs: Option<Arc<daruma_storage::HandoffRepo>>,
@@ -143,6 +153,7 @@ impl CommandHandler {
             tenant_quotas: None,
             documents: None,
             project_settings: None,
+            audit_settings_validator: None,
             work_units: None,
             handoffs: None,
             capability_profiles: None,
@@ -210,6 +221,13 @@ impl CommandHandler {
     /// Wire the per-project settings projection (auto-append toggles).
     pub fn with_project_settings(mut self, repo: Arc<ProjectSettingsRepo>) -> Self {
         self.project_settings = Some(repo);
+        self
+    }
+
+    /// Validate `UpdateProjectSettings.audit` objects with `validator`; its
+    /// error message becomes a validation error.
+    pub fn with_audit_settings_validator(mut self, validator: AuditSettingsValidator) -> Self {
+        self.audit_settings_validator = Some(validator);
         self
     }
 
@@ -2267,9 +2285,21 @@ impl CommandHandler {
                 project_id,
                 auto_append,
                 intake_source,
+                audit,
             } => {
                 if let Some(Some(policy)) = &intake_source {
                     crate::plan_source::validate_policy(policy)?;
+                }
+                if let Some(Some(value)) = &audit {
+                    if !value.is_object() {
+                        return Err(CoreError::validation(
+                            "audit settings must be a JSON object or null",
+                        ));
+                    }
+                    if let Some(validate) = &self.audit_settings_validator {
+                        validate(value)
+                            .map_err(|e| CoreError::validation(format!("audit settings: {e}")))?;
+                    }
                 }
                 self.projects
                     .get(project_id)
@@ -2284,6 +2314,7 @@ impl CommandHandler {
                     auto_append: current.apply(auto_append),
                     at: daruma_shared::time::now(),
                     intake_source,
+                    audit,
                 }])
             }
 
@@ -4209,9 +4240,11 @@ impl CommandHandler {
         }
         let mut events = Vec::new();
         match existing.status {
-            PlanStatus::Abandoned => return Err(CoreError::validation(format!(
+            PlanStatus::Abandoned => {
+                return Err(CoreError::validation(format!(
                 "plan {plan_id} is abandoned: tasks cannot be added to it, materialize a new plan"
-            ))),
+            )))
+            }
             PlanStatus::Completed => events.push(Event::PlanStatusChanged {
                 plan_id,
                 from: PlanStatus::Completed,

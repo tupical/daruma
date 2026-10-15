@@ -425,7 +425,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_settings_get",
             "Get project settings",
-            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default), and the plan-source policy `intake_source` (null = warn).",
+            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default), the plan-source policy `intake_source` (null = warn), and the audit thresholds object `audit` (null = engine defaults).",
             schema_with_id("project_id"),
             Dom::Projects, F, E, Ann::Read,
         ),
@@ -439,7 +439,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_settings_update",
             "Update project settings",
-            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document; pass `intake_source` to replace the plan-source policy (null removes it).",
+            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document; pass `intake_source` to replace the plan-source policy (null removes it); pass `audit` to replace the audit thresholds object whole (null removes it).",
             schema_project_settings_update(),
             Dom::Projects, F, E, Ann::WriteIdem,
         ),
@@ -2606,6 +2606,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(policy) = args.get("intake_source") {
                 body["intake_source"] = policy.clone();
             }
+            if let Some(audit) = args.get("audit") {
+                body["audit"] = audit.clone();
+            }
             client
                 .patch_json(&format!("/v1/projects/{project_id}/settings"), body)
                 .await
@@ -4473,7 +4476,8 @@ fn schema_project_settings_update() -> Value {
             "project_id": {"type":"string"},
             "interview": {"type":"boolean","description":"Auto-append agent activity to the Interview document."},
             "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."},
-            "intake_source": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Plan-source policy {mode: off|warn|enforce, default_ref, derive:[{from:\"branch\",pattern,ref}], channels:[{scheme,pattern,label,note_required}]}; null removes."}
+            "intake_source": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Plan-source policy {mode: off|warn|enforce, default_ref, derive:[{from:\"branch\",pattern,ref}], channels:[{scheme,pattern,label,note_required}]}; null removes."},
+            "audit": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Audit thresholds, replaced whole (keys absent from the object fall back to defaults), e.g. {usage_p95_bytes:32768, usage_retention:{...}}; null removes. Keys: docs/audit-checks-catalog.md §7."}
         },
         "required":["project_id"]
     })

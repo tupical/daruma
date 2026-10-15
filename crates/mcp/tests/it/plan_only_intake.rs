@@ -254,6 +254,38 @@ async fn project_settings_update_forwards_intake_source() {
         .contains_key("intake_source"));
 }
 
+/// `audit` reaches PATCH /settings whole, and `null` is kept (it removes the
+/// thresholds server-side); an omitted `audit` is not sent at all.
+#[tokio::test]
+async fn project_settings_update_forwards_audit() {
+    let audit = json!({"usage_p95_bytes": 32768, "usage_retention": {"error_rate_pp": 1}});
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "audit": audit}),
+    )
+    .await;
+    result.unwrap();
+    assert_eq!(captured[0].path, "/v1/projects/prj_1/settings");
+    assert_eq!(captured[0].body["audit"], audit);
+
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "audit": null}),
+    )
+    .await;
+    result.unwrap();
+    let body = captured[0].body.as_object().unwrap();
+    assert!(body.contains_key("audit") && body["audit"].is_null());
+
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "interview": false}),
+    )
+    .await;
+    result.unwrap();
+    assert!(!captured[0].body.as_object().unwrap().contains_key("audit"));
+}
+
 /// `daruma_plan_create` takes the same `source`/`git_context` arguments as
 /// materialize and forwards them to `POST /v1/plans`.
 #[tokio::test]

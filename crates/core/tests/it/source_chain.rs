@@ -413,6 +413,7 @@ async fn extend_sets_source_of_sourceless_plan_once() {
                     }],
                     ..IntakeSourcePolicy::default()
                 })),
+                audit: None,
             },
             Actor::user(),
         )
@@ -475,6 +476,7 @@ async fn enforce_rejection_writes_no_nodes() {
                     }],
                     ..IntakeSourcePolicy::default()
                 })),
+                audit: None,
             },
             Actor::user(),
         )
