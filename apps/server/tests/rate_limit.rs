@@ -158,11 +158,18 @@ async fn mcp_handshake_bucket_is_bounded_per_token() {
     let app = common::test_app().await;
     let token = mint_limited_token(&app, "tenant-handshake-flood", 1).await;
 
-    assert_eq!(
-        post_mcp(&app, &token, "/v1/mcp", rpc(1, "initialize")).await,
-        StatusCode::OK
-    );
+    // One full session handshake per allowed call: three frames for limit 1.
     let notification = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    for frame in [
+        rpc(1, "initialize"),
+        rpc(2, "server/discover"),
+        notification.clone(),
+    ] {
+        assert_ne!(
+            post_mcp(&app, &token, "/v1/mcp", frame).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
     assert_eq!(
         post_mcp(&app, &token, "/mcp", notification).await,
         StatusCode::TOO_MANY_REQUESTS

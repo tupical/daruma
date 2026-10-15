@@ -27,6 +27,12 @@ const PAIRING_LIMIT_PER_MIN: u32 = 5;
 /// frames are a few hundred bytes; anything bigger is charged as a call.
 const MCP_CLASSIFY_MAX_BYTES: u64 = 64 * 1024;
 
+/// Handshake frames a session-per-call client sends per tool call
+/// (initialize, server/discover, notifications/initialized). The handshake
+/// bucket holds this many times the token's limit, so the handshake never
+/// becomes the bottleneck of such a client while staying bounded.
+const MCP_HANDSHAKE_FRAMES_PER_CALL: f64 = 3.0;
+
 /// JSON-RPC methods of the MCP session handshake. They never touch tenant
 /// data, so they draw from their own per-token bucket instead of the budget
 /// that `tools/call` and REST requests share: clients that open a session per
@@ -53,7 +59,7 @@ enum RateLimitKey {
         tenant_id: String,
         token_id: String,
     },
-    /// Separate per-token bucket for MCP handshake frames, same capacity.
+    /// Separate per-token bucket for MCP handshake frames.
     McpHandshake {
         tenant_id: String,
         token_id: String,
@@ -109,7 +115,7 @@ impl RateLimiter {
     /// Charge an MCP handshake frame (see [`is_mcp_handshake_method`]) to the
     /// token's handshake bucket; the main bucket of [`Self::check`] is untouched.
     pub fn check_mcp_handshake(&self, ctx: &AuthContext) -> Result<(), Duration> {
-        let limit = ctx.rate_limit_per_min.max(1) as f64;
+        let limit = ctx.rate_limit_per_min.max(1) as f64 * MCP_HANDSHAKE_FRAMES_PER_CALL;
         let key = RateLimitKey::McpHandshake {
             tenant_id: tenant_key(ctx),
             token_id: ctx.token_id.to_string(),
