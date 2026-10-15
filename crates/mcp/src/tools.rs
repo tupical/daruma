@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (required): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
+            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (default `active`): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -601,7 +601,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_list",
             "List plans",
-            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma list, or `all`. Prefer `draft,active`; completed plans are token-heavy — use `daruma_plan_get` for one plan. `project_id` defaults to the repo project; `all` spans projects.",
+            "List plans. `status` (default `draft,active`): `draft`/`active`/`completed`/`abandoned`, a comma list, or `all`. Completed plans are token-heavy — use `daruma_plan_get` for one plan. `project_id` defaults to the repo project; `all` spans projects.",
             schema_plan_list(),
             Dom::Plans, D, C, Ann::Read,
         ),
@@ -657,7 +657,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_progress",
             "Plan progress snapshot",
-            "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
+            "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active). Alias of `plan_id`: `id`.",
             schema_with_id("plan_id"),
             Dom::Plans, D, E, Ann::Read,
         ),
@@ -1598,7 +1598,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_list" => {
-            let status = required_string(&args, "status")?;
+            let status = string_or_default(&args, "status", "active");
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
@@ -2128,7 +2128,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
         }
         "daruma_plan_list" => {
-            let status = required_string(&args, "status")?;
+            let status = string_or_default(&args, "status", "draft,active");
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
@@ -2234,20 +2234,26 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_next_task" => {
-            let id = required_string(&args, "id")?;
-            let run_id = required_string(&args, "run_id")?;
+            let id = required_string_or_alias(&args, "id", "plan_id")?;
             let ttl = args
                 .get("claim_ttl_secs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            // `run_id` is optional: the server generates one when absent,
+            // the same contract as `daruma_plan_drain_next`.
+            let run = args
+                .get("run_id")
+                .and_then(Value::as_str)
+                .map(|run_id| format!("run_id={}&", urlencode(run_id)))
+                .unwrap_or_default();
             client
                 .get_json(&format!(
-                    "/v1/plans/{id}/next-task?run_id={run_id}&claim_ttl_secs={ttl}"
+                    "/v1/plans/{id}/next-task?{run}claim_ttl_secs={ttl}"
                 ))
                 .await
         }
         "daruma_plan_progress" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = required_string_or_alias(&args, "plan_id", "id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/progress"))
                 .await
@@ -3795,7 +3801,7 @@ fn schema_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required; see tool description. Ask before `all`."
+                "description": "See tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -3813,8 +3819,7 @@ fn schema_list() -> Value {
                 "default":"summary",
                 "description":"detail = full task rows."
             }
-        },
-        "required": ["status"]
+        }
     })
 }
 
@@ -4088,7 +4093,7 @@ fn schema_plan_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required; see tool description. Ask before `all`."
+                "description": "See tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -4108,8 +4113,7 @@ fn schema_plan_list() -> Value {
             },
             "source": {"type":"string","description":"Source URI anywhere in the chain."},
             "channel": {"type":"string","description":"Scheme of the nearest source."}
-        },
-        "required": ["status"]
+        }
     })
 }
 
@@ -4152,11 +4156,11 @@ fn schema_plan_next_task() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id":             {"type":"string","description":"Plan id"},
-            "run_id":         {"type":"string"},
+            "id":             {"type":"string","description":"Plan id (`plan_id` accepted as alias)"},
+            "run_id":         {"type":"string","description":"Run UUID; omit for a server-generated id."},
             "claim_ttl_secs": {"type":"integer","minimum":0}
         },
-        "required":["id","run_id"]
+        "required":["id"]
     })
 }
 
@@ -5758,6 +5762,29 @@ fn required_string(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required"))
+}
+
+/// Missing optional string argument falls back to `default`.
+fn string_or_default(args: &serde_json::Map<String, Value>, key: &str, default: &str) -> String {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+/// `required_string` that also accepts `alias` — the id parameter name the
+/// sibling plan tools use (`plan_id` vs `id`), which agents routinely mix up.
+fn required_string_or_alias(
+    args: &serde_json::Map<String, Value>,
+    key: &str,
+    alias: &str,
+) -> anyhow::Result<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .or_else(|| args.get(alias).and_then(Value::as_str))
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required (alias: `{alias}`)"))
 }
 
 fn required_i64(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::Result<i64> {

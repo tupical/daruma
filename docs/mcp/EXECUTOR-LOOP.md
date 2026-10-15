@@ -40,7 +40,7 @@ repeat from plan_progress
 |------|------|-------|
 | 1 | `daruma_run_start` | `{ plan_id, agent_id }` |
 | 2 | `daruma_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
-| 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` |
+| 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` — `plan_id` is accepted for `id`; `run_id` is optional (server-generated) |
 | 4 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
 | 5 | *(work)* | Agent edits codebase; no direct DB writes |
 | 6 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
