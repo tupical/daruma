@@ -110,3 +110,92 @@ async fn healthz_is_not_rate_limited() {
         assert_eq!(response.status(), StatusCode::OK);
     }
 }
+
+async fn post_mcp(
+    app: &common::TestApp,
+    token: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> StatusCode {
+    app.router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .header("host", "127.0.0.1:9")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+fn rpc(id: u64, method: &str) -> serde_json::Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": {}})
+}
+
+#[tokio::test]
+async fn mcp_handshake_does_not_spend_the_tool_call_budget() {
+    let app = common::test_app().await;
+    let token = mint_limited_token(&app, "tenant-handshake", 1).await;
+
+    // A session-per-call client: initialize, server/discover, notification.
+    // All three ride the handshake bucket, not the shared one.
+    assert_eq!(
+        post_mcp(&app, &token, "/v1/mcp", rpc(1, "initialize")).await,
+        StatusCode::OK
+    );
+    assert_eq!(get_tasks(&app, &token).await, StatusCode::OK);
+    assert_eq!(get_tasks(&app, &token).await, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn mcp_handshake_bucket_is_bounded_per_token() {
+    let app = common::test_app().await;
+    let token = mint_limited_token(&app, "tenant-handshake-flood", 1).await;
+
+    assert_eq!(
+        post_mcp(&app, &token, "/v1/mcp", rpc(1, "initialize")).await,
+        StatusCode::OK
+    );
+    let notification = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    assert_eq!(
+        post_mcp(&app, &token, "/mcp", notification).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // The flood never touched the shared budget.
+    assert_eq!(get_tasks(&app, &token).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_tool_call_and_mixed_batch_spend_the_shared_budget() {
+    let app = common::test_app().await;
+    let call = mint_limited_token(&app, "tenant-call", 1).await;
+    let batch = mint_limited_token(&app, "tenant-batch", 1).await;
+
+    let tool_call = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "no_such_tool", "arguments": {}}
+    });
+    assert_ne!(
+        post_mcp(&app, &call, "/v1/mcp", tool_call.clone()).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(get_tasks(&app, &call).await, StatusCode::TOO_MANY_REQUESTS);
+
+    let mixed = serde_json::json!([rpc(1, "initialize"), tool_call]);
+    assert_ne!(
+        post_mcp(&app, &batch, "/v1/mcp", mixed).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(get_tasks(&app, &batch).await, StatusCode::TOO_MANY_REQUESTS);
+    // The handshake bucket of that token is still full.
+    assert_eq!(
+        post_mcp(&app, &batch, "/v1/mcp", rpc(2, "server/discover")).await,
+        StatusCode::OK
+    );
+}

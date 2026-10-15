@@ -8,8 +8,9 @@ use std::{
 };
 
 use axum::{
+    body::{Body, HttpBody},
     extract::{ConnectInfo, Request, State},
-    http::{HeaderValue, StatusCode},
+    http::{HeaderValue, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
@@ -21,6 +22,20 @@ const DEFAULT_TENANT_KEY: &str = "self-hosted";
 
 /// Maximum pairing attempts per source IP per minute.
 const PAIRING_LIMIT_PER_MIN: u32 = 5;
+
+/// Largest MCP body inspected to tell a handshake from a tool call. Handshake
+/// frames are a few hundred bytes; anything bigger is charged as a call.
+const MCP_CLASSIFY_MAX_BYTES: u64 = 64 * 1024;
+
+/// JSON-RPC methods of the MCP session handshake. They never touch tenant
+/// data, so they draw from their own per-token bucket instead of the budget
+/// that `tools/call` and REST requests share: clients that open a session per
+/// call (initialize + server/discover + notifications/initialized) must not
+/// starve their own tool calls.
+fn is_mcp_handshake_method(method: &str) -> bool {
+    matches!(method, "initialize" | "ping" | "server/discover")
+        || method.starts_with("notifications/")
+}
 
 #[derive(Clone, Default)]
 pub struct RateLimiter {
@@ -34,7 +49,15 @@ pub struct RateLimitAlreadyCharged;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum RateLimitKey {
-    Token { tenant_id: String, token_id: String },
+    Token {
+        tenant_id: String,
+        token_id: String,
+    },
+    /// Separate per-token bucket for MCP handshake frames, same capacity.
+    McpHandshake {
+        tenant_id: String,
+        token_id: String,
+    },
     Ip(String),
 }
 
@@ -77,10 +100,18 @@ impl RateLimiter {
     pub fn check(&self, ctx: &AuthContext) -> Result<(), Duration> {
         let limit = ctx.rate_limit_per_min.max(1) as f64;
         let key = RateLimitKey::Token {
-            tenant_id: ctx
-                .tenant_id
-                .clone()
-                .unwrap_or_else(|| DEFAULT_TENANT_KEY.to_string()),
+            tenant_id: tenant_key(ctx),
+            token_id: ctx.token_id.to_string(),
+        };
+        self.check_key(key, limit)
+    }
+
+    /// Charge an MCP handshake frame (see [`is_mcp_handshake_method`]) to the
+    /// token's handshake bucket; the main bucket of [`Self::check`] is untouched.
+    pub fn check_mcp_handshake(&self, ctx: &AuthContext) -> Result<(), Duration> {
+        let limit = ctx.rate_limit_per_min.max(1) as f64;
+        let key = RateLimitKey::McpHandshake {
+            tenant_id: tenant_key(ctx),
             token_id: ctx.token_id.to_string(),
         };
         self.check_key(key, limit)
@@ -103,6 +134,12 @@ impl RateLimiter {
     }
 }
 
+fn tenant_key(ctx: &AuthContext) -> String {
+    ctx.tenant_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TENANT_KEY.to_string())
+}
+
 pub async fn enforce_rate_limit(
     State(limiter): State<RateLimiter>,
     req: Request,
@@ -111,14 +148,58 @@ pub async fn enforce_rate_limit(
     if req.extensions().get::<RateLimitAlreadyCharged>().is_some() {
         return next.run(req).await;
     }
-    let Some(ctx) = req.extensions().get::<AuthContext>() else {
+    let Some(ctx) = req.extensions().get::<AuthContext>().cloned() else {
         return next.run(req).await;
     };
 
-    match limiter.check(ctx) {
+    let (req, handshake) = classify_mcp_handshake(req).await;
+    let charged = if handshake {
+        limiter.check_mcp_handshake(&ctx)
+    } else {
+        limiter.check(&ctx)
+    };
+    match charged {
         Ok(()) => next.run(req).await,
         Err(retry_after) => rate_limited_response(retry_after),
     }
+}
+
+/// `true` when `req` is a POST to the MCP endpoint whose JSON-RPC message (or
+/// every message of a batch) is a handshake method. The body is buffered only
+/// when its size is known and small; the request is rebuilt unchanged.
+async fn classify_mcp_handshake(req: Request) -> (Request, bool) {
+    if req.method() != Method::POST || !req.uri().path().ends_with("/mcp") {
+        return (req, false);
+    }
+    if !req
+        .body()
+        .size_hint()
+        .upper()
+        .is_some_and(|upper| upper <= MCP_CLASSIFY_MAX_BYTES)
+    {
+        return (req, false);
+    }
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MCP_CLASSIFY_MAX_BYTES as usize).await else {
+        // The body stream failed; the handler would fail the same way.
+        return (Request::from_parts(parts, Body::empty()), false);
+    };
+    let handshake = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .is_some_and(|message| {
+            let messages = match &message {
+                serde_json::Value::Array(items) => items.as_slice(),
+                single => std::slice::from_ref(single),
+            };
+            !messages.is_empty()
+                && messages.iter().all(|message| {
+                    message
+                        .get("method")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(is_mcp_handshake_method)
+                })
+        });
+    (Request::from_parts(parts, Body::from(bytes)), handshake)
 }
 
 /// Middleware for unauthenticated pairing endpoint — 5 req/min per source IP.
