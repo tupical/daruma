@@ -82,6 +82,17 @@ fn arguments(tool: &daruma_mcp::ToolDefinition) -> Value {
         "daruma_update" => args["title"] = json!("x"),
         "daruma_workspace_resolve" => args["scope_path"] = json!("/tmp/daruma-route-contract"),
         "daruma_reserve_files" => args["paths"] = json!(["src/lib.rs"]),
+        "daruma_plan_materialize" => {
+            // `plan.title`/`tasks[].title` are conditionally required (title
+            // unless `id` is given) — not expressible in the schema's flat
+            // `required` array, so the generic walker above never fills them.
+            args["plan"]["title"] = json!("x");
+            if let Some(tasks) = args["tasks"].as_array_mut() {
+                for task in tasks {
+                    task["title"] = json!("x");
+                }
+            }
+        }
         _ => {}
     }
     args
