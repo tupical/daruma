@@ -38,6 +38,14 @@ get the change in realtime over WS, and the `project_settings`
 projection (migration 0034) rebuilds from the log. A missing row means
 defaults — both toggles ON.
 
+The same endpoint carries two more keys, each replaced whole (`null`
+removes it, an absent key leaves it unchanged): `intake_source` — the
+plan-source policy (ADR-0009) — and `audit` — a JSON object of audit
+thresholds read by the hosted audit engine (OSS only requires an object;
+the host may plug a stricter validator via
+`CommandHandler::with_audit_settings_validator`). MCP:
+`daruma_project_settings_update { project_id, intake_source?, audit? }`.
+
 ## Out of scope (separate features)
 
 Custom line templates, auto-archiving old entries, export to external

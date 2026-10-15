@@ -146,6 +146,15 @@ pub enum Command {
             deserialize_with = "daruma_domain::deserialize_double_option"
         )]
         intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
+        /// Audit thresholds (`project_settings.audit`, a JSON object read by
+        /// the hosted audit engine): absent = unchanged, `null` = remove,
+        /// object = replace whole.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "daruma_domain::deserialize_double_option"
+        )]
+        audit: Option<Option<serde_json::Value>>,
     },
     UpdateProject {
         id: ProjectId,

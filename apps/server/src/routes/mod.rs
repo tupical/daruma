@@ -2008,24 +2008,35 @@ async fn get_project_settings(
 }
 
 /// Current settings body shared by GET and PATCH: `intake_source` is `null`
-/// when the project has no plan-source policy (behaves as `warn`).
+/// when the project has no plan-source policy (behaves as `warn`); `audit`
+/// is `null` when the project has no audit thresholds (engine defaults).
 async fn project_settings_json(state: &AppState, id: ProjectId) -> Result<Value, ApiError> {
     let auto_append = state
         .project_settings
         .auto_append(id)
         .await
         .map_err(ApiError::from)?;
+    let mut body = json!({ "auto_append": auto_append });
     // A policy this server cannot read (e.g. written by a newer version) is
     // reported, not a 500: intake treats it as `warn` meanwhile.
-    Ok(match state.project_settings.intake_source(id).await {
-        Ok(intake_source) => json!({ "auto_append": auto_append, "intake_source": intake_source }),
-        Err(CoreError::Serde(e)) => json!({
-            "auto_append": auto_append,
-            "intake_source": null,
-            "intake_source_error": e,
-        }),
+    match state.project_settings.intake_source(id).await {
+        Ok(intake_source) => body["intake_source"] = json!(intake_source),
+        Err(CoreError::Serde(e)) => {
+            body["intake_source"] = Value::Null;
+            body["intake_source_error"] = json!(e);
+        }
         Err(e) => return Err(ApiError::from(e)),
-    })
+    }
+    // Same for an audit value that is not JSON (written around the API).
+    match state.project_settings.audit(id).await {
+        Ok(audit) => body["audit"] = json!(audit),
+        Err(CoreError::Serde(e)) => {
+            body["audit"] = Value::Null;
+            body["audit_error"] = json!(e);
+        }
+        Err(e) => return Err(ApiError::from(e)),
+    }
+    Ok(body)
 }
 
 #[derive(Deserialize)]
@@ -2034,10 +2045,13 @@ struct ProjectSettingsPatchBody {
     auto_append: daruma_domain::AutoAppendPatch,
     #[serde(default, deserialize_with = "daruma_domain::deserialize_double_option")]
     intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
+    #[serde(default, deserialize_with = "daruma_domain::deserialize_double_option")]
+    audit: Option<Option<Value>>,
 }
 
 /// `PATCH /v1/projects/{id}/settings` — partial update of the auto-append
-/// toggles and/or the `intake_source` policy (`null` removes it),
+/// toggles, the `intake_source` policy and/or the `audit` thresholds object
+/// (`null` removes either; an object replaces it whole),
 /// dispatched through the command bus (event-sourced).
 async fn patch_project_settings(
     auth: axum::Extension<AuthContext>,
@@ -2055,6 +2069,7 @@ async fn patch_project_settings(
                 project_id: id,
                 auto_append: body.auto_append,
                 intake_source: body.intake_source,
+                audit: body.audit,
             },
             actor_from(&auth, None),
         )

@@ -2,6 +2,7 @@
 //! `tests/<name>.rs` — модуль `<name>`. Один бинарник вместо десятков
 //! линковок экономит место в target/ и время сборки.
 
+mod audit_settings;
 mod bulk_ops;
 mod delete_task_plan_cascade;
 mod document_commands;

@@ -26,7 +26,7 @@ pub mod search;
 
 pub use bus::CommandBus;
 pub use command::{Command, CommandEnvelope};
-pub use handler::CommandHandler;
+pub use handler::{AuditSettingsValidator, CommandHandler};
 pub use lifecycle_gate::{
     DispatchOutcome, GateCheck, GateDecision, GateOverride, LifecycleGate, TriggerEvent,
 };
