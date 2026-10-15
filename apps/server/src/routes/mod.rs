@@ -732,9 +732,19 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<daruma_domain::St
             "done" => Status::Done,
             "cancelled" => Status::Cancelled,
             other => {
+                // `ready`/`blocked` are plan readiness, not task statuses —
+                // name the call that answers the question instead.
+                let hint = match other.to_ascii_lowercase().as_str() {
+                    "ready" | "blocked" => {
+                        " (readiness is per plan: use status=todo or status=active, \
+                         and daruma_plan_progress / daruma_plan_drain_next for ready tasks)"
+                    }
+                    _ => "",
+                };
                 return Err(ApiError::from(CoreError::validation(format!(
-                    "unknown task status: {other}"
-                ))))
+                    "unknown task status: {other}; valid: inbox, todo, in_progress, \
+                     in_review, done, cancelled, active, all{hint}"
+                ))));
             }
         };
         if !out.contains(&parsed) {
@@ -8050,9 +8060,26 @@ async fn list_project_documents(
 
 #[cfg(test)]
 mod tests {
-    use super::{mcp_call_telemetry, mcp_response_telemetry, observe_regret};
+    use super::{mcp_call_telemetry, mcp_response_telemetry, observe_regret, parse_status_filter};
     use daruma_mcp::{JsonRpcRequest, JsonRpcResponse};
     use serde_json::json;
+
+    #[test]
+    fn unknown_task_status_names_valid_values_and_readiness_route() {
+        for (raw, readiness) in [("ready", true), ("blocked", true), ("open", false)] {
+            let err = parse_status_filter(Some(raw)).unwrap_err().0.to_string();
+            assert!(
+                err.contains(&format!("unknown task status: {raw}")),
+                "{err}"
+            );
+            assert!(err.contains("valid: inbox, todo, in_progress"), "{err}");
+            assert_eq!(err.contains("daruma_plan_drain_next"), readiness, "{err}");
+        }
+        assert!(matches!(
+            parse_status_filter(Some("todo,active")),
+            Ok(Some(_))
+        ));
+    }
 
     fn read_call(token: &str, tool: &str, id: &str, view: Option<&str>) -> super::McpCallTelemetry {
         let mut args = json!({ "id": id });

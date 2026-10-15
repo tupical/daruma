@@ -132,6 +132,15 @@ Supported launch modes:
   user which project to use, call `daruma_project_use` with that
   `project_id`, then retry `daruma_list`; the selected project is persisted
   in `workspaces.json` for later calls.
+- `status` is optional on the list tools: `daruma_list` defaults to `active`,
+  `daruma_plan_list` to `draft,active`. There is no `ready`/`blocked` task
+  status — ready plan tasks come from `daruma_plan_progress` /
+  `daruma_plan_drain_next`, and the 400 for an unknown status lists the valid
+  values.
+- Plan id parameter names differ between tools, so the mismatched name is
+  accepted as an alias: `daruma_plan_next_task` takes `plan_id` for `id`
+  (and `run_id` is optional — the server generates one), `daruma_plan_progress`
+  takes `id` for `plan_id`.
 - The same `workspaces.json` works in both modes. To bind projects while running
   from a parent folder, call `daruma_project_use` with `scope_path`
   (relative paths are resolved from `DARUMA_WORKSPACE` / process CWD).
