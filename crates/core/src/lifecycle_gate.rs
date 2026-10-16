@@ -94,6 +94,15 @@ pub struct GateCheck {
     /// transitions the rule engine resolves it (with `project_id`) from the
     /// persisted task, since the status event carries only the id.
     pub task_title: Option<String>,
+    /// Plan memberships the same not-yet-persisted batch adds for `task_id`
+    /// (`PlanTaskAdded`). Persisted memberships are resolved by the gate; these
+    /// exist only in the batch, e.g. `MaterializePlan`'s new tasks.
+    #[serde(skip)]
+    pub pending_plan_ids: Vec<PlanId>,
+    /// Plans the same batch creates, as `(plan id, parent plan id)`, so the
+    /// gate can walk a staged plan's ancestry before its row exists.
+    #[serde(skip)]
+    pub pending_plans: Vec<(PlanId, Option<PlanId>)>,
 }
 
 impl GateCheck {
@@ -111,6 +120,8 @@ impl GateCheck {
             plan_status_from: None,
             plan_status_to: None,
             task_title: None,
+            pending_plan_ids: Vec::new(),
+            pending_plans: Vec::new(),
         }
     }
 }
@@ -210,6 +221,35 @@ pub struct DispatchOutcome {
 /// the mapping is the single source of truth for trigger coverage — any
 /// command emitting these events is gated, including bulk and drain paths.
 pub fn derive_gate_checks(events: &[Event]) -> Vec<GateCheck> {
+    // Plan context staged by the same batch: projections do not hold it yet,
+    // so the gate could not discover it (e.g. `MaterializePlan` stages
+    // PlanCreated + TaskCreated + PlanTaskAdded together).
+    let mut staged_plans: Vec<(PlanId, Option<PlanId>)> = Vec::new();
+    let mut staged_memberships: Vec<(TaskId, PlanId)> = Vec::new();
+    for event in events {
+        match event {
+            Event::PlanCreated { plan } => staged_plans.push((plan.id, plan.parent_plan_id)),
+            Event::PlanTaskAdded {
+                plan_id, task_id, ..
+            } => staged_memberships.push((*task_id, *plan_id)),
+            _ => {}
+        }
+    }
+    let mut checks = derive_checks(events);
+    for check in &mut checks {
+        if let Some(task_id) = check.task_id {
+            check.pending_plan_ids = staged_memberships
+                .iter()
+                .filter(|(task, _)| *task == task_id)
+                .map(|(_, plan)| *plan)
+                .collect();
+        }
+        check.pending_plans = staged_plans.clone();
+    }
+    checks
+}
+
+fn derive_checks(events: &[Event]) -> Vec<GateCheck> {
     let mut checks = Vec::new();
     for event in events {
         match event {

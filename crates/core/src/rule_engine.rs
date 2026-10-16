@@ -21,10 +21,12 @@
 //! Override (`force` + `override_reason`) is honoured per spec §1.5 for rules
 //! with `override_allowed=true`.
 //!
-//! Zero-cost when no rules exist: a check whose scope chain has no matching
-//! rows resolves to `Allowed` after one indexed query per chain element (plus
-//! a task-row lookup for task transitions, which carry only the task id) (the handler only calls
-//! the gate at all when one is wired). Evidence is only queried for rules that
+//! Zero-cost when no rules exist: a check whose scope chains have no matching
+//! rows resolves to `Allowed` after one indexed query per chain element, plus
+//! the indexed lookups that build the chains — task row and plan memberships
+//! for task transitions (they carry only the task id), run row for run
+//! completion, one plan row per ancestor (the handler only calls the gate at
+//! all when one is wired). Evidence is only queried for rules that
 //! both match and would otherwise block, so an unconstrained workspace pays
 //! nothing extra.
 
@@ -36,7 +38,7 @@ use daruma_domain::{
     Actor, Condition, EvidenceKind, EvidenceReach, Requirement, Rule, RuleMode, RuleScope,
     RuleTrigger,
 };
-use daruma_shared::Result;
+use daruma_shared::{CoreError, PlanId, Result};
 use serde_json::json;
 
 use crate::lifecycle_gate::{
@@ -118,18 +120,73 @@ impl RuleEngineGate {
             .await
     }
 
-    /// Build the scope chain (outermost → innermost) for a check. Tenant is
-    /// always the root; project/plan/task are appended when the check carries
-    /// their id. Run-level checks inherit via the plan/task refs the gate
-    /// derivation already attached (spec §1: runs have no own scope).
-    fn scope_chain(check: &GateCheck) -> Vec<RuleScope> {
+    /// Build the scope chains (outermost → innermost) for a check: tenant,
+    /// project, the plan ancestry root → leaf, task. A check names its plan
+    /// directly (plan/run-start triggers) or inherits it: a task through every
+    /// plan it is a member of — persisted or staged in the same batch — and a
+    /// run through its persisted plan (spec §2: runs have no own scope). One
+    /// chain per plan, so each membership resolves inheritance/weakening and
+    /// evidence on its own branch and siblings never satisfy each other; with
+    /// no plan the chain is just tenant/project/task.
+    async fn scope_chains(&self, check: &GateCheck) -> Result<Vec<Vec<RuleScope>>> {
+        let mut plans: Vec<PlanId> = Vec::new();
+        if let Some(plan_id) = check.plan_id {
+            plans.push(plan_id);
+        } else if let Some(task_id) = check.task_id {
+            plans.extend(check.pending_plan_ids.iter().copied());
+            plans.extend(self.rules.task_plan_ids(task_id).await?);
+        } else if let Some(run_id) = check.run_id {
+            plans.extend(self.rules.run_plan_id(run_id).await?);
+        }
+        plans.sort();
+        plans.dedup();
+
+        if plans.is_empty() {
+            return Ok(vec![Self::scope_chain(check, &[])]);
+        }
+        let mut chains = Vec::with_capacity(plans.len());
+        for plan_id in plans {
+            let ancestry = self.plan_ancestry(plan_id, &check.pending_plans).await?;
+            chains.push(Self::scope_chain(check, &ancestry));
+        }
+        Ok(chains)
+    }
+
+    /// `plan_id` and its ancestors, root first. A plan staged by the current
+    /// batch takes its parent from the batch; otherwise from the projection. A
+    /// parent with no row (legacy ghost) ends the walk — it stays in the chain
+    /// as a scope, only its own ancestry is unknown. A cycle fails closed.
+    async fn plan_ancestry(
+        &self,
+        plan_id: PlanId,
+        staged: &[(PlanId, Option<PlanId>)],
+    ) -> Result<Vec<PlanId>> {
+        let mut path = vec![plan_id];
+        let mut current = plan_id;
+        loop {
+            let parent = match staged.iter().find(|(id, _)| *id == current) {
+                Some((_, parent)) => *parent,
+                None => self.rules.plan_parent_id(current).await?.flatten(),
+            };
+            let Some(parent) = parent else { break };
+            if path.contains(&parent) {
+                return Err(CoreError::conflict(format!(
+                    "cyclic plan scope ancestry at plan {parent}"
+                )));
+            }
+            path.push(parent);
+            current = parent;
+        }
+        path.reverse();
+        Ok(path)
+    }
+
+    fn scope_chain(check: &GateCheck, plans: &[PlanId]) -> Vec<RuleScope> {
         let mut chain = vec![RuleScope::Tenant];
         if let Some(project_id) = check.project_id {
             chain.push(RuleScope::Project { id: project_id });
         }
-        if let Some(plan_id) = check.plan_id {
-            chain.push(RuleScope::Plan { id: plan_id });
-        }
+        chain.extend(plans.iter().map(|id| RuleScope::Plan { id: *id }));
         if let Some(task_id) = check.task_id {
             chain.push(RuleScope::Task { id: task_id });
         }
@@ -154,12 +211,11 @@ impl LifecycleGate for RuleEngineGate {
         check: &GateCheck,
         gate_override: &GateOverride,
     ) -> Result<(GateDecision, Vec<RuleObservation>)> {
-        let mut observations = Vec::new();
+        let mut observations: Vec<RuleObservation> = Vec::new();
         let trigger = map_trigger(check.trigger);
         // Task transitions carry only the task id: resolve its project (scope
         // chain) and title (`title_prefix`) from the persisted row.
         let mut resolved;
-        let mut task_plan_ids: Vec<daruma_shared::PlanId> = Vec::new();
         let check = match check.task_id {
             Some(task_id) if check.project_id.is_none() || check.task_title.is_none() => {
                 resolved = check.clone();
@@ -167,80 +223,71 @@ impl LifecycleGate for RuleEngineGate {
                     resolved.project_id = resolved.project_id.or(project_id);
                     resolved.task_title.get_or_insert(title);
                 }
-                // Same gap as project_id above: a direct task transition
-                // never carries plan_id, so a plan-scoped rule on a plan
-                // this task is a member of would silently never fire. A
-                // task can belong to several plans (or none) — check all.
-                if resolved.plan_id.is_none() {
-                    task_plan_ids = self.rules.task_plan_ids(task_id).await?;
-                }
                 &resolved
             }
             _ => check,
         };
-        let chain = Self::scope_chain(check);
-        let mut candidates = self.rules.effective_rules(&chain, trigger).await?;
-        for plan_id in &task_plan_ids {
-            let mut plan_check = check.clone();
-            plan_check.plan_id = Some(*plan_id);
-            let plan_chain = Self::scope_chain(&plan_check);
-            for rule in self.rules.effective_rules(&plan_chain, trigger).await? {
-                if !candidates.iter().any(|r| r.id == rule.id) {
-                    candidates.push(rule);
-                }
-            }
-        }
+        let chains = self.scope_chains(check).await?;
 
         let mut warnings = Vec::new();
-        let mut blocked: Vec<(&Rule, Option<String>)> = Vec::new();
+        // (rule, rejection reason, index of the chain it blocked on). A rule
+        // effective on several chains acts once: it blocks if any branch
+        // leaves it unsatisfied.
+        let mut acting: Vec<(Rule, Option<String>, usize)> = Vec::new();
         // Any blocked rule that forbids override poisons the whole override.
         let mut override_forbidden = false;
 
-        for rule in &candidates {
-            if rule.mode == RuleMode::Recommendation {
-                observations.push(RuleObservation {
-                    rule_id: rule.id,
-                    rule_key: rule.rule_key.clone(),
-                    rule_revision: rule.updated_at,
-                    triggered: false,
-                });
-            }
-            if !condition_matches(rule.condition.as_ref(), check) {
-                continue;
-            }
-            // Spec §1.3: a requirement backed by recorded evidence is satisfied,
-            // so the rule neither blocks nor warns. Only consult the registry
-            // for rules that would otherwise act (`off` is inert).
-            let evidence_check = if rule.mode == RuleMode::Off {
-                None
-            } else {
-                Some(self.requirement_satisfied(rule, &chain).await?)
-            };
-            if evidence_check
-                .as_ref()
-                .map(|check| check.satisfied)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let rejection_reason = evidence_check.and_then(|check| check.reason);
-            match rule.mode {
-                RuleMode::Off => {}
-                RuleMode::Recommendation => {
-                    observations
-                        .last_mut()
-                        .expect("advisory observation")
-                        .triggered = true;
-                    warnings.push(rule_warning(rule));
+        for (chain_index, chain) in chains.iter().enumerate() {
+            for rule in self.rules.effective_rules(chain, trigger).await? {
+                if rule.mode == RuleMode::Recommendation
+                    && !observations.iter().any(|o| o.rule_id == rule.id)
+                {
+                    observations.push(RuleObservation {
+                        rule_id: rule.id,
+                        rule_key: rule.rule_key.clone(),
+                        rule_revision: rule.updated_at,
+                        triggered: false,
+                    });
                 }
-                RuleMode::Required => {
-                    if !rule.override_allowed {
-                        override_forbidden = true;
+                // `off` is inert and never consults evidence.
+                if rule.mode == RuleMode::Off || !condition_matches(rule.condition.as_ref(), check)
+                {
+                    continue;
+                }
+                // Spec §1.3: a requirement backed by recorded evidence in this
+                // chain is satisfied, so the rule neither blocks nor warns here.
+                let evidence_check = self.requirement_satisfied(&rule, chain).await?;
+                if evidence_check.satisfied {
+                    continue;
+                }
+                match rule.mode {
+                    RuleMode::Off => {}
+                    RuleMode::Recommendation => {
+                        let observation = observations
+                            .iter_mut()
+                            .find(|o| o.rule_id == rule.id)
+                            .expect("advisory observation");
+                        if !observation.triggered {
+                            observation.triggered = true;
+                            warnings.push(rule_warning(&rule));
+                        }
                     }
-                    blocked.push((rule, rejection_reason));
+                    RuleMode::Required => {
+                        if acting.iter().any(|(r, _, _)| r.id == rule.id) {
+                            continue;
+                        }
+                        if !rule.override_allowed {
+                            override_forbidden = true;
+                        }
+                        acting.push((rule, evidence_check.reason, chain_index));
+                    }
                 }
             }
         }
+        let blocked: Vec<(&Rule, Option<String>)> = acting
+            .iter()
+            .map(|(rule, reason, _)| (rule, reason.clone()))
+            .collect();
 
         if blocked.is_empty() {
             return Ok((
@@ -300,10 +347,10 @@ impl LifecycleGate for RuleEngineGate {
         // the requirement type, let alone the evidence kind/scope).
         // The rejection reason rides along (e.g. which document version a
         // `latest` ack must carry), since it is not derivable from the rule.
-        let unblock: Vec<serde_json::Value> = blocked
+        let unblock: Vec<serde_json::Value> = acting
             .iter()
-            .map(|(rule, reason)| {
-                let mut hint = unblock_hint(rule, &chain, check.trigger);
+            .map(|(rule, reason, chain_index)| {
+                let mut hint = unblock_hint(rule, &chains[*chain_index], check.trigger);
                 if let (Some(reason), Some(hint)) = (reason, hint.as_object_mut()) {
                     hint.insert("reason".into(), json!(reason));
                 }

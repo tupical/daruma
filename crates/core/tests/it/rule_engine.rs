@@ -22,10 +22,10 @@ use daruma_domain::{
     Requirement, Rule, RuleMode, RuleScope, RuleTrigger, Status,
 };
 use daruma_events::{Event, EventBus, EventStore};
-use daruma_shared::{CoreError, PlanId, ProjectId, TaskId};
+use daruma_shared::{AgentId, CoreError, PlanId, ProjectId, TaskId};
 use daruma_storage::{
     ActivityRepo, CommentRepo, Db, DocumentRepo, EvidenceRepo, PlanRepo, ProjectRepo, RelationRepo,
-    RuleRepo, SqliteEventStore, TaskRepo,
+    RuleRepo, RunRepo, SqliteEventStore, TaskRepo,
 };
 
 struct Stack {
@@ -78,6 +78,7 @@ async fn stack() -> Stack {
         EventBus::default(),
     )
     .with_plans(plans)
+    .with_runs(Arc::new(RunRepo::new(pool.clone())))
     .with_rules(rules.clone())
     .with_evidence(evidence.clone())
     .with_documents(documents)
@@ -987,6 +988,8 @@ async fn required_fields_reject_incomplete_evidence_and_explain_why() {
         plan_status_from: None,
         plan_status_to: None,
         task_title: None,
+        pending_plan_ids: vec![],
+        pending_plans: vec![],
     };
     let GateDecision::Blocked { details, .. } = stack
         .gate
@@ -1055,6 +1058,8 @@ async fn read_artifact_min_version_is_enforced_numerically() {
             plan_status_from: None,
             plan_status_to: None,
             task_title: None,
+            pending_plan_ids: vec![],
+            pending_plans: vec![],
         };
         let decision = stack
             .gate
@@ -1814,6 +1819,8 @@ async fn blocked_details_keep_outcomes_beside_unblock_hints() {
         plan_status_from: None,
         plan_status_to: None,
         task_title: None,
+        pending_plan_ids: vec![],
+        pending_plans: vec![],
     };
 
     let GateDecision::Blocked { details, .. } = stack
@@ -2528,5 +2535,448 @@ async fn plan_scoped_rule_blocks_task_start_via_direct_set_status() {
         stack.handler.tasks.get(task).await.unwrap().unwrap().status,
         Status::Inbox,
         "blocked before persist — task unchanged"
+    );
+}
+
+// ── Plan-scope carrier: ancestry, pending memberships, runs ─────────────────────
+
+fn design_read_rule(rule_key: &str, scope: RuleScope, trigger: RuleTrigger) -> NewRule {
+    new_rule(
+        rule_key,
+        scope,
+        trigger,
+        Requirement::ReadArtifact {
+            doc_ref: "design.md".into(),
+            min_version: "1".into(),
+        },
+        RuleMode::Required,
+        false,
+    )
+}
+
+fn design_read_ack(scope: RuleScope) -> NewEvidence {
+    let mut ack = new_evidence(EvidenceKind::DocumentReadAck, scope, Some("design.md"));
+    ack.doc_version = Some("1".into());
+    ack
+}
+
+async fn create_child_plan(stack: &Stack, project: ProjectId, parent: PlanId) -> PlanId {
+    let plan = NewPlan {
+        parent_plan_id: Some(parent),
+        ..NewPlan::new("Child", project, Actor::user())
+    };
+    let envs = stack
+        .handler
+        .handle(
+            Command::CreatePlan {
+                plan,
+                external_ref: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("create child plan");
+    match &envs[0].payload {
+        Event::PlanCreated { plan } => plan.id,
+        other => panic!("expected PlanCreated, got {other:?}"),
+    }
+}
+
+async fn attach(stack: &Stack, plan: PlanId, task: TaskId) {
+    stack
+        .handler
+        .handle(
+            Command::BulkAttachToPlan {
+                plan_id: plan,
+                task_ids: vec![task],
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("attach task to plan");
+}
+
+async fn set_in_progress(stack: &Stack, task: TaskId, force: bool) -> daruma_shared::Result<()> {
+    stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::InProgress,
+                force,
+                override_reason: force.then(|| "try to force past the rule".into()),
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .map(|_| ())
+}
+
+/// Review Q6: `MaterializePlan` stages PlanCreated + TaskCreated +
+/// PlanTaskAdded in one batch. Nothing is persisted when the gate runs, so the
+/// new task's membership and the new plan's parent must come from the batch
+/// itself — otherwise an ancestor `task.created` rule is silently skipped.
+#[tokio::test]
+async fn pending_materialization_inherits_ancestor_task_created_rule_atomically() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    install(
+        &stack,
+        design_read_rule(
+            "ancestor-task-create",
+            RuleScope::Plan { id: parent },
+            RuleTrigger::TaskCreated,
+        ),
+    )
+    .await;
+    let task = TaskId::new();
+    let command = || Command::MaterializePlan {
+        plan: NewPlan {
+            parent_plan_id: Some(parent),
+            ..NewPlan::new("Child", project, Actor::user())
+        },
+        tasks: vec![daruma_domain::NewTask {
+            id: Some(task),
+            ..daruma_domain::NewTask::new("New member")
+        }],
+        plan_id: None,
+    };
+    let before_seq = stack.handler.store.latest_seq().await.unwrap();
+    let err = stack
+        .handler
+        .handle(command(), Actor::user())
+        .await
+        .expect_err("pending membership must carry the ancestor task.created rule");
+    assert!(is_blocked(&err, "ancestor-task-create"), "got: {err}");
+    // Only the RuleFired audit trail may land; the mutation itself must not.
+    assert!(stack.handler.tasks.get(task).await.unwrap().is_none());
+    let plans = stack.handler.plans.as_ref().unwrap();
+    assert!(plans.list_plans_for_task(task).await.unwrap().is_empty());
+    let after: Vec<_> = stack
+        .handler
+        .store
+        .load_since(before_seq, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|env| env.payload.kind())
+        .collect();
+    assert!(
+        after.iter().all(|kind| *kind == "rule_fired"),
+        "blocked materialization persisted: {after:?}"
+    );
+
+    // Evidence at the ancestor plan satisfies the inherited requirement.
+    record_evidence(&stack, design_read_ack(RuleScope::Plan { id: parent })).await;
+    let events = stack
+        .handler
+        .handle(command(), Actor::user())
+        .await
+        .unwrap();
+    let child = events
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::PlanCreated { plan } => Some(plan.id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(plans.list_plans_for_task(task).await.unwrap(), vec![child]);
+}
+
+/// Appending to an already persisted plan is also a pending membership.
+#[tokio::test]
+async fn materialize_into_existing_plan_respects_its_task_created_rule() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        design_read_rule(
+            "plan-task-create",
+            RuleScope::Plan { id: plan },
+            RuleTrigger::TaskCreated,
+        ),
+    )
+    .await;
+    let task = TaskId::new();
+    let err = stack
+        .handler
+        .handle(
+            Command::MaterializePlan {
+                plan: NewPlan::new("Plan", project, Actor::user()),
+                tasks: vec![daruma_domain::NewTask {
+                    id: Some(task),
+                    ..daruma_domain::NewTask::new("Appended")
+                }],
+                plan_id: Some(plan),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("plan task.created rule must gate tasks appended to it");
+    assert!(is_blocked(&err, "plan-task-create"), "got: {err}");
+    assert!(stack.handler.tasks.get(task).await.unwrap().is_none());
+}
+
+/// A new child plan inherits its parent's `plan.created` rule (pending plan
+/// ancestry, not only persisted ancestry).
+#[tokio::test]
+async fn child_plan_creation_inherits_parent_plan_created_rule() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    install(
+        &stack,
+        design_read_rule(
+            "parent-plan-create",
+            RuleScope::Plan { id: parent },
+            RuleTrigger::PlanCreated,
+        ),
+    )
+    .await;
+    let err = stack
+        .handler
+        .handle(
+            Command::CreatePlan {
+                plan: NewPlan {
+                    parent_plan_id: Some(parent),
+                    ..NewPlan::new("Child", project, Actor::user())
+                },
+                external_ref: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("child plan creation must see the parent's rule");
+    assert!(is_blocked(&err, "parent-plan-create"), "got: {err}");
+}
+
+/// Direct start of a task in a child plan sees the rule on the parent plan;
+/// non-overridable means force + reason does not pass, and nothing persists.
+#[tokio::test]
+async fn direct_start_inherits_parent_plan_rule() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    let child = create_child_plan(&stack, project, parent).await;
+    install(
+        &stack,
+        design_read_rule(
+            "parent-start-read",
+            RuleScope::Plan { id: parent },
+            RuleTrigger::TaskBeforeStart,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Child member").await;
+    attach(&stack, child, task).await;
+
+    let err = set_in_progress(&stack, task, true)
+        .await
+        .expect_err("non-overridable parent plan rule must reach the child's member");
+    assert!(is_blocked(&err, "parent-start-read"), "got: {err}");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Inbox
+    );
+    assert!(stack
+        .handler
+        .comments
+        .list_for_task(task)
+        .await
+        .unwrap()
+        .is_empty());
+
+    record_evidence(&stack, design_read_ack(RuleScope::Task { id: task })).await;
+    set_in_progress(&stack, task, false)
+        .await
+        .expect("current read ack satisfies the inherited rule");
+}
+
+/// Spec §2: a plan-level `off` may weaken an inherited rule whose parent
+/// allows override. The member task must not be blocked through a second,
+/// plan-less chain that resurrects the weakened rule.
+#[tokio::test]
+async fn plan_level_off_weakens_an_overridable_tenant_rule_for_members() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let plan = create_plan(&stack, project).await;
+    let mut tenant = design_read_rule(
+        "shared-read",
+        RuleScope::Tenant,
+        RuleTrigger::TaskBeforeStart,
+    );
+    tenant.override_allowed = true;
+    install(&stack, tenant).await;
+    let mut off = design_read_rule(
+        "shared-read",
+        RuleScope::Plan { id: plan },
+        RuleTrigger::TaskBeforeStart,
+    );
+    off.mode = RuleMode::Off;
+    install(&stack, off).await;
+
+    let member = create_task(&stack, "Member").await;
+    attach(&stack, plan, member).await;
+    let outsider = create_task(&stack, "Outsider").await;
+
+    set_in_progress(&stack, member, false)
+        .await
+        .expect("plan off weakens the overridable tenant rule");
+    let err = set_in_progress(&stack, outsider, false)
+        .await
+        .expect_err("a task outside the plan still sees the tenant rule");
+    assert!(is_blocked(&err, "shared-read"), "got: {err}");
+}
+
+/// Each membership is its own chain: evidence on a sibling plan cannot
+/// satisfy another plan's rule; evidence on the rule's own plan can.
+#[tokio::test]
+async fn sibling_plan_evidence_does_not_satisfy_another_plans_rule() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let guarded = create_plan(&stack, project).await;
+    let sibling = create_plan(&stack, project).await;
+    install(
+        &stack,
+        design_read_rule(
+            "guarded-read",
+            RuleScope::Plan { id: guarded },
+            RuleTrigger::TaskBeforeStart,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Shared member").await;
+    attach(&stack, guarded, task).await;
+    attach(&stack, sibling, task).await;
+
+    record_evidence(&stack, design_read_ack(RuleScope::Plan { id: sibling })).await;
+    let err = set_in_progress(&stack, task, false)
+        .await
+        .expect_err("sibling evidence must not satisfy the guarded plan");
+    assert!(is_blocked(&err, "guarded-read"), "got: {err}");
+
+    record_evidence(&stack, design_read_ack(RuleScope::Plan { id: guarded })).await;
+    set_in_progress(&stack, task, false)
+        .await
+        .expect("evidence on the rule's own plan satisfies it");
+}
+
+/// `RunCompleted` carries only the run id; the gate resolves the run's plan
+/// (and its ancestors) so a plan-scoped `run.before_complete` rule applies.
+#[tokio::test]
+async fn run_completion_inherits_the_run_plan_rule() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    let child = create_child_plan(&stack, project, parent).await;
+    install(
+        &stack,
+        design_read_rule(
+            "run-complete-read",
+            RuleScope::Plan { id: parent },
+            RuleTrigger::RunBeforeComplete,
+        ),
+    )
+    .await;
+    stack
+        .handler
+        .handle(
+            Command::SetPlanStatus {
+                plan_id: child,
+                status: PlanStatus::Active,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("activate child plan");
+    let envs = stack
+        .handler
+        .handle(
+            Command::StartRun {
+                plan_id: child,
+                agent_id: AgentId::new(),
+                parent_run_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("start run");
+    let run_id = envs
+        .iter()
+        .find_map(|e| match &e.payload {
+            Event::RunStarted { run } => Some(run.id),
+            _ => None,
+        })
+        .unwrap();
+    let err = stack
+        .handler
+        .handle(Command::CompleteRun { run_id }, Actor::user())
+        .await
+        .expect_err("run completion must see the run plan's ancestry");
+    assert!(is_blocked(&err, "run-complete-read"), "got: {err}");
+}
+
+/// Legacy compatibility (review Q3): a parent id with no plan row ends the
+/// ancestry walk (it is still queried as a scope, though rule creation refuses
+/// it as a target), so rules on the known chain keep applying; nothing errors.
+#[tokio::test]
+async fn ghost_parent_keeps_the_known_chain_without_failing() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let ghost = PlanId::new();
+    let child = create_child_plan(&stack, project, ghost).await;
+    install(
+        &stack,
+        design_read_rule(
+            "ghost-read",
+            RuleScope::Plan { id: child },
+            RuleTrigger::TaskBeforeStart,
+        ),
+    )
+    .await;
+    let task = create_task(&stack, "Orphan member").await;
+    attach(&stack, child, task).await;
+    let err = set_in_progress(&stack, task, false)
+        .await
+        .expect_err("the child's rule applies despite the ghost parent");
+    assert!(is_blocked(&err, "ghost-read"), "got: {err}");
+}
+
+/// A cyclic staged ancestry fails closed instead of looping or truncating.
+#[tokio::test]
+async fn cyclic_plan_ancestry_fails_closed() {
+    let stack = stack().await;
+    let a = PlanId::new();
+    let b = PlanId::new();
+    let mut check = GateCheck {
+        trigger: TriggerEvent::PlanCreated,
+        project_id: None,
+        task_id: None,
+        plan_id: Some(a),
+        run_id: None,
+        document_id: None,
+        handoff_id: None,
+        status_from: None,
+        status_to: None,
+        plan_status_from: None,
+        plan_status_to: None,
+        task_title: None,
+        pending_plan_ids: vec![],
+        pending_plans: vec![],
+    };
+    check.pending_plans = vec![(a, Some(b)), (b, Some(a))];
+    let err = stack
+        .gate
+        .check(&Actor::user(), &check, &GateOverride::default())
+        .await
+        .expect_err("cycle must not resolve");
+    assert!(
+        err.to_string().contains("cyclic plan scope ancestry"),
+        "got: {err}"
     );
 }
