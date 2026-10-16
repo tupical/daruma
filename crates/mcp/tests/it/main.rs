@@ -3,6 +3,7 @@
 //! линковок экономит место в target/ и время сборки.
 
 mod ai_analyze_complexity;
+mod argument_aliases;
 mod feature_tiers_doc;
 mod get_task_comments;
 mod list_project_selection;
