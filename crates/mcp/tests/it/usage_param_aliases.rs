@@ -10,13 +10,19 @@ use daruma_mcp::tools::{call_tool, tool_definitions};
 use daruma_mcp::ApiClient;
 use serde_json::{json, Value};
 
-async fn serve(captured: Arc<Mutex<Vec<String>>>) -> (ApiClient, tokio::task::JoinHandle<()>) {
+type Captured = Arc<Mutex<Vec<(String, Value)>>>;
+
+async fn serve(captured: Captured) -> (ApiClient, tokio::task::JoinHandle<()>) {
     let router = Router::new().fallback(any(move |req: Request<Body>| {
         let captured = captured.clone();
         async move {
             let path = req.uri().path_and_query().unwrap().as_str().to_string();
             let list = path.starts_with("/v1/tasks?") || path.starts_with("/v1/plans?");
-            captured.lock().unwrap().push(path);
+            let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            captured.lock().unwrap().push((path, body));
             axum::Json(if list { json!([]) } else { json!({}) })
         }
     }));
@@ -29,15 +35,33 @@ async fn serve(captured: Arc<Mutex<Vec<String>>>) -> (ApiClient, tokio::task::Jo
 }
 
 async fn path_of(tool: &str, args: Value) -> String {
+    request_of(tool, args).await.0
+}
+
+/// Path and JSON body (`null` when empty) of the single request `tool` sends.
+async fn request_of(tool: &str, args: Value) -> (String, Value) {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let (client, handle) = serve(captured.clone()).await;
     call_tool(&client, tool, args)
         .await
         .unwrap_or_else(|e| panic!("{tool}: {e:#}"));
     handle.abort();
-    let paths = captured.lock().unwrap().clone();
-    assert_eq!(paths.len(), 1, "{tool}: {paths:?}");
-    paths[0].clone()
+    let requests = captured.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1, "{tool}: {requests:?}");
+    requests[0].clone()
+}
+
+/// Error of `tool`, which must fail before sending any request.
+async fn error_of(tool: &str, args: Value) -> String {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let (client, handle) = serve(captured.clone()).await;
+    let err = call_tool(&client, tool, args)
+        .await
+        .expect_err(tool)
+        .to_string();
+    handle.abort();
+    assert!(captured.lock().unwrap().is_empty(), "{tool} sent a request");
+    err
 }
 
 #[tokio::test]
@@ -159,4 +183,139 @@ fn schemas_no_longer_require_defaulted_params() {
     assert!(required("daruma_list").is_null());
     assert!(required("daruma_plan_list").is_null());
     assert_eq!(required("daruma_plan_next_task"), json!(["id"]));
+}
+
+/// Plan 01a06cfc, task 04c37251 (dispatch on the resolvers): every id
+/// family — tasks, plans, runs, documents, sessions, rules, work units,
+/// artifacts, relations — takes its own name or the generic `id`.
+#[tokio::test]
+async fn every_id_family_accepts_its_name_and_generic_id() {
+    let cases = [
+        (
+            "daruma_run_complete",
+            "run_id",
+            "run_1",
+            "/v1/runs/run_1/complete",
+        ),
+        ("daruma_doc_get", "doc_id", "doc_1", "/v1/documents/doc_1"),
+        (
+            "daruma_session_get",
+            "session_id",
+            "ags_1",
+            "/v1/sessions/ags_1",
+        ),
+        ("daruma_rule_get", "rule_id", "rule_1", "/v1/rules/rule_1"),
+        (
+            "daruma_work_unit_complete",
+            "work_unit_id",
+            "wu_1",
+            "/v1/work-units/wu_1/complete",
+        ),
+        (
+            "daruma_artifact_deprecate",
+            "artifact_id",
+            "art_1",
+            "/v1/artifacts/art_1/deprecate",
+        ),
+        (
+            "daruma_unlink",
+            "relation_id",
+            "rel_1",
+            "/v1/relations/rel_1",
+        ),
+        (
+            "daruma_plan_set_status",
+            "id",
+            "pln_1",
+            "/v1/plans/pln_1/status",
+        ),
+    ];
+    for (tool, name, id, path) in cases {
+        let mut extra = json!({});
+        if tool == "daruma_plan_set_status" {
+            extra = json!({"status": "active"});
+        }
+        for key in [name, "id"] {
+            let mut args = extra.clone();
+            args[key] = json!(id);
+            assert_eq!(path_of(tool, args).await, path, "{tool} via `{key}`");
+        }
+    }
+}
+
+#[tokio::test]
+async fn task_commands_carry_the_resolved_task_id() {
+    let (path, body) = request_of("daruma_complete", json!({"task_id": "tsk_1"})).await;
+    assert_eq!(path, "/v1/commands");
+    assert_eq!(body["command"]["id"], "tsk_1", "{body}");
+
+    let (_, body) = request_of(
+        "daruma_split",
+        json!({"task_id": "tsk_1", "subtasks": [{"title": "a"}]}),
+    )
+    .await;
+    assert_eq!(body["command"]["parent"], "tsk_1", "{body}");
+
+    let (_, body) = request_of(
+        "daruma_bulk_set_status",
+        json!({"task_ids": ["tsk_1", "tsk_2"], "status": "done"}),
+    )
+    .await;
+    assert_eq!(body["command"]["ids"], json!(["tsk_1", "tsk_2"]), "{body}");
+}
+
+#[tokio::test]
+async fn two_id_tools_fill_the_missing_side_from_generic_id() {
+    let (path, body) = request_of(
+        "daruma_run_start_step",
+        json!({"run_id": "run_1", "id": "tsk_1"}),
+    )
+    .await;
+    assert_eq!(path, "/v1/runs/run_1/step/start");
+    assert_eq!(body["task_id"], "tsk_1");
+
+    let (path, body) = request_of(
+        "daruma_plan_add_task",
+        json!({"id": "pln_1", "task_id": "tsk_1"}),
+    )
+    .await;
+    assert_eq!(path, "/v1/plans/pln_1/tasks");
+    assert_eq!(body["task_id"], "tsk_1", "{body}");
+}
+
+#[tokio::test]
+async fn wrong_kind_ids_fail_in_every_family() {
+    assert_eq!(
+        error_of("daruma_run_complete", json!({"run_id": "tsk_1"})).await,
+        "`run_id` = \"tsk_1\" is a task id, but this tool needs a run id"
+    );
+    assert_eq!(
+        error_of("daruma_doc_get", json!({"document_id": "pln_1"})).await,
+        "`document_id` = \"pln_1\" is a plan id, but this tool needs a document id"
+    );
+    assert_eq!(
+        error_of(
+            "daruma_run_finish_step",
+            json!({"run_id": "run_1", "outcome": {"kind": "done"}})
+        )
+        .await,
+        "`task_id` (string) required; `id` is accepted for one of them \
+         (a `run_`/`tsk_` prefix picks which)"
+    );
+    assert_eq!(
+        error_of(
+            "daruma_handoff_request",
+            json!({"from_work_unit_id": "tsk_1", "to_work_unit_id": "wu_2"})
+        )
+        .await,
+        "`from_work_unit_id` = \"tsk_1\" is a task id, but this tool needs a work unit id"
+    );
+    assert_eq!(
+        error_of(
+            "daruma_doc_link_task",
+            json!({"document_id": "doc_1", "task_id": "pln_1"})
+        )
+        .await,
+        "`task_id` = \"pln_1\" is a plan id, but this tool needs a task id"
+    );
 }

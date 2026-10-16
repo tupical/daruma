@@ -1555,7 +1555,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             ))
         }
         "daruma_update" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let mut patch = Map::new();
             if let Some(title) = args.get("title") {
                 let title = title
@@ -1898,15 +1898,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_command(command).await
         }
         "daruma_set_priority" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let priority = required_string(&args, "priority")?;
             client
                 .post_command(json!({"type":"set_priority","id": id, "priority": priority}))
                 .await
         }
         "daruma_amend_plan_task" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (plan_id, task_id) = resolve_plan_and_task_ids(&args)?;
             let patch = args
                 .get("patch")
                 .cloned()
@@ -1918,7 +1917,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_move_project" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let project_id = match resolve_project_filter(client, &args, false, false, true).await?
             {
                 ProjectFilter::Project(pid) => pid,
@@ -1938,7 +1937,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_complete" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             // Assemble an optional completion note from the loose args. Only
             // include `note` when at least one field is present, so a bare
             // `{id}` call stays byte-identical to the legacy command.
@@ -1960,13 +1959,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_command(cmd).await
         }
         "daruma_delete" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             client
                 .post_command(json!({"type":"delete_task","id": id}))
                 .await
         }
         "daruma_split" => {
-            let parent = required_string(&args, "parent")?;
+            let parent = resolve_task_id(&args, "parent")?;
             let subtasks = args
                 .get("subtasks")
                 .cloned()
@@ -1976,22 +1975,15 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_bulk_set_status" => {
-            let ids = args
-                .get("ids")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("`ids` (array of task ids) is required"))?;
+            let ids = resolve_task_ids(&args, "ids")?;
             let status = required_string(&args, "status")?;
             client
                 .post_command(json!({"type":"bulk_set_status","ids": ids, "status": status}))
                 .await
         }
         "daruma_bulk_attach_to_plan" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_ids = args
-                .get("ids")
-                .or_else(|| args.get("task_ids"))
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("`ids` (array of task ids) is required"))?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
+            let task_ids = resolve_task_ids(&args, "ids")?;
             client
                 .post_command(json!({
                     "type":"bulk_attach_to_plan",
@@ -2002,7 +1994,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         // Forward to the Daruma server's batch complexity implementation.
         "daruma_ai_analyze_complexity" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let mut body = json!({});
             if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
                 body["use_research_provider"] = json!(flag);
@@ -2029,7 +2021,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_reopen" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             client
                 .post_command(json!({"type":"set_status","id": id, "status": "todo"}))
                 .await
@@ -2092,7 +2084,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/plans", json!({ "plan": plan })).await
         }
         "daruma_plan_update" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_plan_id(&args, "id")?;
             let patch = args
                 .get("patch")
                 .cloned()
@@ -2174,8 +2166,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             })
         }
         "daruma_plan_add_task" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (plan_id, task_id) = resolve_plan_and_task_ids(&args)?;
             let mut body = json!({"task_id": task_id});
             if let Some(pos) = args.get("position").and_then(|v| v.as_u64()) {
                 body["position"] = json!(pos);
@@ -2188,14 +2179,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_remove_task" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (plan_id, task_id) = resolve_plan_and_task_ids(&args)?;
             client
                 .delete_json(&format!("/v1/plans/{plan_id}/tasks/{task_id}"))
                 .await
         }
         "daruma_plan_reorder" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let order = args
                 .get("order")
                 .cloned()
@@ -2208,17 +2198,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_archive" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_plan_id(&args, "id")?;
             client
                 .post_json(&format!("/v1/plans/{id}/archive"), json!({}))
                 .await
         }
         "daruma_plan_delete" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client.delete_json(&format!("/v1/plans/{plan_id}")).await
         }
         "daruma_plan_set_status" => {
-            let id = required_string(&args, "plan_id")?;
+            let id = resolve_plan_id(&args, "plan_id")?;
             let status = required_string(&args, "status")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut body = json!({ "status": status, "force": force });
@@ -2259,7 +2249,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_drain_next" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let mut body = json!({});
             if let Some(run_id) = args.get("run_id").and_then(|v| v.as_str()) {
                 body["run_id"] = json!(run_id);
@@ -2272,17 +2262,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_graph" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client.get_json(&format!("/v1/plans/{plan_id}/graph")).await
         }
         "daruma_plan_fanout" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/fanout"))
                 .await
         }
         "daruma_can_start" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/can_start"))
                 .await
@@ -2362,7 +2352,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Run tools (W3.2) ──────────────────────────────────────────────
         "daruma_run_start" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let agent_id = required_string(&args, "agent_id")?;
             let mut body = json!({"plan_id": plan_id, "agent_id": agent_id});
             if let Some(parent) = args.get("parent_run_id").and_then(|v| v.as_str()) {
@@ -2371,8 +2361,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/runs", body).await
         }
         "daruma_run_start_step" => {
-            let run_id = required_string(&args, "run_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (run_id, task_id) = resolve_id_pair(&args, IdKind::Run, IdKind::Task)?;
             client
                 .post_json(
                     &format!("/v1/runs/{run_id}/step/start"),
@@ -2381,8 +2370,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_run_finish_step" => {
-            let run_id = required_string(&args, "run_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (run_id, task_id) = resolve_id_pair(&args, IdKind::Run, IdKind::Task)?;
             let outcome = args.get("outcome").cloned().ok_or_else(|| {
                 anyhow::anyhow!("`outcome` (object with `kind` field) is required")
             })?;
@@ -2394,13 +2382,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_run_complete" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             client
                 .post_json(&format!("/v1/runs/{run_id}/complete"), json!({}))
                 .await
         }
         "daruma_run_abort" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let reason = args
                 .get("reason")
                 .and_then(|v| v.as_str())
@@ -2416,14 +2404,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Run note tools (§3.8.2) ───────────────────────────────────────
         "daruma_run_note_append" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let body = required_string(&args, "body")?;
             client
                 .post_json(&format!("/v1/runs/{run_id}/notes"), json!({"body": body}))
                 .await
         }
         "daruma_run_log" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let level = args
                 .get("level")
                 .and_then(|v| v.as_str())
@@ -2443,7 +2431,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_run_notes_list" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
             let mut path = format!("/v1/runs/{run_id}/notes?limit={limit}");
             if let Some(after) = args.get("after").and_then(|v| v.as_str()) {
@@ -2475,7 +2463,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
         "daruma_work_unit_create" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let title = required_string(&args, "title")?;
             let mut wu = json!({ "task_id": task_id, "title": title });
             for key in ["description", "stage_plan_id", "priority"] {
@@ -2493,13 +2481,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_work_unit_list" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/work-units"))
                 .await
         }
         "daruma_work_unit_drain_next" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let mut body = json!({ "task_id": task_id });
             if let Some(ttl) = args.get("ttl_secs").and_then(|v| v.as_u64()) {
                 body["ttl_secs"] = json!(ttl);
@@ -2507,7 +2495,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/work-units/drain-next", body).await
         }
         "daruma_work_unit_complete" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_work_unit_id(&args, "id")?;
             let mut body = json!({});
             if let Some(o) = args.get("outcome").and_then(|v| v.as_str()) {
                 body["outcome"] = json!(o);
@@ -2524,8 +2512,8 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_handoff_request" => {
             let mut handoff = json!({
-                "from_work_unit_id": required_string(&args, "from_work_unit_id")?,
-                "to_work_unit_id": required_string(&args, "to_work_unit_id")?,
+                "from_work_unit_id": resolve_exact_id(&args, IdKind::WorkUnit, "from_work_unit_id")?,
+                "to_work_unit_id": resolve_exact_id(&args, IdKind::WorkUnit, "to_work_unit_id")?,
             });
             for key in ["required_artifact_ids", "checklist"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_array()) {
@@ -2566,13 +2554,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
         }
         "daruma_handoff_list" => {
-            let id = required_string(&args, "work_unit_id")?;
+            let id = resolve_work_unit_id(&args, "work_unit_id")?;
             client
                 .get_json(&format!("/v1/work-units/{id}/handoffs"))
                 .await
         }
         "daruma_work_unit_release" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_work_unit_id(&args, "id")?;
             client
                 .post_json(&format!("/v1/work-units/{id}/release"), json!({}))
                 .await
@@ -2628,7 +2616,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         "daruma_rule_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_rule_id(&args, "id")?;
             client.get_json(&format!("/v1/rules/{id}")).await
         }
         "daruma_rule_create" => {
@@ -2639,7 +2627,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/rules", json!({ "rule": rule })).await
         }
         "daruma_rule_update" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_rule_id(&args, "id")?;
             let mut patch = args.clone();
             patch.remove("id");
             client
@@ -2647,7 +2635,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_rule_disable" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_rule_id(&args, "id")?;
             client
                 .patch_json(&format!("/v1/rules/{id}"), json!({ "enabled": false }))
                 .await
@@ -2796,7 +2784,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_reserve_files" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let paths = args.get("paths").and_then(|v| v.as_array()).cloned();
             let targets = args.get("targets").and_then(|v| v.as_array()).cloned();
             if paths.as_ref().is_none_or(|p| p.is_empty())
@@ -2827,7 +2815,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_release_files" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/leases/{agent_id}/{task_id}"))
                 .await
@@ -2864,7 +2852,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_suggest_files" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/leases/suggest?task_id={task_id}"))
                 .await
@@ -2886,7 +2874,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/sessions", body).await
         }
         "daruma_session_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             client.get_json(&format!("/v1/sessions/{id}")).await
         }
         "daruma_session_list" => {
@@ -2900,13 +2888,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_session_end" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             client
                 .post_json(&format!("/v1/sessions/{id}/end"), json!({}))
                 .await
         }
         "daruma_session_set_plan" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             let steps = args
                 .get("steps")
                 .cloned()
@@ -2919,7 +2907,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_session_artifact" => {
-            let session_id = required_string(&args, "session_id")?;
+            let session_id = resolve_session_id(&args, "session_id")?;
             let kind = required_string(&args, "kind")?;
             let reference = required_string(&args, "ref")?;
             let mut body = json!({"kind": kind, "ref": reference});
@@ -2931,7 +2919,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_session_artifacts_list" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             client
                 .get_json(&format!("/v1/sessions/{id}/artifacts"))
                 .await
@@ -2939,7 +2927,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Signal tools (W3.2 / Linear B.5) ─────────────────────────────
         "daruma_signal_send" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let kind = args
                 .get("kind")
                 .cloned()
@@ -2949,7 +2937,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_signal_respond" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let choice = required_string(&args, "choice")?;
             client
                 .post_json(
@@ -2971,7 +2959,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/relations", body).await
         }
         "daruma_unlink" => {
-            let relation_id = required_string(&args, "relation_id")?;
+            let relation_id = resolve_relation_id(&args, "relation_id")?;
             client
                 .delete_json(&format!("/v1/relations/{relation_id}"))
                 .await
@@ -3006,12 +2994,12 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_doc_get" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let resp = client.get_json(&format!("/v1/documents/{id}")).await?;
             Ok(maybe_bounded(resp, &args, &id, "document content"))
         }
         "daruma_doc_append" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let content = required_string(&args, "content")?;
             client
                 .post_json(
@@ -3021,7 +3009,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_doc_replace" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let content = required_string(&args, "content")?;
             client
                 .patch_json(
@@ -3031,30 +3019,36 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_doc_rename" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let title = required_string(&args, "title")?;
             client
                 .patch_json(&format!("/v1/documents/{id}"), json!({ "title": title }))
                 .await
         }
         "daruma_doc_archive" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             client
                 .post_json(&format!("/v1/documents/{id}/archive"), json!({}))
                 .await
         }
         "daruma_doc_set_status" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let status = required_string(&args, "status")?;
             client
                 .patch_json(&format!("/v1/documents/{id}"), json!({ "status": status }))
                 .await
         }
         "daruma_doc_link_task" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             // Explicit `task_id: null` (or absent) unlinks — the PATCH body
             // distinguishes present-null from absent, so always send the key.
-            let task_id = args.get("task_id").cloned().unwrap_or(Value::Null);
+            let task_id = match id_value(&args, "task_id")? {
+                Some(task_id) => {
+                    check_id_kind("task_id", task_id, IdKind::Task)?;
+                    json!(task_id)
+                }
+                None => Value::Null,
+            };
             client
                 .patch_json(
                     &format!("/v1/documents/{id}"),
@@ -3158,7 +3152,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/artifacts", body).await
         }
         "daruma_artifact_update" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let mut body = json!({});
             for key in ["title", "description"] {
                 if let Some(value) = args.get(key).and_then(|value| value.as_str()) {
@@ -3170,7 +3164,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_artifact_commit_write" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let fencing_token = required_i64(&args, "fencing_token")?;
             let mut body = json!({"fencing_token": fencing_token});
             if let Some(version) = args.get("version").and_then(|value| value.as_str()) {
@@ -3181,7 +3175,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_artifact_deprecate" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             client
                 .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), json!({}))
                 .await
@@ -3223,7 +3217,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         "daruma_artifact_impact" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let path = match args.get("limit").and_then(|value| value.as_u64()) {
                 Some(limit) => format!("/v1/artifacts/{artifact_id}/impact?limit={limit}"),
                 None => format!("/v1/artifacts/{artifact_id}/impact"),
@@ -3231,7 +3225,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         "daruma_role_artifact_propose" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let role = required_string(&args, "role")?;
             let kind = required_string(&args, "kind")?;
             let mut body = json!({"task_id": task_id, "role": role, "kind": kind});
@@ -3246,7 +3240,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/role-artifacts", body).await
         }
         "daruma_role_artifact_set_status" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let status = required_string(&args, "status")?;
             client
                 .post_json(
@@ -3256,7 +3250,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_role_artifact_apply_patch" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let path = required_string(&args, "path")?;
             let content = required_string(&args, "content")?;
             let dry_run = args
@@ -3271,7 +3265,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_role_artifact_list" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let mut params = vec![format!("task_id={}", urlencode(&task_id))];
             for key in ["role", "kind", "status"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
@@ -5974,47 +5968,47 @@ fn resolve_plan_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<Strin
     resolve_id(args, IdKind::Plan, key)
 }
 
-// The resolvers marked `allow(dead_code)` are wired into dispatch by the
-// plan's next task (01a06cfc-eeb3-7d81-bf24-04c37251c892).
-#[allow(dead_code)]
 fn resolve_doc_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Doc, key)
 }
 
-#[allow(dead_code)]
 fn resolve_run_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Run, key)
 }
 
-#[allow(dead_code)]
 fn resolve_session_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Session, key)
 }
 
-#[allow(dead_code)]
 fn resolve_rule_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Rule, key)
 }
 
-#[allow(dead_code)]
 fn resolve_work_unit_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::WorkUnit, key)
 }
 
-#[allow(dead_code)]
 fn resolve_artifact_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Artifact, key)
 }
 
-#[allow(dead_code)]
 fn resolve_relation_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Relation, key)
+}
+
+/// The `kind` id under exactly `key`, for a tool that takes two ids of one
+/// kind (`from_work_unit_id` + `to_work_unit_id`) where aliases would be
+/// ambiguous. A value with another kind's prefix fails like [`resolve_id`].
+fn resolve_exact_id(args: &Map<String, Value>, kind: IdKind, key: &str) -> anyhow::Result<String> {
+    let value =
+        id_value(args, key)?.ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required"))?;
+    check_id_kind(key, value, kind)?;
+    Ok(value.to_string())
 }
 
 /// Task ids of a bulk tool: an array (or one string) under `key`,
 /// `task_ids` or `ids`, else a single `task_id`. Every entry is checked
 /// like [`resolve_task_id`]; an empty list is an error.
-#[allow(dead_code)]
 fn resolve_task_ids(args: &Map<String, Value>, key: &str) -> anyhow::Result<Vec<String>> {
     let mut names = vec![key];
     names.extend(["task_ids", "ids"].into_iter().filter(|n| *n != key));
@@ -6057,41 +6051,53 @@ fn resolve_task_ids(args: &Map<String, Value>, key: &str) -> anyhow::Result<Vec<
     ))
 }
 
-/// `(plan_id, task_id)` of a plan-membership tool. A generic `id` fills
-/// the missing side: by prefix when it has one (`pln_…` / `tsk_…`),
-/// otherwise only when exactly one side is missing.
-#[allow(dead_code)]
+/// `(plan_id, task_id)` of a plan-membership tool; see [`resolve_id_pair`].
 fn resolve_plan_and_task_ids(args: &Map<String, Value>) -> anyhow::Result<(String, String)> {
-    let mut plan = id_value(args, "plan_id")?;
-    let mut task = id_value(args, "task_id")?;
-    if let Some(value) = plan {
-        check_id_kind("plan_id", value, IdKind::Plan)?;
+    resolve_id_pair(args, IdKind::Plan, IdKind::Task)
+}
+
+/// Ids of a tool that takes two different kinds under their own names
+/// (`plan_id` + `task_id`, `run_id` + `task_id`). A generic `id` fills the
+/// missing side: by prefix when it has one (`pln_…` / `tsk_…`), otherwise
+/// only when exactly one side is missing.
+fn resolve_id_pair(
+    args: &Map<String, Value>,
+    first: IdKind,
+    second: IdKind,
+) -> anyhow::Result<(String, String)> {
+    let (first_key, second_key) = (first.keys()[0], second.keys()[0]);
+    let mut a = id_value(args, first_key)?;
+    let mut b = id_value(args, second_key)?;
+    if let Some(value) = a {
+        check_id_kind(first_key, value, first)?;
     }
-    if let Some(value) = task {
-        check_id_kind("task_id", value, IdKind::Task)?;
+    if let Some(value) = b {
+        check_id_kind(second_key, value, second)?;
     }
     if let Some(id) = id_value(args, "id")? {
         let label = id_prefix_label(id);
-        match (plan, task) {
-            (None, _) if label == Some(IdKind::Plan.label()) => plan = Some(id),
-            (_, None) if label == Some(IdKind::Task.label()) => task = Some(id),
-            (None, Some(_)) if label.is_none() => plan = Some(id),
-            (Some(_), None) if label.is_none() => task = Some(id),
+        match (a, b) {
+            (None, _) if label == Some(first.label()) => a = Some(id),
+            (_, None) if label == Some(second.label()) => b = Some(id),
+            (None, Some(_)) if label.is_none() => a = Some(id),
+            (Some(_), None) if label.is_none() => b = Some(id),
             _ => {}
         }
     }
-    match (plan, task) {
-        (Some(plan), Some(task)) => Ok((plan.to_string(), task.to_string())),
-        (plan, task) => {
-            let missing: Vec<&str> = [("`plan_id`", plan), ("`task_id`", task)]
+    match (a, b) {
+        (Some(a), Some(b)) => Ok((a.to_string(), b.to_string())),
+        (a, b) => {
+            let missing: Vec<String> = [(first_key, a), (second_key, b)]
                 .into_iter()
                 .filter(|(_, v)| v.is_none())
-                .map(|(n, _)| n)
+                .map(|(n, _)| format!("`{n}`"))
                 .collect();
             Err(anyhow::anyhow!(
                 "{} (string) required; `id` is accepted for one of them \
-                 (a `pln_`/`tsk_` prefix picks which)",
-                missing.join(" and ")
+                 (a `{}_`/`{}_` prefix picks which)",
+                missing.join(" and "),
+                first.prefixes()[0],
+                second.prefixes()[0]
             ))
         }
     }
@@ -7374,5 +7380,40 @@ mod resolver_tests {
              (a `pln_`/`tsk_` prefix picks which)"
         );
         assert!(err(both(json!({"plan_id": TASK, "task_id": TASK}))).contains("is a task id"));
+    }
+
+    #[test]
+    fn run_and_task_pair_uses_the_same_rules() {
+        let pair = |v: Value| resolve_id_pair(&args(v), IdKind::Run, IdKind::Task);
+        let want = ("run_1".to_string(), "tsk_1".to_string());
+        assert_eq!(
+            pair(json!({"run_id": "run_1", "task_id": "tsk_1"})).unwrap(),
+            want
+        );
+        assert_eq!(
+            pair(json!({"id": "run_1", "task_id": "tsk_1"})).unwrap(),
+            want
+        );
+        assert_eq!(
+            pair(json!({"run_id": "run_1", "id": "tsk_1"})).unwrap(),
+            want
+        );
+        assert_eq!(
+            err(pair(json!({}))),
+            "`run_id` and `task_id` (string) required; `id` is accepted for one of them \
+             (a `run_`/`tsk_` prefix picks which)"
+        );
+        assert!(err(pair(json!({"run_id": "tsk_1", "task_id": "tsk_2"}))).contains("is a task id"));
+    }
+
+    #[test]
+    fn exact_id_takes_no_alias_but_checks_the_kind() {
+        let exact = |v: Value| resolve_exact_id(&args(v), IdKind::WorkUnit, "from_work_unit_id");
+        assert_eq!(exact(json!({"from_work_unit_id": "wu_1"})).unwrap(), "wu_1");
+        assert_eq!(
+            err(exact(json!({"id": "wu_1", "work_unit_id": "wu_1"}))),
+            "`from_work_unit_id` (string) is required"
+        );
+        assert!(err(exact(json!({"from_work_unit_id": "tsk_1"}))).contains("is a task id"));
     }
 }
