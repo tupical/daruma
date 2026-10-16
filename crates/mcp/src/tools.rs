@@ -1533,7 +1533,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_command(command).await
         }
         "daruma_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let resp = client.get_json(&format!("/v1/tasks/{id}")).await?;
             if args.get("comments").and_then(Value::as_bool) == Some(true) {
                 // Comments are attached after bounding so `max_tokens` only
@@ -1869,7 +1869,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }))
         }
         "daruma_set_status" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let status = required_string(&args, "status")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut command =
@@ -2012,7 +2012,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_comment" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let body_text = required_string(&args, "body")?;
             // §3.8.8: optional semantic classification. We validate locally
             // against the canonical set so MCP callers get an immediate
@@ -2103,7 +2103,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_plan_id(&args, "id")?;
             let view = view_arg(&args, "progress", &["progress", "detail"])?;
             let resp = client.get_json(&format!("/v1/plans/{id}")).await?;
             if view == "detail" {
@@ -2234,7 +2234,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_next_task" => {
-            let id = required_string_or_alias(&args, "id", "plan_id")?;
+            let id = resolve_plan_id(&args, "id")?;
             let ttl = args
                 .get("claim_ttl_secs")
                 .and_then(|v| v.as_u64())
@@ -2253,7 +2253,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_progress" => {
-            let plan_id = required_string_or_alias(&args, "plan_id", "id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/progress"))
                 .await
@@ -2456,7 +2456,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Claim tools (W3.2) ────────────────────────────────────────────
         "daruma_claim" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let ttl_secs = args.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(300);
             client
                 .post_json(
@@ -2467,7 +2467,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_release" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/claims/{agent_id}/{task_id}"))
                 .await
@@ -2977,7 +2977,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_relations" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/relations"))
                 .await
@@ -5777,18 +5777,324 @@ fn string_or_default(args: &serde_json::Map<String, Value>, key: &str, default: 
         .to_string()
 }
 
-/// `required_string` that also accepts `alias` — the id parameter name the
-/// sibling plan tools use (`plan_id` vs `id`), which agents routinely mix up.
-fn required_string_or_alias(
-    args: &serde_json::Map<String, Value>,
-    key: &str,
-    alias: &str,
-) -> anyhow::Result<String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .or_else(|| args.get(alias).and_then(Value::as_str))
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required (alias: `{alias}`)"))
+/// Entity kinds an MCP id argument can name (plan 01a06cfc: one resolver per
+/// kind instead of a per-tool `required_string(.., "id")`, which agents hit
+/// by mixing up `id` / `task_id` / `plan_id`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdKind {
+    Task,
+    Plan,
+    Doc,
+    Run,
+    Session,
+    Rule,
+    WorkUnit,
+    Artifact,
+    Relation,
+}
+
+impl IdKind {
+    const ALL: [IdKind; 9] = [
+        IdKind::Task,
+        IdKind::Plan,
+        IdKind::Doc,
+        IdKind::Run,
+        IdKind::Session,
+        IdKind::Rule,
+        IdKind::WorkUnit,
+        IdKind::Artifact,
+        IdKind::Relation,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            IdKind::Task => "task",
+            IdKind::Plan => "plan",
+            IdKind::Doc => "document",
+            IdKind::Run => "run",
+            IdKind::Session => "session",
+            IdKind::Rule => "rule",
+            IdKind::WorkUnit => "work unit",
+            IdKind::Artifact => "artifact",
+            IdKind::Relation => "relation",
+        }
+    }
+
+    /// `daruma_shared` id prefixes of this kind. Relations cover both task
+    /// links (`rel_`) and artifact relations (`artrel_`).
+    fn prefixes(self) -> &'static [&'static str] {
+        use daruma_shared::{
+            AgentSessionId, ArtifactId, ArtifactRelationId, DocumentId, PlanId, RelationId, RuleId,
+            RunId, TaskId, WorkUnitId,
+        };
+        const TASK: [&str; 1] = [TaskId::prefix()];
+        const PLAN: [&str; 1] = [PlanId::prefix()];
+        const DOC: [&str; 1] = [DocumentId::prefix()];
+        const RUN: [&str; 1] = [RunId::prefix()];
+        const SESSION: [&str; 1] = [AgentSessionId::prefix()];
+        const RULE: [&str; 1] = [RuleId::prefix()];
+        const WORK_UNIT: [&str; 1] = [WorkUnitId::prefix()];
+        const ARTIFACT: [&str; 1] = [ArtifactId::prefix()];
+        const RELATION: [&str; 2] = [RelationId::prefix(), ArtifactRelationId::prefix()];
+        match self {
+            IdKind::Task => &TASK,
+            IdKind::Plan => &PLAN,
+            IdKind::Doc => &DOC,
+            IdKind::Run => &RUN,
+            IdKind::Session => &SESSION,
+            IdKind::Rule => &RULE,
+            IdKind::WorkUnit => &WORK_UNIT,
+            IdKind::Artifact => &ARTIFACT,
+            IdKind::Relation => &RELATION,
+        }
+    }
+
+    /// Argument names that carry this kind; the generic `id` comes last.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            IdKind::Task => &["task_id", "id"],
+            IdKind::Plan => &["plan_id", "id"],
+            IdKind::Doc => &["doc_id", "document_id", "id"],
+            IdKind::Run => &["run_id", "id"],
+            IdKind::Session => &["session_id", "id"],
+            IdKind::Rule => &["rule_id", "id"],
+            IdKind::WorkUnit => &["work_unit_id", "id"],
+            IdKind::Artifact => &["artifact_id", "id"],
+            IdKind::Relation => &["relation_id", "id"],
+        }
+    }
+}
+
+/// Label of the entity a prefixed id names (`pln_…` → "plan"), when the
+/// value is `<known prefix>_<id-like rest>`. Bare UUIDs and slugs such as
+/// `rule_engine` are not discriminated.
+fn id_prefix_label(value: &str) -> Option<&'static str> {
+    use daruma_shared::{AgentId, ClaimId, CommentId, EvidenceId, ProjectId};
+    let (prefix, rest) = value.split_once('_')?;
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    if let Some(kind) = IdKind::ALL.iter().find(|k| k.prefixes().contains(&prefix)) {
+        return Some(kind.label());
+    }
+    [
+        (ProjectId::prefix(), "project"),
+        (ClaimId::prefix(), "claim"),
+        (CommentId::prefix(), "comment"),
+        (AgentId::prefix(), "agent"),
+        (EvidenceId::prefix(), "evidence"),
+    ]
+    .into_iter()
+    .find(|(p, _)| *p == prefix)
+    .map(|(_, label)| label)
+}
+
+/// Non-empty string value of `name`; a non-string value is an error.
+fn id_value<'a>(args: &'a Map<String, Value>, name: &str) -> anyhow::Result<Option<&'a str>> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.trim())),
+        Some(_) => Err(anyhow::anyhow!("`{name}` must be a string id")),
+    }
+}
+
+/// Reject an id whose prefix names another entity kind.
+fn check_id_kind(name: &str, value: &str, kind: IdKind) -> anyhow::Result<()> {
+    match id_prefix_label(value) {
+        Some(label) if label != kind.label() => Err(anyhow::anyhow!(
+            "`{name}` = \"{value}\" is a {label} id, but this tool needs a {} id",
+            kind.label()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Resolve the `kind` id a tool expects under `key` (its schema name).
+/// Also accepted: the kind's own name (`task_id`, `plan_id`, …) and `id`.
+/// A value with another kind's prefix fails with a hint, and so do two
+/// different values under two names; a missing id names every accepted
+/// argument and any other-kind id the caller sent instead.
+fn resolve_id(args: &Map<String, Value>, kind: IdKind, key: &str) -> anyhow::Result<String> {
+    let mut names = vec![key];
+    names.extend(kind.keys().iter().copied().filter(|n| *n != key));
+    let mut found: Option<(&str, &str)> = None;
+    for name in &names {
+        let Some(value) = id_value(args, name)? else {
+            continue;
+        };
+        match found {
+            None => {
+                check_id_kind(name, value, kind)?;
+                found = Some((name, value));
+            }
+            // A generic `id` beside an explicit one may name something else.
+            Some(_) if *name == "id" => {}
+            Some((first, first_value)) if first_value != value => {
+                return Err(anyhow::anyhow!(
+                    "conflicting {} ids: `{first}` = \"{first_value}\", `{name}` = \"{value}\"",
+                    kind.label()
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some((_, value)) = found {
+        return Ok(value.to_string());
+    }
+    let aliases: Vec<String> = names[1..].iter().map(|n| format!("`{n}`")).collect();
+    let mut msg = format!(
+        "`{key}` (string) is required ({}: {})",
+        if aliases.len() == 1 {
+            "alias"
+        } else {
+            "aliases"
+        },
+        aliases.join(", ")
+    );
+    for other in IdKind::ALL.iter().filter(|k| **k != kind) {
+        let name = other.keys()[0];
+        if names.contains(&name) || !args.contains_key(name) {
+            continue;
+        }
+        msg.push_str(&format!(
+            "; got `{name}`, which names a {}, not a {}",
+            other.label(),
+            kind.label()
+        ));
+    }
+    Err(anyhow::anyhow!(msg))
+}
+
+fn resolve_task_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Task, key)
+}
+
+fn resolve_plan_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Plan, key)
+}
+
+// The resolvers marked `allow(dead_code)` are wired into dispatch by the
+// plan's next task (01a06cfc-eeb3-7d81-bf24-04c37251c892).
+#[allow(dead_code)]
+fn resolve_doc_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Doc, key)
+}
+
+#[allow(dead_code)]
+fn resolve_run_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Run, key)
+}
+
+#[allow(dead_code)]
+fn resolve_session_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Session, key)
+}
+
+#[allow(dead_code)]
+fn resolve_rule_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Rule, key)
+}
+
+#[allow(dead_code)]
+fn resolve_work_unit_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::WorkUnit, key)
+}
+
+#[allow(dead_code)]
+fn resolve_artifact_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Artifact, key)
+}
+
+#[allow(dead_code)]
+fn resolve_relation_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Relation, key)
+}
+
+/// Task ids of a bulk tool: an array (or one string) under `key`,
+/// `task_ids` or `ids`, else a single `task_id`. Every entry is checked
+/// like [`resolve_task_id`]; an empty list is an error.
+#[allow(dead_code)]
+fn resolve_task_ids(args: &Map<String, Value>, key: &str) -> anyhow::Result<Vec<String>> {
+    let mut names = vec![key];
+    names.extend(["task_ids", "ids"].into_iter().filter(|n| *n != key));
+    for name in &names {
+        let ids: Vec<&Value> = match args.get(*name) {
+            None | Some(Value::Null) => continue,
+            Some(Value::Array(items)) => items.iter().collect(),
+            Some(single @ Value::String(_)) => vec![single],
+            Some(_) => {
+                return Err(anyhow::anyhow!(
+                    "`{name}` must be an array of task id strings"
+                ))
+            }
+        };
+        if ids.is_empty() {
+            return Err(anyhow::anyhow!("`{name}` must list at least one task id"));
+        }
+        return ids
+            .into_iter()
+            .enumerate()
+            .map(|(ix, item)| {
+                let value = item
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("`{name}[{ix}]` must be a task id string"))?;
+                check_id_kind(&format!("{name}[{ix}]"), value, IdKind::Task)?;
+                Ok(value.to_string())
+            })
+            .collect();
+    }
+    if let Some(single) = id_value(args, "task_id")? {
+        check_id_kind("task_id", single, IdKind::Task)?;
+        return Ok(vec![single.to_string()]);
+    }
+    let aliases: Vec<String> = names[1..].iter().map(|n| format!("`{n}`")).collect();
+    Err(anyhow::anyhow!(
+        "`{key}` (array of task ids) is required (aliases: {}, `task_id`)",
+        aliases.join(", ")
+    ))
+}
+
+/// `(plan_id, task_id)` of a plan-membership tool. A generic `id` fills
+/// the missing side: by prefix when it has one (`pln_…` / `tsk_…`),
+/// otherwise only when exactly one side is missing.
+#[allow(dead_code)]
+fn resolve_plan_and_task_ids(args: &Map<String, Value>) -> anyhow::Result<(String, String)> {
+    let mut plan = id_value(args, "plan_id")?;
+    let mut task = id_value(args, "task_id")?;
+    if let Some(value) = plan {
+        check_id_kind("plan_id", value, IdKind::Plan)?;
+    }
+    if let Some(value) = task {
+        check_id_kind("task_id", value, IdKind::Task)?;
+    }
+    if let Some(id) = id_value(args, "id")? {
+        let label = id_prefix_label(id);
+        match (plan, task) {
+            (None, _) if label == Some(IdKind::Plan.label()) => plan = Some(id),
+            (_, None) if label == Some(IdKind::Task.label()) => task = Some(id),
+            (None, Some(_)) if label.is_none() => plan = Some(id),
+            (Some(_), None) if label.is_none() => task = Some(id),
+            _ => {}
+        }
+    }
+    match (plan, task) {
+        (Some(plan), Some(task)) => Ok((plan.to_string(), task.to_string())),
+        (plan, task) => {
+            let missing: Vec<&str> = [("`plan_id`", plan), ("`task_id`", task)]
+                .into_iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(n, _)| n)
+                .collect();
+            Err(anyhow::anyhow!(
+                "{} (string) required; `id` is accepted for one of them \
+                 (a `pln_`/`tsk_` prefix picks which)",
+                missing.join(" and ")
+            ))
+        }
+    }
 }
 
 fn required_i64(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::Result<i64> {
@@ -6886,5 +7192,187 @@ mod profile_tests {
         std::env::set_var("DARUMA_MCP_PROFILE", "garbage");
         assert_eq!(ToolProfile::from_env(), ToolProfile::Default);
         std::env::remove_var("DARUMA_MCP_PROFILE");
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+
+    const TASK: &str = "tsk_01a06cfc-eeb3-7d81-bf24-04b006fe955a";
+    const PLAN: &str = "pln_01a06cfc-eeb3-7d81-bf24-04a6a9c527fc";
+    const BARE: &str = "01a06cfc-eeb3-7d81-bf24-04b006fe955a";
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    fn err<T: std::fmt::Debug>(r: anyhow::Result<T>) -> String {
+        r.unwrap_err().to_string()
+    }
+
+    #[test]
+    fn task_id_accepts_schema_key_kind_key_and_id() {
+        for a in [
+            json!({"task_id": TASK}),
+            json!({"id": TASK}),
+            json!({"id": TASK, "task_id": TASK}),
+        ] {
+            assert_eq!(resolve_task_id(&args(a.clone()), "task_id").unwrap(), TASK);
+            assert_eq!(resolve_task_id(&args(a), "id").unwrap(), TASK);
+        }
+        // Bare uuids and surrounding whitespace pass through untouched.
+        assert_eq!(
+            resolve_task_id(&args(json!({"task_id": format!(" {BARE} ")})), "task_id").unwrap(),
+            BARE
+        );
+    }
+
+    #[test]
+    fn foreign_prefix_is_rejected_with_its_kind() {
+        assert_eq!(
+            err(resolve_task_id(&args(json!({"id": PLAN})), "id")),
+            format!("`id` = \"{PLAN}\" is a plan id, but this tool needs a task id")
+        );
+        assert_eq!(
+            err(resolve_plan_id(
+                &args(json!({"plan_id": "tsk_1"})),
+                "plan_id"
+            )),
+            "`plan_id` = \"tsk_1\" is a task id, but this tool needs a plan id"
+        );
+        assert!(err(resolve_task_id(
+            &args(json!({"task_id": "prj_1"})),
+            "task_id"
+        ))
+        .contains("is a project id"));
+        // Slugs that merely start with a prefix word are not ids.
+        assert_eq!(
+            resolve_doc_id(&args(json!({"doc_id": "rule_engine"})), "doc_id").unwrap(),
+            "rule_engine"
+        );
+    }
+
+    #[test]
+    fn generic_id_beside_an_explicit_id_is_ignored() {
+        // `id` may name another entity (e.g. a comment) next to `task_id`.
+        let a = args(json!({"task_id": TASK, "id": "cmt_1"}));
+        assert_eq!(resolve_task_id(&a, "task_id").unwrap(), TASK);
+    }
+
+    #[test]
+    fn conflicting_explicit_ids_fail() {
+        let a = args(json!({"id": "tsk_1", "task_id": "tsk_2"}));
+        assert_eq!(
+            err(resolve_task_id(&a, "id")),
+            "conflicting task ids: `id` = \"tsk_1\", `task_id` = \"tsk_2\""
+        );
+    }
+
+    #[test]
+    fn missing_id_names_aliases_and_the_wrong_kind_sent() {
+        assert_eq!(
+            err(resolve_plan_id(&args(json!({})), "plan_id")),
+            "`plan_id` (string) is required (alias: `id`)"
+        );
+        assert_eq!(
+            err(resolve_doc_id(&args(json!({})), "doc_id")),
+            "`doc_id` (string) is required (aliases: `document_id`, `id`)"
+        );
+        assert_eq!(
+            err(resolve_task_id(
+                &args(json!({"plan_id": PLAN, "id": ""})),
+                "id"
+            )),
+            "`id` (string) is required (alias: `task_id`); \
+             got `plan_id`, which names a plan, not a task"
+        );
+        assert_eq!(
+            err(resolve_run_id(&args(json!({"run_id": 7})), "run_id")),
+            "`run_id` must be a string id"
+        );
+    }
+
+    #[test]
+    fn every_kind_has_its_resolver_and_prefix() {
+        type Resolver = fn(&Map<String, Value>, &str) -> anyhow::Result<String>;
+        let cases: [(Resolver, &str, &str); 9] = [
+            (resolve_task_id, "task_id", "tsk_1"),
+            (resolve_plan_id, "plan_id", "pln_1"),
+            (resolve_doc_id, "doc_id", "doc_1"),
+            (resolve_run_id, "run_id", "run_1"),
+            (resolve_session_id, "session_id", "ags_1"),
+            (resolve_rule_id, "rule_id", "rule_1"),
+            (resolve_work_unit_id, "work_unit_id", "wu_1"),
+            (resolve_artifact_id, "artifact_id", "art_1"),
+            (resolve_relation_id, "relation_id", "artrel_1"),
+        ];
+        for (resolve, key, value) in cases {
+            assert_eq!(resolve(&args(json!({key: value})), key).unwrap(), value);
+            assert_eq!(resolve(&args(json!({"id": value})), key).unwrap(), value);
+            let foreign = if key == "task_id" { "pln_1" } else { "tsk_1" };
+            assert!(
+                err(resolve(&args(json!({key: foreign})), key)).contains("but this tool needs"),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            resolve_relation_id(&args(json!({"relation_id": "rel_1"})), "relation_id").unwrap(),
+            "rel_1"
+        );
+    }
+
+    #[test]
+    fn task_ids_accept_array_single_string_and_task_id() {
+        assert_eq!(
+            resolve_task_ids(&args(json!({"task_ids": ["tsk_1", BARE]})), "task_ids").unwrap(),
+            vec!["tsk_1".to_string(), BARE.to_string()]
+        );
+        assert_eq!(
+            resolve_task_ids(&args(json!({"ids": "tsk_1"})), "task_ids").unwrap(),
+            vec!["tsk_1".to_string()]
+        );
+        assert_eq!(
+            resolve_task_ids(&args(json!({"task_id": "tsk_1"})), "task_ids").unwrap(),
+            vec!["tsk_1".to_string()]
+        );
+        assert_eq!(
+            err(resolve_task_ids(
+                &args(json!({"task_ids": ["tsk_1", "pln_2"]})),
+                "task_ids"
+            )),
+            "`task_ids[1]` = \"pln_2\" is a plan id, but this tool needs a task id"
+        );
+        assert_eq!(
+            err(resolve_task_ids(&args(json!({"task_ids": []})), "task_ids")),
+            "`task_ids` must list at least one task id"
+        );
+        assert_eq!(
+            err(resolve_task_ids(&args(json!({})), "task_ids")),
+            "`task_ids` (array of task ids) is required (aliases: `ids`, `task_id`)"
+        );
+    }
+
+    #[test]
+    fn plan_and_task_ids_discriminate_generic_id_by_prefix() {
+        let both = |v: Value| resolve_plan_and_task_ids(&args(v));
+        let pair = (PLAN.to_string(), TASK.to_string());
+        assert_eq!(
+            both(json!({"plan_id": PLAN, "task_id": TASK})).unwrap(),
+            pair
+        );
+        assert_eq!(both(json!({"id": PLAN, "task_id": TASK})).unwrap(), pair);
+        assert_eq!(both(json!({"plan_id": PLAN, "id": TASK})).unwrap(), pair);
+        // A bare `id` fills the only missing side.
+        assert_eq!(
+            both(json!({"plan_id": PLAN, "id": BARE})).unwrap(),
+            (PLAN.to_string(), BARE.to_string())
+        );
+        assert_eq!(
+            err(both(json!({"id": PLAN}))),
+            "`task_id` (string) required; `id` is accepted for one of them \
+             (a `pln_`/`tsk_` prefix picks which)"
+        );
+        assert!(err(both(json!({"plan_id": TASK, "task_id": TASK}))).contains("is a task id"));
     }
 }

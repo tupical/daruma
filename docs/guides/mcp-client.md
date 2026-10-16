@@ -137,10 +137,15 @@ Supported launch modes:
   status — ready plan tasks come from `daruma_plan_progress` /
   `daruma_plan_drain_next`, and the 400 for an unknown status lists the valid
   values.
-- Plan id parameter names differ between tools, so the mismatched name is
-  accepted as an alias: `daruma_plan_next_task` takes `plan_id` for `id`
-  (and `run_id` is optional — the server generates one), `daruma_plan_progress`
-  takes `id` for `plan_id`.
+- Id parameter names differ between tools, so the mismatched name is
+  accepted as an alias: `daruma_get`, `daruma_set_status`, `daruma_comment`,
+  `daruma_claim`, `daruma_release` and `daruma_relations` take `id` or
+  `task_id`; `daruma_plan_get`, `daruma_plan_next_task` and
+  `daruma_plan_progress` take `id` or `plan_id` (`run_id` is optional on
+  `daruma_plan_next_task` — the server generates one). An id whose prefix names
+  another kind (`pln_…` where a task is expected) fails before any request, and
+  a missing id lists the accepted names. Bare UUIDs carry no kind, so a plan
+  UUID sent to a task tool still reaches the server and returns 404.
 - The same `workspaces.json` works in both modes. To bind projects while running
   from a parent folder, call `daruma_project_use` with `scope_path`
   (relative paths are resolved from `DARUMA_WORKSPACE` / process CWD).

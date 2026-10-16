@@ -81,6 +81,55 @@ async fn missing_plan_id_error_names_the_alias() {
     assert!(captured.lock().unwrap().is_empty());
 }
 
+/// Plan 01a06cfc (argument resolvers): task tools take `task_id` or `id`
+/// interchangeably, and an id of the wrong kind fails before any request.
+#[tokio::test]
+async fn task_tools_accept_id_and_task_id_interchangeably() {
+    for args in [json!({"id": "tsk_1"}), json!({"task_id": "tsk_1"})] {
+        assert_eq!(path_of("daruma_get", args.clone()).await, "/v1/tasks/tsk_1");
+        assert_eq!(
+            path_of("daruma_relations", args).await,
+            "/v1/tasks/tsk_1/relations"
+        );
+    }
+    assert_eq!(
+        path_of("daruma_comment", json!({"id": "tsk_1", "body": "hi"})).await,
+        "/v1/tasks/tsk_1/comments"
+    );
+}
+
+#[tokio::test]
+async fn wrong_kind_id_fails_before_any_request() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let (client, handle) = serve(captured.clone()).await;
+    let err = call_tool(
+        &client,
+        "daruma_set_status",
+        json!({"id": "pln_1", "status": "done"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    let missing = call_tool(
+        &client,
+        "daruma_comment",
+        json!({"plan_id": "pln_1", "body": "x"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    handle.abort();
+    assert_eq!(
+        err,
+        "`id` = \"pln_1\" is a plan id, but this tool needs a task id"
+    );
+    assert_eq!(
+        missing,
+        "`task_id` (string) is required (alias: `id`); got `plan_id`, which names a plan, not a task"
+    );
+    assert!(captured.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn list_tools_default_status_when_omitted() {
     assert_eq!(
