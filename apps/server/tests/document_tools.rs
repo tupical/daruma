@@ -41,11 +41,19 @@ async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> Value {
     .await
     .unwrap();
     assert!(resp.error.is_none(), "tool {name} failed: {:?}", resp.error);
-    let text = resp.result.unwrap()["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let result = resp.result.unwrap();
+    assert_ne!(result["isError"], true, "tool {name} failed: {result}");
+    let text = result["content"][0]["text"].as_str().unwrap().to_owned();
     serde_json::from_str(&text).unwrap()
+}
+
+/// Text of a tool that ran and failed: MCP reports it as a tool result with
+/// `isError: true`, not as a JSON-RPC error.
+fn tool_error_text(resp: daruma_mcp::JsonRpcResponse, why: &str) -> String {
+    assert!(resp.error.is_none(), "{why}: {:?}", resp.error);
+    let result = resp.result.expect(why);
+    assert_eq!(result["isError"], true, "{why}: {result}");
+    result["content"][0]["text"].as_str().unwrap().to_owned()
 }
 
 async fn create_project_via_mcp(client: &ApiClient, title: &str) -> String {
@@ -306,11 +314,7 @@ async fn doc_create_without_task_id_is_rejected() {
     )
     .await
     .unwrap();
-    assert!(
-        resp.error.is_some(),
-        "doc_create without task_id must fail: {resp:?}"
-    );
-    let msg = resp.error.unwrap().message;
+    let msg = tool_error_text(resp, "doc_create without task_id must fail");
     assert!(
         msg.contains("task_id") || msg.contains("anchored"),
         "error should explain the missing anchor: {msg}"
@@ -346,8 +350,8 @@ async fn live_anchor_guard_roundtrips_through_mcp_and_rest() {
         )
         .await
         .unwrap();
-        let error = resp.error.expect("live anchor mutation must fail");
-        assert!(error.message.contains("400"), "{error:?}");
+        let error = tool_error_text(resp, "live anchor mutation must fail");
+        assert!(error.contains("400"), "{error}");
         assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
     }
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
@@ -386,8 +390,8 @@ async fn live_anchor_guard_roundtrips_through_mcp_and_rest() {
         )
         .await
         .unwrap();
-        let error = resp.error.expect("terminal anchor must not become live");
-        assert!(error.message.contains("400"), "{error:?}");
+        let error = tool_error_text(resp, "terminal anchor must not become live");
+        assert!(error.contains("400"), "{error}");
         assert_eq!(handler.store.latest_seq().await.unwrap(), seq);
     }
     call_tool(
@@ -403,11 +407,7 @@ async fn live_anchor_guard_roundtrips_through_mcp_and_rest() {
     )
     .await;
     let resp = dispatch_request(&client, req("tools/call", json!({ "name": "daruma_doc_set_status", "arguments": { "document_id": doc_id, "status": "active" } }))).await.unwrap();
-    assert!(resp
-        .error
-        .expect("orphan reactivation must fail")
-        .message
-        .contains("400"));
+    assert!(tool_error_text(resp, "orphan reactivation must fail").contains("400"));
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
     assert_eq!(doc["document"]["status"], "archived");
     assert!(doc["document"].get("task_id").is_none());

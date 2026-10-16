@@ -114,11 +114,25 @@ async fn handle_tools_call(
         .cloned()
         .unwrap_or_else(|| Value::Object(Default::default()));
 
-    let output = call_tool_in_profile(client, profile, &name, arguments).await?;
+    // A failing tool is a tool result, not a protocol failure (MCP
+    // 2025-06-18 "Error Handling"): the model must see the message to
+    // self-correct, and clients drop JSON-RPC errors before the model.
+    let output = match call_tool_in_profile(client, profile, &name, arguments).await {
+        Ok(output) => output,
+        Err(e) => return Ok(tool_error_result(&e.to_string())),
+    };
     let text = serde_json::to_string(&output)?;
     Ok(json!({
         "content": [{ "type": "text", "text": text }]
     }))
+}
+
+/// `CallToolResult` for a tool that ran and failed.
+fn tool_error_result(message: &str) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": message }],
+        "isError": true
+    })
 }
 
 /// Read newline-delimited JSON-RPC frames from stdin, dispatch them, and
@@ -302,6 +316,65 @@ mod tests {
 
         assert!(!text.is_empty());
         assert!(text.contains("daruma_plan_drain_next"));
+    }
+
+    #[tokio::test]
+    async fn tool_failure_is_a_tool_result_with_is_error() {
+        // Port 1 refuses the connection: the tool runs and fails.
+        let client = ApiClient::new("http://127.0.0.1:1", "test-token");
+        let response = dispatch_request_with_profile(
+            &client,
+            ToolProfile::Default,
+            request(
+                "tools/call",
+                Some(json!({ "name": "daruma_healthz", "arguments": {} })),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let result = response.result.unwrap();
+        assert_eq!(result["isError"], true, "{result}");
+        assert_eq!(result["content"][0]["type"], "text");
+        assert!(!result["content"][0]["text"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hidden_and_unknown_tools_are_tool_errors() {
+        let client = ApiClient::new("http://127.0.0.1:1", "test-token");
+        for (name, needle) in [
+            ("daruma_history_latest", "not available"),
+            ("daruma_no_such_tool", "daruma_no_such_tool"),
+        ] {
+            let response = dispatch_request_with_profile(
+                &client,
+                ToolProfile::Default,
+                request("tools/call", Some(json!({ "name": name }))),
+            )
+            .await
+            .unwrap();
+            assert!(response.error.is_none(), "{name}: {:?}", response.error);
+            let result = response.result.unwrap();
+            assert_eq!(result["isError"], true, "{name}: {result}");
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains(needle), "{name}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_call_without_name_stays_a_protocol_error() {
+        let client = ApiClient::new("http://127.0.0.1:1", "test-token");
+        let response = dispatch_request_with_profile(
+            &client,
+            ToolProfile::Default,
+            request("tools/call", Some(json!({ "arguments": {} }))),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.result.is_none());
+        assert!(response.error.unwrap().message.contains("name"));
     }
 
     #[tokio::test]
