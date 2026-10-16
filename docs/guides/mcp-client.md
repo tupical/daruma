@@ -6,7 +6,8 @@ files for the client live under a single directory:
 ```text
 ~/.agents/daruma/
   credentials.json   # optional local/self-host profiles
-  workspaces.json    # map: workspace/scope path → default project id
+  workspaces.json    # legacy scope bindings; imported to the server once,
+                     # then renamed to workspaces.json.migrated
   data/              # server SQLite (default DARUMA_DATA_DIR)
     daruma.sqlite
     bootstrap.token
@@ -16,10 +17,10 @@ files for the client live under a single directory:
 
 | Variable | Purpose |
 |----------|---------|
-| `DARUMA_WORKSPACE` | Workspace key (default: process CWD). Used to infer the nearest configured repo scope in `workspaces.json`. |
-| `DARUMA_PROJECT_ID` | Overrides the on-disk default for this session. |
+| `DARUMA_WORKSPACE` | Workspace key (default: process CWD). Used to infer the nearest repo scope bound on the server (`/v1/repo-scopes`). |
+| `DARUMA_PROJECT_ID` | Overrides the server-side scope binding for this session. |
 | `DARUMA_AGENT_DIR` | Override agent data root (default `~/.agents/daruma`). |
-| `DARUMA_WORKSPACES_FILE` | Override path to `workspaces.json` only. |
+| `DARUMA_WORKSPACES_FILE` | Override path of the legacy `workspaces.json` imported on startup (see [Migration](#migration)). |
 | `DARUMA_API_URL` / `DARUMA_TOKEN` | Remote server (see [ai-agent.md](ai-agent.md)). When unset, `daruma mcp` reads the active profile from `credentials.json`. |
 | `DARUMA_WORKSPACE_ID` | Optional workspace UUID sent as `X-Daruma-Workspace-Id`. If unset, uses `workspace_id` from the active profile in `credentials.json`, or a UUID-valued `DARUMA_WORKSPACE`. |
 
@@ -95,21 +96,35 @@ the CLI checks `~/.agents/daruma/data/bootstrap.token`.
 `daruma mcp` stdio remains available for clients that do not support remote
 HTTP MCP.
 
-## `workspaces.json` shape
+## Repo scope bindings
+
+Repo scope bindings (`scope_path → project_id`) are stored on the server in
+the `repo_scopes` table, not in a local file. `GET /v1/repo-scopes` returns
+every binding; `PUT /v1/repo-scopes` with
+`{"scope_path": "...", "project_id": "..."}` upserts one, and
+`"project_id": null` removes it:
 
 ```json
-{
-  "workspaces": {
-    "/home/you/projects/daruma": "01900000-0000-7000-8000-000000000001",
-    "/home/you/projects/daruma-secondary": "01900000-0000-7000-8000-000000000002"
-  }
-}
+[
+  { "scope_path": "/home/you/projects/daruma", "project_id": "01900000-0000-7000-8000-000000000001" },
+  { "scope_path": "/home/you/projects/daruma-secondary", "project_id": "01900000-0000-7000-8000-000000000002" }
+]
 ```
 
-Bind repo scopes via MCP tool `daruma_project_use` or override the whole
-session with env `DARUMA_PROJECT_ID`.
+The server stores paths in canonical form (trailing slash trimmed, Windows
+spellings such as `C:\Repos\app` and `C:/Repos/app/` collapse to one row).
+Because bindings are server-side, local stdio sessions and hosted
+(`/v1/mcp`) sessions resolve the same mapping. A server that predates
+`/v1/repo-scopes` yields no bindings; explicit `project_id` arguments keep
+working there.
 
-For multi-repo folders, add one entry per repository. Task tools resolve project
+Bind repo scopes via MCP tool `daruma_project_use` or override the whole
+session with env `DARUMA_PROJECT_ID`. When a `scope_path` has no binding and
+the server runs with `DARUMA_AUTO_PROVISION_REPO_PROJECT` on (default off),
+the client asks `POST /v1/repo-scopes/provision` to create and bind a project
+named after the directory.
+
+For multi-repo folders, add one binding per repository. Task tools resolve project
 scope in this order:
 
 1. explicit `project_id`
@@ -131,7 +146,7 @@ Supported launch modes:
   `needs_project_selection` response with project ids/titles/slugs. Ask the
   user which project to use, call `daruma_project_use` with that
   `project_id`, then retry `daruma_list`; the selected project is persisted
-  in `workspaces.json` for later calls.
+  as a server-side repo scope binding for later calls.
 - `status` is optional on the list tools: `daruma_list` defaults to `active`,
   `daruma_plan_list` to `draft,active`. There is no `ready`/`blocked` task
   status — ready plan tasks come from `daruma_plan_progress` /
@@ -159,18 +174,34 @@ Supported launch modes:
   UUID sent to a task tool still reaches the server and returns 404. Project,
   agent, workspace, handoff, finding, history and graph-node ids keep their
   single name.
-- The same `workspaces.json` works in both modes. To bind projects while running
-  from a parent folder, call `daruma_project_use` with `scope_path`
+- The same server-side bindings serve both modes. To bind projects while
+  running from a parent folder, call `daruma_project_use` with `scope_path`
   (relative paths are resolved from `DARUMA_WORKSPACE` / process CWD).
 
 ## Migration
 
-On first run after upgrading, if `~/.agents/daruma/workspaces.json` is
-missing, the client copies from the first existing legacy file:
+Earlier clients kept bindings in `~/.agents/daruma/workspaces.json`
+(`DARUMA_WORKSPACES_FILE` when overridden), shaped
+`{"workspaces": {"<repo path>": "<project id>"}}`. On `daruma mcp` (stdio)
+startup the client imports that file into the server:
 
-1. `~/.config/daruma/workspaces.json`
-2. `$XDG_CONFIG_HOME/daruma/workspaces.json`
-3. `./daruma/workspaces.json` (old repo-local path — do not commit this)
+1. If `~/.agents/daruma/workspaces.json` is missing, it is first copied from
+   the first existing legacy location:
+   1. `~/.config/daruma/workspaces.json`
+   2. `$XDG_CONFIG_HOME/daruma/workspaces.json`
+   3. `./daruma/workspaces.json` (old repo-local path — do not commit this)
+
+   The legacy source is not deleted: remove it after the import, or it is
+   copied and imported again on the next startup.
+2. Each non-empty binding is sent to `PUT /v1/repo-scopes`. A binding whose
+   project no longer exists (HTTP 404) is dropped.
+3. After all bindings are pushed, the file is renamed to
+   `workspaces.json.migrated` and is no longer read. Bindings are managed
+   only on the server from then on; editing the renamed file has no effect.
+
+If any other `PUT` fails, the file stays in place and the import is retried
+on the next startup. Hosted `/v1/mcp` sessions never read a local
+`workspaces.json`.
 
 ## Do not use
 
