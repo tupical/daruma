@@ -67,6 +67,7 @@ pub struct TestAppBuilder {
     mint_admin: bool,
     admin_agent_id: Option<AgentId>,
     lifecycle_gate: Option<Arc<dyn LifecycleGate>>,
+    rule_engine_gate: bool,
     auto_provision_repo_project: bool,
     plan_only_intake: bool,
 }
@@ -78,6 +79,7 @@ impl Default for TestAppBuilder {
             mint_admin: true,
             admin_agent_id: None,
             lifecycle_gate: None,
+            rule_engine_gate: false,
             auto_provision_repo_project: false,
             plan_only_intake: false,
         }
@@ -101,6 +103,13 @@ impl TestAppBuilder {
     /// (docs/LIFECYCLE_RULES_SPEC.md §1.5).
     pub fn lifecycle_gate(mut self, gate: Arc<dyn LifecycleGate>) -> Self {
         self.lifecycle_gate = Some(gate);
+        self
+    }
+
+    /// Wire the production rule engine over this app's own rule and evidence
+    /// projections, exactly as `main.rs` does.
+    pub fn rule_engine_gate(mut self) -> Self {
+        self.rule_engine_gate = true;
         self
     }
 
@@ -213,6 +222,10 @@ impl TestAppBuilder {
         .with_plan_only_intake(self.plan_only_intake);
         if let Some(gate) = self.lifecycle_gate.clone() {
             handler = handler.with_lifecycle_gate(gate);
+        } else if self.rule_engine_gate {
+            handler = handler.with_lifecycle_gate(Arc::new(
+                daruma_core::RuleEngineGate::with_evidence(rules.clone(), evidence.clone()),
+            ));
         }
         let handler = Arc::new(handler);
         let command_bus = CommandBus::new(handler);

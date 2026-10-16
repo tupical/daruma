@@ -9,7 +9,7 @@
 use crate::parse_ts;
 use daruma_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{CoreError, PlanId, ProjectId, Result, RuleId, TaskId};
+use daruma_shared::{CoreError, PlanId, ProjectId, Result, RuleId, RunId, TaskId};
 use sqlx::{Row, SqlitePool};
 
 pub struct RuleRepo {
@@ -116,6 +116,42 @@ impl RuleRepo {
                     .map_err(|_| CoreError::storage("bad plan_tasks.plan_id"))
             })
             .collect()
+    }
+
+    /// Parent of a persisted plan, for walking plan ancestry in the scope
+    /// chain. `None` = no such plan row (legacy ghost or not yet persisted);
+    /// `Some(None)` = a root plan.
+    pub async fn plan_parent_id(&self, id: PlanId) -> Result<Option<Option<PlanId>>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT parent_plan_id FROM plans WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        row.map(|(parent,)| {
+            parent
+                .map(|p| {
+                    p.parse()
+                        .map_err(|_| CoreError::storage("bad plans.parent_plan_id"))
+                })
+                .transpose()
+        })
+        .transpose()
+    }
+
+    /// Plan of a persisted run. `RunCompleted` carries only the run id; runs
+    /// inherit their plan's rules (spec §2), so the gate resolves it here.
+    pub async fn run_plan_id(&self, id: RunId) -> Result<Option<PlanId>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT plan_id FROM runs WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        row.map(|(plan,)| {
+            plan.parse()
+                .map_err(|_| CoreError::storage("bad runs.plan_id"))
+        })
+        .transpose()
     }
 
     pub async fn effective_rules(
