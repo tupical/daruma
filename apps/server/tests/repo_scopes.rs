@@ -389,6 +389,11 @@ async fn server_mode_mcp_resolves_scopes_from_table() {
         .json()
         .await
         .unwrap();
-    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    // A failed tool call is a `CallToolResult` with `isError: true`, not a
+    // JSON-RPC error (docs/mcp: tool-error protocol).
+    assert_eq!(body["result"]["isError"], true, "got: {body}");
+    let msg = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
     assert!(msg.contains("no daruma scope configured"), "got: {body}");
 }
