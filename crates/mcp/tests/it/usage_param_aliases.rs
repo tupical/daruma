@@ -319,3 +319,78 @@ async fn wrong_kind_ids_fail_in_every_family() {
         "`task_id` = \"pln_1\" is a plan id, but this tool needs a task id"
     );
 }
+
+/// Plan 01a06cfc, task 04eacc9f (schemas): the key task/plan tools advertise
+/// the alias their resolver accepts, so neither name is `required`, and a
+/// call that sends only the alias reaches the server with that id.
+#[tokio::test]
+async fn key_tool_schemas_advertise_the_accepted_id_alias() {
+    let agent = "019e0000-0000-7000-8000-000000000001";
+    let cases = [
+        ("daruma_get", "id", json!({"task_id": "tsk_1"})),
+        (
+            "daruma_update",
+            "id",
+            json!({"task_id": "tsk_1", "title": "t"}),
+        ),
+        (
+            "daruma_set_status",
+            "id",
+            json!({"task_id": "tsk_1", "status": "todo"}),
+        ),
+        ("daruma_complete", "id", json!({"task_id": "tsk_1"})),
+        (
+            "daruma_comment",
+            "task_id",
+            json!({"id": "tsk_1", "body": "b"}),
+        ),
+        ("daruma_relations", "task_id", json!({"id": "tsk_1"})),
+        (
+            "daruma_claim",
+            "task_id",
+            json!({"id": "tsk_1", "agent_id": agent}),
+        ),
+        (
+            "daruma_release",
+            "task_id",
+            json!({"id": "tsk_1", "agent_id": agent}),
+        ),
+        ("daruma_plan_get", "id", json!({"plan_id": "pln_1"})),
+        ("daruma_plan_progress", "plan_id", json!({"id": "pln_1"})),
+        ("daruma_plan_drain_next", "plan_id", json!({"id": "pln_1"})),
+    ];
+    let defs = tool_definitions();
+    for (tool, key, args) in cases {
+        let alias = args
+            .as_object()
+            .unwrap()
+            .keys()
+            .find(|k| ["id", "task_id", "plan_id"].contains(&k.as_str()))
+            .unwrap()
+            .clone();
+        let schema = &defs.iter().find(|t| t.name == tool).unwrap().input_schema;
+        for name in [key, alias.as_str()] {
+            assert_eq!(
+                schema["properties"][name]["type"], "string",
+                "{tool}.{name}"
+            );
+            let required = schema["required"].as_array().cloned().unwrap_or_default();
+            assert!(!required.contains(&json!(name)), "{tool} requires {name}");
+        }
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let (client, handle) = serve(captured.clone()).await;
+        let result = call_tool(&client, tool, args).await;
+        handle.abort();
+        let id = if alias == "plan_id" || tool.starts_with("daruma_plan_") {
+            "pln_1"
+        } else {
+            "tsk_1"
+        };
+        let sent = serde_json::to_string(&*captured.lock().unwrap()).unwrap();
+        assert!(
+            sent.contains(id),
+            "{tool} {{{alias}}} did not reach the server with {id}: {result:?} {sent}"
+        );
+    }
+}

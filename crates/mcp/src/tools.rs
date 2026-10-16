@@ -257,14 +257,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_get",
             "Get task",
             "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version. `comments: true` also attaches the task's full comment list as `comments` (never trimmed by `max_tokens`, never replaced by the `unchanged` marker).",
-            schema_get_task(),
+            with_id_alias(schema_get_task(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
             "daruma_update",
             "Update task",
             "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; null clears). Under plan-only intake title/description are plan-owned — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
-            schema_update(),
+            with_id_alias(schema_update(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
@@ -299,7 +299,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_set_status",
             "Set task status",
             "Set a task's status. Optional `comment` {body, kind} lands atomically with the transition — no separate daruma_comment.",
-            schema_set_status(),
+            with_id_alias(schema_set_status(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
@@ -320,7 +320,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_complete",
             "Complete task",
             "Complete a task. Optional note (reason / result_summary / acceptance_criteria_status / related_artifacts) replaces a separate daruma_comment; the actor is recorded automatically.",
-            schema_complete(),
+            with_id_alias(schema_complete(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
@@ -355,7 +355,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_comment",
             "Comment on task",
             "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected).",
-            schema_comment(),
+            with_id_alias(schema_comment(), "task_id", "id"),
             Dom::Tasks, D, E, Ann::Write,
         ),
         tool(
@@ -595,7 +595,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_plan_get",
             "Get plan",
             "Fetch a plan with progress metrics — the cheap way to summarize one plan (prefer over enumerating plans or tasks).",
-            schema_plan_get(),
+            with_id_alias(schema_plan_get(), "id", "plan_id"),
             Dom::Plans, D, C, Ann::Read,
         ),
         tool(
@@ -658,14 +658,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_plan_progress",
             "Plan progress snapshot",
             "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active). Alias of `plan_id`: `id`.",
-            schema_with_id("plan_id"),
+            with_id_alias(schema_with_id("plan_id"), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Read,
         ),
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
             "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
-            schema_plan_drain_next(),
+            with_id_alias(schema_plan_drain_next(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Write,
         ),
         tool(
@@ -891,14 +891,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_claim",
             "Claim task",
             "Claim a task optimistically for a TTL in seconds; agent UUID from daruma_workspace_info.mcp_agent_id.",
-            schema_claim(),
+            with_id_alias(schema_claim(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::Write,
         ),
         tool(
             "daruma_release",
             "Release task claim",
             "Release a previously-acquired task claim.",
-            schema_release(),
+            with_id_alias(schema_release(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::WriteIdem,
         ),
         tool(
@@ -1090,7 +1090,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_relations",
             "Read task relations",
             "Task relations in 5 groups (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
-            schema_relations(),
+            with_id_alias(schema_relations(), "task_id", "id"),
             Dom::Relations, D, E, Ann::Read,
         ),
         // ── Documents ─────────────────────────────────────────────────────
@@ -3290,9 +3290,26 @@ fn empty_schema() -> Value {
 fn schema_with_id(field: &str) -> Value {
     json!({
         "type":"object",
-        "properties": {field: {"type":"string","description":"Task identifier"}},
+        "properties": {field: {"type":"string"}},
         "required": [field]
     })
+}
+
+/// Advertise an id name the dispatch resolver already accepts for `key`
+/// ([`resolve_id`]): `alias` joins the properties and `key` leaves
+/// `required`, since either name satisfies the call; a call with neither
+/// fails with the accepted names. No prose here — `tools/list` is
+/// size-budgeted, and the server instructions state the rule once.
+fn with_id_alias(mut schema: Value, key: &str, alias: &str) -> Value {
+    schema["properties"][alias] = json!({"type":"string"});
+    let object = schema.as_object_mut().expect("tool schema is an object");
+    if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|name| name != key);
+        if required.is_empty() {
+            object.remove("required");
+        }
+    }
+    schema
 }
 
 /// `schema_with_id` plus an optional `max_tokens` budget for bounded excerpt
@@ -3303,11 +3320,11 @@ fn schema_with_id(field: &str) -> Value {
 /// (task D session dedup). It is off unless the tool actually implements dedup,
 /// so clients that do not understand the `unchanged` marker never see it.
 fn schema_bounded_read(field: &str, id_desc: &str) -> Value {
-    schema_bounded_read_ext(field, id_desc, false)
+    schema_bounded_read_ext(field, Some(id_desc), false)
 }
 
 fn schema_get_task() -> Value {
-    let mut schema = schema_bounded_read_ext("id", "Task identifier", true);
+    let mut schema = schema_bounded_read_ext("id", None, true);
     schema["properties"]["comments"] = json!({
         "type":"boolean",
         "default": false,
@@ -3316,9 +3333,12 @@ fn schema_get_task() -> Value {
     schema
 }
 
-fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Value {
+fn schema_bounded_read_ext(field: &str, id_desc: Option<&str>, with_dedup: bool) -> Value {
     let mut props = json!({
-        field: {"type":"string","description": id_desc},
+        field: match id_desc {
+            Some(desc) => json!({"type":"string","description": desc}),
+            None => json!({"type":"string"}),
+        },
         "max_tokens": {
             "type":"integer",
             "minimum": 1,
@@ -3348,7 +3368,7 @@ fn schema_complete() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id": {"type":"string","description":"Task identifier"},
+            "id": {"type":"string"},
             "reason": {"type":"string","description":"Why the task is done."},
             "result_summary": {"type":"string","description":"Produced outcome."},
             "acceptance_criteria_status": {"type":"string","description":"Acceptance-criteria result."},
@@ -3576,7 +3596,7 @@ fn schema_update() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id": {"type":"string", "description":"Task identifier"},
+            "id": {"type":"string"},
             "title": {"type":"string"},
             "description": {"type":"string"},
             "due_at": {

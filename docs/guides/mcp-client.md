@@ -143,7 +143,12 @@ Supported launch modes:
   (`task_id`, `plan_id`, `run_id`, `doc_id` / `document_id`, `session_id`,
   `rule_id`, `work_unit_id`, `artifact_id`, `relation_id`) or the generic `id`:
   `daruma_get {task_id}` and `daruma_comment {id}` both work, as do
-  `daruma_plan_progress {id}` and `daruma_run_complete {id}`. Bulk tools take
+  `daruma_plan_progress {id}` and `daruma_run_complete {id}`. The schemas of
+  the key tools — `daruma_get`, `daruma_update`, `daruma_set_status`,
+  `daruma_complete`, `daruma_comment`, `daruma_relations`, `daruma_claim`,
+  `daruma_release`, `daruma_plan_get`, `daruma_plan_progress`,
+  `daruma_plan_drain_next` — list both names and require neither; a call with
+  neither fails with the accepted names. Bulk tools take
   `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
   different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
   generic `id` fill the missing one; `from_work_unit_id` / `to_work_unit_id` of
