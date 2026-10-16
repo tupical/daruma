@@ -213,6 +213,11 @@ async fn relations_read_returns_five_groups() {
     .await
     .unwrap();
     assert!(r1.error.is_none(), "link A->B failed: {:?}", r1.error);
+    assert_ne!(
+        r1.result.as_ref().unwrap()["isError"],
+        true,
+        "link A->B failed: {r1:?}"
+    );
 
     // A relates_to C
     let r2 = dispatch_request(
@@ -228,6 +233,11 @@ async fn relations_read_returns_five_groups() {
     .await
     .unwrap();
     assert!(r2.error.is_none(), "link A->C failed: {:?}", r2.error);
+    assert_ne!(
+        r2.result.as_ref().unwrap()["isError"],
+        true,
+        "link A->C failed: {r2:?}"
+    );
 
     // A duplicates D
     let r3 = dispatch_request(
@@ -243,6 +253,11 @@ async fn relations_read_returns_five_groups() {
     .await
     .unwrap();
     assert!(r3.error.is_none(), "link A->D failed: {:?}", r3.error);
+    assert_ne!(
+        r3.result.as_ref().unwrap()["isError"],
+        true,
+        "link A->D failed: {r3:?}"
+    );
 
     // Read relations for A
     let rel_resp = dispatch_request(

@@ -2,9 +2,9 @@
 //! backed by stored lifecycle rules (docs/LIFECYCLE_RULES_SPEC.md).
 //!
 //! Flow for one [`GateCheck`]: map the trigger, assemble the scope chain from
-//! task/plan/run projections, ask the repo for effective enabled rules on each
-//! applicable scope chain (`mode != off`), match each rule's condition against
-//! the check, then turn matched rules into a decision:
+//! the entity refs the check carries, ask the repo for effective enabled rules
+//! (`mode != off`), match each rule's condition against the check, then turn
+//! matched rules into a decision:
 //!
 //! - `required`    → [`GateDecision::Blocked`]
 //! - `recommendation` → [`GateDecision::Warning`]
@@ -49,39 +49,24 @@ use daruma_storage::{evidence_repo::EvidenceCheck, EvidenceRepo, RuleRepo};
 pub struct RuleEngineGate {
     rules: Arc<RuleRepo>,
     evidence: Option<Arc<EvidenceRepo>>,
-    plans: Arc<dyn crate::repos::PlanRepository>,
-    runs: Arc<dyn crate::repos::RunRepository>,
 }
 
 impl RuleEngineGate {
     /// Construct without evidence: every requirement is treated as unsatisfied
     /// (honest v1 behaviour). Prefer [`RuleEngineGate::with_evidence`].
-    pub fn new(
-        rules: Arc<RuleRepo>,
-        plans: Arc<dyn crate::repos::PlanRepository>,
-        runs: Arc<dyn crate::repos::RunRepository>,
-    ) -> Self {
+    pub fn new(rules: Arc<RuleRepo>) -> Self {
         Self {
             rules,
             evidence: None,
-            plans,
-            runs,
         }
     }
 
     /// Construct with an evidence registry so satisfied `required` requirements
     /// unblock the transition (spec §1.3).
-    pub fn with_evidence(
-        rules: Arc<RuleRepo>,
-        evidence: Arc<EvidenceRepo>,
-        plans: Arc<dyn crate::repos::PlanRepository>,
-        runs: Arc<dyn crate::repos::RunRepository>,
-    ) -> Self {
+    pub fn with_evidence(rules: Arc<RuleRepo>, evidence: Arc<EvidenceRepo>) -> Self {
         Self {
             rules,
             evidence: Some(evidence),
-            plans,
-            runs,
         }
     }
 
@@ -133,51 +118,10 @@ impl RuleEngineGate {
             .await
     }
 
-    /// Build the scope chains (outermost → innermost) for a check. Tenant is
-    /// always the root. Resolve every membership independently: sibling plans
-    /// are not inner scopes of one another. Within each branch ancestors precede
-    /// descendants, preserving RuleRepo's existing same-key override policy.
-    async fn scope_chains(&self, check: &GateCheck) -> Result<Vec<Vec<RuleScope>>> {
-        let mut memberships = if let Some(task) = check.task_id {
-            self.plans.list_plans_for_task(task).await?
-        } else {
-            Vec::new()
-        };
-        memberships.extend(check.plan_id);
-        memberships.sort();
-        memberships.dedup();
-        if memberships.is_empty() {
-            return Ok(vec![Self::scope_chain(check)]);
-        }
-        let mut chains = Vec::new();
-        for membership in memberships {
-            let mut ancestors = Vec::new();
-            let mut project_id = check.project_id;
-            let mut cursor = Some(membership);
-            while let Some(id) = cursor {
-                if ancestors.contains(&id) {
-                    return Err(daruma_shared::CoreError::conflict(
-                        "cyclic plan scope ancestry",
-                    ));
-                }
-                ancestors.push(id);
-                let plan = self.plans.get(id).await?;
-                project_id = project_id.or(plan.as_ref().map(|plan| plan.project_id));
-                cursor = plan.and_then(|plan| plan.parent_plan_id);
-            }
-            let mut chain = vec![RuleScope::Tenant];
-            if let Some(project) = project_id {
-                chain.push(RuleScope::Project { id: project });
-            }
-            chain.extend(ancestors.into_iter().rev().map(|id| RuleScope::Plan { id }));
-            if let Some(task) = check.task_id {
-                chain.push(RuleScope::Task { id: task });
-            }
-            chains.push(chain);
-        }
-        Ok(chains)
-    }
-
+    /// Build the scope chain (outermost → innermost) for a check. Tenant is
+    /// always the root; project/plan/task are appended when the check carries
+    /// their id. Run-level checks inherit via the plan/task refs the gate
+    /// derivation already attached (spec §1: runs have no own scope).
     fn scope_chain(check: &GateCheck) -> Vec<RuleScope> {
         let mut chain = vec![RuleScope::Tenant];
         if let Some(project_id) = check.project_id {
@@ -214,42 +158,46 @@ impl LifecycleGate for RuleEngineGate {
         let trigger = map_trigger(check.trigger);
         // Task transitions carry only the task id: resolve its project (scope
         // chain) and title (`title_prefix`) from the persisted row.
-        let mut resolved = check.clone();
-        if resolved.plan_id.is_none() {
-            if let Some(run) = resolved.run_id {
-                resolved.plan_id = self.runs.get(run).await?.map(|run| run.plan_id);
-            }
-        }
-        let check = match resolved.task_id {
-            Some(task_id) if resolved.project_id.is_none() || resolved.task_title.is_none() => {
+        let mut resolved;
+        let mut task_plan_ids: Vec<daruma_shared::PlanId> = Vec::new();
+        let check = match check.task_id {
+            Some(task_id) if check.project_id.is_none() || check.task_title.is_none() => {
+                resolved = check.clone();
                 if let Some((project_id, title)) = self.rules.task_context(task_id).await? {
                     resolved.project_id = resolved.project_id.or(project_id);
                     resolved.task_title.get_or_insert(title);
                 }
+                // Same gap as project_id above: a direct task transition
+                // never carries plan_id, so a plan-scoped rule on a plan
+                // this task is a member of would silently never fire. A
+                // task can belong to several plans (or none) — check all.
+                if resolved.plan_id.is_none() {
+                    task_plan_ids = self.rules.task_plan_ids(task_id).await?;
+                }
                 &resolved
             }
-            _ => &resolved,
+            _ => check,
         };
-        let mut candidates = Vec::new();
-        for chain in self.scope_chains(check).await? {
-            for rule in self.rules.effective_rules(&chain, trigger).await? {
-                candidates.push((rule, chain.clone()));
+        let chain = Self::scope_chain(check);
+        let mut candidates = self.rules.effective_rules(&chain, trigger).await?;
+        for plan_id in &task_plan_ids {
+            let mut plan_check = check.clone();
+            plan_check.plan_id = Some(*plan_id);
+            let plan_chain = Self::scope_chain(&plan_check);
+            for rule in self.rules.effective_rules(&plan_chain, trigger).await? {
+                if !candidates.iter().any(|r| r.id == rule.id) {
+                    candidates.push(rule);
+                }
             }
         }
-        let mut acting = std::collections::HashSet::new();
-        let mut blocked_chains = std::collections::HashMap::new();
 
         let mut warnings = Vec::new();
         let mut blocked: Vec<(&Rule, Option<String>)> = Vec::new();
         // Any blocked rule that forbids override poisons the whole override.
         let mut override_forbidden = false;
 
-        for (rule, chain) in &candidates {
-            if rule.mode == RuleMode::Recommendation
-                && !observations
-                    .iter()
-                    .any(|o: &RuleObservation| o.rule_id == rule.id)
-            {
+        for rule in &candidates {
+            if rule.mode == RuleMode::Recommendation {
                 observations.push(RuleObservation {
                     rule_id: rule.id,
                     rule_key: rule.rule_key.clone(),
@@ -266,7 +214,7 @@ impl LifecycleGate for RuleEngineGate {
             let evidence_check = if rule.mode == RuleMode::Off {
                 None
             } else {
-                Some(self.requirement_satisfied(rule, chain).await?)
+                Some(self.requirement_satisfied(rule, &chain).await?)
             };
             if evidence_check
                 .as_ref()
@@ -275,18 +223,12 @@ impl LifecycleGate for RuleEngineGate {
             {
                 continue;
             }
-            // Shared ancestor/task rules may appear in several branches. They
-            // act once, but evidence in a sibling branch cannot satisfy them.
-            if !acting.insert(rule.id) {
-                continue;
-            }
             let rejection_reason = evidence_check.and_then(|check| check.reason);
             match rule.mode {
                 RuleMode::Off => {}
                 RuleMode::Recommendation => {
                     observations
-                        .iter_mut()
-                        .find(|o| o.rule_id == rule.id)
+                        .last_mut()
                         .expect("advisory observation")
                         .triggered = true;
                     warnings.push(rule_warning(rule));
@@ -295,7 +237,6 @@ impl LifecycleGate for RuleEngineGate {
                     if !rule.override_allowed {
                         override_forbidden = true;
                     }
-                    blocked_chains.insert(rule.id, chain);
                     blocked.push((rule, rejection_reason));
                 }
             }
@@ -357,9 +298,17 @@ impl LifecycleGate for RuleEngineGate {
         // learns the exact evidence that satisfies each requirement without
         // a trial-and-error loop (the custom rule `message` does not carry
         // the requirement type, let alone the evidence kind/scope).
+        // The rejection reason rides along (e.g. which document version a
+        // `latest` ack must carry), since it is not derivable from the rule.
         let unblock: Vec<serde_json::Value> = blocked
             .iter()
-            .map(|(rule, _)| unblock_hint(rule, blocked_chains[&rule.id], check.trigger))
+            .map(|(rule, reason)| {
+                let mut hint = unblock_hint(rule, &chain, check.trigger);
+                if let (Some(reason), Some(hint)) = (reason, hint.as_object_mut()) {
+                    hint.insert("reason".into(), json!(reason));
+                }
+                hint
+            })
             .collect();
         let (first, reason) = &blocked[0];
         Ok((
@@ -384,7 +333,8 @@ impl LifecycleGate for RuleEngineGate {
 /// the evidence proving it line up without translation (spec §1.3). The target
 /// narrows the match (e.g. the document a `read_artifact` rule names); `None`
 /// means any evidence of that kind in scope satisfies the rule. Empty field
-/// lists and `latest` are normalized to no additional constraint.
+/// lists are normalized to no additional constraint; `latest` is resolved by
+/// the evidence repo against the document's current version.
 fn requirement_evidence(
     req: &Requirement,
 ) -> (
@@ -401,7 +351,7 @@ fn requirement_evidence(
             EvidenceKind::DocumentReadAck,
             Some(doc_ref.clone()),
             None,
-            (min_version != "latest").then_some(min_version.as_str()),
+            Some(min_version.as_str()),
         ),
         Requirement::IndependentTestVerification {
             source_revision, ..

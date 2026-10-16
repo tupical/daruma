@@ -732,9 +732,19 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<Vec<daruma_domain::St
             "done" => Status::Done,
             "cancelled" => Status::Cancelled,
             other => {
+                // `ready`/`blocked` are plan readiness, not task statuses —
+                // name the call that answers the question instead.
+                let hint = match other.to_ascii_lowercase().as_str() {
+                    "ready" | "blocked" => {
+                        " (readiness is per plan: use status=todo or status=active, \
+                         and daruma_plan_progress / daruma_plan_drain_next for ready tasks)"
+                    }
+                    _ => "",
+                };
                 return Err(ApiError::from(CoreError::validation(format!(
-                    "unknown task status: {other}"
-                ))))
+                    "unknown task status: {other}; valid: inbox, todo, in_progress, \
+                     in_review, done, cancelled, active, all{hint}"
+                ))));
             }
         };
         if !out.contains(&parsed) {
@@ -1998,24 +2008,35 @@ async fn get_project_settings(
 }
 
 /// Current settings body shared by GET and PATCH: `intake_source` is `null`
-/// when the project has no plan-source policy (behaves as `warn`).
+/// when the project has no plan-source policy (behaves as `warn`); `audit`
+/// is `null` when the project has no audit thresholds (engine defaults).
 async fn project_settings_json(state: &AppState, id: ProjectId) -> Result<Value, ApiError> {
     let auto_append = state
         .project_settings
         .auto_append(id)
         .await
         .map_err(ApiError::from)?;
+    let mut body = json!({ "auto_append": auto_append });
     // A policy this server cannot read (e.g. written by a newer version) is
     // reported, not a 500: intake treats it as `warn` meanwhile.
-    Ok(match state.project_settings.intake_source(id).await {
-        Ok(intake_source) => json!({ "auto_append": auto_append, "intake_source": intake_source }),
-        Err(CoreError::Serde(e)) => json!({
-            "auto_append": auto_append,
-            "intake_source": null,
-            "intake_source_error": e,
-        }),
+    match state.project_settings.intake_source(id).await {
+        Ok(intake_source) => body["intake_source"] = json!(intake_source),
+        Err(CoreError::Serde(e)) => {
+            body["intake_source"] = Value::Null;
+            body["intake_source_error"] = json!(e);
+        }
         Err(e) => return Err(ApiError::from(e)),
-    })
+    }
+    // Same for an audit value that is not JSON (written around the API).
+    match state.project_settings.audit(id).await {
+        Ok(audit) => body["audit"] = json!(audit),
+        Err(CoreError::Serde(e)) => {
+            body["audit"] = Value::Null;
+            body["audit_error"] = json!(e);
+        }
+        Err(e) => return Err(ApiError::from(e)),
+    }
+    Ok(body)
 }
 
 #[derive(Deserialize)]
@@ -2024,10 +2045,13 @@ struct ProjectSettingsPatchBody {
     auto_append: daruma_domain::AutoAppendPatch,
     #[serde(default, deserialize_with = "daruma_domain::deserialize_double_option")]
     intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
+    #[serde(default, deserialize_with = "daruma_domain::deserialize_double_option")]
+    audit: Option<Option<Value>>,
 }
 
 /// `PATCH /v1/projects/{id}/settings` — partial update of the auto-append
-/// toggles and/or the `intake_source` policy (`null` removes it),
+/// toggles, the `intake_source` policy and/or the `audit` thresholds object
+/// (`null` removes either; an object replaces it whole),
 /// dispatched through the command bus (event-sourced).
 async fn patch_project_settings(
     auth: axum::Extension<AuthContext>,
@@ -2045,6 +2069,7 @@ async fn patch_project_settings(
                 project_id: id,
                 auto_append: body.auto_append,
                 intake_source: body.intake_source,
+                audit: body.audit,
             },
             actor_from(&auth, None),
         )
@@ -3144,7 +3169,12 @@ fn parse_finding_status(s: &str) -> Result<daruma_domain::FindingStatus, ApiErro
 
 #[derive(Deserialize)]
 struct FindingListQuery {
-    project_id: String,
+    #[serde(default)]
+    project_id: Option<String>,
+    /// `workspace` lists workspace-scope findings (`project_id = null`);
+    /// requires `project_id` to be absent.
+    #[serde(default)]
+    scope: Option<String>,
     #[serde(default)]
     severity: Option<String>,
     #[serde(default)]
@@ -3154,7 +3184,8 @@ struct FindingListQuery {
 }
 
 /// `GET /v1/audit/findings?project_id=&severity=&category=&status=` — list
-/// findings in a project, newest activity first. Read access (default profile).
+/// findings in a project, newest activity first. `?scope=workspace` instead of
+/// `project_id` lists workspace-scope findings. Read access (default profile).
 async fn list_audit_findings(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -3162,17 +3193,26 @@ async fn list_audit_findings(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let project_id = parse_project_id(&q.project_id)?;
     let filter = daruma_storage::FindingFilter {
         severity: q.severity.as_deref().map(parse_severity).transpose()?,
         category: q.category,
         status: q.status.as_deref().map(parse_finding_status).transpose()?,
     };
-    let findings = state
-        .audit_findings
-        .list(project_id, &filter)
-        .await
-        .map_err(ApiError::from)?;
+    let findings = match (q.project_id.as_deref(), q.scope.as_deref()) {
+        (Some(project_id), None) => {
+            state
+                .audit_findings
+                .list(parse_project_id(project_id)?, &filter)
+                .await
+        }
+        (None, Some("workspace")) => state.audit_findings.list_workspace(&filter).await,
+        _ => {
+            return Err(ApiError::from(CoreError::validation(
+                "pass either project_id or scope=workspace",
+            )))
+        }
+    }
+    .map_err(ApiError::from)?;
     Ok(Json(json!({ "findings": findings })))
 }
 
@@ -3261,7 +3301,7 @@ async fn record_audit_finding(
         None => daruma_domain::FindingSource::Script,
     };
     let new = daruma_domain::NewFinding {
-        project_id: parse_project_id(&f.project_id)?,
+        project_id: Some(parse_project_id(&f.project_id)?),
         entity: daruma_domain::FindingEntity {
             plan_id: parse_opt_id(&f.plan_id, "plan id")?,
             task_id: parse_opt_id(&f.task_id, "task id")?,
@@ -8035,9 +8075,26 @@ async fn list_project_documents(
 
 #[cfg(test)]
 mod tests {
-    use super::{mcp_call_telemetry, mcp_response_telemetry, observe_regret};
+    use super::{mcp_call_telemetry, mcp_response_telemetry, observe_regret, parse_status_filter};
     use daruma_mcp::{JsonRpcRequest, JsonRpcResponse};
     use serde_json::json;
+
+    #[test]
+    fn unknown_task_status_names_valid_values_and_readiness_route() {
+        for (raw, readiness) in [("ready", true), ("blocked", true), ("open", false)] {
+            let err = parse_status_filter(Some(raw)).unwrap_err().0.to_string();
+            assert!(
+                err.contains(&format!("unknown task status: {raw}")),
+                "{err}"
+            );
+            assert!(err.contains("valid: inbox, todo, in_progress"), "{err}");
+            assert_eq!(err.contains("daruma_plan_drain_next"), readiness, "{err}");
+        }
+        assert!(matches!(
+            parse_status_filter(Some("todo,active")),
+            Ok(Some(_))
+        ));
+    }
 
     fn read_call(token: &str, tool: &str, id: &str, view: Option<&str>) -> super::McpCallTelemetry {
         let mut args = json!({ "id": id });

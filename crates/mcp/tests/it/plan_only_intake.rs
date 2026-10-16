@@ -7,6 +7,8 @@
 //!      шлёт POST /v1/commands с {"type":"materialize_plan", plan, tasks}.
 //!   3. `plan_materialize_requires_tasks` — пустой/отсутствующий `tasks` — ошибка
 //!      до какого-либо запроса.
+//!   4. `plan_materialize_appends_by_plan_id` — `plan.id` без title: проект и
+//!      title берутся из плана, в команду уходит `plan_id`.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,18 +23,25 @@ struct Captured {
     body: Value,
 }
 
-/// Router that records every request (any HTTP method) and returns 200 `{}`.
+/// Router that records every request (any HTTP method) and returns 200 `{}`
+/// — except `GET /v1/plans/{id}`, which answers a stored plan.
 fn recording_router(capture: Arc<Mutex<Vec<Captured>>>) -> Router {
     Router::new().fallback(any(move |req: Request<Body>| {
         let capture = capture.clone();
         async move {
             let path = req.uri().path().to_string();
+            let reply = match path.strip_prefix("/v1/plans/") {
+                Some(id) if req.method() == axum::http::Method::GET => json!({
+                    "plan": {"id": id, "project_id": "prj_plan", "title": "Stored plan"}
+                }),
+                _ => json!({}),
+            };
             let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
                 .await
                 .unwrap_or_default();
             let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             capture.lock().unwrap().push(Captured { path, body });
-            (StatusCode::OK, axum::Json(json!({})))
+            (StatusCode::OK, axum::Json(reply))
         }
     }))
 }
@@ -148,6 +157,29 @@ async fn plan_materialize_requires_tasks() {
     }
 }
 
+/// `plan.separate: true` reaches the command (the caller chose a new plan
+/// next to `plan_choice_required` candidates); omitted or false is not sent.
+#[tokio::test]
+async fn plan_materialize_passes_separate_only_when_true() {
+    for (separate, expected) in [
+        (Some(json!(true)), json!(true)),
+        (Some(json!(false)), Value::Null),
+        (None, Value::Null),
+    ] {
+        let mut plan = json!({"title": "Resolver", "project_id": "prj_1"});
+        if let Some(value) = separate {
+            plan["separate"] = value;
+        }
+        let (result, captured) = with_recording_server(
+            "daruma_plan_materialize",
+            json!({"plan": plan, "tasks": [{"title": "t"}]}),
+        )
+        .await;
+        result.unwrap();
+        assert_eq!(captured[0].body["command"]["plan"]["separate"], expected);
+    }
+}
+
 /// ADR-0009: `plan.source` (the chain's nearest node) and
 /// `plan.git_context` pass through; wrong shapes fail before any request.
 #[tokio::test]
@@ -222,6 +254,38 @@ async fn project_settings_update_forwards_intake_source() {
         .contains_key("intake_source"));
 }
 
+/// `audit` reaches PATCH /settings whole, and `null` is kept (it removes the
+/// thresholds server-side); an omitted `audit` is not sent at all.
+#[tokio::test]
+async fn project_settings_update_forwards_audit() {
+    let audit = json!({"usage_p95_bytes": 32768, "usage_retention": {"error_rate_pp": 1}});
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "audit": audit}),
+    )
+    .await;
+    result.unwrap();
+    assert_eq!(captured[0].path, "/v1/projects/prj_1/settings");
+    assert_eq!(captured[0].body["audit"], audit);
+
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "audit": null}),
+    )
+    .await;
+    result.unwrap();
+    let body = captured[0].body.as_object().unwrap();
+    assert!(body.contains_key("audit") && body["audit"].is_null());
+
+    let (result, captured) = with_recording_server(
+        "daruma_project_settings_update",
+        json!({"project_id": "prj_1", "interview": false}),
+    )
+    .await;
+    result.unwrap();
+    assert!(!captured[0].body.as_object().unwrap().contains_key("audit"));
+}
+
 /// `daruma_plan_create` takes the same `source`/`git_context` arguments as
 /// materialize and forwards them to `POST /v1/plans`.
 #[tokio::test]
@@ -260,4 +324,53 @@ async fn source_extend_forwards_arguments() {
     assert_eq!(captured[0].body["ref"], "mailto:c@acme.ru");
     assert_eq!(captured[0].body["upstream"][0]["label"], "Call");
     assert!(captured[0].body.get("plan_id").is_none());
+}
+
+/// `plan.id` appends to an existing plan: no title needed, the project (and
+/// title) come from `GET /v1/plans/{id}`, the command carries `plan_id`, and
+/// source/git_context still pass through for the server to compare.
+#[tokio::test]
+async fn plan_materialize_appends_by_plan_id() {
+    let (result, captured) = with_recording_server(
+        "daruma_plan_materialize",
+        json!({
+            "plan": {
+                "id": "pln_1",
+                "source": {"ref": "https://gitlab.x/g/p/-/issues/7"},
+                "git_context": {"branch": "7_fix_login"}
+            },
+            "tasks": [{"title": "follow-up"}]
+        }),
+    )
+    .await;
+    result.expect("append must succeed");
+
+    assert_eq!(captured[0].path, "/v1/plans/pln_1");
+    let command = &captured
+        .iter()
+        .find(|c| c.path == "/v1/commands")
+        .expect("materialize must POST /v1/commands")
+        .body["command"];
+    assert_eq!(command["type"], "materialize_plan");
+    assert_eq!(command["plan_id"], "pln_1");
+    assert_eq!(command["plan"]["project_id"], "prj_plan");
+    assert_eq!(command["plan"]["title"], "Stored plan");
+    assert_eq!(
+        command["plan"]["source"]["ref"],
+        "https://gitlab.x/g/p/-/issues/7"
+    );
+    assert_eq!(command["plan"]["git_context"]["branch"], "7_fix_login");
+    assert_eq!(command["tasks"][0]["title"], "follow-up");
+
+    // Without `plan.id` the title stays mandatory and nothing is sent.
+    let (result, captured) = with_recording_server(
+        "daruma_plan_materialize",
+        json!({"plan": {"project_id": "prj_1"}, "tasks": [{"title": "t"}]}),
+    )
+    .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("`plan.title` is required"));
+    assert!(captured.is_empty());
 }

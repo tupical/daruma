@@ -22,9 +22,14 @@ Resolution order (first match wins):
 3. **Built-in default** — `default`.
 
 `tools/list` returns only the selected profile's tools. Tools hidden by the
-profile are **not callable**: `tools/call` on a hidden tool returns an error
-that names the tool and explains how to enable the full catalogue. Unknown
+profile are **not callable**: `tools/call` on a hidden tool returns a tool
+error that names the tool and explains how to enable the full catalogue. Unknown
 tool names keep their normal unknown-tool error.
+
+Like every failed tool call, both come back as a tool result
+`{"content": [{"type": "text", "text": "<message>"}], "isError": true}`, not as
+a JSON-RPC error, so the model sees the message. JSON-RPC errors are reserved
+for protocol failures (unknown method, `tools/call` without `name`).
 
 ## Migration
 

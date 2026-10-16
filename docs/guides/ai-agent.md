@@ -13,7 +13,7 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 | Surface | Role |
 |---------|------|
-| `crates/ai-infra` | AI client (OpenAI Responses, Chat Completions, Anthropic Messages request side), provider abstraction, prompt engine, tool schemas |
+| `crates/ai-infra` | AI client (OpenAI Responses, Chat Completions, Anthropic Messages), provider abstraction, prompt engine, tool schemas |
 | `apps/server` | `POST /v1/ai/*` HTTP endpoints; the deprecated `analyze_complexity` shim lives in `apps/server/src/ai.rs` (prompts in `apps/server/prompts/*.toml`) |
 | MCP (`daruma mcp`) | `daruma_ai_analyze_complexity` for external agents |
 | MCP agents (Cursor, Claude) | Primary consumers — use MCP tools, not raw SQL |
@@ -22,10 +22,16 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 
 - `ai_analyze_complexity` (deprecated shim)
 - Intake (new tasks): `daruma_plan_materialize` — the only path (plan-only intake); `daruma_create`/`daruma_capture`/`daruma_capture_batch` are removed from the catalogue and return a bridge error naming the replacement
+- Follow-up tasks for an existing plan (same issue/branch): `daruma_plan_materialize` with `plan.id` (no title) — the tasks are appended after the plan's last one, the plan keeps its title, project and source (a different incoming source is commented on each new task); a completed plan is reopened, an abandoned/archived one refuses
+- A new plan next to plans it may continue (draft/active, or completed within 7 days; their tasks share the git branch — not main/master/develop/dev/trunk — or their source lies in the same source chain — on the path from the incoming source up to its root, or below the incoming source; sibling branches of the source tree, e.g. issue → meeting A → plan and issue → meeting B → new plan, are candidates only through a shared git branch): `daruma_plan_materialize` answers 409 `plan_choice_required` with up to 10 candidates (title, goal, status, updated_at, source label chain, last 3 tasks). The agent decides by subject: same work → `plan.id`, another subject → `plan.separate: true`. The server never merges plans on its own
 - Task mutations (existing tasks): `set_status`, `complete`, `split`, `comment`, plans/runs/claims
 - Plan executor: `daruma_plan_progress`, `daruma_plan_next_task`, `daruma_run_*`
 
 Canonical schemas live in code; when the wire format changes, update `crates/ai-infra` and MCP tool descriptors together.
+
+Anthropic Messages requests mark the last tool schema with `cache_control: {"type": "ephemeral"}`, so the tool prefix shared by every call of one kind is prompt-cached. Stable instructions go through `AiProvider::generate_object_with_system` (`ResponseRequest.system`): Anthropic receives them as a `system` text block with its own `cache_control` breakpoint, so the cached prefix covers tools and instructions together; the OpenAI Responses and Chat Completions protocols get the system text prepended to the input (`<system>\n\n<input>`), keeping the request shape providers were verified with. Providers that do not override the method see the same concatenated prompt. The per-call user message is not marked, since a cache write costs more than plain input. Each Anthropic reply logs its `usage` (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`) at `info` as `anthropic usage`, which is how the cache hit rate is measured.
+
+One-turn mass judgments of an offline pass go through `AiProvider::generate_objects_batch` (one shared `system`, many prompts, item `i` answers prompt `i`). The default makes the calls one by one. `OpenAiClient` over `anthropic_messages` sends two or more prompts as one Anthropic Message Batch (`OpenAiClient::respond_batch`: `POST /v1/messages/batches`, polling until `processing_status = ended`, then the results JSONL matched back by `custom_id`); each request carries exactly the body a direct call would, cache breakpoints included. The wait is bounded by `BatchWait` (default: poll every 10 s, give up after 15 min and cancel the batch); a batch that fails as a whole falls back to single calls, while a request the batch errored or let expire is an error of its own. Interactive paths must not call it — a batch can take minutes.
 
 ## Further reading
 

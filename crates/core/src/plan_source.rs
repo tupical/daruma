@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use daruma_api_dto::MutationWarning;
 use daruma_domain::{
     normalize_source_ref, Actor, GitContext, IntakeSourceMode, IntakeSourcePolicy, NewPlan,
-    NewTask, SourceChannel, SourceInput, SourceNode, SOURCE_CHAIN_MAX,
+    NewTask, Plan, PlanStatus, SourceChannel, SourceInput, SourceNode, SOURCE_CHAIN_MAX,
 };
 use daruma_events::Event;
 use daruma_shared::{time, CoreError, PlanId, ProjectId, Result};
@@ -19,6 +19,17 @@ use crate::{plan_concurrency::detect_parent_cycle, CommandHandler};
 const MAX_PATTERN_LEN: usize = 512;
 const MAX_DERIVE_RULES: usize = 32;
 const MAX_CHANNELS: usize = 32;
+/// A brief recorded on appended tasks is cut here; the comment stays small.
+const APPENDED_BRIEF_MAX: usize = 2000;
+/// `plan_choice_required` lists at most this many plans, freshest first.
+const PLAN_CHOICE_MAX: usize = 10;
+/// A completed plan stays a continuation candidate this long after its last
+/// update; older work on the same branch/source is history, not a choice.
+const PLAN_CHOICE_COMPLETED_DAYS: i64 = 7;
+/// Long-lived branches carry unrelated work: sharing one says nothing about
+/// the subject. ponytail: fixed names; a project with another trunk name
+/// gets branch candidates on it — make it a project setting if that bites.
+const TRUNK_BRANCHES: [&str; 5] = ["main", "master", "develop", "dev", "trunk"];
 
 fn compile(pattern: &str, what: &str) -> Result<Regex> {
     if pattern.chars().count() > MAX_PATTERN_LEN {
@@ -223,6 +234,175 @@ impl CommandHandler {
         let (events, kept) = self.plan_source_events(plan, nodes, actor).await?;
         warnings.extend(kept);
         Ok((warnings, events))
+    }
+
+    /// A new plan (no `plan_id`, no `separate`) next to plans it may
+    /// continue — same git branch on their tasks, or a source in the same
+    /// chain — is refused with `plan_choice_required` listing them. Whether
+    /// it is the same subject is the caller's call: `plan.id` appends,
+    /// `plan.separate` creates. No merge and no refusal by key; without
+    /// candidates the plan is created as before. Runs after
+    /// [`Self::resolve_plan_source`]: `source_events` are its not yet
+    /// persisted chain links, and a policy `default_ref` (project-wide, not
+    /// a subject) is no evidence.
+    pub(crate) async fn require_plan_choice(
+        &self,
+        plan: &NewPlan,
+        source_events: &[Event],
+    ) -> Result<()> {
+        let Some(plans) = &self.plans else {
+            return Ok(());
+        };
+        let pending: HashMap<&str, Option<&str>> = source_events
+            .iter()
+            .filter_map(|event| match event {
+                Event::SourceUpserted { source } => {
+                    Some((source.source_ref.as_str(), source.upstream_ref.as_deref()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut chain: Vec<String> = Vec::new();
+        let mut next = plan.source_ref.clone();
+        while let Some(source_ref) = next {
+            if chain.len() >= SOURCE_CHAIN_MAX || chain.contains(&source_ref) {
+                break;
+            }
+            next = match pending.get(source_ref.as_str()) {
+                Some(up) => up.map(str::to_string),
+                None => plans
+                    .get_source(&source_ref)
+                    .await?
+                    .and_then(|node| node.upstream_ref),
+            };
+            chain.push(source_ref);
+        }
+        let default_ref = self
+            .intake_policy(plan.project_id)
+            .await?
+            .default_ref
+            .map(|r| normalized(&r))
+            .transpose()?;
+        if chain
+            .first()
+            .is_some_and(|nearest| Some(nearest) == default_ref.as_ref())
+        {
+            chain.clear();
+        }
+        chain.retain(|r| Some(r) != default_ref.as_ref());
+        let git = plan.git_context.as_ref();
+        let branch = git
+            .and_then(|g| g.branch.as_deref())
+            .filter(|b| !TRUNK_BRANCHES.contains(&b.to_ascii_lowercase().as_str()));
+        if chain.is_empty() && branch.is_none() {
+            return Ok(());
+        }
+        let repo = branch.and(git.and_then(|g| g.repo.as_deref()));
+        let since = time::now() - chrono::Duration::days(PLAN_CHOICE_COMPLETED_DAYS);
+        let mut candidates: Vec<Plan> = plans
+            .continuation_candidates(plan.project_id, &chain, repo, branch)
+            .await?
+            .into_iter()
+            .filter(|p| p.status != PlanStatus::Completed || p.updated_at >= since)
+            .collect();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        candidates.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
+        let total = candidates.len();
+        candidates.truncate(PLAN_CHOICE_MAX);
+        let mut listed = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            let mut labels = Vec::new();
+            let mut next = candidate.source_ref.clone();
+            while let Some(source_ref) = next {
+                if labels.len() >= SOURCE_CHAIN_MAX {
+                    break;
+                }
+                let node = plans.get_source(&source_ref).await?;
+                next = node.as_ref().and_then(|n| n.upstream_ref.clone());
+                labels.push(node.and_then(|n| n.label).unwrap_or(source_ref));
+            }
+            let members = plans.list_plan_tasks_ordered(candidate.id).await?;
+            let mut recent_tasks = Vec::new();
+            for member in members.iter().rev().take(3) {
+                if let Some(task) = self.tasks.get(member.task_id).await? {
+                    recent_tasks.push(task.title);
+                }
+            }
+            listed.push(json!({
+                "plan_id": candidate.id,
+                "title": candidate.title,
+                "goal": candidate.goal,
+                "status": candidate.status,
+                "updated_at": candidate.updated_at,
+                "source_label_chain": labels,
+                "recent_tasks": recent_tasks,
+            }));
+        }
+        Err(CoreError::CodedConflict {
+            code: "plan_choice_required",
+            message: format!(
+                "{total} existing plan(s) share this branch or source chain: same subject of \
+                 work → pass `plan.id` (a completed plan reopens); another subject → pass \
+                 `plan.separate: true`"
+            ),
+            details: json!({
+                "candidates": listed,
+                "total": total,
+                "hint": "same subject of work → plan.id (completed reopens); another subject → plan.separate=true",
+            }),
+        })
+    }
+
+    /// Appending tasks to an existing plan keeps that plan's source: an
+    /// incoming source ref/label or brief that differs from it is returned as
+    /// a note for the new tasks instead of being dropped. `None` when the
+    /// request repeats the plan's own source (or carries none).
+    pub(crate) async fn appended_source_note(
+        &self,
+        plan: &Plan,
+        incoming: &NewPlan,
+    ) -> Result<Option<String>> {
+        fn given(value: Option<&str>) -> Option<&str> {
+            value.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let source = incoming.source.as_ref();
+        let incoming_ref = given(source.and_then(|s| s.source_ref.as_deref()))
+            .or(given(incoming.source_ref.as_deref()))
+            .map(normalized)
+            .transpose()?;
+        let stored_label = match (&plan.source_ref, &self.plans) {
+            (Some(source_ref), Some(plans)) => plans
+                .get_source(source_ref)
+                .await?
+                .and_then(|node| node.label),
+            _ => None,
+        };
+        let mut lines = Vec::new();
+        if let Some(source_ref) = incoming_ref.filter(|r| plan.source_ref.as_ref() != Some(r)) {
+            lines.push(format!("Source: {source_ref}"));
+        }
+        if let Some(label) = given(source.and_then(|s| s.label.as_deref()))
+            .filter(|l| given(stored_label.as_deref()) != Some(*l))
+        {
+            lines.push(format!("Source label: {label}"));
+        }
+        if let Some(brief) = given(incoming.source_brief.as_deref())
+            .filter(|b| given(plan.source_brief.as_deref()) != Some(*b))
+        {
+            let brief: String = brief.chars().take(APPENDED_BRIEF_MAX).collect();
+            lines.push(format!("Brief: {brief}"));
+        }
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Added to plan {} from a source other than the plan's own (`{}`, kept).\n{}",
+            plan.id,
+            plan.source_ref.as_deref().unwrap_or("none"),
+            lines.join("\n")
+        )))
     }
 
     /// Nodes to write for a new plan: the client chain, or — when the ref

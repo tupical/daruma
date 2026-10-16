@@ -569,6 +569,15 @@ pub enum Event {
             deserialize_with = "daruma_domain::deserialize_double_option"
         )]
         intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
+        /// Audit thresholds JSON object: absent = unchanged (every event
+        /// before the field existed), `null` = key removed, object = new
+        /// value as a whole.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "daruma_domain::deserialize_double_option"
+        )]
+        audit: Option<Option<serde_json::Value>>,
     },
 
     // ── Async AI operations (§3.8.12 / CTM B.6) ──────────────────────────────

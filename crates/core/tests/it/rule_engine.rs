@@ -60,7 +60,6 @@ async fn stack() -> Stack {
     let comments = Arc::new(CommentRepo::new(pool.clone()));
     let activity = Arc::new(ActivityRepo::new(pool.clone()));
     let plans = Arc::new(PlanRepo::new(pool.clone()));
-    let runs = Arc::new(daruma_storage::RunRepo::new(pool.clone()));
     let rules = Arc::new(RuleRepo::new(pool.clone()));
     let evidence = Arc::new(EvidenceRepo::new(pool.clone()));
     let relations = Arc::new(RelationRepo::new(pool.clone()));
@@ -68,8 +67,6 @@ async fn stack() -> Stack {
     let gate: Arc<dyn LifecycleGate> = Arc::new(RuleEngineGate::with_evidence(
         rules.clone(),
         evidence.clone(),
-        plans.clone(),
-        runs.clone(),
     ));
 
     let handler = CommandHandler::new(
@@ -81,7 +78,6 @@ async fn stack() -> Stack {
         EventBus::default(),
     )
     .with_plans(plans)
-    .with_runs(runs)
     .with_rules(rules.clone())
     .with_evidence(evidence.clone())
     .with_documents(documents)
@@ -201,553 +197,7 @@ fn is_blocked(err: &CoreError, fragment: &str) -> bool {
     msg.contains("rule_blocked") && msg.contains(fragment)
 }
 
-async fn attach_task(stack: &Stack, plan: PlanId, task: TaskId) {
-    stack
-        .handler
-        .handle(
-            Command::AddPlanTask {
-                plan_id: plan,
-                task_id: task,
-                position: None,
-                depends_on: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn pending_materialization_inherits_task_created_rule_atomically() {
-    let stack = stack().await;
-    let project = ProjectId::new();
-    let parent = create_plan(&stack, project).await;
-    install(&stack, new_rule(
-        "ancestor-task-create", RuleScope::Plan { id: parent }, RuleTrigger::TaskCreated,
-        Requirement::ReadArtifact { doc_ref: "design.md".into(), min_version: "1".into() },
-        RuleMode::Required, false,
-    )).await;
-    let task = TaskId::new();
-    let command = || wire_command(serde_json::json!({
-        "type": "materialize_plan",
-        "plan": NewPlan { parent_plan_id: Some(parent), ..NewPlan::new("Child", project, Actor::user()) },
-        "tasks": [{ "id": task, "title": "New member" }]
-    }));
-    let before_seq = stack.handler.store.latest_seq().await.unwrap();
-    let before_parent = stack.handler.plans.as_ref().unwrap().get(parent).await.unwrap();
-    let err = stack.handler.handle(command(), Actor::user()).await
-        .expect_err("pending membership must carry ancestor task.created policy");
-    assert!(is_blocked(&err, "ancestor-task-create"), "{err}");
-    assert_eq!(stack.handler.store.latest_seq().await.unwrap(), before_seq);
-    assert_eq!(stack.handler.plans.as_ref().unwrap().get(parent).await.unwrap(), before_parent);
-    assert!(stack.handler.tasks.get(task).await.unwrap().is_none());
-    assert!(stack.handler.plans.as_ref().unwrap().list_plans_for_task(task).await.unwrap().is_empty());
-    assert!(stack.handler.comments.list_for_task(task).await.unwrap().is_empty());
-    let mut ack = new_evidence(EvidenceKind::DocumentReadAck, RuleScope::Plan { id: parent }, Some("design.md"));
-    ack.doc_version = Some("1".into());
-    record_evidence(&stack, ack).await;
-    let events = stack.handler.handle(command(), Actor::user()).await.unwrap();
-    let child = events.iter().find_map(|e| match &e.payload {
-        Event::PlanCreated { plan } => Some(plan.id), _ => None,
-    }).unwrap();
-    assert_eq!(stack.handler.plans.as_ref().unwrap().list_plans_for_task(task).await.unwrap(), vec![child]);
-    assert_eq!(stack.handler.tasks.get(task).await.unwrap().unwrap().status, Status::Todo);
-    assert_eq!(stack.handler.plans.as_ref().unwrap().get(child).await.unwrap().unwrap().parent_plan_id, Some(parent));
-}
-
-fn wire_command(value: serde_json::Value) -> Command {
-    serde_json::from_value(value).unwrap()
-}
-
-#[tokio::test]
-async fn plan_membership_required_read_blocks_direct_command_without_mutation() {
-    let stack = stack().await;
-    let project = ProjectId::new();
-    let plan = create_plan(&stack, project).await;
-    let task = create_task(&stack, "HUD clock").await;
-    attach_task(&stack, plan, task).await;
-    stack
-        .handler
-        .handle(
-            wire_command(serde_json::json!({
-                "type": "set_status", "id": task, "status": "todo"
-            })),
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let doc = daruma_shared::DocumentId::new();
-    stack
-        .handler
-        .handle(
-            wire_command(serde_json::json!({
-                "type": "create_document", "new_doc": {
-                    "id": doc, "project_id": project, "kind": "human_log",
-                    "title": "HUD design", "content": "current design", "task_id": task
-                }
-            })),
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let mut rule = new_rule(
-        "hud-design-read",
-        RuleScope::Plan { id: plan },
-        RuleTrigger::TaskBeforeStart,
-        Requirement::ReadArtifact {
-            doc_ref: doc.to_string(),
-            min_version: "latest".into(),
-        },
-        RuleMode::Required,
-        false,
-    );
-    rule.condition = Some(Condition {
-        title_prefix: Some(vec!["HUD".into()]),
-        ..Default::default()
-    });
-    install(&stack, rule).await;
-    let before = stack.handler.tasks.get(task).await.unwrap().unwrap();
-    let comments = stack.handler.comments.list_for_task(task).await.unwrap();
-    for force in [false, true] {
-        let err = stack
-            .handler
-            .handle(
-                wire_command(serde_json::json!({
-                    "type": "set_status", "id": task, "status": "in_progress",
-                    "force": force, "override_reason": "explicit emergency override",
-                    "comment": { "kind": "progress", "body": "must not persist on rejection" }
-                })),
-                Actor::user(),
-            )
-            .await
-            .expect_err("plan required read must reject direct transition");
-        assert!(matches!(err, CoreError::Conflict(_)), "{err}");
-        assert!(is_blocked(&err, "hud-design-read"), "{err}");
-        assert_eq!(
-            stack.handler.tasks.get(task).await.unwrap().unwrap(),
-            before
-        );
-        assert_eq!(
-            stack.handler.comments.list_for_task(task).await.unwrap(),
-            comments
-        );
-    }
-    assert!(!stack.can_start(task).await.ready);
-    let mut ack = new_evidence(
-        EvidenceKind::DocumentReadAck,
-        RuleScope::Task { id: task },
-        Some(&doc.to_string()),
-    );
-    ack.doc_version = Some("1".into());
-    record_evidence(&stack, ack).await;
-    assert!(stack.can_start(task).await.ready);
-    stack
-        .handler
-        .handle(
-            wire_command(serde_json::json!({
-                "type": "set_status", "id": task, "status": "in_progress"
-            })),
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
-        Status::InProgress
-    );
-}
-
 // ── Example 3: completion-note blocks task.before_complete ──────────────────────
-
-#[tokio::test]
-async fn plan_membership_gates_completion_and_bulk_atomically() {
-    let stack = stack().await;
-    let plan = create_plan(&stack, ProjectId::new()).await;
-    let task = create_task(&stack, "Member").await;
-    let unrelated = create_task(&stack, "No plan").await;
-    attach_task(&stack, plan, task).await;
-    for trigger in [
-        RuleTrigger::TaskBeforeStart,
-        RuleTrigger::TaskBeforeComplete,
-    ] {
-        install(
-            &stack,
-            new_rule(
-                &format!("plan-note-{trigger:?}"),
-                RuleScope::Plan { id: plan },
-                trigger,
-                Requirement::CompletionNote {
-                    required_fields: vec![],
-                },
-                RuleMode::Required,
-                false,
-            ),
-        )
-        .await;
-    }
-    for command in [
-        serde_json::json!({"type":"complete_task", "id":task, "note":{"reason":"blocked completion"}}),
-        serde_json::json!({"type":"bulk_set_status", "ids":[unrelated,task], "status":"done"}),
-        serde_json::json!({"type":"bulk_set_status", "ids":[unrelated,task], "status":"in_progress"}),
-    ] {
-        let err = stack
-            .handler
-            .handle(wire_command(command), Actor::user())
-            .await
-            .expect_err("plan rule blocks every status ingress");
-        assert!(is_blocked(&err, "plan-note"), "{err}");
-        for id in [task, unrelated] {
-            assert_eq!(
-                stack.handler.tasks.get(id).await.unwrap().unwrap().status,
-                Status::Inbox
-            );
-            assert!(stack
-                .handler
-                .comments
-                .list_for_task(id)
-                .await
-                .unwrap()
-                .is_empty());
-        }
-    }
-    record_evidence(
-        &stack,
-        new_evidence(
-            EvidenceKind::CompletionNote,
-            RuleScope::Task { id: task },
-            None,
-        ),
-    )
-    .await;
-    stack
-        .handler
-        .handle(
-            Command::BulkSetStatus {
-                ids: vec![unrelated, task],
-                status: Status::Done,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn plan_membership_siblings_cannot_override_or_supply_each_others_evidence() {
-    let stack = stack().await;
-    let project = ProjectId::new();
-    let parent = create_plan(&stack, project).await;
-    let mut child = NewPlan::new("Child", project, Actor::user());
-    child.parent_plan_id = Some(parent);
-    let events = stack
-        .handler
-        .handle(
-            Command::CreatePlan {
-                plan: child,
-                external_ref: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let Event::PlanCreated { plan: child } = &events[0].payload else {
-        panic!("plan")
-    };
-    let sibling = create_plan(&stack, project).await;
-    let task = create_task(&stack, "Two memberships").await;
-    attach_task(&stack, child.id, task).await;
-    attach_task(&stack, parent, task).await;
-    attach_task(&stack, sibling, task).await;
-    let required = new_rule(
-        "same-key",
-        RuleScope::Plan { id: parent },
-        RuleTrigger::TaskBeforeStart,
-        Requirement::ImpactCheck {
-            target: "release".into(),
-            required_fields: vec![],
-        },
-        RuleMode::Required,
-        true,
-    );
-    install(&stack, required).await;
-    install(
-        &stack,
-        new_rule(
-            "same-key",
-            RuleScope::Plan { id: sibling },
-            RuleTrigger::TaskBeforeStart,
-            Requirement::OwnerRequired,
-            RuleMode::Off,
-            true,
-        ),
-    )
-    .await;
-    let start =
-        || wire_command(serde_json::json!({"type":"set_status","id":task,"status":"in_progress"}));
-    let err = stack
-        .handler
-        .handle(start(), Actor::user())
-        .await
-        .expect_err("parent rule applies through child membership, despite sibling off");
-    assert!(is_blocked(&err, "same-key"), "{err}");
-    assert_eq!(unblock_hints(&err).len(), 1, "shared parent rule acts once");
-    record_evidence(
-        &stack,
-        new_evidence(
-            EvidenceKind::ImpactAssessment,
-            RuleScope::Plan { id: sibling },
-            Some("release"),
-        ),
-    )
-    .await;
-    assert!(
-        stack.handler.handle(start(), Actor::user()).await.is_err(),
-        "sibling evidence must not satisfy another branch"
-    );
-    record_evidence(
-        &stack,
-        new_evidence(
-            EvidenceKind::ImpactAssessment,
-            RuleScope::Plan { id: parent },
-            Some("release"),
-        ),
-    )
-    .await;
-    stack.handler.handle(start(), Actor::user()).await.unwrap();
-}
-
-#[tokio::test]
-async fn plan_membership_preserves_inner_scope_override_policy_and_no_plan() {
-    for override_allowed in [false, true] {
-        let stack = stack().await;
-        let plan = create_plan(&stack, ProjectId::new()).await;
-        let task = create_task(&stack, "Member").await;
-        let unrelated = create_task(&stack, "Unrelated").await;
-        attach_task(&stack, plan, task).await;
-        install(
-            &stack,
-            new_rule(
-                "policy",
-                RuleScope::Plan { id: plan },
-                RuleTrigger::TaskBeforeStart,
-                Requirement::OwnerRequired,
-                RuleMode::Required,
-                override_allowed,
-            ),
-        )
-        .await;
-        install(
-            &stack,
-            new_rule(
-                "policy",
-                RuleScope::Task { id: task },
-                RuleTrigger::TaskBeforeStart,
-                Requirement::OwnerRequired,
-                RuleMode::Off,
-                true,
-            ),
-        )
-        .await;
-        let result = stack
-            .handler
-            .handle(
-                wire_command(
-                    serde_json::json!({"type":"set_status","id":task,"status":"in_progress"}),
-                ),
-                Actor::user(),
-            )
-            .await;
-        assert_eq!(result.is_ok(), override_allowed);
-        stack
-            .handler
-            .handle(
-                wire_command(
-                    serde_json::json!({"type":"set_status","id":unrelated,"status":"in_progress"}),
-                ),
-                Actor::user(),
-            )
-            .await
-            .unwrap();
-    }
-}
-
-#[tokio::test]
-async fn plan_membership_run_start_and_complete_share_plan_ancestry() {
-    let stack = stack().await;
-    let project = ProjectId::new();
-    let parent = create_plan(&stack, project).await;
-    let mut child = NewPlan::new("Run child", project, Actor::user());
-    child.parent_plan_id = Some(parent);
-    let events = stack
-        .handler
-        .handle(
-            Command::CreatePlan {
-                plan: child,
-                external_ref: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    let Event::PlanCreated { plan: child } = &events[0].payload else {
-        panic!("plan")
-    };
-    stack
-        .handler
-        .handle(
-            Command::SetPlanStatus {
-                plan_id: child.id,
-                status: PlanStatus::Active,
-                force: false,
-                override_reason: None,
-            },
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    for (key, trigger) in [
-        ("run-start", RuleTrigger::RunBeforeExecute),
-        ("run-complete", RuleTrigger::RunBeforeComplete),
-    ] {
-        install(
-            &stack,
-            new_rule(
-                key,
-                RuleScope::Plan { id: parent },
-                trigger,
-                Requirement::ReadArtifact {
-                    doc_ref: format!("{key}.md"),
-                    min_version: "latest".into(),
-                },
-                RuleMode::Required,
-                false,
-            ),
-        )
-        .await;
-    }
-    let start = || Command::StartRun {
-        plan_id: child.id,
-        agent_id: daruma_shared::AgentId::new(),
-        parent_run_id: None,
-    };
-    let err = stack
-        .handler
-        .handle(start(), Actor::user())
-        .await
-        .expect_err("ancestor run start rule");
-    assert!(is_blocked(&err, "run-start"), "{err}");
-    record_evidence(
-        &stack,
-        new_evidence(
-            EvidenceKind::DocumentReadAck,
-            RuleScope::Plan { id: parent },
-            Some("run-start.md"),
-        ),
-    )
-    .await;
-    let events = stack.handler.handle(start(), Actor::user()).await.unwrap();
-    let run = events
-        .iter()
-        .find_map(|e| {
-            if let Event::RunStarted { run } = &e.payload {
-                Some(run.id)
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    let err = stack
-        .handler
-        .handle(Command::CompleteRun { run_id: run }, Actor::user())
-        .await
-        .expect_err("completion must resolve run plan too");
-    assert!(is_blocked(&err, "run-complete"), "{err}");
-    assert_eq!(
-        stack
-            .handler
-            .runs
-            .as_ref()
-            .unwrap()
-            .get(run)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        daruma_domain::RunStatus::Active
-    );
-    record_evidence(
-        &stack,
-        new_evidence(
-            EvidenceKind::DocumentReadAck,
-            RuleScope::Plan { id: parent },
-            Some("run-complete.md"),
-        ),
-    )
-    .await;
-    stack
-        .handler
-        .handle(Command::CompleteRun { run_id: run }, Actor::user())
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn plan_membership_recommendations_remain_advisory_and_deduplicated() {
-    let stack = stack().await;
-    let project = ProjectId::new();
-    let first = create_plan(&stack, project).await;
-    let second = create_plan(&stack, project).await;
-    let task = create_task(&stack, "Advisory member").await;
-    attach_task(&stack, first, task).await;
-    attach_task(&stack, second, task).await;
-    for (key, scope) in [
-        ("tenant-advice", RuleScope::Tenant),
-        ("plan-advice", RuleScope::Plan { id: first }),
-    ] {
-        install(
-            &stack,
-            new_rule(
-                key,
-                scope,
-                RuleTrigger::TaskBeforeStart,
-                Requirement::OwnerRequired,
-                RuleMode::Recommendation,
-                false,
-            ),
-        )
-        .await;
-    }
-    let readiness = stack.can_start(task).await;
-    assert!(readiness.ready);
-    assert_eq!(readiness.rule_warnings.len(), 2);
-    let outcome = stack
-        .handler
-        .handle_with_warnings(
-            wire_command(serde_json::json!({
-                "type":"set_status", "id":task, "status":"in_progress"
-            })),
-            Actor::user(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(outcome.warnings.len(), 2);
-    assert_eq!(
-        outcome
-            .events
-            .iter()
-            .filter(|e| matches!(&e.payload, Event::RuleFired { .. }))
-            .count(),
-        2
-    );
-    assert_eq!(
-        outcome
-            .events
-            .iter()
-            .filter(|e| matches!(&e.payload, Event::OperationalMetricRecorded { .. }))
-            .count(),
-        2
-    );
-}
 
 #[tokio::test]
 async fn example3_completion_note_required_blocks_complete() {
@@ -1625,6 +1075,161 @@ async fn read_artifact_min_version_is_enforced_numerically() {
                 .unwrap()
                 .contains("older than required 3"));
         }
+    }
+}
+
+/// Corporate-game repro (task 01a130e4): a task-scoped, non-overridable
+/// `read_artifact` rule with `min_version = latest` names a real document. A
+/// v1 ack must stop counting once the document changes — through replace or
+/// append — and the blocked start (plain or force + reason) leaves the task,
+/// its comments and the event log untouched. A fresh ack of the current
+/// version unblocks it.
+#[tokio::test]
+async fn read_artifact_latest_rejects_an_ack_of_a_superseded_document_version() {
+    for append in [false, true] {
+        let stack = stack().await;
+        let task = create_task(&stack, "Follow the policy").await;
+        let envs = stack
+            .handler
+            .handle(
+                Command::CreateDocument {
+                    new_doc: daruma_domain::NewDocument {
+                        id: None,
+                        project_id: ProjectId::new(),
+                        kind: daruma_domain::DocumentKind::Interview,
+                        title: "Policy".into(),
+                        content: Some("version one".into()),
+                        status: None,
+                        task_id: Some(task),
+                        trigger_kind: None,
+                        consumer: None,
+                    },
+                },
+                Actor::user(),
+            )
+            .await
+            .expect("create document");
+        let Event::DocumentCreated { document } = &envs[0].payload else {
+            panic!("expected DocumentCreated");
+        };
+        let doc_id = document.id;
+        // Clients name the document by its bare id, as the MCP surface prints it.
+        let doc_ref = serde_json::to_value(doc_id)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        install(
+            &stack,
+            new_rule(
+                "read-policy-latest",
+                RuleScope::Task { id: task },
+                RuleTrigger::TaskBeforeStart,
+                Requirement::ReadArtifact {
+                    doc_ref: doc_ref.clone(),
+                    min_version: "latest".into(),
+                },
+                RuleMode::Required,
+                false,
+            ),
+        )
+        .await;
+        let mut ack_v1 = new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Task { id: task },
+            Some(&doc_ref),
+        );
+        ack_v1.doc_version = Some("1".into());
+        record_evidence(&stack, ack_v1).await;
+        assert!(stack.can_start(task).await.ready, "v1 ack of v1 is current");
+
+        let change = if append {
+            Command::AppendDocumentContent {
+                document_id: doc_id,
+                append: "version two addendum".into(),
+            }
+        } else {
+            Command::ReplaceDocumentContent {
+                document_id: doc_id,
+                content: "version two".into(),
+            }
+        };
+        stack.handler.handle(change, Actor::user()).await.unwrap();
+
+        let seq_before = stack.handler.store.latest_seq().await.unwrap();
+        let comments_before = stack
+            .handler
+            .comments
+            .list_for_task(task)
+            .await
+            .unwrap()
+            .len();
+        let err = start(&stack, task)
+            .await
+            .expect_err("a stale v1 ack must not satisfy latest");
+        assert!(is_blocked(&err, "read-policy-latest"), "got: {err}");
+        assert!(
+            err.to_string().contains("current document version 2"),
+            "got: {err}"
+        );
+        let err = stack
+            .handler
+            .handle(
+                Command::SetStatus {
+                    id: task,
+                    status: Status::InProgress,
+                    force: true,
+                    override_reason: Some("I read it last week".into()),
+                    comment: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .expect_err("force + reason must not bypass a non-overridable rule");
+        assert!(is_blocked(&err, "read-policy-latest"), "got: {err}");
+        assert!(!stack.can_start(task).await.ready);
+        assert_eq!(
+            stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+            Status::Inbox
+        );
+        // A block appends only its `rule_*` audit trail — never a task mutation.
+        let since = stack
+            .handler
+            .store
+            .load_since(seq_before, 100)
+            .await
+            .unwrap();
+        assert!(
+            since
+                .iter()
+                .all(|env| env.payload.kind().starts_with("rule_")),
+            "unexpected events: {:?}",
+            since
+                .iter()
+                .map(|env| env.payload.kind())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stack
+                .handler
+                .comments
+                .list_for_task(task)
+                .await
+                .unwrap()
+                .len(),
+            comments_before
+        );
+
+        let mut ack_v2 = new_evidence(
+            EvidenceKind::DocumentReadAck,
+            RuleScope::Task { id: task },
+            Some(&doc_ref),
+        );
+        ack_v2.doc_version = Some("2".into());
+        record_evidence(&stack, ack_v2).await;
+        start(&stack, task)
+            .await
+            .expect("a current ack must satisfy latest");
     }
 }
 
@@ -2856,4 +2461,72 @@ async fn document_linked_requires_a_live_bound_document() {
         .handle(done(), Actor::user())
         .await
         .expect("live bound document satisfies the rule");
+}
+
+// ── Plan membership must gate direct task transitions ───────────────────────
+//
+// AUD/ATT: a rule scoped to a plan only fires today if the triggering event
+// already carries `plan_id` (e.g. a plan-materialize path). A task that is a
+// *member* of that plan but transitions via a direct `SetStatus` command
+// never resolves its plan membership, so the plan-scoped rule is silently
+// skipped — the same requirement blocks at `RuleScope::Project`, so this is
+// a real gap in the inheritance chain, not an intentional narrower reach.
+#[tokio::test]
+async fn plan_scoped_rule_blocks_task_start_via_direct_set_status() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        new_rule(
+            "plan-auth-impact-check",
+            RuleScope::Plan { id: plan },
+            RuleTrigger::TaskBeforeStart,
+            Requirement::ImpactCheck {
+                target: "auth-module".into(),
+                required_fields: vec!["risk_level".into()],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Touch auth").await;
+    stack
+        .handler
+        .handle(
+            Command::BulkAttachToPlan {
+                plan_id: plan,
+                task_ids: vec![task],
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("attach task to plan");
+
+    // Direct transition — does NOT go through plan-materialize machinery.
+    let err = stack
+        .handler
+        .handle(
+            Command::SetStatus {
+                id: task,
+                status: Status::InProgress,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("plan-scoped rule must still block a direct task transition");
+    assert!(
+        is_blocked(&err, "plan-auth-impact-check message"),
+        "got: {err}"
+    );
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Inbox,
+        "blocked before persist — task unchanged"
+    );
 }

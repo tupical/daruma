@@ -32,6 +32,11 @@ use crate::lifecycle_gate::{
 };
 use daruma_events::event::RuleDecision as EventRuleDecision;
 
+/// Validator for the `audit` project setting, see
+/// [`CommandHandler::with_audit_settings_validator`].
+pub type AuditSettingsValidator =
+    Arc<dyn Fn(&serde_json::Value) -> std::result::Result<(), String> + Send + Sync>;
+
 /// Processes commands: validate → build events → persist → apply → publish.
 pub struct CommandHandler {
     pub store: Arc<dyn EventStore>,
@@ -57,6 +62,11 @@ pub struct CommandHandler {
     /// minimal test harnesses; when absent, defaults apply and the settings
     /// command is rejected.
     pub project_settings: Option<Arc<ProjectSettingsRepo>>,
+    /// Extra check of the `audit` settings object before it is stored. OSS
+    /// only requires a JSON object; the hosted audit engine knows the keys
+    /// and plugs its validator here, because the engine falls back to
+    /// defaults on unreadable settings and a typo would go unnoticed.
+    pub audit_settings_validator: Option<AuditSettingsValidator>,
     /// WorkUnit projection (P3). `None` until wired by the server.
     pub work_units: Option<Arc<WorkUnitRepo>>,
     pub handoffs: Option<Arc<daruma_storage::HandoffRepo>>,
@@ -143,6 +153,7 @@ impl CommandHandler {
             tenant_quotas: None,
             documents: None,
             project_settings: None,
+            audit_settings_validator: None,
             work_units: None,
             handoffs: None,
             capability_profiles: None,
@@ -210,6 +221,13 @@ impl CommandHandler {
     /// Wire the per-project settings projection (auto-append toggles).
     pub fn with_project_settings(mut self, repo: Arc<ProjectSettingsRepo>) -> Self {
         self.project_settings = Some(repo);
+        self
+    }
+
+    /// Validate `UpdateProjectSettings.audit` objects with `validator`; its
+    /// error message becomes a validation error.
+    pub fn with_audit_settings_validator(mut self, validator: AuditSettingsValidator) -> Self {
+        self.audit_settings_validator = Some(validator);
         self
     }
 
@@ -496,9 +514,19 @@ impl CommandHandler {
         // shape checks only, no policy.
         // Source-chain upserts (and `PlanSourceSet`) ride ahead of the
         // mutation in the same batch.
+        // Appending to an existing plan (`plan_id`) keeps that plan's source:
+        // no policy check, no new chain nodes — a differing incoming source is
+        // recorded on the new tasks as a comment instead (see build_events).
         let (mut warnings, source_events) = match &mut cmd {
-            Command::MaterializePlan { plan, tasks } => {
+            Command::MaterializePlan {
+                plan,
+                tasks,
+                plan_id: None,
+            } => {
                 let (mut warnings, events) = self.resolve_plan_source(plan, &actor).await?;
+                if !plan.separate {
+                    self.require_plan_choice(plan, &events).await?;
+                }
                 warnings.extend(crate::plan_source::plan_looks_raw(plan, tasks));
                 (warnings, events)
             }
@@ -2257,9 +2285,21 @@ impl CommandHandler {
                 project_id,
                 auto_append,
                 intake_source,
+                audit,
             } => {
                 if let Some(Some(policy)) = &intake_source {
                     crate::plan_source::validate_policy(policy)?;
+                }
+                if let Some(Some(value)) = &audit {
+                    if !value.is_object() {
+                        return Err(CoreError::validation(
+                            "audit settings must be a JSON object or null",
+                        ));
+                    }
+                    if let Some(validate) = &self.audit_settings_validator {
+                        validate(value)
+                            .map_err(|e| CoreError::validation(format!("audit settings: {e}")))?;
+                    }
                 }
                 self.projects
                     .get(project_id)
@@ -2274,6 +2314,7 @@ impl CommandHandler {
                     auto_append: current.apply(auto_append),
                     at: daruma_shared::time::now(),
                     intake_source,
+                    audit,
                 }])
             }
 
@@ -2507,7 +2548,25 @@ impl CommandHandler {
             // happens in `relink_materialised_provenance` after the envelopes
             // (and thus the real `PlanCreated` id) exist. daruma does not
             // decompose — it lands the finished structure.
-            Command::MaterializePlan { mut plan, tasks } => {
+            Command::MaterializePlan {
+                plan,
+                tasks,
+                plan_id: Some(plan_id),
+            } => {
+                if tasks.is_empty() {
+                    return Err(CoreError::validation(
+                        "materialize_plan requires at least one task",
+                    ));
+                }
+                self.append_materialized_tasks(plan_id, plan, tasks, actor)
+                    .await
+            }
+
+            Command::MaterializePlan {
+                mut plan,
+                tasks,
+                plan_id: None,
+            } => {
                 if tasks.is_empty() {
                     return Err(CoreError::validation(
                         "materialize_plan requires at least one task",
@@ -2548,82 +2607,21 @@ impl CommandHandler {
                 new_plan.status = PlanStatus::Active;
                 let mut events = vec![Event::PlanCreated { plan: new_plan }];
 
-                let mut batch_external_keys = std::collections::HashSet::new();
-                for (position, mut task) in tasks.into_iter().enumerate() {
-                    let t_title = task.title.trim().to_string();
-                    if t_title.is_empty() {
-                        return Err(CoreError::validation("task title must not be empty"));
-                    }
-                    if t_title.len() > 500 {
-                        return Err(CoreError::validation(
-                            "task title must not exceed 500 characters",
-                        ));
-                    }
-                    task.title = t_title;
-                    normalize_external_key(&mut task);
-                    if let Some(external_key) = task.external_key.as_ref() {
-                        if !batch_external_keys.insert(external_key.clone()) {
-                            return Err(CoreError::validation(format!(
-                                "duplicate_external_key_in_materialize_plan: `{external_key}`"
-                            )));
-                        }
-                    }
-                    // Та же причина: задача приехала внутри решённого плана, с
-                    // позицией и зависимостями — она уже разобрана. `Inbox` по
-                    // умолчанию ставил бы её в очередь на триаж, которого для
-                    // плановой задачи не бывает.
-                    if task.status.is_none() {
-                        task.status = Some(Status::Todo);
-                    }
-                    // A materialised task is plan-owned (Q1): its project is
-                    // always the plan project, regardless of caller input.
-                    task.project_id = Some(project_id);
-                    let existing = match task.external_key.clone() {
-                        Some(key) => self
-                            .tasks
-                            .find_by_external_key(&key)
-                            .await?
-                            .map(|task| (key, task)),
-                        None => None,
-                    };
-                    let task_id = if let Some((ext_key, existing)) = existing {
-                        if existing.project_id != Some(project_id) {
-                            return Err(CoreError::validation(format!(
-                                "external_key_project_mismatch: external_key `{ext_key}` belongs to project {:?}, not plan project {project_id}",
-                                existing.project_id
-                            )));
-                        }
-                        events.extend(redelivered_create_events(
-                            existing.id,
-                            &ext_key,
-                            &task,
-                            actor,
-                        ));
-                        existing.id
-                    } else {
-                        let task_id = task.id.unwrap_or_else(TaskId::new);
-                        task.id = Some(task_id);
-                        events.push(Event::TaskCreated { task });
-                        // NewTask has no git_context; inherit through the existing
-                        // update event in the same batch, only for new tasks.
-                        if let Some(context) = &git_context {
-                            events.push(Event::TaskUpdated {
-                                task_id,
-                                patch: daruma_domain::TaskPatch {
-                                    git_context: Some(Some(context.clone())),
-                                    ..Default::default()
-                                },
-                            });
-                        }
-                        task_id
-                    };
-                    events.push(Event::PlanTaskAdded {
-                        plan_id,
-                        task_id,
-                        position: position as u32,
-                        depends_on: Vec::new(),
-                    });
-                }
+                events.extend(
+                    self.materialized_task_events(
+                        MaterializeTarget {
+                            plan_id,
+                            project_id,
+                            git_context: git_context.as_ref(),
+                            first_position: 0,
+                            members: &std::collections::HashSet::new(),
+                            source_note: None,
+                        },
+                        tasks,
+                        actor,
+                    )
+                    .await?,
+                );
                 Ok(events)
             }
 
@@ -4105,6 +4103,194 @@ impl CommandHandler {
     }
 }
 
+/// Where a `MaterializePlan` batch lands its tasks: a fresh plan (position 0,
+/// no members) or an existing one (`plan_id` append).
+struct MaterializeTarget<'a> {
+    plan_id: PlanId,
+    project_id: ProjectId,
+    git_context: Option<&'a daruma_domain::GitContext>,
+    first_position: u32,
+    /// Tasks already in the plan: a re-delivered one is not added twice.
+    members: &'a std::collections::HashSet<TaskId>,
+    /// Commented on every new task (append from a differing source).
+    source_note: Option<&'a str>,
+}
+
+impl CommandHandler {
+    /// ADR-0007 Q5: one `TaskCreated` (or, for a known `external_key`, the
+    /// re-delivery comment) plus one `PlanTaskAdded` per task, in order.
+    async fn materialized_task_events(
+        &self,
+        target: MaterializeTarget<'_>,
+        tasks: Vec<daruma_domain::NewTask>,
+        actor: &Actor,
+    ) -> Result<Vec<Event>> {
+        let project_id = target.project_id;
+        let mut events = Vec::new();
+        let mut position = target.first_position;
+        let mut batch_external_keys = std::collections::HashSet::new();
+        for mut task in tasks {
+            let t_title = task.title.trim().to_string();
+            if t_title.is_empty() {
+                return Err(CoreError::validation("task title must not be empty"));
+            }
+            if t_title.len() > 500 {
+                return Err(CoreError::validation(
+                    "task title must not exceed 500 characters",
+                ));
+            }
+            task.title = t_title;
+            normalize_external_key(&mut task);
+            if let Some(external_key) = task.external_key.as_ref() {
+                if !batch_external_keys.insert(external_key.clone()) {
+                    return Err(CoreError::validation(format!(
+                        "duplicate_external_key_in_materialize_plan: `{external_key}`"
+                    )));
+                }
+            }
+            // Та же причина: задача приехала внутри решённого плана, с
+            // позицией и зависимостями — она уже разобрана. `Inbox` по
+            // умолчанию ставил бы её в очередь на триаж, которого для
+            // плановой задачи не бывает.
+            if task.status.is_none() {
+                task.status = Some(Status::Todo);
+            }
+            // A materialised task is plan-owned (Q1): its project is
+            // always the plan project, regardless of caller input.
+            task.project_id = Some(project_id);
+            let existing = match task.external_key.clone() {
+                Some(key) => self
+                    .tasks
+                    .find_by_external_key(&key)
+                    .await?
+                    .map(|task| (key, task)),
+                None => None,
+            };
+            let task_id = if let Some((ext_key, existing)) = existing {
+                if existing.project_id != Some(project_id) {
+                    return Err(CoreError::validation(format!(
+                        "external_key_project_mismatch: external_key `{ext_key}` belongs to project {:?}, not plan project {project_id}",
+                        existing.project_id
+                    )));
+                }
+                events.extend(redelivered_create_events(
+                    existing.id,
+                    &ext_key,
+                    &task,
+                    actor,
+                ));
+                existing.id
+            } else {
+                let task_id = task.id.unwrap_or_else(TaskId::new);
+                task.id = Some(task_id);
+                events.push(Event::TaskCreated { task });
+                // NewTask has no git_context; inherit through the existing
+                // update event in the same batch, only for new tasks.
+                if let Some(context) = target.git_context {
+                    events.push(Event::TaskUpdated {
+                        task_id,
+                        patch: daruma_domain::TaskPatch {
+                            git_context: Some(Some(context.clone())),
+                            ..Default::default()
+                        },
+                    });
+                }
+                if let Some(note) = target.source_note {
+                    events.extend(task_comment_events(task_id, note.to_string(), actor));
+                }
+                task_id
+            };
+            if target.members.contains(&task_id) {
+                continue;
+            }
+            events.push(Event::PlanTaskAdded {
+                plan_id: target.plan_id,
+                task_id,
+                position,
+                depends_on: Vec::new(),
+            });
+            position += 1;
+        }
+        Ok(events)
+    }
+
+    /// `MaterializePlan` with `plan_id`: append the tasks to that existing
+    /// plan, so follow-up work on one issue stays in one plan. The plan keeps
+    /// its own title, project and source; a completed plan is reopened in the
+    /// same batch, an abandoned or archived one is refused.
+    async fn append_materialized_tasks(
+        &self,
+        plan_id: PlanId,
+        plan: daruma_domain::NewPlan,
+        tasks: Vec<daruma_domain::NewTask>,
+        actor: &Actor,
+    ) -> Result<Vec<Event>> {
+        let plan_repo = self
+            .plans
+            .as_ref()
+            .ok_or_else(|| CoreError::storage("plan repository not configured"))?;
+        let existing = plan_repo
+            .get(plan_id)
+            .await?
+            .ok_or_else(|| CoreError::not_found(format!("plan {plan_id}")))?;
+        if existing.archived_at.is_some() {
+            return Err(CoreError::validation(format!(
+                "plan {plan_id} is archived: tasks cannot be added to it, materialize a new plan"
+            )));
+        }
+        let mut events = Vec::new();
+        match existing.status {
+            PlanStatus::Abandoned => {
+                return Err(CoreError::validation(format!(
+                "plan {plan_id} is abandoned: tasks cannot be added to it, materialize a new plan"
+            )))
+            }
+            PlanStatus::Completed => events.push(Event::PlanStatusChanged {
+                plan_id,
+                from: PlanStatus::Completed,
+                to: PlanStatus::Active,
+            }),
+            PlanStatus::Draft | PlanStatus::Active => {}
+        }
+        let source_note = self.appended_source_note(&existing, &plan).await?;
+        let members = plan_repo.list_plan_tasks_ordered(plan_id).await?;
+        // The plan stores no git context: the request's wins, else the latest
+        // one its tasks carry.
+        let git_context = match plan.git_context {
+            Some(context) => Some(context.normalized().map_err(CoreError::validation)?),
+            None => {
+                let mut found = None;
+                for member in members.iter().rev() {
+                    if let Some(task) = self.tasks.get(member.task_id).await? {
+                        if task.git_context.is_some() {
+                            found = task.git_context;
+                            break;
+                        }
+                    }
+                }
+                found
+            }
+        };
+        let member_ids = members.iter().map(|member| member.task_id).collect();
+        events.extend(
+            self.materialized_task_events(
+                MaterializeTarget {
+                    plan_id,
+                    project_id: existing.project_id,
+                    git_context: git_context.as_ref(),
+                    first_position: members.last().map_or(0, |member| member.position + 1),
+                    members: &member_ids,
+                    source_note: source_note.as_deref(),
+                },
+                tasks,
+                actor,
+            )
+            .await?,
+        );
+        Ok(events)
+    }
+}
+
 /// Borrow the rule repo or return a clean "not configured" error. Every rule
 /// CRUD command needs it; centralised so the message stays consistent.
 fn require_rules(rules: &Option<Arc<RuleRepo>>) -> Result<&Arc<RuleRepo>> {
@@ -4115,14 +4301,21 @@ fn require_rules(rules: &Option<Arc<RuleRepo>>) -> Result<&Arc<RuleRepo>> {
 
 /// ADR-0007 Q5: bind every `TaskCreated` in a `MaterializePlan` batch to the
 /// batch's `PlanCreated` event id, so a plan-derived task's `source_event_id`
-/// points at the real event that created its plan. Runs after envelope ids are
-/// assigned (they are unknown while the events are still bare payloads) and
-/// before persistence. No-op if the batch has no `PlanCreated` (defensive).
+/// points at the real event that created its plan. An append to an existing
+/// plan (`plan_id`) has no `PlanCreated`: its anchor is the batch's reopening
+/// `PlanStatusChanged`, else its first `PlanTaskAdded`. Runs after envelope
+/// ids are assigned (they are unknown while the events are still bare
+/// payloads) and before persistence. No-op without an anchor (defensive).
 fn relink_materialised_provenance(envelopes: &mut [EventEnvelope]) {
-    let plan_event_id = envelopes.iter().find_map(|env| match env.payload {
-        Event::PlanCreated { .. } => Some(env.id),
-        _ => None,
-    });
+    let anchor = |wanted: fn(&Event) -> bool| {
+        envelopes
+            .iter()
+            .find(|env| wanted(&env.payload))
+            .map(|env| env.id)
+    };
+    let plan_event_id = anchor(|e| matches!(e, Event::PlanCreated { .. }))
+        .or_else(|| anchor(|e| matches!(e, Event::PlanStatusChanged { .. })))
+        .or_else(|| anchor(|e| matches!(e, Event::PlanTaskAdded { .. })));
     let Some(plan_event_id) = plan_event_id else {
         return;
     };
@@ -4303,7 +4496,15 @@ fn redelivered_create_events(
     task: &daruma_domain::NewTask,
     actor: &Actor,
 ) -> Vec<Event> {
-    let body = redelivered_create_comment_body(external_key, task);
+    task_comment_events(
+        task_id,
+        redelivered_create_comment_body(external_key, task),
+        actor,
+    )
+}
+
+/// A research comment on `task_id` written inside a command batch.
+fn task_comment_events(task_id: TaskId, body: String, actor: &Actor) -> Vec<Event> {
     let preview: String = body.chars().take(80).collect();
     let comment = Comment::from_new(
         daruma_domain::NewComment {
@@ -5992,6 +6193,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("Roadmap", project_id, Actor::user()),
                     tasks: vec![NewTask::new("t1"), NewTask::new("t2"), NewTask::new("t3")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6038,6 +6240,308 @@ mod tests {
         );
     }
 
+    /// Seed an active plan with `titles` (issue source + branch) for the
+    /// `plan_id` append tests; returns its id and the plan project.
+    async fn seed_append_plan(
+        handler: &CommandHandler,
+        titles: &[&str],
+        keyed: Option<&str>,
+    ) -> (daruma_shared::PlanId, ProjectId) {
+        use daruma_domain::NewPlan;
+        let project_id = ProjectId::new();
+        let mut plan = NewPlan::new("Issue 7", project_id, Actor::user());
+        plan.source_ref = Some("https://gitlab.x/g/p/-/issues/7".into());
+        plan.git_context = Some(daruma_domain::GitContext {
+            branch: Some("7_fix_login".into()),
+            ..Default::default()
+        });
+        let tasks = titles
+            .iter()
+            .map(|title| NewTask {
+                external_key: keyed.map(str::to_string),
+                ..NewTask::new(*title)
+            })
+            .collect();
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan,
+                    tasks,
+                    plan_id: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        (plan_created_id(&envs).0, project_id)
+    }
+
+    /// `plan_id` appends to an existing active plan: no new plan, the plan's
+    /// project and title win, positions continue, git context is inherited
+    /// from the plan's tasks, provenance points at the batch's first
+    /// `PlanTaskAdded`; the same source adds no comment.
+    #[tokio::test]
+    async fn materialize_plan_appends_to_active_plan_by_plan_id() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let (plan_id, project_id) = seed_append_plan(&handler, &["t1", "t2"], None).await;
+
+        let mut incoming = NewPlan::new("", ProjectId::new(), Actor::user());
+        incoming.source_ref = Some("https://gitlab.x/g/p/-/issues/7".into());
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: incoming,
+                    tasks: vec![NewTask::new("follow-up")],
+                    plan_id: Some(plan_id),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        assert!(!envs
+            .iter()
+            .any(|e| matches!(e.payload, Event::PlanCreated { .. })));
+        assert!(!envs
+            .iter()
+            .any(|e| matches!(e.payload, Event::CommentAdded { .. })));
+        let added = envs
+            .iter()
+            .find(|e| matches!(e.payload, Event::PlanTaskAdded { .. }))
+            .expect("PlanTaskAdded");
+        let [task_id] = created_task_ids(&envs)[..] else {
+            panic!("one new task expected");
+        };
+        assert_eq!(plans.plans.lock().unwrap().len(), 1);
+        let stored_plan = plans.get(plan_id).await.unwrap().unwrap();
+        assert_eq!(stored_plan.title, "Issue 7");
+        assert_eq!(stored_plan.status, PlanStatus::Active);
+        let members = plans.list_plan_tasks_ordered(plan_id).await.unwrap();
+        assert_eq!(members.len(), 3);
+        assert_eq!(members[2].task_id, task_id);
+        assert_eq!(members[2].position, 2);
+        let stored = tasks.get(task_id).await.unwrap().unwrap();
+        assert_eq!(stored.project_id, Some(project_id));
+        assert_eq!(stored.status, Status::Todo);
+        assert_eq!(stored.source_event_id, Some(added.id));
+        assert_eq!(
+            stored.git_context.and_then(|c| c.branch).as_deref(),
+            Some("7_fix_login")
+        );
+    }
+
+    /// Appending from another source keeps the plan's source and records the
+    /// incoming ref, label and brief on every new task.
+    #[tokio::test]
+    async fn materialize_plan_append_notes_a_differing_source() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, _tasks) = build_plan_stack().await;
+        let (plan_id, project_id) = seed_append_plan(&handler, &["t1"], None).await;
+
+        let mut incoming = NewPlan::new("", project_id, Actor::user());
+        incoming.source = Some(daruma_domain::SourceInput {
+            source_ref: Some("https://gitlab.x/g/p/-/issues/8".into()),
+            label: Some("Linked issue".into()),
+            ..Default::default()
+        });
+        incoming.source_brief = Some("owner asked in chat".into());
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: incoming,
+                    tasks: vec![NewTask::new("a"), NewTask::new("b")],
+                    plan_id: Some(plan_id),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let new_tasks = created_task_ids(&envs);
+        let notes: Vec<_> = envs
+            .iter()
+            .filter_map(|e| match &e.payload {
+                Event::CommentAdded { comment } => Some(comment),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes.len(), 2);
+        for (note, task_id) in notes.iter().zip(&new_tasks) {
+            assert_eq!(note.task_id, *task_id);
+            assert!(note
+                .body
+                .contains("Source: https://gitlab.x/g/p/-/issues/8"));
+            assert!(note.body.contains("Source label: Linked issue"));
+            assert!(note.body.contains("Brief: owner asked in chat"));
+        }
+        assert_eq!(
+            plans
+                .get(plan_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .source_ref
+                .as_deref(),
+            Some("https://gitlab.x/g/p/-/issues/7")
+        );
+    }
+
+    /// A completed plan is reopened in the same batch; provenance points at
+    /// that `PlanStatusChanged`.
+    #[tokio::test]
+    async fn materialize_plan_append_reopens_completed_plan() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let (plan_id, project_id) = seed_append_plan(&handler, &["t1"], None).await;
+        plans
+            .plans
+            .lock()
+            .unwrap()
+            .get_mut(&plan_id)
+            .unwrap()
+            .status = PS::Completed;
+
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("", project_id, Actor::user()),
+                    tasks: vec![NewTask::new("late fix")],
+                    plan_id: Some(plan_id),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let reopened = envs
+            .iter()
+            .find(|e| {
+                matches!(
+                    e.payload,
+                    Event::PlanStatusChanged {
+                        from: PS::Completed,
+                        to: PS::Active,
+                        ..
+                    }
+                )
+            })
+            .expect("completed → active in the same batch");
+        assert_eq!(
+            plans.get(plan_id).await.unwrap().unwrap().status,
+            PS::Active
+        );
+        let [task_id] = created_task_ids(&envs)[..] else {
+            panic!("one new task expected");
+        };
+        let stored = tasks.get(task_id).await.unwrap().unwrap();
+        assert_eq!(stored.source_event_id, Some(reopened.id));
+        assert_eq!(
+            plans.list_plan_tasks_ordered(plan_id).await.unwrap().len(),
+            2
+        );
+    }
+
+    /// Abandoned and archived plans refuse appends and write nothing.
+    #[tokio::test]
+    async fn materialize_plan_append_refuses_abandoned_and_archived_plans() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let (plan_id, project_id) = seed_append_plan(&handler, &["t1"], None).await;
+        let append = || Command::MaterializePlan {
+            plan: NewPlan::new("", project_id, Actor::user()),
+            tasks: vec![NewTask::new("too late")],
+            plan_id: Some(plan_id),
+        };
+
+        plans
+            .plans
+            .lock()
+            .unwrap()
+            .get_mut(&plan_id)
+            .unwrap()
+            .status = PS::Abandoned;
+        let err = handler.handle(append(), Actor::user()).await.unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err:?}");
+        assert!(err.to_string().contains("abandoned"), "{err}");
+
+        {
+            let mut guard = plans.plans.lock().unwrap();
+            let plan = guard.get_mut(&plan_id).unwrap();
+            plan.status = PS::Active;
+            plan.archived_at = Some(time::now());
+        }
+        let err = handler.handle(append(), Actor::user()).await.unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err:?}");
+        assert!(err.to_string().contains("archived"), "{err}");
+
+        assert_eq!(tasks.list_all().await.unwrap().len(), 1);
+        assert_eq!(
+            plans.list_plan_tasks_ordered(plan_id).await.unwrap().len(),
+            1
+        );
+
+        let err = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("", project_id, Actor::user()),
+                    tasks: vec![NewTask::new("x")],
+                    plan_id: Some(daruma_shared::PlanId::new()),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound(_)), "{err:?}");
+    }
+
+    /// A repeated `external_key` in an append reuses the member task: the
+    /// incoming context becomes a comment, membership is not duplicated, and
+    /// a new task in the same batch takes the next position.
+    #[tokio::test]
+    async fn materialize_plan_append_reuses_external_key_member() {
+        use daruma_domain::NewPlan;
+        let (handler, plans, _runs, _sessions, _ext, tasks) = build_plan_stack().await;
+        let (plan_id, project_id) =
+            seed_append_plan(&handler, &["imported"], Some("gitlab:g/p#7")).await;
+        let original = tasks.list_all().await.unwrap()[0].id;
+
+        let envs = handler
+            .handle(
+                Command::MaterializePlan {
+                    plan: NewPlan::new("", project_id, Actor::user()),
+                    tasks: vec![
+                        NewTask {
+                            external_key: Some("gitlab:g/p#7".into()),
+                            ..NewTask::new("imported again")
+                        },
+                        NewTask::new("new step"),
+                    ],
+                    plan_id: Some(plan_id),
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+
+        let [new_task] = created_task_ids(&envs)[..] else {
+            panic!("only the unkeyed task is new");
+        };
+        assert!(envs.iter().any(|e| matches!(
+            &e.payload,
+            Event::CommentAdded { comment } if comment.task_id == original
+        )));
+        let members = plans.list_plan_tasks_ordered(plan_id).await.unwrap();
+        assert_eq!(
+            members
+                .iter()
+                .map(|m| (m.task_id, m.position))
+                .collect::<Vec<_>>(),
+            vec![(original, 0), (new_task, 1)]
+        );
+        assert_eq!(tasks.list_all().await.unwrap().len(), 2);
+    }
+
     /// A repeated task `external_key` reuses the existing task, records the
     /// incoming context as a comment, and attaches it to the new plan.
     #[tokio::test]
@@ -6053,6 +6557,7 @@ mod tests {
                 description: Some(format!("payload for {task_title}")),
                 ..NewTask::new(task_title)
             }],
+            plan_id: None,
         };
 
         let first = handler
@@ -6103,6 +6608,7 @@ mod tests {
                 external_key: Some("concurrent-delivery".into()),
                 ..NewTask::new("Imported task")
             }],
+            plan_id: None,
         };
 
         let (first, second) = tokio::join!(
@@ -6145,6 +6651,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("First plan", first_project, Actor::user()),
                     tasks: vec![task()],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6156,6 +6663,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("Foreign plan", second_project, Actor::user()),
                     tasks: vec![task()],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6189,6 +6697,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("Invalid batch", project_id, Actor::user()),
                     tasks: vec![keyed("First"), keyed("Second")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6213,6 +6722,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("p", ProjectId::new(), Actor::user()),
                     tasks: vec![],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6235,6 +6745,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("p", project_id, Actor::user()),
                     tasks: vec![NewTask::new("t1")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6298,6 +6809,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("p", project_id, Actor::user()),
                     tasks: vec![NewTask::new("t1")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6387,6 +6899,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("other", project_id, Actor::user()),
                     tasks: vec![NewTask::new("outsider")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -6543,6 +7056,7 @@ mod tests {
                 Command::MaterializePlan {
                     plan: NewPlan::new("p", ProjectId::new(), Actor::user()),
                     tasks: vec![NewTask::new("parent")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )

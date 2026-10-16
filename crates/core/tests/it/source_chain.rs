@@ -108,12 +108,16 @@ impl Stack {
     ) -> Result<(Plan, Vec<MutationWarning>), CoreError> {
         let mut plan = NewPlan::new("Plan", self.project, Actor::user());
         plan.source = source;
+        // Chain mechanics, not the continuation choice: every plan here is
+        // deliberately new (plan_choice_required is covered in plan_source).
+        plan.separate = true;
         let outcome = self
             .handler
             .handle_with_warnings(
                 Command::MaterializePlan {
                     plan,
                     tasks: vec![NewTask::new("t")],
+                    plan_id: None,
                 },
                 Actor::user(),
             )
@@ -409,6 +413,7 @@ async fn extend_sets_source_of_sourceless_plan_once() {
                     }],
                     ..IntakeSourcePolicy::default()
                 })),
+                audit: None,
             },
             Actor::user(),
         )
@@ -471,6 +476,7 @@ async fn enforce_rejection_writes_no_nodes() {
                     }],
                     ..IntakeSourcePolicy::default()
                 })),
+                audit: None,
             },
             Actor::user(),
         )
@@ -554,6 +560,7 @@ async fn replay_rebuilds_the_same_chain() {
             Command::MaterializePlan {
                 plan,
                 tasks: vec![NewTask::new("t")],
+                plan_id: None,
             },
             Actor::user(),
         )

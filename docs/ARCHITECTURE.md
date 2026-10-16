@@ -525,7 +525,7 @@ guard.
 | Prefix   | Paths                                                       | Auth | Notes |
 |----------|-------------------------------------------------------------|------|-------|
 | (root)   | `GET /healthz`                                              | —    | Health check; no versioning. |
-| `/v1`    | `GET /healthz`, `GET /ws`                                   | —    | Public surface. WS bearer auth via `Sec-WebSocket-Protocol`; `?token=…` is legacy fallback. |
+| `/v1`    | `GET /healthz`, `GET /ws`                                   | —    | Public surface. WS bearer auth via `Sec-WebSocket-Protocol`; `?token=…` is legacy fallback; `?visibility=mine` keeps only the principal's events and tasks (unknown value → 400). |
 | `/v1`    | `GET /tasks`, `GET /tasks/{id}`, `GET /projects`,           | ✔    | Bearer middleware + per-handler `require(Capability)`. |
 |          | `POST /commands`, `GET /events?since&limit`,                |      |  Each command kind maps to a `task:write`/`comment:write`/etc gate. |
 |          | `POST /ai/analyze-complexity/{plan_id}`,                    |      | `agent:dispatch` (deprecated shim). |

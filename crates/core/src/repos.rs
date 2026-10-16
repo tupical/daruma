@@ -36,6 +36,18 @@ pub trait PlanRepository: Send + Sync {
         source_ref: &str,
     ) -> Result<Option<PlanId>>;
 
+    /// Plans a new plan may continue (`plan_choice_required`): see
+    /// `PlanRepo::continuation_candidates`. Stubs without plan data have none.
+    async fn continuation_candidates(
+        &self,
+        _project_id: ProjectId,
+        _chain_refs: &[String],
+        _repo: Option<&str>,
+        _branch: Option<&str>,
+    ) -> Result<Vec<Plan>> {
+        Ok(Vec::new())
+    }
+
     /// ADR-0009 source node by ref.
     async fn get_source(&self, source_ref: &str) -> Result<Option<SourceNode>>;
 
@@ -143,6 +155,15 @@ impl PlanRepository for PlanRepo {
         source_ref: &str,
     ) -> Result<Option<PlanId>> {
         PlanRepo::earliest_by_source_ref(self, project_id, source_ref).await
+    }
+    async fn continuation_candidates(
+        &self,
+        project_id: ProjectId,
+        chain_refs: &[String],
+        repo: Option<&str>,
+        branch: Option<&str>,
+    ) -> Result<Vec<Plan>> {
+        PlanRepo::continuation_candidates(self, project_id, chain_refs, repo, branch).await
     }
     async fn get_source(&self, source_ref: &str) -> Result<Option<SourceNode>> {
         PlanRepo::get_source(self, source_ref).await

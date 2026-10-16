@@ -132,6 +132,33 @@ Supported launch modes:
   user which project to use, call `daruma_project_use` with that
   `project_id`, then retry `daruma_list`; the selected project is persisted
   in `workspaces.json` for later calls.
+- `status` is optional on the list tools: `daruma_list` defaults to `active`,
+  `daruma_plan_list` to `draft,active`. There is no `ready`/`blocked` task
+  status — ready plan tasks come from `daruma_plan_progress` /
+  `daruma_plan_drain_next`, and the 400 for an unknown status lists the valid
+  values.
+- Id parameter names differ between tools, so the mismatched name is
+  accepted as an alias. Every task, plan, run, document, session, rule, work
+  unit, artifact and relation tool takes its schema name, the kind's own name
+  (`task_id`, `plan_id`, `run_id`, `doc_id` / `document_id`, `session_id`,
+  `rule_id`, `work_unit_id`, `artifact_id`, `relation_id`) or the generic `id`:
+  `daruma_get {task_id}` and `daruma_comment {id}` both work, as do
+  `daruma_plan_progress {id}` and `daruma_run_complete {id}`. The schemas of
+  the key tools — `daruma_get`, `daruma_update`, `daruma_set_status`,
+  `daruma_complete`, `daruma_comment`, `daruma_relations`, `daruma_claim`,
+  `daruma_release`, `daruma_plan_get`, `daruma_plan_progress`,
+  `daruma_plan_drain_next` — list both names and require neither; a call with
+  neither fails with the accepted names. Bulk tools take
+  `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
+  different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
+  generic `id` fill the missing one; `from_work_unit_id` / `to_work_unit_id` of
+  `daruma_handoff_request` take no alias. `run_id` is optional on
+  `daruma_plan_next_task` — the server generates one. An id whose prefix names
+  another kind (`pln_…` where a task is expected) fails before any request, and
+  a missing id lists the accepted names. Bare UUIDs carry no kind, so a plan
+  UUID sent to a task tool still reaches the server and returns 404. Project,
+  agent, workspace, handoff, finding, history and graph-node ids keep their
+  single name.
 - The same `workspaces.json` works in both modes. To bind projects while running
   from a parent folder, call `daruma_project_use` with `scope_path`
   (relative paths are resolved from `DARUMA_WORKSPACE` / process CWD).

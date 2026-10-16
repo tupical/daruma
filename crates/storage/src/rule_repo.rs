@@ -9,7 +9,7 @@
 use crate::parse_ts;
 use daruma_domain::{Condition, Requirement, Rule, RuleMode, RuleScope, RuleTrigger};
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{CoreError, ProjectId, Result, RuleId, TaskId};
+use daruma_shared::{CoreError, PlanId, ProjectId, Result, RuleId, TaskId};
 use sqlx::{Row, SqlitePool};
 
 pub struct RuleRepo {
@@ -90,6 +90,32 @@ impl RuleRepo {
             Ok((project, title))
         })
         .transpose()
+    }
+
+    /// Every plan this task is a member of (`plan_tasks`), ordered the same
+    /// way as `PlanRepo::list_plans_for_task`. Task-status events carry only
+    /// the task id, so the gate needs this to extend plan-scoped rules to a
+    /// *direct* `SetStatus` transition, not only plan-materialize paths. A
+    /// task may belong to several plans (or none) — the gate must check all
+    /// of them, not an arbitrary first membership.
+    pub async fn task_plan_ids(&self, id: TaskId) -> Result<Vec<PlanId>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT pt.plan_id FROM plan_tasks pt \
+             JOIN plans p ON p.id = pt.plan_id \
+             WHERE pt.task_id = ? \
+             ORDER BY pt.position ASC, p.created_at ASC",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.into_iter()
+            .map(|(plan_id,)| {
+                plan_id
+                    .parse()
+                    .map_err(|_| CoreError::storage("bad plan_tasks.plan_id"))
+            })
+            .collect()
     }
 
     pub async fn effective_rules(

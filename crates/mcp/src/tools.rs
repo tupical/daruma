@@ -249,7 +249,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. Raw ideas go through the idea pipeline, not here.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. To add follow-up tasks to an existing plan pass `plan.id` (no title); it keeps its project and source. Plans on the same branch/source chain give `plan_choice_required`: same subject → `plan.id`, else `plan.separate`. Raw ideas go through the idea pipeline, not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
@@ -257,14 +257,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_get",
             "Get task",
             "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version. `comments: true` also attaches the task's full comment list as `comments` (never trimmed by `max_tokens`, never replaced by the `unchanged` marker).",
-            schema_get_task(),
+            with_id_alias(schema_get_task(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::Read,
         ),
         tool(
             "daruma_update",
             "Update task",
             "Update a task's title, description, due_at or git_context (where the work lives: branch/head_sha/mr_url/repo; null clears). Under plan-only intake title/description are plan-owned — use daruma_amend_plan_task. Status/priority: daruma_set_status / daruma_set_priority.",
-            schema_update(),
+            with_id_alias(schema_update(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (required): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
+            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (default `active`): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -299,7 +299,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_set_status",
             "Set task status",
             "Set a task's status. Optional `comment` {body, kind} lands atomically with the transition — no separate daruma_comment.",
-            schema_set_status(),
+            with_id_alias(schema_set_status(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
@@ -320,7 +320,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_complete",
             "Complete task",
             "Complete a task. Optional note (reason / result_summary / acceptance_criteria_status / related_artifacts) replaces a separate daruma_comment; the actor is recorded automatically.",
-            schema_complete(),
+            with_id_alias(schema_complete(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::WriteIdem,
         ),
         tool(
@@ -355,7 +355,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_comment",
             "Comment on task",
             "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected).",
-            schema_comment(),
+            with_id_alias(schema_comment(), "task_id", "id"),
             Dom::Tasks, D, E, Ann::Write,
         ),
         tool(
@@ -425,7 +425,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_settings_get",
             "Get project settings",
-            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default), and the plan-source policy `intake_source` (null = warn).",
+            "Read per-project settings: the auto-append toggles for the Interview (AI log) and Human Log documents (both ON by default), the plan-source policy `intake_source` (null = warn), and the audit thresholds object `audit` (null = engine defaults).",
             schema_with_id("project_id"),
             Dom::Projects, F, E, Ann::Read,
         ),
@@ -439,7 +439,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_project_settings_update",
             "Update project settings",
-            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document; pass `intake_source` to replace the plan-source policy (null removes it).",
+            "Partially update per-project settings: pass `interview` and/or `human_log` booleans to toggle auto-append into the corresponding log document; pass `intake_source` to replace the plan-source policy (null removes it); pass `audit` to replace the audit thresholds object whole (null removes it).",
             schema_project_settings_update(),
             Dom::Projects, F, E, Ann::WriteIdem,
         ),
@@ -595,13 +595,13 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_plan_get",
             "Get plan",
             "Fetch a plan with progress metrics — the cheap way to summarize one plan (prefer over enumerating plans or tasks).",
-            schema_plan_get(),
+            with_id_alias(schema_plan_get(), "id", "plan_id"),
             Dom::Plans, D, C, Ann::Read,
         ),
         tool(
             "daruma_plan_list",
             "List plans",
-            "List plans. Required `status`: `draft`/`active`/`completed`/`abandoned`, a comma list, or `all`. Prefer `draft,active`; completed plans are token-heavy — use `daruma_plan_get` for one plan. `project_id` defaults to the repo project; `all` spans projects.",
+            "List plans. `status` (default `draft,active`): `draft`/`active`/`completed`/`abandoned`, a comma list, or `all`. Completed plans are token-heavy — use `daruma_plan_get` for one plan. `project_id` defaults to the repo project; `all` spans projects.",
             schema_plan_list(),
             Dom::Plans, D, C, Ann::Read,
         ),
@@ -657,15 +657,15 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_progress",
             "Plan progress snapshot",
-            "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active).",
-            schema_with_id("plan_id"),
+            "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active). Alias of `plan_id`: `id`.",
+            with_id_alias(schema_with_id("plan_id"), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Read,
         ),
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
             "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
-            schema_plan_drain_next(),
+            with_id_alias(schema_plan_drain_next(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Write,
         ),
         tool(
@@ -891,14 +891,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_claim",
             "Claim task",
             "Claim a task optimistically for a TTL in seconds; agent UUID from daruma_workspace_info.mcp_agent_id.",
-            schema_claim(),
+            with_id_alias(schema_claim(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::Write,
         ),
         tool(
             "daruma_release",
             "Release task claim",
             "Release a previously-acquired task claim.",
-            schema_release(),
+            with_id_alias(schema_release(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::WriteIdem,
         ),
         tool(
@@ -1090,7 +1090,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_relations",
             "Read task relations",
             "Task relations in 5 groups (blocks, blocked_by, relates_to, duplicates, duplicated_by).",
-            schema_relations(),
+            with_id_alias(schema_relations(), "task_id", "id"),
             Dom::Relations, D, E, Ann::Read,
         ),
         // ── Documents ─────────────────────────────────────────────────────
@@ -1452,20 +1452,51 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             let title = plan_args
                 .get("title")
                 .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`plan.title` is required"))?;
-            // NewPlan.project_id is mandatory: take it from the plan object or
-            // resolve the repo-scoped default project (same idiom as list/get).
-            let project_id = match plan_args.get("project_id").and_then(|v| v.as_str()) {
-                Some(pid) => pid.to_string(),
-                None => match resolve_project_filter(client, &args, false, false, true).await? {
-                    ProjectFilter::Project(pid) => pid,
-                    ProjectFilter::None | ProjectFilter::All => {
-                        return Err(anyhow::anyhow!(
-                            "`plan.project_id` is required (no unambiguous repo project resolved)"
-                        ))
-                    }
-                },
+                .filter(|s| !s.trim().is_empty());
+            // `plan.id` appends the tasks to that existing plan: the server
+            // takes its project and ignores the other plan fields, so `title`
+            // is optional and the project comes from the plan itself.
+            let existing_plan = match plan_args.get("id").and_then(|v| v.as_str()) {
+                Some(id) => Some((
+                    id.to_string(),
+                    client.get_json(&format!("/v1/plans/{id}")).await?,
+                )),
+                None => None,
+            };
+            let (title, project_id) = match &existing_plan {
+                Some((id, resp)) => {
+                    let project_id = resp
+                        .pointer("/plan/project_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("plan {id}: response has no project_id"))?;
+                    let stored_title = resp.pointer("/plan/title").and_then(Value::as_str);
+                    (
+                        title.or(stored_title).unwrap_or_default().to_string(),
+                        project_id.to_string(),
+                    )
+                }
+                None => {
+                    let title = title
+                        .ok_or_else(|| anyhow::anyhow!("`plan.title` is required"))?
+                        .to_string();
+                    // NewPlan.project_id is mandatory: take it from the plan
+                    // object or resolve the repo-scoped default project (same
+                    // idiom as list/get).
+                    let project_id = match plan_args.get("project_id").and_then(|v| v.as_str()) {
+                        Some(pid) => pid.to_string(),
+                        None => match resolve_project_filter(client, &args, false, false, true)
+                            .await?
+                        {
+                            ProjectFilter::Project(pid) => pid,
+                            ProjectFilter::None | ProjectFilter::All => {
+                                return Err(anyhow::anyhow!(
+                                "`plan.project_id` is required (no unambiguous repo project resolved)"
+                            ))
+                            }
+                        },
+                    };
+                    (title, project_id)
+                }
             };
             let mut plan = json!({
                 "title": title,
@@ -1480,6 +1511,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(criteria) = plan_args.get("success_criteria") {
                 plan["success_criteria"] = criteria.clone();
             }
+            if plan_args.get("separate").and_then(Value::as_bool) == Some(true) {
+                plan["separate"] = json!(true);
+            }
             apply_plan_source(&plan_args, &mut plan)?;
             let tasks = args
                 .get("tasks")
@@ -1488,16 +1522,18 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .ok_or_else(|| {
                     anyhow::anyhow!("`tasks` (non-empty array of {{title, ...}}) is required")
                 })?;
-            client
-                .post_command(json!({
-                    "type": "materialize_plan",
-                    "plan": plan,
-                    "tasks": tasks,
-                }))
-                .await
+            let mut command = json!({
+                "type": "materialize_plan",
+                "plan": plan,
+                "tasks": tasks,
+            });
+            if let Some((id, _)) = existing_plan {
+                command["plan_id"] = json!(id);
+            }
+            client.post_command(command).await
         }
         "daruma_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let resp = client.get_json(&format!("/v1/tasks/{id}")).await?;
             if args.get("comments").and_then(Value::as_bool) == Some(true) {
                 // Comments are attached after bounding so `max_tokens` only
@@ -1519,7 +1555,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             ))
         }
         "daruma_update" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let mut patch = Map::new();
             if let Some(title) = args.get("title") {
                 let title = title
@@ -1562,7 +1598,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_list" => {
-            let status = required_string(&args, "status")?;
+            let status = string_or_default(&args, "status", "active");
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
@@ -1833,7 +1869,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }))
         }
         "daruma_set_status" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let status = required_string(&args, "status")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut command =
@@ -1862,15 +1898,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_command(command).await
         }
         "daruma_set_priority" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let priority = required_string(&args, "priority")?;
             client
                 .post_command(json!({"type":"set_priority","id": id, "priority": priority}))
                 .await
         }
         "daruma_amend_plan_task" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (plan_id, task_id) = resolve_plan_and_task_ids(&args)?;
             let patch = args
                 .get("patch")
                 .cloned()
@@ -1882,7 +1917,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_move_project" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             let project_id = match resolve_project_filter(client, &args, false, false, true).await?
             {
                 ProjectFilter::Project(pid) => pid,
@@ -1902,7 +1937,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_complete" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             // Assemble an optional completion note from the loose args. Only
             // include `note` when at least one field is present, so a bare
             // `{id}` call stays byte-identical to the legacy command.
@@ -1924,13 +1959,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_command(cmd).await
         }
         "daruma_delete" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             client
                 .post_command(json!({"type":"delete_task","id": id}))
                 .await
         }
         "daruma_split" => {
-            let parent = required_string(&args, "parent")?;
+            let parent = resolve_task_id(&args, "parent")?;
             let subtasks = args
                 .get("subtasks")
                 .cloned()
@@ -1940,22 +1975,15 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_bulk_set_status" => {
-            let ids = args
-                .get("ids")
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("`ids` (array of task ids) is required"))?;
+            let ids = resolve_task_ids(&args, "ids")?;
             let status = required_string(&args, "status")?;
             client
                 .post_command(json!({"type":"bulk_set_status","ids": ids, "status": status}))
                 .await
         }
         "daruma_bulk_attach_to_plan" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_ids = args
-                .get("ids")
-                .or_else(|| args.get("task_ids"))
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("`ids` (array of task ids) is required"))?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
+            let task_ids = resolve_task_ids(&args, "ids")?;
             client
                 .post_command(json!({
                     "type":"bulk_attach_to_plan",
@@ -1966,7 +1994,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         // Forward to the Daruma server's batch complexity implementation.
         "daruma_ai_analyze_complexity" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let mut body = json!({});
             if let Some(flag) = args.get("use_research_provider").and_then(|v| v.as_bool()) {
                 body["use_research_provider"] = json!(flag);
@@ -1976,7 +2004,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_comment" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let body_text = required_string(&args, "body")?;
             // §3.8.8: optional semantic classification. We validate locally
             // against the canonical set so MCP callers get an immediate
@@ -1993,7 +2021,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_reopen" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_task_id(&args, "id")?;
             client
                 .post_command(json!({"type":"set_status","id": id, "status": "todo"}))
                 .await
@@ -2056,7 +2084,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/plans", json!({ "plan": plan })).await
         }
         "daruma_plan_update" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_plan_id(&args, "id")?;
             let patch = args
                 .get("patch")
                 .cloned()
@@ -2067,7 +2095,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_plan_id(&args, "id")?;
             let view = view_arg(&args, "progress", &["progress", "detail"])?;
             let resp = client.get_json(&format!("/v1/plans/{id}")).await?;
             if view == "detail" {
@@ -2092,7 +2120,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
         }
         "daruma_plan_list" => {
-            let status = required_string(&args, "status")?;
+            let status = string_or_default(&args, "status", "draft,active");
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
@@ -2138,8 +2166,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             })
         }
         "daruma_plan_add_task" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (plan_id, task_id) = resolve_plan_and_task_ids(&args)?;
             let mut body = json!({"task_id": task_id});
             if let Some(pos) = args.get("position").and_then(|v| v.as_u64()) {
                 body["position"] = json!(pos);
@@ -2152,14 +2179,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_remove_task" => {
-            let plan_id = required_string(&args, "plan_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (plan_id, task_id) = resolve_plan_and_task_ids(&args)?;
             client
                 .delete_json(&format!("/v1/plans/{plan_id}/tasks/{task_id}"))
                 .await
         }
         "daruma_plan_reorder" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let order = args
                 .get("order")
                 .cloned()
@@ -2172,17 +2198,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_archive" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_plan_id(&args, "id")?;
             client
                 .post_json(&format!("/v1/plans/{id}/archive"), json!({}))
                 .await
         }
         "daruma_plan_delete" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client.delete_json(&format!("/v1/plans/{plan_id}")).await
         }
         "daruma_plan_set_status" => {
-            let id = required_string(&args, "plan_id")?;
+            let id = resolve_plan_id(&args, "plan_id")?;
             let status = required_string(&args, "status")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut body = json!({ "status": status, "force": force });
@@ -2198,26 +2224,32 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_next_task" => {
-            let id = required_string(&args, "id")?;
-            let run_id = required_string(&args, "run_id")?;
+            let id = resolve_plan_id(&args, "id")?;
             let ttl = args
                 .get("claim_ttl_secs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            // `run_id` is optional: the server generates one when absent,
+            // the same contract as `daruma_plan_drain_next`.
+            let run = args
+                .get("run_id")
+                .and_then(Value::as_str)
+                .map(|run_id| format!("run_id={}&", urlencode(run_id)))
+                .unwrap_or_default();
             client
                 .get_json(&format!(
-                    "/v1/plans/{id}/next-task?run_id={run_id}&claim_ttl_secs={ttl}"
+                    "/v1/plans/{id}/next-task?{run}claim_ttl_secs={ttl}"
                 ))
                 .await
         }
         "daruma_plan_progress" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/progress"))
                 .await
         }
         "daruma_plan_drain_next" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let mut body = json!({});
             if let Some(run_id) = args.get("run_id").and_then(|v| v.as_str()) {
                 body["run_id"] = json!(run_id);
@@ -2230,17 +2262,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_plan_graph" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client.get_json(&format!("/v1/plans/{plan_id}/graph")).await
         }
         "daruma_plan_fanout" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             client
                 .get_json(&format!("/v1/plans/{plan_id}/fanout"))
                 .await
         }
         "daruma_can_start" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/can_start"))
                 .await
@@ -2320,7 +2352,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Run tools (W3.2) ──────────────────────────────────────────────
         "daruma_run_start" => {
-            let plan_id = required_string(&args, "plan_id")?;
+            let plan_id = resolve_plan_id(&args, "plan_id")?;
             let agent_id = required_string(&args, "agent_id")?;
             let mut body = json!({"plan_id": plan_id, "agent_id": agent_id});
             if let Some(parent) = args.get("parent_run_id").and_then(|v| v.as_str()) {
@@ -2329,8 +2361,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/runs", body).await
         }
         "daruma_run_start_step" => {
-            let run_id = required_string(&args, "run_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (run_id, task_id) = resolve_id_pair(&args, IdKind::Run, IdKind::Task)?;
             client
                 .post_json(
                     &format!("/v1/runs/{run_id}/step/start"),
@@ -2339,8 +2370,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_run_finish_step" => {
-            let run_id = required_string(&args, "run_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let (run_id, task_id) = resolve_id_pair(&args, IdKind::Run, IdKind::Task)?;
             let outcome = args.get("outcome").cloned().ok_or_else(|| {
                 anyhow::anyhow!("`outcome` (object with `kind` field) is required")
             })?;
@@ -2352,13 +2382,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_run_complete" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             client
                 .post_json(&format!("/v1/runs/{run_id}/complete"), json!({}))
                 .await
         }
         "daruma_run_abort" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let reason = args
                 .get("reason")
                 .and_then(|v| v.as_str())
@@ -2374,14 +2404,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Run note tools (§3.8.2) ───────────────────────────────────────
         "daruma_run_note_append" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let body = required_string(&args, "body")?;
             client
                 .post_json(&format!("/v1/runs/{run_id}/notes"), json!({"body": body}))
                 .await
         }
         "daruma_run_log" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let level = args
                 .get("level")
                 .and_then(|v| v.as_str())
@@ -2401,7 +2431,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_run_notes_list" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
             let mut path = format!("/v1/runs/{run_id}/notes?limit={limit}");
             if let Some(after) = args.get("after").and_then(|v| v.as_str()) {
@@ -2414,7 +2444,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Claim tools (W3.2) ────────────────────────────────────────────
         "daruma_claim" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let ttl_secs = args.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(300);
             client
                 .post_json(
@@ -2425,7 +2455,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_release" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/claims/{agent_id}/{task_id}"))
                 .await
@@ -2433,7 +2463,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Work-lease tools (parallel-agent file coordination) ──────────
         "daruma_work_unit_create" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let title = required_string(&args, "title")?;
             let mut wu = json!({ "task_id": task_id, "title": title });
             for key in ["description", "stage_plan_id", "priority"] {
@@ -2451,13 +2481,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_work_unit_list" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/work-units"))
                 .await
         }
         "daruma_work_unit_drain_next" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let mut body = json!({ "task_id": task_id });
             if let Some(ttl) = args.get("ttl_secs").and_then(|v| v.as_u64()) {
                 body["ttl_secs"] = json!(ttl);
@@ -2465,7 +2495,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/work-units/drain-next", body).await
         }
         "daruma_work_unit_complete" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_work_unit_id(&args, "id")?;
             let mut body = json!({});
             if let Some(o) = args.get("outcome").and_then(|v| v.as_str()) {
                 body["outcome"] = json!(o);
@@ -2482,8 +2512,8 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_handoff_request" => {
             let mut handoff = json!({
-                "from_work_unit_id": required_string(&args, "from_work_unit_id")?,
-                "to_work_unit_id": required_string(&args, "to_work_unit_id")?,
+                "from_work_unit_id": resolve_exact_id(&args, IdKind::WorkUnit, "from_work_unit_id")?,
+                "to_work_unit_id": resolve_exact_id(&args, IdKind::WorkUnit, "to_work_unit_id")?,
             });
             for key in ["required_artifact_ids", "checklist"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_array()) {
@@ -2524,13 +2554,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
         }
         "daruma_handoff_list" => {
-            let id = required_string(&args, "work_unit_id")?;
+            let id = resolve_work_unit_id(&args, "work_unit_id")?;
             client
                 .get_json(&format!("/v1/work-units/{id}/handoffs"))
                 .await
         }
         "daruma_work_unit_release" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_work_unit_id(&args, "id")?;
             client
                 .post_json(&format!("/v1/work-units/{id}/release"), json!({}))
                 .await
@@ -2564,6 +2594,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(policy) = args.get("intake_source") {
                 body["intake_source"] = policy.clone();
             }
+            if let Some(audit) = args.get("audit") {
+                body["audit"] = audit.clone();
+            }
             client
                 .patch_json(&format!("/v1/projects/{project_id}/settings"), body)
                 .await
@@ -2583,7 +2616,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         "daruma_rule_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_rule_id(&args, "id")?;
             client.get_json(&format!("/v1/rules/{id}")).await
         }
         "daruma_rule_create" => {
@@ -2594,7 +2627,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/rules", json!({ "rule": rule })).await
         }
         "daruma_rule_update" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_rule_id(&args, "id")?;
             let mut patch = args.clone();
             patch.remove("id");
             client
@@ -2602,7 +2635,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_rule_disable" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_rule_id(&args, "id")?;
             client
                 .patch_json(&format!("/v1/rules/{id}"), json!({ "enabled": false }))
                 .await
@@ -2636,7 +2669,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Audit primitives ─────────────────────────────────────────────
         "daruma_audit_findings" => {
             let project_id = required_string(&args, "project_id")?;
-            let mut qs = vec![format!("project_id={project_id}")];
+            let mut qs = vec![if project_id == "workspace" {
+                "scope=workspace".to_string()
+            } else {
+                format!("project_id={project_id}")
+            }];
             for key in ["severity", "category", "status"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
                     qs.push(format!("{key}={v}"));
@@ -2747,7 +2784,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_reserve_files" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let paths = args.get("paths").and_then(|v| v.as_array()).cloned();
             let targets = args.get("targets").and_then(|v| v.as_array()).cloned();
             if paths.as_ref().is_none_or(|p| p.is_empty())
@@ -2778,7 +2815,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_release_files" => {
             let agent_id = required_string(&args, "agent_id")?;
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/leases/{agent_id}/{task_id}"))
                 .await
@@ -2815,7 +2852,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_suggest_files" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/leases/suggest?task_id={task_id}"))
                 .await
@@ -2837,7 +2874,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/sessions", body).await
         }
         "daruma_session_get" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             client.get_json(&format!("/v1/sessions/{id}")).await
         }
         "daruma_session_list" => {
@@ -2851,13 +2888,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_session_end" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             client
                 .post_json(&format!("/v1/sessions/{id}/end"), json!({}))
                 .await
         }
         "daruma_session_set_plan" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             let steps = args
                 .get("steps")
                 .cloned()
@@ -2870,7 +2907,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_session_artifact" => {
-            let session_id = required_string(&args, "session_id")?;
+            let session_id = resolve_session_id(&args, "session_id")?;
             let kind = required_string(&args, "kind")?;
             let reference = required_string(&args, "ref")?;
             let mut body = json!({"kind": kind, "ref": reference});
@@ -2882,7 +2919,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_session_artifacts_list" => {
-            let id = required_string(&args, "id")?;
+            let id = resolve_session_id(&args, "id")?;
             client
                 .get_json(&format!("/v1/sessions/{id}/artifacts"))
                 .await
@@ -2890,7 +2927,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Signal tools (W3.2 / Linear B.5) ─────────────────────────────
         "daruma_signal_send" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let kind = args
                 .get("kind")
                 .cloned()
@@ -2900,7 +2937,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_signal_respond" => {
-            let run_id = required_string(&args, "run_id")?;
+            let run_id = resolve_run_id(&args, "run_id")?;
             let choice = required_string(&args, "choice")?;
             client
                 .post_json(
@@ -2922,13 +2959,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/relations", body).await
         }
         "daruma_unlink" => {
-            let relation_id = required_string(&args, "relation_id")?;
+            let relation_id = resolve_relation_id(&args, "relation_id")?;
             client
                 .delete_json(&format!("/v1/relations/{relation_id}"))
                 .await
         }
         "daruma_relations" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .get_json(&format!("/v1/tasks/{task_id}/relations"))
                 .await
@@ -2957,12 +2994,12 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_doc_get" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let resp = client.get_json(&format!("/v1/documents/{id}")).await?;
             Ok(maybe_bounded(resp, &args, &id, "document content"))
         }
         "daruma_doc_append" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let content = required_string(&args, "content")?;
             client
                 .post_json(
@@ -2972,7 +3009,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_doc_replace" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let content = required_string(&args, "content")?;
             client
                 .patch_json(
@@ -2982,30 +3019,36 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_doc_rename" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let title = required_string(&args, "title")?;
             client
                 .patch_json(&format!("/v1/documents/{id}"), json!({ "title": title }))
                 .await
         }
         "daruma_doc_archive" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             client
                 .post_json(&format!("/v1/documents/{id}/archive"), json!({}))
                 .await
         }
         "daruma_doc_set_status" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             let status = required_string(&args, "status")?;
             client
                 .patch_json(&format!("/v1/documents/{id}"), json!({ "status": status }))
                 .await
         }
         "daruma_doc_link_task" => {
-            let id = required_string(&args, "document_id")?;
+            let id = resolve_doc_id(&args, "document_id")?;
             // Explicit `task_id: null` (or absent) unlinks — the PATCH body
             // distinguishes present-null from absent, so always send the key.
-            let task_id = args.get("task_id").cloned().unwrap_or(Value::Null);
+            let task_id = match id_value(&args, "task_id")? {
+                Some(task_id) => {
+                    check_id_kind("task_id", task_id, IdKind::Task)?;
+                    json!(task_id)
+                }
+                None => Value::Null,
+            };
             client
                 .patch_json(
                     &format!("/v1/documents/{id}"),
@@ -3109,7 +3152,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/artifacts", body).await
         }
         "daruma_artifact_update" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let mut body = json!({});
             for key in ["title", "description"] {
                 if let Some(value) = args.get(key).and_then(|value| value.as_str()) {
@@ -3121,7 +3164,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_artifact_commit_write" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let fencing_token = required_i64(&args, "fencing_token")?;
             let mut body = json!({"fencing_token": fencing_token});
             if let Some(version) = args.get("version").and_then(|value| value.as_str()) {
@@ -3132,7 +3175,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_artifact_deprecate" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             client
                 .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), json!({}))
                 .await
@@ -3174,7 +3217,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         "daruma_artifact_impact" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let path = match args.get("limit").and_then(|value| value.as_u64()) {
                 Some(limit) => format!("/v1/artifacts/{artifact_id}/impact?limit={limit}"),
                 None => format!("/v1/artifacts/{artifact_id}/impact"),
@@ -3182,7 +3225,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&path).await
         }
         "daruma_role_artifact_propose" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let role = required_string(&args, "role")?;
             let kind = required_string(&args, "kind")?;
             let mut body = json!({"task_id": task_id, "role": role, "kind": kind});
@@ -3197,7 +3240,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.post_json("/v1/role-artifacts", body).await
         }
         "daruma_role_artifact_set_status" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let status = required_string(&args, "status")?;
             client
                 .post_json(
@@ -3207,7 +3250,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_role_artifact_apply_patch" => {
-            let artifact_id = required_string(&args, "artifact_id")?;
+            let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
             let path = required_string(&args, "path")?;
             let content = required_string(&args, "content")?;
             let dry_run = args
@@ -3222,7 +3265,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_role_artifact_list" => {
-            let task_id = required_string(&args, "task_id")?;
+            let task_id = resolve_task_id(&args, "task_id")?;
             let mut params = vec![format!("task_id={}", urlencode(&task_id))];
             for key in ["role", "kind", "status"] {
                 if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
@@ -3247,9 +3290,26 @@ fn empty_schema() -> Value {
 fn schema_with_id(field: &str) -> Value {
     json!({
         "type":"object",
-        "properties": {field: {"type":"string","description":"Task identifier"}},
+        "properties": {field: {"type":"string"}},
         "required": [field]
     })
+}
+
+/// Advertise an id name the dispatch resolver already accepts for `key`
+/// ([`resolve_id`]): `alias` joins the properties and `key` leaves
+/// `required`, since either name satisfies the call; a call with neither
+/// fails with the accepted names. No prose here — `tools/list` is
+/// size-budgeted, and the server instructions state the rule once.
+fn with_id_alias(mut schema: Value, key: &str, alias: &str) -> Value {
+    schema["properties"][alias] = json!({"type":"string"});
+    let object = schema.as_object_mut().expect("tool schema is an object");
+    if let Some(required) = object.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|name| name != key);
+        if required.is_empty() {
+            object.remove("required");
+        }
+    }
+    schema
 }
 
 /// `schema_with_id` plus an optional `max_tokens` budget for bounded excerpt
@@ -3260,11 +3320,11 @@ fn schema_with_id(field: &str) -> Value {
 /// (task D session dedup). It is off unless the tool actually implements dedup,
 /// so clients that do not understand the `unchanged` marker never see it.
 fn schema_bounded_read(field: &str, id_desc: &str) -> Value {
-    schema_bounded_read_ext(field, id_desc, false)
+    schema_bounded_read_ext(field, Some(id_desc), false)
 }
 
 fn schema_get_task() -> Value {
-    let mut schema = schema_bounded_read_ext("id", "Task identifier", true);
+    let mut schema = schema_bounded_read_ext("id", None, true);
     schema["properties"]["comments"] = json!({
         "type":"boolean",
         "default": false,
@@ -3273,9 +3333,12 @@ fn schema_get_task() -> Value {
     schema
 }
 
-fn schema_bounded_read_ext(field: &str, id_desc: &str, with_dedup: bool) -> Value {
+fn schema_bounded_read_ext(field: &str, id_desc: Option<&str>, with_dedup: bool) -> Value {
     let mut props = json!({
-        field: {"type":"string","description": id_desc},
+        field: match id_desc {
+            Some(desc) => json!({"type":"string","description": desc}),
+            None => json!({"type":"string"}),
+        },
         "max_tokens": {
             "type":"integer",
             "minimum": 1,
@@ -3305,7 +3368,7 @@ fn schema_complete() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id": {"type":"string","description":"Task identifier"},
+            "id": {"type":"string"},
             "reason": {"type":"string","description":"Why the task is done."},
             "result_summary": {"type":"string","description":"Produced outcome."},
             "acceptance_criteria_status": {"type":"string","description":"Acceptance-criteria result."},
@@ -3414,7 +3477,7 @@ fn schema_audit_findings() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "project_id": {"type":"string","description":"Project to list findings for."},
+            "project_id": {"type":"string","description":"Project to list findings for, or `workspace` for workspace-scope findings."},
             "severity": {"type":"string","enum":["error","warn","info"],"description":"Filter by severity."},
             "category": {"type":"string","description":"Filter by category bucket."},
             "status": {"type":"string","enum":["open","acknowledged","muted","resolved"],"description":"Filter by status."}
@@ -3484,7 +3547,9 @@ fn schema_plan_materialize() -> Value {
             "plan": {
                 "type":"object",
                 "properties": {
-                    "title": {"type":"string"},
+                    "id": {"type":"string","description":"Existing plan to append to (follow-ups of its issue/branch): completed reopens, abandoned/archived refuse."},
+                    "separate": {"type":"boolean","description":"New plan beside `plan_choice_required` candidates."},
+                    "title": {"type":"string","description":"Required unless `id` is given."},
                     "description": {"type":"string"},
                     "goal": {"type":"string"},
                     "success_criteria": {"type":"array","items":{"type":"string"}},
@@ -3493,8 +3558,7 @@ fn schema_plan_materialize() -> Value {
                     "source": {"type":"object","description":"{ref: URI, label, occurred_at, note, upstream: [nodes, nearest first]}"},
                     "git_context": {"type":"object","description":"{repo, branch, head_sha, mr_url}"},
                     "project_id": {"type":"string","description":"Project; omit to infer from the repo."}
-                },
-                "required":["title"]
+                }
             },
             "tasks": {
                 "type":"array",
@@ -3532,7 +3596,7 @@ fn schema_update() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id": {"type":"string", "description":"Task identifier"},
+            "id": {"type":"string"},
             "title": {"type":"string"},
             "description": {"type":"string"},
             "due_at": {
@@ -3754,7 +3818,7 @@ fn schema_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required; see tool description. Ask before `all`."
+                "description": "See tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -3772,8 +3836,7 @@ fn schema_list() -> Value {
                 "default":"summary",
                 "description":"detail = full task rows."
             }
-        },
-        "required": ["status"]
+        }
     })
 }
 
@@ -4047,7 +4110,7 @@ fn schema_plan_list() -> Value {
             },
             "status": {
                 "type":"string",
-                "description": "Required; see tool description. Ask before `all`."
+                "description": "See tool description. Ask before `all`."
             },
             "limit": {
                 "type":"integer",
@@ -4067,8 +4130,7 @@ fn schema_plan_list() -> Value {
             },
             "source": {"type":"string","description":"Source URI anywhere in the chain."},
             "channel": {"type":"string","description":"Scheme of the nearest source."}
-        },
-        "required": ["status"]
+        }
     })
 }
 
@@ -4111,11 +4173,11 @@ fn schema_plan_next_task() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id":             {"type":"string","description":"Plan id"},
-            "run_id":         {"type":"string"},
+            "id":             {"type":"string","description":"Plan id (`plan_id` accepted as alias)"},
+            "run_id":         {"type":"string","description":"Run UUID; omit for a server-generated id."},
             "claim_ttl_secs": {"type":"integer","minimum":0}
         },
-        "required":["id","run_id"]
+        "required":["id"]
     })
 }
 
@@ -4428,7 +4490,8 @@ fn schema_project_settings_update() -> Value {
             "project_id": {"type":"string"},
             "interview": {"type":"boolean","description":"Auto-append agent activity to the Interview document."},
             "human_log": {"type":"boolean","description":"Auto-append human milestones to the Human Log document."},
-            "intake_source": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Plan-source policy {mode: off|warn|enforce, default_ref, derive:[{from:\"branch\",pattern,ref}], channels:[{scheme,pattern,label,note_required}]}; null removes."}
+            "intake_source": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Plan-source policy {mode: off|warn|enforce, default_ref, derive:[{from:\"branch\",pattern,ref}], channels:[{scheme,pattern,label,note_required}]}; null removes."},
+            "audit": {"anyOf":[{"type":"object"},{"type":"null"}],"description":"Audit thresholds, replaced whole (keys absent from the object fall back to defaults), e.g. {usage_p95_bytes:32768, usage_retention:{...}}; null removes. Keys: docs/audit-checks-catalog.md §7."}
         },
         "required":["project_id"]
     })
@@ -5719,6 +5782,347 @@ fn required_string(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::
         .ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required"))
 }
 
+/// Missing optional string argument falls back to `default`.
+fn string_or_default(args: &serde_json::Map<String, Value>, key: &str, default: &str) -> String {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+/// Entity kinds an MCP id argument can name (plan 01a06cfc: one resolver per
+/// kind instead of a per-tool `required_string(.., "id")`, which agents hit
+/// by mixing up `id` / `task_id` / `plan_id`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdKind {
+    Task,
+    Plan,
+    Doc,
+    Run,
+    Session,
+    Rule,
+    WorkUnit,
+    Artifact,
+    Relation,
+}
+
+impl IdKind {
+    const ALL: [IdKind; 9] = [
+        IdKind::Task,
+        IdKind::Plan,
+        IdKind::Doc,
+        IdKind::Run,
+        IdKind::Session,
+        IdKind::Rule,
+        IdKind::WorkUnit,
+        IdKind::Artifact,
+        IdKind::Relation,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            IdKind::Task => "task",
+            IdKind::Plan => "plan",
+            IdKind::Doc => "document",
+            IdKind::Run => "run",
+            IdKind::Session => "session",
+            IdKind::Rule => "rule",
+            IdKind::WorkUnit => "work unit",
+            IdKind::Artifact => "artifact",
+            IdKind::Relation => "relation",
+        }
+    }
+
+    /// `daruma_shared` id prefixes of this kind. Relations cover both task
+    /// links (`rel_`) and artifact relations (`artrel_`).
+    fn prefixes(self) -> &'static [&'static str] {
+        use daruma_shared::{
+            AgentSessionId, ArtifactId, ArtifactRelationId, DocumentId, PlanId, RelationId, RuleId,
+            RunId, TaskId, WorkUnitId,
+        };
+        const TASK: [&str; 1] = [TaskId::prefix()];
+        const PLAN: [&str; 1] = [PlanId::prefix()];
+        const DOC: [&str; 1] = [DocumentId::prefix()];
+        const RUN: [&str; 1] = [RunId::prefix()];
+        const SESSION: [&str; 1] = [AgentSessionId::prefix()];
+        const RULE: [&str; 1] = [RuleId::prefix()];
+        const WORK_UNIT: [&str; 1] = [WorkUnitId::prefix()];
+        const ARTIFACT: [&str; 1] = [ArtifactId::prefix()];
+        const RELATION: [&str; 2] = [RelationId::prefix(), ArtifactRelationId::prefix()];
+        match self {
+            IdKind::Task => &TASK,
+            IdKind::Plan => &PLAN,
+            IdKind::Doc => &DOC,
+            IdKind::Run => &RUN,
+            IdKind::Session => &SESSION,
+            IdKind::Rule => &RULE,
+            IdKind::WorkUnit => &WORK_UNIT,
+            IdKind::Artifact => &ARTIFACT,
+            IdKind::Relation => &RELATION,
+        }
+    }
+
+    /// Argument names that carry this kind; the generic `id` comes last.
+    fn keys(self) -> &'static [&'static str] {
+        match self {
+            IdKind::Task => &["task_id", "id"],
+            IdKind::Plan => &["plan_id", "id"],
+            IdKind::Doc => &["doc_id", "document_id", "id"],
+            IdKind::Run => &["run_id", "id"],
+            IdKind::Session => &["session_id", "id"],
+            IdKind::Rule => &["rule_id", "id"],
+            IdKind::WorkUnit => &["work_unit_id", "id"],
+            IdKind::Artifact => &["artifact_id", "id"],
+            IdKind::Relation => &["relation_id", "id"],
+        }
+    }
+}
+
+/// Label of the entity a prefixed id names (`pln_…` → "plan"), when the
+/// value is `<known prefix>_<id-like rest>`. Bare UUIDs and slugs such as
+/// `rule_engine` are not discriminated.
+fn id_prefix_label(value: &str) -> Option<&'static str> {
+    use daruma_shared::{AgentId, ClaimId, CommentId, EvidenceId, ProjectId};
+    let (prefix, rest) = value.split_once('_')?;
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    if let Some(kind) = IdKind::ALL.iter().find(|k| k.prefixes().contains(&prefix)) {
+        return Some(kind.label());
+    }
+    [
+        (ProjectId::prefix(), "project"),
+        (ClaimId::prefix(), "claim"),
+        (CommentId::prefix(), "comment"),
+        (AgentId::prefix(), "agent"),
+        (EvidenceId::prefix(), "evidence"),
+    ]
+    .into_iter()
+    .find(|(p, _)| *p == prefix)
+    .map(|(_, label)| label)
+}
+
+/// Non-empty string value of `name`; a non-string value is an error.
+fn id_value<'a>(args: &'a Map<String, Value>, name: &str) -> anyhow::Result<Option<&'a str>> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.trim())),
+        Some(_) => Err(anyhow::anyhow!("`{name}` must be a string id")),
+    }
+}
+
+/// Reject an id whose prefix names another entity kind.
+fn check_id_kind(name: &str, value: &str, kind: IdKind) -> anyhow::Result<()> {
+    match id_prefix_label(value) {
+        Some(label) if label != kind.label() => Err(anyhow::anyhow!(
+            "`{name}` = \"{value}\" is a {label} id, but this tool needs a {} id",
+            kind.label()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Resolve the `kind` id a tool expects under `key` (its schema name).
+/// Also accepted: the kind's own name (`task_id`, `plan_id`, …) and `id`.
+/// A value with another kind's prefix fails with a hint, and so do two
+/// different values under two names; a missing id names every accepted
+/// argument and any other-kind id the caller sent instead.
+fn resolve_id(args: &Map<String, Value>, kind: IdKind, key: &str) -> anyhow::Result<String> {
+    let mut names = vec![key];
+    names.extend(kind.keys().iter().copied().filter(|n| *n != key));
+    let mut found: Option<(&str, &str)> = None;
+    for name in &names {
+        let Some(value) = id_value(args, name)? else {
+            continue;
+        };
+        match found {
+            None => {
+                check_id_kind(name, value, kind)?;
+                found = Some((name, value));
+            }
+            // A generic `id` beside an explicit one may name something else.
+            Some(_) if *name == "id" => {}
+            Some((first, first_value)) if first_value != value => {
+                return Err(anyhow::anyhow!(
+                    "conflicting {} ids: `{first}` = \"{first_value}\", `{name}` = \"{value}\"",
+                    kind.label()
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some((_, value)) = found {
+        return Ok(value.to_string());
+    }
+    let aliases: Vec<String> = names[1..].iter().map(|n| format!("`{n}`")).collect();
+    let mut msg = format!(
+        "`{key}` (string) is required ({}: {})",
+        if aliases.len() == 1 {
+            "alias"
+        } else {
+            "aliases"
+        },
+        aliases.join(", ")
+    );
+    for other in IdKind::ALL.iter().filter(|k| **k != kind) {
+        let name = other.keys()[0];
+        if names.contains(&name) || !args.contains_key(name) {
+            continue;
+        }
+        msg.push_str(&format!(
+            "; got `{name}`, which names a {}, not a {}",
+            other.label(),
+            kind.label()
+        ));
+    }
+    Err(anyhow::anyhow!(msg))
+}
+
+fn resolve_task_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Task, key)
+}
+
+fn resolve_plan_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Plan, key)
+}
+
+fn resolve_doc_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Doc, key)
+}
+
+fn resolve_run_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Run, key)
+}
+
+fn resolve_session_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Session, key)
+}
+
+fn resolve_rule_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Rule, key)
+}
+
+fn resolve_work_unit_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::WorkUnit, key)
+}
+
+fn resolve_artifact_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Artifact, key)
+}
+
+fn resolve_relation_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    resolve_id(args, IdKind::Relation, key)
+}
+
+/// The `kind` id under exactly `key`, for a tool that takes two ids of one
+/// kind (`from_work_unit_id` + `to_work_unit_id`) where aliases would be
+/// ambiguous. A value with another kind's prefix fails like [`resolve_id`].
+fn resolve_exact_id(args: &Map<String, Value>, kind: IdKind, key: &str) -> anyhow::Result<String> {
+    let value =
+        id_value(args, key)?.ok_or_else(|| anyhow::anyhow!("`{key}` (string) is required"))?;
+    check_id_kind(key, value, kind)?;
+    Ok(value.to_string())
+}
+
+/// Task ids of a bulk tool: an array (or one string) under `key`,
+/// `task_ids` or `ids`, else a single `task_id`. Every entry is checked
+/// like [`resolve_task_id`]; an empty list is an error.
+fn resolve_task_ids(args: &Map<String, Value>, key: &str) -> anyhow::Result<Vec<String>> {
+    let mut names = vec![key];
+    names.extend(["task_ids", "ids"].into_iter().filter(|n| *n != key));
+    for name in &names {
+        let ids: Vec<&Value> = match args.get(*name) {
+            None | Some(Value::Null) => continue,
+            Some(Value::Array(items)) => items.iter().collect(),
+            Some(single @ Value::String(_)) => vec![single],
+            Some(_) => {
+                return Err(anyhow::anyhow!(
+                    "`{name}` must be an array of task id strings"
+                ))
+            }
+        };
+        if ids.is_empty() {
+            return Err(anyhow::anyhow!("`{name}` must list at least one task id"));
+        }
+        return ids
+            .into_iter()
+            .enumerate()
+            .map(|(ix, item)| {
+                let value = item
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("`{name}[{ix}]` must be a task id string"))?;
+                check_id_kind(&format!("{name}[{ix}]"), value, IdKind::Task)?;
+                Ok(value.to_string())
+            })
+            .collect();
+    }
+    if let Some(single) = id_value(args, "task_id")? {
+        check_id_kind("task_id", single, IdKind::Task)?;
+        return Ok(vec![single.to_string()]);
+    }
+    let aliases: Vec<String> = names[1..].iter().map(|n| format!("`{n}`")).collect();
+    Err(anyhow::anyhow!(
+        "`{key}` (array of task ids) is required (aliases: {}, `task_id`)",
+        aliases.join(", ")
+    ))
+}
+
+/// `(plan_id, task_id)` of a plan-membership tool; see [`resolve_id_pair`].
+fn resolve_plan_and_task_ids(args: &Map<String, Value>) -> anyhow::Result<(String, String)> {
+    resolve_id_pair(args, IdKind::Plan, IdKind::Task)
+}
+
+/// Ids of a tool that takes two different kinds under their own names
+/// (`plan_id` + `task_id`, `run_id` + `task_id`). A generic `id` fills the
+/// missing side: by prefix when it has one (`pln_…` / `tsk_…`), otherwise
+/// only when exactly one side is missing.
+fn resolve_id_pair(
+    args: &Map<String, Value>,
+    first: IdKind,
+    second: IdKind,
+) -> anyhow::Result<(String, String)> {
+    let (first_key, second_key) = (first.keys()[0], second.keys()[0]);
+    let mut a = id_value(args, first_key)?;
+    let mut b = id_value(args, second_key)?;
+    if let Some(value) = a {
+        check_id_kind(first_key, value, first)?;
+    }
+    if let Some(value) = b {
+        check_id_kind(second_key, value, second)?;
+    }
+    if let Some(id) = id_value(args, "id")? {
+        let label = id_prefix_label(id);
+        match (a, b) {
+            (None, _) if label == Some(first.label()) => a = Some(id),
+            (_, None) if label == Some(second.label()) => b = Some(id),
+            (None, Some(_)) if label.is_none() => a = Some(id),
+            (Some(_), None) if label.is_none() => b = Some(id),
+            _ => {}
+        }
+    }
+    match (a, b) {
+        (Some(a), Some(b)) => Ok((a.to_string(), b.to_string())),
+        (a, b) => {
+            let missing: Vec<String> = [(first_key, a), (second_key, b)]
+                .into_iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(n, _)| format!("`{n}`"))
+                .collect();
+            Err(anyhow::anyhow!(
+                "{} (string) required; `id` is accepted for one of them \
+                 (a `{}_`/`{}_` prefix picks which)",
+                missing.join(" and "),
+                first.prefixes()[0],
+                second.prefixes()[0]
+            ))
+        }
+    }
+}
+
 fn required_i64(args: &serde_json::Map<String, Value>, key: &str) -> anyhow::Result<i64> {
     args.get(key)
         .and_then(Value::as_i64)
@@ -6814,5 +7218,222 @@ mod profile_tests {
         std::env::set_var("DARUMA_MCP_PROFILE", "garbage");
         assert_eq!(ToolProfile::from_env(), ToolProfile::Default);
         std::env::remove_var("DARUMA_MCP_PROFILE");
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+
+    const TASK: &str = "tsk_01a06cfc-eeb3-7d81-bf24-04b006fe955a";
+    const PLAN: &str = "pln_01a06cfc-eeb3-7d81-bf24-04a6a9c527fc";
+    const BARE: &str = "01a06cfc-eeb3-7d81-bf24-04b006fe955a";
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    fn err<T: std::fmt::Debug>(r: anyhow::Result<T>) -> String {
+        r.unwrap_err().to_string()
+    }
+
+    #[test]
+    fn task_id_accepts_schema_key_kind_key_and_id() {
+        for a in [
+            json!({"task_id": TASK}),
+            json!({"id": TASK}),
+            json!({"id": TASK, "task_id": TASK}),
+        ] {
+            assert_eq!(resolve_task_id(&args(a.clone()), "task_id").unwrap(), TASK);
+            assert_eq!(resolve_task_id(&args(a), "id").unwrap(), TASK);
+        }
+        // Bare uuids and surrounding whitespace pass through untouched.
+        assert_eq!(
+            resolve_task_id(&args(json!({"task_id": format!(" {BARE} ")})), "task_id").unwrap(),
+            BARE
+        );
+    }
+
+    #[test]
+    fn foreign_prefix_is_rejected_with_its_kind() {
+        assert_eq!(
+            err(resolve_task_id(&args(json!({"id": PLAN})), "id")),
+            format!("`id` = \"{PLAN}\" is a plan id, but this tool needs a task id")
+        );
+        assert_eq!(
+            err(resolve_plan_id(
+                &args(json!({"plan_id": "tsk_1"})),
+                "plan_id"
+            )),
+            "`plan_id` = \"tsk_1\" is a task id, but this tool needs a plan id"
+        );
+        assert!(err(resolve_task_id(
+            &args(json!({"task_id": "prj_1"})),
+            "task_id"
+        ))
+        .contains("is a project id"));
+        // Slugs that merely start with a prefix word are not ids.
+        assert_eq!(
+            resolve_doc_id(&args(json!({"doc_id": "rule_engine"})), "doc_id").unwrap(),
+            "rule_engine"
+        );
+    }
+
+    #[test]
+    fn generic_id_beside_an_explicit_id_is_ignored() {
+        // `id` may name another entity (e.g. a comment) next to `task_id`.
+        let a = args(json!({"task_id": TASK, "id": "cmt_1"}));
+        assert_eq!(resolve_task_id(&a, "task_id").unwrap(), TASK);
+    }
+
+    #[test]
+    fn conflicting_explicit_ids_fail() {
+        let a = args(json!({"id": "tsk_1", "task_id": "tsk_2"}));
+        assert_eq!(
+            err(resolve_task_id(&a, "id")),
+            "conflicting task ids: `id` = \"tsk_1\", `task_id` = \"tsk_2\""
+        );
+    }
+
+    #[test]
+    fn missing_id_names_aliases_and_the_wrong_kind_sent() {
+        assert_eq!(
+            err(resolve_plan_id(&args(json!({})), "plan_id")),
+            "`plan_id` (string) is required (alias: `id`)"
+        );
+        assert_eq!(
+            err(resolve_doc_id(&args(json!({})), "doc_id")),
+            "`doc_id` (string) is required (aliases: `document_id`, `id`)"
+        );
+        assert_eq!(
+            err(resolve_task_id(
+                &args(json!({"plan_id": PLAN, "id": ""})),
+                "id"
+            )),
+            "`id` (string) is required (alias: `task_id`); \
+             got `plan_id`, which names a plan, not a task"
+        );
+        assert_eq!(
+            err(resolve_run_id(&args(json!({"run_id": 7})), "run_id")),
+            "`run_id` must be a string id"
+        );
+    }
+
+    #[test]
+    fn every_kind_has_its_resolver_and_prefix() {
+        type Resolver = fn(&Map<String, Value>, &str) -> anyhow::Result<String>;
+        let cases: [(Resolver, &str, &str); 9] = [
+            (resolve_task_id, "task_id", "tsk_1"),
+            (resolve_plan_id, "plan_id", "pln_1"),
+            (resolve_doc_id, "doc_id", "doc_1"),
+            (resolve_run_id, "run_id", "run_1"),
+            (resolve_session_id, "session_id", "ags_1"),
+            (resolve_rule_id, "rule_id", "rule_1"),
+            (resolve_work_unit_id, "work_unit_id", "wu_1"),
+            (resolve_artifact_id, "artifact_id", "art_1"),
+            (resolve_relation_id, "relation_id", "artrel_1"),
+        ];
+        for (resolve, key, value) in cases {
+            assert_eq!(resolve(&args(json!({key: value})), key).unwrap(), value);
+            assert_eq!(resolve(&args(json!({"id": value})), key).unwrap(), value);
+            let foreign = if key == "task_id" { "pln_1" } else { "tsk_1" };
+            assert!(
+                err(resolve(&args(json!({key: foreign})), key)).contains("but this tool needs"),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            resolve_relation_id(&args(json!({"relation_id": "rel_1"})), "relation_id").unwrap(),
+            "rel_1"
+        );
+    }
+
+    #[test]
+    fn task_ids_accept_array_single_string_and_task_id() {
+        assert_eq!(
+            resolve_task_ids(&args(json!({"task_ids": ["tsk_1", BARE]})), "task_ids").unwrap(),
+            vec!["tsk_1".to_string(), BARE.to_string()]
+        );
+        assert_eq!(
+            resolve_task_ids(&args(json!({"ids": "tsk_1"})), "task_ids").unwrap(),
+            vec!["tsk_1".to_string()]
+        );
+        assert_eq!(
+            resolve_task_ids(&args(json!({"task_id": "tsk_1"})), "task_ids").unwrap(),
+            vec!["tsk_1".to_string()]
+        );
+        assert_eq!(
+            err(resolve_task_ids(
+                &args(json!({"task_ids": ["tsk_1", "pln_2"]})),
+                "task_ids"
+            )),
+            "`task_ids[1]` = \"pln_2\" is a plan id, but this tool needs a task id"
+        );
+        assert_eq!(
+            err(resolve_task_ids(&args(json!({"task_ids": []})), "task_ids")),
+            "`task_ids` must list at least one task id"
+        );
+        assert_eq!(
+            err(resolve_task_ids(&args(json!({})), "task_ids")),
+            "`task_ids` (array of task ids) is required (aliases: `ids`, `task_id`)"
+        );
+    }
+
+    #[test]
+    fn plan_and_task_ids_discriminate_generic_id_by_prefix() {
+        let both = |v: Value| resolve_plan_and_task_ids(&args(v));
+        let pair = (PLAN.to_string(), TASK.to_string());
+        assert_eq!(
+            both(json!({"plan_id": PLAN, "task_id": TASK})).unwrap(),
+            pair
+        );
+        assert_eq!(both(json!({"id": PLAN, "task_id": TASK})).unwrap(), pair);
+        assert_eq!(both(json!({"plan_id": PLAN, "id": TASK})).unwrap(), pair);
+        // A bare `id` fills the only missing side.
+        assert_eq!(
+            both(json!({"plan_id": PLAN, "id": BARE})).unwrap(),
+            (PLAN.to_string(), BARE.to_string())
+        );
+        assert_eq!(
+            err(both(json!({"id": PLAN}))),
+            "`task_id` (string) required; `id` is accepted for one of them \
+             (a `pln_`/`tsk_` prefix picks which)"
+        );
+        assert!(err(both(json!({"plan_id": TASK, "task_id": TASK}))).contains("is a task id"));
+    }
+
+    #[test]
+    fn run_and_task_pair_uses_the_same_rules() {
+        let pair = |v: Value| resolve_id_pair(&args(v), IdKind::Run, IdKind::Task);
+        let want = ("run_1".to_string(), "tsk_1".to_string());
+        assert_eq!(
+            pair(json!({"run_id": "run_1", "task_id": "tsk_1"})).unwrap(),
+            want
+        );
+        assert_eq!(
+            pair(json!({"id": "run_1", "task_id": "tsk_1"})).unwrap(),
+            want
+        );
+        assert_eq!(
+            pair(json!({"run_id": "run_1", "id": "tsk_1"})).unwrap(),
+            want
+        );
+        assert_eq!(
+            err(pair(json!({}))),
+            "`run_id` and `task_id` (string) required; `id` is accepted for one of them \
+             (a `run_`/`tsk_` prefix picks which)"
+        );
+        assert!(err(pair(json!({"run_id": "tsk_1", "task_id": "tsk_2"}))).contains("is a task id"));
+    }
+
+    #[test]
+    fn exact_id_takes_no_alias_but_checks_the_kind() {
+        let exact = |v: Value| resolve_exact_id(&args(v), IdKind::WorkUnit, "from_work_unit_id");
+        assert_eq!(exact(json!({"from_work_unit_id": "wu_1"})).unwrap(), "wu_1");
+        assert_eq!(
+            err(exact(json!({"id": "wu_1", "work_unit_id": "wu_1"}))),
+            "`from_work_unit_id` (string) is required"
+        );
+        assert!(err(exact(json!({"from_work_unit_id": "tsk_1"}))).contains("is a task id"));
     }
 }

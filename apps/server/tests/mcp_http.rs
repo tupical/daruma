@@ -219,7 +219,10 @@ async fn http_mcp_profile_query_param_selects_surface() {
         .json()
         .await
         .unwrap();
-    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert_eq!(body["result"]["isError"], true, "got: {body}");
+    let msg = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
     assert!(msg.contains("not available"), "got: {body}");
 
     // ?profile=full: the same call dispatches.
@@ -237,7 +240,7 @@ async fn http_mcp_profile_query_param_selects_surface() {
         .await
         .unwrap();
     assert!(
-        body["error"].is_null(),
+        body["error"].is_null() && body["result"]["isError"] != true,
         "full profile must dispatch: {body}"
     );
 

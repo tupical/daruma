@@ -146,6 +146,15 @@ pub enum Command {
             deserialize_with = "daruma_domain::deserialize_double_option"
         )]
         intake_source: Option<Option<daruma_domain::IntakeSourcePolicy>>,
+        /// Audit thresholds (`project_settings.audit`, a JSON object read by
+        /// the hosted audit engine): absent = unchanged, `null` = remove,
+        /// object = replace whole.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "daruma_domain::deserialize_double_option"
+        )]
+        audit: Option<Option<serde_json::Value>>,
     },
     UpdateProject {
         id: ProjectId,
@@ -198,9 +207,17 @@ pub enum Command {
     /// whose `external_key` already exists is reused, receives the incoming
     /// context as a comment, and is attached to the new plan. daruma does not
     /// decompose — it receives the finished structure and executes.
+    ///
+    /// With `plan_id` the tasks are appended to that existing plan instead:
+    /// no `PlanCreated`, the plan's project wins, `plan.title` and the other
+    /// plan fields are ignored, positions continue after the last task. A
+    /// completed plan is reopened (`PlanStatusChanged` completed→active in
+    /// the same batch); an abandoned or archived plan is a validation error.
     MaterializePlan {
         plan: NewPlan,
         tasks: Vec<NewTask>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_id: Option<PlanId>,
     },
 
     /// ADR-0009: extend a source chain. Exactly one of `plan_id` / `ref`.

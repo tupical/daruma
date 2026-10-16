@@ -82,7 +82,34 @@ fn arguments(tool: &daruma_mcp::ToolDefinition) -> Value {
         "daruma_update" => args["title"] = json!("x"),
         "daruma_workspace_resolve" => args["scope_path"] = json!("/tmp/daruma-route-contract"),
         "daruma_reserve_files" => args["paths"] = json!(["src/lib.rs"]),
+        "daruma_plan_materialize" => {
+            // `plan.title`/`tasks[].title` are conditionally required (title
+            // unless `id` is given) — not expressible in the schema's flat
+            // `required` array, so the generic walker above never fills them.
+            args["plan"]["title"] = json!("x");
+            if let Some(tasks) = args["tasks"].as_array_mut() {
+                for task in tasks {
+                    task["title"] = json!("x");
+                }
+            }
+        }
         _ => {}
+    }
+    // `id` and its alias (`task_id`/`plan_id`) both satisfy an aliased tool,
+    // so neither is in `required` and the walker above leaves both out.
+    let properties = tool
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object);
+    let aliased = properties.is_some_and(|p| {
+        p.contains_key("id") && (p.contains_key("task_id") || p.contains_key("plan_id"))
+    });
+    if aliased
+        && ["id", "task_id", "plan_id"]
+            .iter()
+            .all(|k| args.get(k).is_none())
+    {
+        args["id"] = json!("00000000-0000-0000-0000-000000000001");
     }
     args
 }

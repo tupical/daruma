@@ -171,6 +171,7 @@ async fn ac7_tools_call_create_task_dispatches_through_to_server() {
     .await
     .unwrap();
     assert!(healthz.error.is_none());
+    assert_ne!(healthz.result.unwrap()["isError"], true);
 }
 
 #[tokio::test]
@@ -394,13 +395,15 @@ async fn profiles_hidden_tool_is_not_callable_in_default() {
     )
     .await
     .unwrap();
-    let err = resp
-        .error
-        .expect("hidden tool must error in default profile");
+    // A hidden tool is a failed tool call, reported to the model as
+    // `isError: true` rather than a JSON-RPC protocol error.
+    assert!(resp.error.is_none(), "{:?}", resp.error);
+    let result = resp.result.unwrap();
+    assert_eq!(result["isError"], true, "hidden tool must error: {result}");
+    let msg = result["content"][0]["text"].as_str().unwrap();
     assert!(
-        err.message.contains("not available") && err.message.contains("full"),
-        "error must point at the full profile, got: {}",
-        err.message
+        msg.contains("not available") && msg.contains("full"),
+        "error must point at the full profile, got: {msg}"
     );
 
     // The same call succeeds when the full profile is selected.
@@ -418,6 +421,11 @@ async fn profiles_hidden_tool_is_not_callable_in_default() {
         ok.error.is_none(),
         "full profile must dispatch: {:?}",
         ok.error
+    );
+    let result = ok.result.unwrap();
+    assert_ne!(
+        result["isError"], true,
+        "full profile must dispatch: {result}"
     );
 }
 
@@ -526,6 +534,11 @@ async fn tools_call_update_sets_and_clears_git_context() {
 
     let resp = update(json!({"id": task_id, "git_context": null})).await;
     assert!(resp.error.is_none(), "clear failed: {:?}", resp.error);
+    assert_ne!(
+        resp.result.as_ref().unwrap()["isError"],
+        true,
+        "clear failed: {resp:?}"
+    );
     let (_, task) = get_json(
         app.router.clone(),
         &app.admin_token,

@@ -10,7 +10,13 @@ Codex plugin manages this block; do not hand-edit between the markers.
    tasks, plans, subtasks, or backlogs in markdown scratchpads,
    `TODO.md` files, or in-chat notes as the source of truth. Use
    `daruma_plan_materialize` (plan-only intake),
-   `daruma_set_status`, `daruma_comment`.
+   `daruma_set_status`, `daruma_comment`. Same subject as an existing
+   plan (its follow-up, a check, a commit of that work): materialize
+   with its `plan.id` — a completed plan reopens; another subject gets
+   its own plan even on the same branch or source, and on
+   `plan_choice_required` pick by subject, not by branch or source.
+   `plan.source` is the nearest source of this request (a meeting, a
+   message) with `upstream` to the issue — not the broadest umbrella.
 
 2. **Do not create or modify `.omc/plans/`, `.omc/ultragoal/`, or
    `.omc/state/plans*`.** OMC skills (`/plan`, `/ultragoal`,

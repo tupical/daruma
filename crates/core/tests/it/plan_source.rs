@@ -1,7 +1,8 @@
 //! ADR-0009 plan source at intake: `source_ref` resolution order, the
 //! project `intake_source` policy (off / warn / enforce, channels,
-//! note_required), exemptions for internal producers, and auto-parent of a
-//! repeated source.
+//! note_required), exemptions for internal producers, auto-parent of a
+//! repeated source, and `plan_choice_required` next to plans a new one may
+//! continue.
 
 use std::sync::Arc;
 
@@ -9,10 +10,10 @@ use daruma_api_dto::MutationWarning;
 use daruma_core::{repos::PlanRepository, Command, CommandHandler};
 use daruma_domain::{
     Actor, AutoAppendPatch, GitContext, IntakeSourceMode, IntakeSourcePolicy, NewPlan, NewTask,
-    Plan, SourceChannel, SourceDeriveRule, SourceInput,
+    Plan, PlanStatus, SourceChannel, SourceDeriveRule, SourceInput, Status,
 };
-use daruma_events::{Event, EventBus, EventStore};
-use daruma_shared::{CoreError, ProjectId};
+use daruma_events::{Event, EventBus, EventEnvelope, EventStore};
+use daruma_shared::{CoreError, PlanId, ProjectId};
 use daruma_storage::{
     ActivityRepo, CommentRepo, Db, PlanRepo, ProjectRepo, ProjectSettingsRepo, SqliteEventStore,
     TaskRepo,
@@ -69,6 +70,7 @@ fn set_policy(project: ProjectId, policy: Option<IntakeSourcePolicy>) -> Command
         project_id: project,
         auto_append: AutoAppendPatch::default(),
         intake_source: Some(policy),
+        audit: None,
     }
 }
 
@@ -111,6 +113,7 @@ impl Stack {
                 Command::MaterializePlan {
                     plan,
                     tasks: vec![NewTask::new("t")],
+                    plan_id: None,
                 },
                 actor,
             )
@@ -161,6 +164,7 @@ async fn materialize_inherits_git_context_without_overwriting_reused_tasks() {
                     ..NewTask::new("Task")
                 })
                 .collect(),
+            plan_id: None,
         }
     };
     s.handler
@@ -278,6 +282,7 @@ async fn resolution_order_parent_then_derive_then_default() {
     let mut plan = s.new_plan();
     plan.parent_plan_id = Some(explicit.id);
     plan.git_context = branch("11084_x");
+    plan.separate = true;
     let (child, warnings) = s.materialize(plan).await;
     assert_eq!(child.source_ref.as_deref(), Some("mailto:c@acme.ru"));
     assert_eq!(child.parent_plan_id, Some(explicit.id));
@@ -297,6 +302,7 @@ async fn resolution_order_parent_then_derive_then_default() {
     // A derived ref does auto-parent onto the first plan of that issue.
     let mut plan = s.new_plan();
     plan.git_context = branch("11084_again");
+    plan.separate = true;
     let (again, warnings) = s.materialize(plan).await;
     assert_eq!(again.parent_plan_id, Some(derived.id));
     assert_eq!(codes(&warnings), ["plan_auto_parented"]);
@@ -309,6 +315,7 @@ async fn repeated_source_is_auto_parented_to_the_first_plan() {
     let with_ref = || {
         let mut plan = s.new_plan();
         plan.source_ref = Some(source.into());
+        plan.separate = true;
         plan
     };
     let (first, warnings) = s.materialize(with_ref()).await;
@@ -773,6 +780,7 @@ async fn invalid_policy_is_rejected_and_null_removes_it() {
                     human_log: None,
                 },
                 intake_source: None,
+                audit: None,
             },
             Actor::user(),
         )
@@ -795,10 +803,17 @@ async fn raw_looking_plan_gets_plan_looks_raw_warning_only() {
     let raw = |plan: NewPlan, tasks: Vec<NewTask>| {
         let h = &s.handler;
         async move {
-            h.handle_with_warnings(Command::MaterializePlan { plan, tasks }, Actor::user())
-                .await
-                .unwrap()
-                .warnings
+            h.handle_with_warnings(
+                Command::MaterializePlan {
+                    plan,
+                    tasks,
+                    plan_id: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap()
+            .warnings
         }
     };
     let mut p = s.new_plan();
@@ -816,4 +831,229 @@ async fn raw_looking_plan_gets_plan_looks_raw_warning_only() {
     p.title = "idea: cache".into();
     let w = raw(p, vec![NewTask::new("a"), NewTask::new("b")]).await;
     assert!(!codes(&w).contains(&"plan_looks_raw"), "{w:?}");
+}
+
+// ── plan_choice_required ─────────────────────────────────────────────────────
+
+impl Stack {
+    async fn try_materialize_into(
+        &self,
+        plan: NewPlan,
+        plan_id: Option<PlanId>,
+    ) -> Result<Vec<Event>, CoreError> {
+        let envs = self
+            .handler
+            .handle(
+                Command::MaterializePlan {
+                    plan,
+                    tasks: vec![NewTask::new("next")],
+                    plan_id,
+                },
+                Actor::user(),
+            )
+            .await?;
+        Ok(envs.into_iter().map(|e| e.payload).collect())
+    }
+
+    async fn plan_count(&self) -> usize {
+        self.plans
+            .list_by_project(self.project, None)
+            .await
+            .unwrap()
+            .len()
+    }
+
+    async fn complete(&self, plan_id: PlanId) {
+        for member in self.plans.list_tasks_ordered(plan_id).await.unwrap() {
+            self.handler
+                .handle(
+                    Command::SetStatus {
+                        id: member.task_id,
+                        status: Status::Done,
+                        force: false,
+                        override_reason: None,
+                        comment: None,
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+        }
+        if self.plans.get(plan_id).await.unwrap().unwrap().status == PlanStatus::Completed {
+            return;
+        }
+        self.handler
+            .handle(
+                Command::SetPlanStatus {
+                    plan_id,
+                    status: PlanStatus::Completed,
+                    force: false,
+                    override_reason: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let stored = self.plans.get(plan_id).await.unwrap().unwrap();
+        assert_eq!(stored.status, PlanStatus::Completed);
+    }
+}
+
+const ISSUE: &str = "https://gitlab.x/g/p/-/issues/11542";
+
+/// A label-only node (chat/meeting) under the issue, on a git branch.
+fn under_issue(s: &Stack, label: &str, branch: &str) -> NewPlan {
+    let mut plan = s.new_plan();
+    plan.source = Some(SourceInput {
+        label: Some(label.into()),
+        upstream: vec![SourceInput {
+            source_ref: Some(ISSUE.into()),
+            ..SourceInput::default()
+        }],
+        ..SourceInput::default()
+    });
+    plan.git_context = Some(GitContext {
+        repo: Some("g/p".into()),
+        branch: Some(branch.into()),
+        ..GitContext::default()
+    });
+    plan
+}
+
+fn choice_candidates(err: &CoreError) -> Vec<serde_json::Value> {
+    match err {
+        CoreError::CodedConflict {
+            code: "plan_choice_required",
+            details,
+            ..
+        } => details["candidates"].as_array().unwrap().clone(),
+        other => panic!("expected plan_choice_required, got {other:?}"),
+    }
+}
+
+/// The incident: plan «statuses» was completed minutes ago on branch
+/// 11542_*; a second materialize on that branch without a choice lists it
+/// (the server does not decide), and `plan.id` keeps one plan, reopened.
+#[tokio::test]
+async fn plan_choice_required_lists_recent_completed_plan_on_same_branch() {
+    let s = stack().await;
+    let (statuses, _) = s
+        .materialize(under_issue(
+            &s,
+            "Совещание с директором",
+            "11542_av_statuses",
+        ))
+        .await;
+    s.complete(statuses.id).await;
+
+    let err = s
+        .try_materialize_into(under_issue(&s, "Бэклог диалога", "11542_av_statuses"), None)
+        .await
+        .unwrap_err();
+    let candidates = choice_candidates(&err);
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert_eq!(candidates[0]["plan_id"], json!(statuses.id));
+    assert_eq!(candidates[0]["status"], "completed");
+    assert_eq!(candidates[0]["recent_tasks"], json!(["t"]));
+    assert_eq!(
+        candidates[0]["source_label_chain"],
+        json!(["Совещание с директором", ISSUE])
+    );
+    assert!(err.to_string().contains("plan.separate"), "{err}");
+    assert_eq!(s.plan_count().await, 1, "a refusal writes nothing");
+
+    // Same subject: append by id — still one plan, active again.
+    let events = s
+        .try_materialize_into(
+            under_issue(&s, "Бэклог диалога", "11542_av_statuses"),
+            Some(statuses.id),
+        )
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|e| !matches!(e, Event::PlanCreated { .. })));
+    assert_eq!(s.plan_count().await, 1);
+    let stored = s.plans.get(statuses.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, PlanStatus::Active);
+    assert_eq!(
+        s.plans.list_tasks_ordered(statuses.id).await.unwrap().len(),
+        2
+    );
+}
+
+/// Another subject next to candidates: `plan.separate` creates a new plan.
+#[tokio::test]
+async fn separate_plan_is_created_next_to_candidates() {
+    let s = stack().await;
+    s.materialize(under_issue(&s, "Совещание", "11542_av_statuses"))
+        .await;
+    let mut plan = under_issue(&s, "Резолвер", "11542_av_statuses");
+    plan.separate = true;
+    let events = s.try_materialize_into(plan, None).await.unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::PlanCreated { .. })));
+    assert_eq!(s.plan_count().await, 2);
+}
+
+/// A trunk branch says nothing about the subject, and an unrelated source
+/// chain is no evidence; a plan whose source is an ancestor of the incoming
+/// one is a candidate.
+#[tokio::test]
+async fn trunk_branch_and_foreign_chain_give_no_candidates() {
+    let s = stack().await;
+    let on_main = |source_ref: &str| {
+        let mut plan = s.new_plan();
+        plan.source_ref = Some(source_ref.into());
+        plan.git_context = Some(GitContext {
+            repo: Some("g/p".into()),
+            branch: Some("main".into()),
+            ..GitContext::default()
+        });
+        plan
+    };
+    s.materialize(on_main("https://gitlab.x/g/p/-/issues/1"))
+        .await;
+    s.try_materialize_into(on_main("https://gitlab.x/g/p/-/issues/2"), None)
+        .await
+        .unwrap();
+    for branch in ["master", "Develop", "dev", "trunk"] {
+        let mut plan = on_main(&format!("https://gitlab.x/g/p/-/issues/{branch}"));
+        plan.git_context.as_mut().unwrap().branch = Some(branch.into());
+        s.try_materialize_into(plan, None).await.unwrap();
+    }
+    assert_eq!(s.plan_count().await, 6);
+
+    // Same chain, upward: issue 1 is the upstream of the incoming note.
+    let mut plan = under_issue(&s, "Обсуждение", "main");
+    plan.source.as_mut().unwrap().upstream[0].source_ref =
+        Some("https://gitlab.x/g/p/-/issues/1".into());
+    let err = s.try_materialize_into(plan, None).await.unwrap_err();
+    assert_eq!(choice_candidates(&err).len(), 1);
+}
+
+/// A completed plan older than the window is history, not a choice.
+#[tokio::test]
+async fn completed_plan_older_than_a_week_is_no_candidate() {
+    let s = stack().await;
+    let (old, _) = s
+        .materialize(under_issue(&s, "Совещание", "11542_av_statuses"))
+        .await;
+    s.complete(old.id).await;
+    let mut env = EventEnvelope::new(
+        Actor::user(),
+        Event::PlanStatusChanged {
+            plan_id: old.id,
+            from: PlanStatus::Completed,
+            to: PlanStatus::Completed,
+        },
+    );
+    env.occurred_at = daruma_shared::time::now() - chrono::Duration::days(8);
+    s.plans.apply_event(&env).await.unwrap();
+
+    s.try_materialize_into(under_issue(&s, "Бэклог", "11542_av_statuses"), None)
+        .await
+        .unwrap();
+    assert_eq!(s.plan_count().await, 2);
 }

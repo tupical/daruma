@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 // 27,000: deliberate +2,000 for daruma_audit_findings / daruma_audit_finding_ack
 // entering the default profile (~1.2 KB measured), so findings are reachable
 // without the REST bypass.
+// Id aliases on 11 key tool schemas (task 04eacc9f) are paid for by dropping
+// the repeated, often wrong "Task identifier" prose: 26,947 → 26,857 bytes.
 const MAX_DEFAULT_TOOLS_LIST_BYTES: usize = 27_000;
 
 struct ToolSize {

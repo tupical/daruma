@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{config::AiConfig, config::ApiProtocol, error::AiError};
 
@@ -20,6 +20,34 @@ pub struct ResponseRequest {
     pub tools: Vec<Value>,
     /// Optional `tool_choice` value (`"auto"`, `"required"`, `"none"`).
     pub tool_choice: Option<String>,
+    /// Stable instructions shared by every call of one kind (review rules,
+    /// project context). Anthropic gets them as a cached `system` block; the
+    /// OpenAI protocols get them prepended to the input, see [`with_system`].
+    pub system: Option<String>,
+}
+
+/// Separator between the stable system part and the per-call input wherever
+/// the protocol has no dedicated place for the system part.
+pub const SYSTEM_SEPARATOR: &str = "\n\n";
+
+/// The input with the system part prepended — the request the OpenAI
+/// protocols send. A string input stays a single string, so the request keeps
+/// exactly the shape providers were verified with; the shared prefix still
+/// comes first, where OpenAI's automatic prefix caching can reuse it. An array
+/// input gets a leading system message instead.
+pub(crate) fn with_system(req: &ResponseRequest) -> Value {
+    match (req.system.as_deref().filter(|s| !s.is_empty()), &req.input) {
+        (None, input) => input.clone(),
+        (Some(system), Value::String(input)) => {
+            Value::String(format!("{system}{SYSTEM_SEPARATOR}{input}"))
+        }
+        (Some(system), Value::Array(items)) => {
+            let mut out = vec![json!({"role": "system", "content": system})];
+            out.extend(items.iter().cloned());
+            Value::Array(out)
+        }
+        (Some(_), other) => other.clone(),
+    }
 }
 
 /// A single item extracted from the `output` array of a Responses API reply.
@@ -162,8 +190,238 @@ impl OpenAiClient {
         }
 
         let json: Value = resp.json().await?;
+        if self.config.api_protocol == ApiProtocol::AnthropicMessages {
+            if let Some(usage) = anthropic_usage(&json) {
+                info!(
+                    model = %self.config.model,
+                    input_tokens = usage.input_tokens,
+                    cache_creation_input_tokens = usage.cache_creation_input_tokens,
+                    cache_read_input_tokens = usage.cache_read_input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "anthropic usage"
+                );
+            }
+        }
         parse(&json)
     }
+}
+
+/// How long [`OpenAiClient::respond_batch`] waits for a Message Batch and how
+/// often it asks.
+///
+/// Anthropic finishes most batches within the hour and guarantees only 24
+/// hours, so the wait is bounded: a batch still running at the deadline is
+/// cancelled and the caller gets an error it can fall back from. The default
+/// suits an offline pass (scheduled audit) — nothing interactive should ever
+/// wait on a batch.
+#[derive(Clone, Copy, Debug)]
+pub struct BatchWait {
+    pub poll_interval: Duration,
+    pub deadline: Duration,
+}
+
+impl Default for BatchWait {
+    fn default() -> Self {
+        Self {
+            poll_interval: Duration::from_secs(10),
+            deadline: Duration::from_secs(15 * 60),
+        }
+    }
+}
+
+impl OpenAiClient {
+    /// Send many independent one-turn requests as one Anthropic Message Batch
+    /// (half the price of the same calls made one by one) and wait for them.
+    ///
+    /// The outer `Err` means the batch as a whole failed — not created, not
+    /// finished by [`BatchWait::deadline`] (then it is cancelled), results
+    /// unreadable — and nothing was answered. Otherwise item `i` is the reply
+    /// to `reqs[i]`, each one parsed exactly as [`Self::respond`] parses it; a
+    /// request the batch errored, cancelled or let expire is an `Err` of its
+    /// own. Only `anthropic_messages` has batches: the other protocols get a
+    /// configuration error before any request is sent.
+    pub async fn respond_batch(
+        &self,
+        reqs: &[ResponseRequest],
+        wait: BatchWait,
+    ) -> Result<Vec<Result<Vec<ResponseOutput>, AiError>>, AiError> {
+        if self.config.api_protocol != ApiProtocol::AnthropicMessages {
+            return Err(AiError::Config(
+                "message batches need api_protocol anthropic_messages".into(),
+            ));
+        }
+        let body = build_anthropic_batch_body(&self.config, reqs)?;
+        let batches_url = self.config.anthropic_batches_url();
+        let created = self
+            .anthropic_call(self.http.post(&batches_url).json(&body))
+            .await?;
+        let id = created["id"]
+            .as_str()
+            .ok_or_else(|| AiError::Batch(format!("created batch has no id: {created}")))?
+            .to_owned();
+        info!(batch_id = %id, requests = reqs.len(), model = %self.config.model, "anthropic batch created");
+
+        let started = std::time::Instant::now();
+        let mut batch = created;
+        while batch["processing_status"] != "ended" {
+            if started.elapsed() >= wait.deadline {
+                // Best effort: an uncancelled batch still finishes and bills,
+                // but the caller has already moved on without its answers.
+                if let Err(error) = self
+                    .anthropic_call(self.http.post(format!("{batches_url}/{id}/cancel")))
+                    .await
+                {
+                    tracing::warn!(batch_id = %id, %error, "anthropic batch cancel failed");
+                }
+                return Err(AiError::Batch(format!(
+                    "batch {id} not ended within {}s, cancelled",
+                    wait.deadline.as_secs()
+                )));
+            }
+            tokio::time::sleep(wait.poll_interval).await;
+            batch = self
+                .anthropic_call(self.http.get(format!("{batches_url}/{id}")))
+                .await?;
+        }
+
+        let results_url = batch["results_url"]
+            .as_str()
+            .ok_or_else(|| AiError::Batch(format!("ended batch {id} has no results_url")))?;
+        let mut request = self.http.get(results_url);
+        for (name, value) in auth_headers(&self.config) {
+            request = request.header(name, value);
+        }
+        let resp = request.send().await?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let message = resp.text().await.unwrap_or_default();
+            return Err(AiError::Api { status, message });
+        }
+        let jsonl = resp.text().await?;
+        let results = parse_anthropic_batch_results(&jsonl, reqs.len())?;
+        for message in results.iter().flatten() {
+            if let Some(usage) = anthropic_usage(message) {
+                info!(
+                    model = %self.config.model,
+                    batch_id = %id,
+                    input_tokens = usage.input_tokens,
+                    cache_creation_input_tokens = usage.cache_creation_input_tokens,
+                    cache_read_input_tokens = usage.cache_read_input_tokens,
+                    output_tokens = usage.output_tokens,
+                    "anthropic usage"
+                );
+            }
+        }
+        Ok(results
+            .into_iter()
+            .map(|result| result.and_then(|message| parse_anthropic_outputs(&message)))
+            .collect())
+    }
+
+    pub(crate) fn config(&self) -> &AiConfig {
+        &self.config
+    }
+
+    /// One authenticated JSON call to the Anthropic API; non-2xx is an error.
+    async fn anthropic_call(&self, mut request: reqwest::RequestBuilder) -> Result<Value, AiError> {
+        for (name, value) in auth_headers(&self.config) {
+            request = request.header(name, value);
+        }
+        let resp = request.send().await?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let message = resp.text().await.unwrap_or_default();
+            return Err(AiError::Api { status, message });
+        }
+        Ok(resp.json().await?)
+    }
+}
+
+/// `custom_id` of request `i` in a batch. Anthropic returns results in any
+/// order, so this is how a result finds its request.
+fn batch_custom_id(i: usize) -> String {
+    format!("req-{i}")
+}
+
+/// The Message Batch create body: request `i` carries [`batch_custom_id`]`(i)`
+/// and exactly the body [`OpenAiClient::respond`] would send for it, cache
+/// breakpoints included.
+pub(crate) fn build_anthropic_batch_body(
+    config: &AiConfig,
+    reqs: &[ResponseRequest],
+) -> Result<Value, AiError> {
+    let requests = reqs
+        .iter()
+        .enumerate()
+        .map(|(i, req)| {
+            Ok(json!({
+                "custom_id": batch_custom_id(i),
+                "params": build_anthropic_request_body(config, req)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, AiError>>()?;
+    Ok(json!({ "requests": requests }))
+}
+
+/// Split the results JSONL of an ended batch into one entry per request, in
+/// request order: the `message` of a succeeded request, otherwise an error
+/// naming what happened to it. A request the file does not mention is an error
+/// too — it was never answered.
+pub(crate) fn parse_anthropic_batch_results(
+    jsonl: &str,
+    n: usize,
+) -> Result<Vec<Result<Value, AiError>>, AiError> {
+    let mut out: Vec<Option<Result<Value, AiError>>> = (0..n).map(|_| None).collect();
+    for line in jsonl.lines().filter(|line| !line.trim().is_empty()) {
+        let item: Value = serde_json::from_str(line)?;
+        let index = item["custom_id"]
+            .as_str()
+            .and_then(|id| id.strip_prefix("req-"))
+            .and_then(|i| i.parse::<usize>().ok())
+            .filter(|i| *i < n)
+            .ok_or_else(|| AiError::Batch(format!("result for an unknown request: {line}")))?;
+        let result = &item["result"];
+        out[index] = Some(match result["type"].as_str() {
+            Some("succeeded") => Ok(result["message"].clone()),
+            Some("errored") => Err(AiError::Batch(format!(
+                "request errored: {}",
+                result["error"]
+            ))),
+            Some(other) => Err(AiError::Batch(format!("request {other}"))),
+            None => Err(AiError::Batch(format!("result without type: {line}"))),
+        });
+    }
+    Ok(out
+        .into_iter()
+        .map(|result| result.unwrap_or_else(|| Err(AiError::Batch("request has no result".into()))))
+        .collect())
+}
+
+/// Token accounting of one Anthropic Messages reply, cache split included.
+///
+/// `input_tokens` counts only the uncached part of the prompt; the cached
+/// prefix is billed separately as a write (`cache_creation_input_tokens`) or a
+/// read (`cache_read_input_tokens`). Logged so the effect of
+/// [`anthropic_cache_control`] can be measured per call.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AnthropicUsage {
+    pub input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Read `usage` from an Anthropic reply. Missing counters — older or
+/// Anthropic-compatible gateways omit the cache ones — read as zero.
+pub(crate) fn anthropic_usage(json: &Value) -> Option<AnthropicUsage> {
+    let usage = json.get("usage")?.as_object()?;
+    let count = |field: &str| usage.get(field).and_then(Value::as_u64).unwrap_or(0);
+    Some(AnthropicUsage {
+        input_tokens: count("input_tokens"),
+        cache_creation_input_tokens: count("cache_creation_input_tokens"),
+        cache_read_input_tokens: count("cache_read_input_tokens"),
+        output_tokens: count("output_tokens"),
+    })
 }
 
 /// Anthropic API version pinned in the `anthropic-version` header.
@@ -234,7 +492,7 @@ pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 2000;
 pub(crate) fn build_request_body(config: &AiConfig, req: &ResponseRequest) -> Value {
     let mut obj = json!({
         "model": config.model,
-        "input": req.input,
+        "input": with_system(req),
         "max_output_tokens": config.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
     });
 
@@ -263,7 +521,7 @@ pub(crate) fn build_chat_request_body(
 ) -> Result<Value, AiError> {
     let mut obj = json!({
         "model": config.model,
-        "messages": [{"role": "user", "content": req.input}],
+        "messages": [{"role": "user", "content": with_system(req)}],
         "max_tokens": config.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
     });
 
@@ -308,17 +566,32 @@ pub(crate) fn build_chat_request_body(
     Ok(obj)
 }
 
+/// Cache breakpoint Anthropic puts at the end of the prefix it should cache.
+/// `ephemeral` is the default five-minute cache, refreshed on every hit.
+pub(crate) fn anthropic_cache_control() -> Value {
+    json!({"type": "ephemeral"})
+}
+
 /// Build an Anthropic Messages request body from the provider-neutral request.
 ///
 /// Limits of this first iteration:
 /// - `input` must be a plain string; it becomes the single user message. An
 ///   array of OpenAI-style message objects is rejected rather than nested into
 ///   an invalid `content`.
-/// - No `system` field: the neutral request carries no system part, so there
-///   is nothing to send there yet.
+/// - `system`, when set, is sent as one text block of the `system` field.
 /// - `reasoning_effort` is not sent: Anthropic has no such parameter, and
 ///   extended thinking needs its own token budget.
 /// - `tool_choice` is omitted without tools — there is nothing to choose.
+///
+/// Prompt caching: Anthropic caches the prefix in the order tools → system →
+/// messages. The last tool carries [`anthropic_cache_control`] (tool schemas
+/// are identical for every call of one kind), and so does the system block
+/// (review rules and project context shared by the calls of one run) — the
+/// second breakpoint covers tools and system together. The user message is
+/// deliberately not marked: it differs per call, and a cache write costs more
+/// than plain input, so caching it would raise the price of every one-off
+/// prompt. A prefix below the model's minimum cacheable length is simply not
+/// cached; the request is still valid.
 pub(crate) fn build_anthropic_request_body(
     config: &AiConfig,
     req: &ResponseRequest,
@@ -333,6 +606,13 @@ pub(crate) fn build_anthropic_request_body(
         "max_tokens": config.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
         "messages": [{"role": "user", "content": input}],
     });
+    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+        obj["system"] = json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": anthropic_cache_control(),
+        }]);
+    }
 
     if req.tools.is_empty() {
         return Ok(obj);
@@ -370,6 +650,12 @@ pub(crate) fn build_anthropic_request_body(
             })
             .collect::<Result<Vec<_>, AiError>>()?,
     );
+    if let Some(last) = obj["tools"]
+        .as_array_mut()
+        .and_then(|tools| tools.last_mut())
+    {
+        last["cache_control"] = anthropic_cache_control();
+    }
 
     if let Some(tc) = &req.tool_choice {
         obj["tool_choice"] = match tc.as_str() {
@@ -565,6 +851,14 @@ mod tests {
             input: Value::String(input.into()),
             tools,
             tool_choice: tool_choice.map(Into::into),
+            system: None,
+        }
+    }
+
+    fn with_system_req(system: &str, input: &str, tools: Vec<Value>) -> ResponseRequest {
+        ResponseRequest {
+            system: Some(system.into()),
+            ..make_req(input, tools, Some("required"))
         }
     }
 
@@ -691,11 +985,13 @@ mod tests {
         assert!(parse_by_protocol(ApiProtocol::AnthropicMessages, &chat_json).is_err());
     }
 
-    #[tokio::test]
-    async fn respond_over_anthropic_messages_round_trips_tool_use() {
+    /// One-shot HTTP stub: accepts one request, answers `reply` as JSON and
+    /// returns the raw request text from the join handle.
+    fn one_shot_anthropic_stub(
+        reply: Value,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
 
-        // One-shot HTTP stub: captures the request, answers with a Messages reply.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
@@ -720,13 +1016,7 @@ mod tests {
                     }
                 }
             }
-            let reply = json!({
-                "id": "msg_1", "type": "message", "role": "assistant",
-                "stop_reason": "tool_use",
-                "content": [{"type": "tool_use", "id": "toolu_1", "name": "report_status", "input": {"ok": true}}],
-                "usage": {"input_tokens": 5, "output_tokens": 7}
-            })
-            .to_string();
+            let reply = reply.to_string();
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
@@ -735,7 +1025,10 @@ mod tests {
             .unwrap();
             String::from_utf8(raw).unwrap()
         });
+        (addr, server)
+    }
 
+    fn anthropic_stub_client(addr: std::net::SocketAddr) -> OpenAiClient {
         let mut cfg = make_cfg(None);
         cfg.api_protocol = ApiProtocol::AnthropicMessages;
         cfg.base_url = format!("http://{addr}");
@@ -744,9 +1037,54 @@ mod tests {
             .no_proxy()
             .build()
             .unwrap();
+        OpenAiClient::with_http_client(cfg, http)
+    }
+
+    #[tokio::test]
+    async fn generate_object_with_system_sends_cached_system_block_over_anthropic() {
+        use crate::AiProvider;
+
+        let (addr, server) = one_shot_anthropic_stub(json!({
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "report", "input": {"ok": true}}],
+            "usage": {"input_tokens": 5, "cache_read_input_tokens": 1200, "output_tokens": 7}
+        }));
+        let tool = json!({"type": "function", "name": "report"});
+        let args = anthropic_stub_client(addr)
+            .generate_object_with_system("RULES".into(), "per-call".into(), vec![tool], "report")
+            .await
+            .unwrap();
+        assert_eq!(args, json!({"ok": true}));
+
+        let request = server.join().unwrap();
+        let sent: Value =
+            serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            sent["system"],
+            json!([{"type": "text", "text": "RULES", "cache_control": {"type": "ephemeral"}}]),
+            "{sent}"
+        );
+        assert_eq!(
+            sent["messages"],
+            json!([{"role": "user", "content": "per-call"}]),
+            "{sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_over_anthropic_messages_round_trips_tool_use() {
+        let (addr, server) = one_shot_anthropic_stub(json!({
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "report_status", "input": {"ok": true}}],
+            "usage": {"input_tokens": 5, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 1200, "output_tokens": 7}
+        }));
+
         let tool = json!({"type": "function", "name": "report_status",
             "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}}});
-        let out = OpenAiClient::with_http_client(cfg, http)
+        let out = anthropic_stub_client(addr)
             .respond(make_req("status?", vec![tool], Some("required")))
             .await
             .unwrap();
@@ -760,6 +1098,13 @@ mod tests {
             "{request}"
         );
         assert!(!head.contains("authorization:"), "{request}");
+        let sent: Value =
+            serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            sent["tools"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "{sent}"
+        );
         let [ResponseOutput::ToolCall(call)] = &out[..] else {
             panic!("unexpected outputs: {out:?}");
         };
@@ -816,7 +1161,8 @@ mod tests {
             json!([{
                 "name": "report_status",
                 "description": "Report status",
-                "input_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+                "input_schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+                "cache_control": {"type": "ephemeral"}
             }])
         );
         assert_eq!(body["tool_choice"], json!({"type": "any"}));
@@ -828,6 +1174,136 @@ mod tests {
             assert_eq!(body["tool_choice"], json!({"type": expected}));
             assert_eq!(body["tools"][0]["input_schema"], json!({"type": "object"}));
         }
+    }
+
+    #[test]
+    fn build_anthropic_body_caches_tool_prefix_but_not_the_prompt() {
+        // One breakpoint after the last tool caches every tool schema; a mark on
+        // an earlier tool would leave the rest of the stable prefix uncached.
+        let tools = ["first", "second", "third"]
+            .map(|name| json!({"type": "function", "name": name}))
+            .to_vec();
+        let body =
+            build_anthropic_request_body(&make_cfg(None), &make_req("p", tools, Some("required")))
+                .unwrap();
+        let marks: Vec<_> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool.get("cache_control").cloned())
+            .collect();
+        assert_eq!(marks, [None, None, Some(json!({"type": "ephemeral"}))]);
+        // The per-call prompt stays a plain string: marking it would pay the
+        // cache-write premium on input that is never read back.
+        assert_eq!(body["messages"], json!([{"role": "user", "content": "p"}]));
+        assert!(body.get("cache_control").is_none(), "{body}");
+
+        let body =
+            build_anthropic_request_body(&make_cfg(None), &make_req("p", vec![], None)).unwrap();
+        assert!(!body.to_string().contains("cache_control"), "{body}");
+    }
+
+    #[test]
+    fn build_anthropic_body_caches_system_after_tools() {
+        // Anthropic caches tools → system → messages; the breakpoint on the
+        // system block makes the cached prefix cover the stable instructions,
+        // not only the tool schemas. The per-call input stays uncached.
+        let tools = vec![json!({"type": "function", "name": "report"})];
+        let body = build_anthropic_request_body(
+            &make_cfg(None),
+            &with_system_req("RULES", "per-call", tools),
+        )
+        .unwrap();
+        assert_eq!(
+            body["system"],
+            json!([{"type": "text", "text": "RULES", "cache_control": {"type": "ephemeral"}}])
+        );
+        assert_eq!(
+            body["tools"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": "per-call"}])
+        );
+
+        // Without tools the system breakpoint alone still caches the rules.
+        let body = build_anthropic_request_body(
+            &make_cfg(None),
+            &with_system_req("RULES", "per-call", vec![]),
+        )
+        .unwrap();
+        assert_eq!(
+            body["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+
+        // An empty system part sends no empty block (Anthropic rejects it).
+        let body =
+            build_anthropic_request_body(&make_cfg(None), &with_system_req("", "per-call", vec![]))
+                .unwrap();
+        assert!(body.get("system").is_none(), "{body}");
+    }
+
+    #[test]
+    fn openai_protocols_prepend_system_to_the_input() {
+        // The OpenAI bodies keep the shape providers were verified with: one
+        // string input / one user message, system text first.
+        let req = with_system_req("RULES", "per-call", vec![]);
+        let body = build_request_body(&make_cfg(None), &req);
+        assert_eq!(body["input"], json!("RULES\n\nper-call"));
+        assert!(body.get("instructions").is_none(), "{body}");
+        let body = build_chat_request_body(&make_cfg(None), &req).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": "RULES\n\nper-call"}])
+        );
+
+        // Unset system leaves the bodies byte-identical to before.
+        let plain = make_req("per-call", vec![], None);
+        assert_eq!(
+            build_request_body(&make_cfg(None), &plain)["input"],
+            json!("per-call")
+        );
+
+        // An array input gets a leading system message instead.
+        let req = ResponseRequest {
+            input: json!([{"role": "user", "content": "p"}]),
+            ..with_system_req("RULES", "", vec![])
+        };
+        assert_eq!(
+            build_request_body(&make_cfg(None), &req)["input"],
+            json!([{"role": "system", "content": "RULES"}, {"role": "user", "content": "p"}])
+        );
+    }
+
+    #[test]
+    fn anthropic_usage_reads_cache_split_and_defaults_missing_counters() {
+        let json = json!({"usage": {
+            "input_tokens": 12,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 1500,
+            "output_tokens": 40
+        }});
+        assert_eq!(
+            anthropic_usage(&json),
+            Some(AnthropicUsage {
+                input_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 1500,
+                output_tokens: 40,
+            })
+        );
+        // A compatible gateway without caching reports only the basic pair.
+        assert_eq!(
+            anthropic_usage(&json!({"usage": {"input_tokens": 5, "output_tokens": 7}})),
+            Some(AnthropicUsage {
+                input_tokens: 5,
+                output_tokens: 7,
+                ..Default::default()
+            })
+        );
+        assert_eq!(anthropic_usage(&json!({"content": []})), None);
     }
 
     #[test]
@@ -860,6 +1336,7 @@ mod tests {
                 input: json!([{"role": "user", "content": "p"}]),
                 tools: vec![],
                 tool_choice: None,
+                system: None,
             },
         ];
         for req in cases {
@@ -1124,5 +1601,283 @@ mod tests {
             matches!(&error, AiError::ParseFailed(m) if m.contains("max_tokens") && m.contains("max_output_tokens")),
             "{error:?}"
         );
+    }
+
+    // ── Message Batches ──────────────────────────────────────────────────────
+
+    /// Answers one connection per canned `(status, body)` in order and returns
+    /// every raw request it read. `replies` gets the stub address so a reply
+    /// can point back at it (`results_url`).
+    fn scripted_anthropic_stub(
+        replies: impl FnOnce(std::net::SocketAddr) -> Vec<(u16, String)>,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let replies = replies(addr);
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, reply) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+                requests.push(String::from_utf8(raw).unwrap());
+            }
+            requests
+        });
+        (addr, server)
+    }
+
+    fn request_line(raw: &str) -> &str {
+        raw.lines().next().unwrap_or_default()
+    }
+
+    fn request_body(raw: &str) -> Value {
+        serde_json::from_str(&raw[raw.find("\r\n\r\n").unwrap() + 4..]).unwrap()
+    }
+
+    fn tool_message(name: &str, input: Value) -> Value {
+        json!({
+            "id": "msg", "type": "message", "role": "assistant", "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "toolu", "name": name, "input": input}],
+            "usage": {"input_tokens": 3, "output_tokens": 4}
+        })
+    }
+
+    #[test]
+    fn batch_body_wraps_each_request_body_under_its_custom_id() {
+        let mut cfg = make_cfg(None);
+        cfg.api_protocol = ApiProtocol::AnthropicMessages;
+        let tool = json!({"type": "function", "name": "report"});
+        let reqs: Vec<ResponseRequest> = ["a", "b"]
+            .iter()
+            .map(|input| ResponseRequest {
+                input: Value::String((*input).into()),
+                tools: vec![tool.clone()],
+                tool_choice: Some("required".into()),
+                system: Some("RULES".into()),
+            })
+            .collect();
+        let body = build_anthropic_batch_body(&cfg, &reqs).unwrap();
+        let requests = body["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (i, (item, req)) in requests.iter().zip(&reqs).enumerate() {
+            assert_eq!(item["custom_id"], format!("req-{i}"));
+            // Same body as a direct call — cache breakpoints included.
+            assert_eq!(
+                item["params"],
+                build_anthropic_request_body(&cfg, req).unwrap()
+            );
+        }
+        assert_eq!(
+            requests[1]["params"]["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[test]
+    fn batch_results_follow_request_order_and_name_every_failure() {
+        let jsonl = [
+            json!({"custom_id": "req-2", "result": {"type": "expired"}}),
+            json!({"custom_id": "req-0", "result": {"type": "succeeded", "message": {"id": "m0"}}}),
+            json!({"custom_id": "req-1", "result": {"type": "errored", "error": {"type": "error", "error": {"type": "overloaded_error"}}}}),
+        ]
+        .map(|v| v.to_string())
+        .join("\n");
+        let results = parse_anthropic_batch_results(&jsonl, 4).unwrap();
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].as_ref().unwrap()["id"], "m0");
+        assert!(
+            matches!(&results[1], Err(AiError::Batch(m)) if m.contains("overloaded_error")),
+            "{:?}",
+            results[1]
+        );
+        assert!(matches!(&results[2], Err(AiError::Batch(m)) if m.contains("expired")));
+        assert!(matches!(&results[3], Err(AiError::Batch(m)) if m.contains("no result")));
+
+        let unknown = json!({"custom_id": "req-9", "result": {"type": "expired"}}).to_string();
+        assert!(matches!(
+            parse_anthropic_batch_results(&unknown, 4),
+            Err(AiError::Batch(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn respond_batch_creates_polls_and_reads_results_over_http() {
+        let (addr, server) = scripted_anthropic_stub(|addr| {
+            let results = [
+                json!({"custom_id": "req-1", "result": {"type": "succeeded", "message": tool_message("report", json!({"n": 1}))}}),
+                json!({"custom_id": "req-0", "result": {"type": "succeeded", "message": tool_message("report", json!({"n": 0}))}}),
+            ]
+            .map(|v| v.to_string())
+            .join("\n");
+            vec![
+                (200, json!({"id": "msgbatch_1", "processing_status": "in_progress"}).to_string()),
+                (200, json!({"id": "msgbatch_1", "processing_status": "in_progress"}).to_string()),
+                (
+                    200,
+                    json!({"id": "msgbatch_1", "processing_status": "ended",
+                           "results_url": format!("http://{addr}/v1/messages/batches/msgbatch_1/results")})
+                    .to_string(),
+                ),
+                (200, results),
+            ]
+        });
+        let reqs: Vec<ResponseRequest> = ["first", "second"]
+            .iter()
+            .map(|input| {
+                make_req(
+                    input,
+                    vec![json!({"type": "function", "name": "report"})],
+                    Some("required"),
+                )
+            })
+            .collect();
+        let wait = BatchWait {
+            poll_interval: Duration::from_millis(5),
+            deadline: Duration::from_secs(30),
+        };
+        let results = anthropic_stub_client(addr)
+            .respond_batch(&reqs, wait)
+            .await
+            .unwrap();
+        let args: Vec<String> = results
+            .into_iter()
+            .map(|outputs| match outputs.unwrap().pop() {
+                Some(ResponseOutput::ToolCall(tc)) => tc.arguments,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(args, [r#"{"n":0}"#, r#"{"n":1}"#]);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests.iter().map(|r| request_line(r)).collect::<Vec<_>>(),
+            [
+                "POST /v1/messages/batches HTTP/1.1",
+                "GET /v1/messages/batches/msgbatch_1 HTTP/1.1",
+                "GET /v1/messages/batches/msgbatch_1 HTTP/1.1",
+                "GET /v1/messages/batches/msgbatch_1/results HTTP/1.1",
+            ]
+        );
+        for raw in &requests {
+            let lower = raw.to_ascii_lowercase();
+            assert!(lower.contains("x-api-key: sk-test"), "{raw}");
+            assert!(lower.contains("anthropic-version: 2023-06-01"), "{raw}");
+        }
+        let created = request_body(&requests[0]);
+        assert_eq!(created["requests"][0]["custom_id"], "req-0");
+        assert_eq!(
+            created["requests"][1]["params"]["messages"],
+            json!([{"role": "user", "content": "second"}])
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_batch_cancels_a_batch_past_its_deadline() {
+        let (addr, server) = scripted_anthropic_stub(|_| {
+            vec![
+                (
+                    200,
+                    json!({"id": "msgbatch_2", "processing_status": "in_progress"}).to_string(),
+                ),
+                (
+                    200,
+                    json!({"id": "msgbatch_2", "processing_status": "canceling"}).to_string(),
+                ),
+            ]
+        });
+        let reqs = vec![make_req("x", vec![], None), make_req("y", vec![], None)];
+        let wait = BatchWait {
+            poll_interval: Duration::from_millis(5),
+            deadline: Duration::ZERO,
+        };
+        let error = anthropic_stub_client(addr)
+            .respond_batch(&reqs, wait)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, AiError::Batch(m) if m.contains("msgbatch_2") && m.contains("cancelled")),
+            "{error:?}"
+        );
+        let requests = server.join().unwrap();
+        assert_eq!(
+            request_line(&requests[1]),
+            "POST /v1/messages/batches/msgbatch_2/cancel HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_batch_refuses_protocols_without_batches_before_any_request() {
+        let client = OpenAiClient::new(make_cfg(None));
+        let error = client
+            .respond_batch(&[make_req("x", vec![], None)], BatchWait::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AiError::Config(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn objects_batch_falls_back_to_one_call_per_prompt_when_the_batch_fails() {
+        use crate::AiProvider;
+
+        let (addr, server) = scripted_anthropic_stub(|_| {
+            vec![
+                (
+                    500,
+                    json!({"type": "error", "error": {"type": "api_error"}}).to_string(),
+                ),
+                (200, tool_message("report", json!({"n": "a"})).to_string()),
+                (200, tool_message("report", json!({"n": "b"})).to_string()),
+            ]
+        });
+        let tool = json!({"type": "function", "name": "report"});
+        let results = anthropic_stub_client(addr)
+            .generate_objects_batch(
+                "RULES".into(),
+                vec!["a".into(), "b".into()],
+                vec![tool],
+                "report",
+            )
+            .await;
+        let args: Vec<Value> = results.into_iter().map(Result::unwrap).collect();
+        assert_eq!(args, [json!({"n": "a"}), json!({"n": "b"})]);
+
+        let requests = server.join().unwrap();
+        assert_eq!(
+            request_line(&requests[0]),
+            "POST /v1/messages/batches HTTP/1.1"
+        );
+        for (raw, prompt) in requests[1..].iter().zip(["a", "b"]) {
+            assert_eq!(request_line(raw), "POST /v1/messages HTTP/1.1");
+            let sent = request_body(raw);
+            assert_eq!(sent["messages"][0]["content"], prompt);
+            assert_eq!(sent["system"][0]["text"], "RULES");
+        }
     }
 }
