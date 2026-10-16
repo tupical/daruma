@@ -423,7 +423,10 @@ async fn profiles_hidden_tool_is_not_callable_in_default() {
         ok.error
     );
     let result = ok.result.unwrap();
-    assert_ne!(result["isError"], true, "full profile must dispatch: {result}");
+    assert_ne!(
+        result["isError"], true,
+        "full profile must dispatch: {result}"
+    );
 }
 
 /// `daruma_update` carries `git_context` end to end: the MCP argument becomes
@@ -531,7 +534,11 @@ async fn tools_call_update_sets_and_clears_git_context() {
 
     let resp = update(json!({"id": task_id, "git_context": null})).await;
     assert!(resp.error.is_none(), "clear failed: {:?}", resp.error);
-    assert_ne!(resp.result.as_ref().unwrap()["isError"], true, "clear failed: {resp:?}");
+    assert_ne!(
+        resp.result.as_ref().unwrap()["isError"],
+        true,
+        "clear failed: {resp:?}"
+    );
     let (_, task) = get_json(
         app.router.clone(),
         &app.admin_token,
