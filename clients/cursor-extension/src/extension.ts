@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { Plan, Task, DarumaApiClient } from "./apiClient.js";
+import { ConnectionSettings, resolveConnection } from "./connection.js";
 import { DarumaTreeProvider } from "./tree.js";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -184,10 +185,13 @@ async function updateStatus(status: vscode.StatusBarItem, client: DarumaApiClien
 export function deactivate(): void {}
 
 function createClient(): DarumaApiClient {
-  const config = vscode.workspace.getConfiguration("daruma");
-  const apiUrl = config.get<string>("apiUrl") || process.env.DARUMA_API_URL || "http://localhost:8080";
-  const token = config.get<string>("token") || process.env.DARUMA_TOKEN || "";
+  const { apiUrl, token } = connectionSettings();
   return new DarumaApiClient(apiUrl, token);
+}
+
+function connectionSettings(): ConnectionSettings {
+  const config = vscode.workspace.getConfiguration("daruma");
+  return resolveConnection(config.inspect<string>("apiUrl"), config.inspect<string>("token"), process.env);
 }
 
 function registerCursorMcpServer(): void {
@@ -197,9 +201,7 @@ function registerCursorMcpServer(): void {
     if (!registerServer) {
       return;
     }
-    const config = vscode.workspace.getConfiguration("daruma");
-    const apiUrl = config.get<string>("apiUrl") || process.env.DARUMA_API_URL || "http://localhost:8080";
-    const token = config.get<string>("token") || process.env.DARUMA_TOKEN || "";
+    const { apiUrl, token } = connectionSettings();
     registerServer({
       name: "daruma",
       server: {
