@@ -33,8 +33,9 @@ export DARUMA_WORKSPACE="$PWD"
 
 MCP client disk layout (`daruma mcp`): [docs/guides/mcp-client.md](../../docs/guides/mcp-client.md).
 
-You can also pass `--api-url` and `--token` per-invocation. They override
-the env.
+You can also pass `--api-url` and `--token` per-invocation, `daruma mcp`
+included. They override the env, and the env overrides the active profile in
+`~/.agents/daruma/credentials.json`.
 
 ## MCP config
 

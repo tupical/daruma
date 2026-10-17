@@ -205,7 +205,14 @@ async fn main() -> anyhow::Result<()> {
         }
         // Stdio MCP server: does its own env/credentials resolution and never
         // touches the table-rendering HTTP client below.
-        Some(Cmd::Mcp { profile }) => return run_mcp_stdio(profile.as_deref()).await,
+        Some(Cmd::Mcp { profile }) => {
+            return run_mcp_stdio(
+                profile.as_deref(),
+                cli.api_url.as_deref(),
+                cli.token.as_deref(),
+            )
+            .await
+        }
         _ => {}
     }
 
@@ -240,30 +247,36 @@ async fn main() -> anyhow::Result<()> {
 /// Run the stdio MCP server: read JSON-RPC frames on stdin, forward each tool
 /// call to a `daruma-server` over HTTP, write responses to stdout. This is
 /// the merged `daruma mcp` entry-point (formerly the standalone
-/// `daruma-mcp` binary). Config is via env / credentials.json, exactly like
-/// the rest of the CLI — fully generic over the server it points at.
-async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
+/// `daruma-mcp` binary). `api_url` / `token` are the global `--api-url` /
+/// `--token` values (clap already folds in `DARUMA_API_URL` / `DARUMA_TOKEN`),
+/// so the flags win over env exactly like for every other subcommand;
+/// credentials.json is only the fallback.
+async fn run_mcp_stdio(
+    profile_flag: Option<&str>,
+    api_url: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
     let profile = match profile_flag {
         Some(raw) => ToolProfile::parse(raw).ok_or_else(|| {
             anyhow::anyhow!("unknown MCP profile `{raw}` — expected `default` or `full`")
         })?,
         None => ToolProfile::from_env(),
     };
-    let mut base =
-        std::env::var("DARUMA_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
-    let mut token = std::env::var("DARUMA_TOKEN").unwrap_or_default();
-    let mut workspace_id_from_creds: Option<String> = None;
-
-    if token.trim().is_empty() {
-        if let Some(auth) = daruma_mcp::credentials::resolve_from_agent_dir() {
-            base = auth.api_url;
-            token = auth.token;
-            workspace_id_from_creds = auth.workspace_id;
-            tracing::info!(
-                path = %daruma_mcp::credentials::credentials_path().display(),
-                "loaded API credentials from agent dir"
-            );
-        }
+    let McpConnection {
+        base,
+        token,
+        workspace_id: workspace_id_from_creds,
+        from_credentials,
+    } = resolve_mcp_connection(
+        api_url,
+        token,
+        daruma_mcp::credentials::resolve_from_agent_dir,
+    );
+    if from_credentials {
+        tracing::info!(
+            path = %daruma_mcp::credentials::credentials_path().display(),
+            "loaded API credentials from agent dir"
+        );
     }
 
     if token.is_empty() {
@@ -302,6 +315,48 @@ async fn run_mcp_stdio(profile_flag: Option<&str>) -> anyhow::Result<()> {
 
     tracing::info!(profile = profile.as_str(), "daruma mcp ready on stdio");
     run_stdio_with_profile(client, profile).await
+}
+
+/// Server connection the stdio MCP server talks to.
+#[derive(Debug, PartialEq, Eq)]
+struct McpConnection {
+    base: String,
+    token: String,
+    /// `workspace_id` of the credentials.json profile, only when that
+    /// profile supplied the token.
+    workspace_id: Option<String>,
+    from_credentials: bool,
+}
+
+/// Resolve the `daruma mcp` connection. `api_url` / `token` come from
+/// `--api-url` / `--token` (or their env fallbacks). An explicit token keeps
+/// the explicit URL (default `http://localhost:8080`) and never mixes in the
+/// stored profile. Without a token the active credentials.json profile
+/// supplies token and workspace; an explicit `--api-url` still overrides the
+/// profile's URL.
+fn resolve_mcp_connection(
+    api_url: Option<&str>,
+    token: Option<&str>,
+    stored: impl FnOnce() -> Option<daruma_mcp::credentials::ResolvedRemoteAuth>,
+) -> McpConnection {
+    let api_url = api_url.map(str::trim).filter(|u| !u.is_empty());
+    let token = token.map(str::trim).filter(|t| !t.is_empty());
+    if token.is_none() {
+        if let Some(auth) = stored() {
+            return McpConnection {
+                base: api_url.map(str::to_string).unwrap_or(auth.api_url),
+                token: auth.token,
+                workspace_id: auth.workspace_id,
+                from_credentials: true,
+            };
+        }
+    }
+    McpConnection {
+        base: api_url.unwrap_or("http://localhost:8080").to_string(),
+        token: token.unwrap_or_default().to_string(),
+        workspace_id: None,
+        from_credentials: false,
+    }
 }
 
 /// Optional workspace scope sent as `X-Daruma-Workspace-Id`.
@@ -870,6 +925,93 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    // ── daruma mcp connection resolution ─────────────────────────────────────
+
+    fn stored_profile() -> Option<daruma_mcp::credentials::ResolvedRemoteAuth> {
+        Some(daruma_mcp::credentials::ResolvedRemoteAuth {
+            api_url: "https://stored.example".to_string(),
+            token: "ta_svc_stored".to_string(),
+            workspace_id: Some("ws-stored".to_string()),
+        })
+    }
+
+    #[test]
+    fn mcp_global_flags_reach_the_mcp_subcommand() {
+        for argv in [
+            [
+                "daruma",
+                "--api-url",
+                "http://flag:9",
+                "--token",
+                "ta_flag",
+                "mcp",
+            ],
+            [
+                "daruma",
+                "mcp",
+                "--api-url",
+                "http://flag:9",
+                "--token",
+                "ta_flag",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(cli.cmd, Some(Cmd::Mcp { .. })));
+            assert_eq!(cli.api_url.as_deref(), Some("http://flag:9"));
+            assert_eq!(cli.token.as_deref(), Some("ta_flag"));
+        }
+    }
+
+    #[test]
+    fn mcp_explicit_token_and_url_win_over_stored_profile() {
+        let conn = resolve_mcp_connection(Some("http://flag:9"), Some("ta_flag"), || {
+            panic!("stored profile must not be read when a token is given")
+        });
+        assert_eq!(
+            conn,
+            McpConnection {
+                base: "http://flag:9".to_string(),
+                token: "ta_flag".to_string(),
+                workspace_id: None,
+                from_credentials: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_explicit_token_without_url_defaults_to_localhost() {
+        let conn = resolve_mcp_connection(None, Some("ta_flag"), stored_profile);
+        assert_eq!(conn.base, "http://localhost:8080");
+        assert_eq!(conn.token, "ta_flag");
+        assert_eq!(conn.workspace_id, None);
+        assert!(!conn.from_credentials);
+    }
+
+    #[test]
+    fn mcp_explicit_url_overrides_stored_profile_url() {
+        let conn = resolve_mcp_connection(Some("http://flag:9"), Some("  "), stored_profile);
+        assert_eq!(conn.base, "http://flag:9");
+        assert_eq!(conn.token, "ta_svc_stored");
+        assert_eq!(conn.workspace_id.as_deref(), Some("ws-stored"));
+        assert!(conn.from_credentials);
+    }
+
+    #[test]
+    fn mcp_without_flags_uses_stored_profile() {
+        let conn = resolve_mcp_connection(None, None, stored_profile);
+        assert_eq!(conn.base, "https://stored.example");
+        assert_eq!(conn.token, "ta_svc_stored");
+        assert!(conn.from_credentials);
+    }
+
+    #[test]
+    fn mcp_without_flags_or_profile_falls_back_to_localhost() {
+        let conn = resolve_mcp_connection(None, None, || None);
+        assert_eq!(conn.base, "http://localhost:8080");
+        assert_eq!(conn.token, "");
+        assert!(!conn.from_credentials);
     }
 
     // ── install_mcp_json tests ────────────────────────────────────────────────
