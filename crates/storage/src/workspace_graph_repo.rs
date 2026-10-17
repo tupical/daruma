@@ -80,6 +80,13 @@ pub struct GraphStatus {
     pub last_error: Option<String>,
 }
 
+/// Position of the index in the canonical event log.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphCursor {
+    pub seq: u64,
+    pub event_id: Option<String>,
+}
+
 pub struct WorkspaceGraphRepo {
     pool: SqlitePool,
 }
@@ -711,6 +718,11 @@ impl WorkspaceGraphRepo {
 
         self.set_meta("last_event_seq", &envelope.seq.to_string())
             .await?;
+        self.set_meta(
+            "last_event_cursor",
+            &format!("{} {}", envelope.seq, envelope.id),
+        )
+        .await?;
         self.set_meta("last_error", "").await?;
         Ok(())
     }
@@ -973,6 +985,52 @@ impl WorkspaceGraphRepo {
             last_event_seq,
             last_error,
         })
+    }
+
+    /// Last applied event as `(seq, event id)`. Both halves come from one
+    /// meta row, so a concurrent subscriber cannot tear the seq from its id.
+    /// `event_id` is `None` for an index written before the cursor existed.
+    pub async fn cursor(&self) -> Result<Option<GraphCursor>> {
+        self.ensure_schema().await?;
+        if let Some(raw) = self.get_meta("last_event_cursor").await? {
+            if let Some((seq, id)) = raw.split_once(' ') {
+                if let Ok(seq) = seq.parse::<u64>() {
+                    return Ok(Some(GraphCursor {
+                        seq,
+                        event_id: Some(id.to_string()),
+                    }));
+                }
+            }
+        }
+        Ok(self
+            .get_meta("last_event_seq")
+            .await?
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|seq| GraphCursor {
+                seq,
+                event_id: None,
+            }))
+    }
+
+    /// Drop every derived row and the event cursor so the next catch-up
+    /// replays the whole log. Used when the primary DB was rolled back.
+    pub async fn reset(&self) -> Result<()> {
+        self.ensure_schema().await?;
+        let mut tx = self.pool.begin().await.map_err(storage_err)?;
+        for sql in [
+            "DELETE FROM workspacegraph_edges",
+            "DELETE FROM workspacegraph_fts",
+            "DELETE FROM workspacegraph_nodes",
+            "DELETE FROM workspacegraph_meta
+             WHERE key IN ('last_event_seq', 'last_event_cursor', 'last_error')",
+        ] {
+            sqlx::query(sql)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_err)?;
+        }
+        tx.commit().await.map_err(storage_err)?;
+        Ok(())
     }
 
     async fn search_inner(
@@ -1716,6 +1774,46 @@ mod tests {
         let status = repo.status().await.unwrap();
         assert_eq!(status.node_count, 6);
         assert_eq!(status.last_event_seq, Some(8));
+    }
+
+    #[tokio::test]
+    async fn cursor_tracks_event_id_and_reset_clears_the_index() {
+        let repo = repo().await;
+        assert_eq!(repo.cursor().await.unwrap(), None);
+
+        let task_id = TaskId::new();
+        let mut task = NewTask::new("cursor probe");
+        task.id = Some(task_id);
+        let envelope = env(7, Event::TaskCreated { task });
+        repo.apply_event(&envelope).await.unwrap();
+        assert_eq!(
+            repo.cursor().await.unwrap(),
+            Some(GraphCursor {
+                seq: 7,
+                event_id: Some(envelope.id.to_string()),
+            })
+        );
+
+        // An index written before the cursor key existed still resumes by seq.
+        sqlx::query("DELETE FROM workspacegraph_meta WHERE key = 'last_event_cursor'")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.cursor().await.unwrap(),
+            Some(GraphCursor {
+                seq: 7,
+                event_id: None,
+            })
+        );
+
+        repo.reset().await.unwrap();
+        assert_eq!(repo.cursor().await.unwrap(), None);
+        let status = repo.status().await.unwrap();
+        assert_eq!((status.node_count, status.edge_count), (0, 0));
+        assert_eq!(status.last_event_seq, None);
+        assert!(repo.search("probe", 10, None).await.unwrap().is_empty());
+        assert_eq!(status.schema_version, 2);
     }
 
     #[tokio::test]
