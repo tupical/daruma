@@ -2472,12 +2472,12 @@ async fn document_linked_requires_a_live_bound_document() {
 
 // ── Plan membership must gate direct task transitions ───────────────────────
 //
-// AUD/ATT: a rule scoped to a plan only fires today if the triggering event
-// already carries `plan_id` (e.g. a plan-materialize path). A task that is a
-// *member* of that plan but transitions via a direct `SetStatus` command
-// never resolves its plan membership, so the plan-scoped rule is silently
-// skipped — the same requirement blocks at `RuleScope::Project`, so this is
-// a real gap in the inheritance chain, not an intentional narrower reach.
+// AUD/ATT regression: a plan-scoped rule must fire for a *member* task even
+// when the transition is a direct `SetStatus` whose event carries no
+// `plan_id`. The engine resolves every plan the task belongs to from
+// `plan_tasks` (spec §1.2 «Носитель task-переходов», §2); before that the
+// rule was silently skipped while the same requirement blocked at
+// `RuleScope::Project`.
 #[tokio::test]
 async fn plan_scoped_rule_blocks_task_start_via_direct_set_status() {
     let stack = stack().await;
