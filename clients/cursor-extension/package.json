@@ -125,12 +125,12 @@
         "daruma.apiUrl": {
           "type": "string",
           "default": "http://localhost:8080",
-          "description": "Daruma server base URL."
+          "description": "Daruma server base URL. When unset, DARUMA_API_URL is used, then http://localhost:8080."
         },
         "daruma.token": {
           "type": "string",
           "default": "",
-          "description": "Daruma bearer token."
+          "description": "Daruma bearer token. When unset, DARUMA_TOKEN is used."
         }
       }
     }
