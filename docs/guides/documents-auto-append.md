@@ -1,10 +1,32 @@
 # Auto-append into Interview / Human Log
 
-Every project gets two auto-created documents (`CreateProject` emits
-them): **Interview** — the AI/agent activity log — and **Human Log** —
-a human-readable milestone feed. The server appends lines to them
-automatically; the feature is per-project toggleable and **ON by
-default** (including projects created before the setting existed).
+The server appends activity lines to two kinds of project documents:
+**Interview** (`kind: interview`) — the AI/agent activity log — and
+**Human Log** (`kind: human_log`) — a human-readable milestone feed. The
+feature is per-project toggleable and **ON by default** (including
+projects created before the setting existed).
+
+## The log documents must already exist
+
+`CreateProject` creates the project bare: it does **not** create
+Interview or Human Log documents (older releases did). Auto-append only
+writes into a document that already exists, so a project without them
+logs nothing — silently, the toggles stay ON.
+
+To enable logging, create the document(s) yourself — MCP
+`daruma_doc_create { project_id, kind, title, task_id }` or
+`POST /v1/documents { "new_doc": { project_id, kind, title, task_id } }`. Like
+every live document it must be anchored to a non-terminal task
+(`task_id` is required).
+
+- **Target.** For each event the server picks the **oldest non-archived**
+  document of the matching kind in the project (`created_at`, then `id`).
+  The title is not used; extra documents of the same kind are ignored.
+- **Anchor lifecycle.** When the anchor task is cancelled — or the task
+  is gone and the orphan sweep runs — the document is archived and
+  appends move to the next-oldest document of that kind, or stop if
+  there is none. When the anchor task is done the document becomes
+  `frozen`, is not archived and still receives appends.
 
 ## What lands where
 
