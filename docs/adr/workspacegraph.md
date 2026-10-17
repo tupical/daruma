@@ -23,7 +23,11 @@ WorkspaceGraph will use a sidecar SQLite database named
 The sidecar is rebuilt from the event log and maintained incrementally by
 applying events after the canonical projections have accepted them. If the
 sidecar is missing, corrupt, or behind, Daruma may reindex it without
-changing canonical data.
+changing canonical data. The sidecar stores its cursor as the last applied
+`seq` plus event id; when that cursor is ahead of the event log or names a
+different event (the canonical DB was restored from an older backup),
+startup catch-up clears the sidecar and replays from seq 0 instead of
+resuming.
 
 We choose a sidecar over inline tables in `daruma.sqlite` because:
 

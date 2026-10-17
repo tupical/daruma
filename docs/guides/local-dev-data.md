@@ -127,9 +127,16 @@ Never ship a main file with a stale `-wal` from a different point in time.
 2. Replace `daruma.sqlite` with the backup file.
 3. Delete any leftover `daruma.sqlite-wal` / `daruma.sqlite-shm`
    (they belong to the old database generation).
-4. Optionally delete `workspacegraph.sqlite` — the sidecar index is
-   re-derived from the event log on the next start/reindex.
-5. Start the server.
+4. Start the server.
+
+You do not need to touch `workspacegraph.sqlite`. The sidecar index
+remembers the sequence number and event id it last applied; on start the
+server compares them with the restored event log. If the index is ahead of
+the log, or the event at that sequence is a different one (the restored log
+was written further after the backup), the server logs
+`workspace graph is ahead of or diverged from the event log; rebuilding`,
+clears the index and replays it from the start. Deleting the file before
+step 4 forces the same full rebuild and stays a safe manual fallback.
 
 ### Self-host in a repo
 

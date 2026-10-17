@@ -89,7 +89,7 @@ pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
 pub use work_unit_repo::WorkUnitRepo;
 pub use workspace_graph_repo::{
     DuplicateTaskPair, GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode,
-    GraphSearchHit, GraphStatus, WorkspaceGraphRepo,
+    GraphCursor, GraphSearchHit, GraphStatus, WorkspaceGraphRepo,
 };
 
 /// RFC3339 → UTC timestamp for sqlite row mappers.
