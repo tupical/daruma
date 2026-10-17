@@ -141,8 +141,13 @@ All daruma clients and the `daruma` binary resolve credentials in this order:
 2. `~/.agents/daruma/credentials.json` — written by
    `daruma install --mode local|self-host -y` or the client installers.
    Active profile: `credentials.profiles[active_profile]`.
-3. Legacy `~/.config/daruma/credentials.json` — automatically migrated on
-   first access; kept for backward compatibility.
+3. Legacy `~/.config/daruma/credentials.json` (`$XDG_CONFIG_HOME/daruma/`,
+   `%APPDATA%\daruma\` on Windows) — **not read by the `daruma` binary**.
+   Only the Node plugins (`clients/claude-plugin`, `clients/cursor-plugin`)
+   copy it once into `~/.agents/daruma/credentials.json` when they load
+   credentials and the new file is missing; the legacy file is left in
+   place. If you use the binary alone, copy it yourself:
+   `mkdir -p ~/.agents/daruma && cp ~/.config/daruma/credentials.json ~/.agents/daruma/`.
 
 For service / headless use, set `DARUMA_TOKEN` and optionally
 `DARUMA_API_URL`. No credentials file is needed.
