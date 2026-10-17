@@ -182,7 +182,8 @@ fn schemas_no_longer_require_defaulted_params() {
         |name: &str| defs.iter().find(|t| t.name == name).unwrap().input_schema["required"].clone();
     assert!(required("daruma_list").is_null());
     assert!(required("daruma_plan_list").is_null());
-    assert_eq!(required("daruma_plan_next_task"), json!(["id"]));
+    // `id` and its alias `plan_id` are both listed, so neither is required.
+    assert!(required("daruma_plan_next_task").is_null());
 }
 
 /// Plan 01a06cfc, task 04c37251 (dispatch on the resolvers): every id
@@ -358,6 +359,7 @@ async fn key_tool_schemas_advertise_the_accepted_id_alias() {
         ("daruma_plan_get", "id", json!({"plan_id": "pln_1"})),
         ("daruma_plan_progress", "plan_id", json!({"id": "pln_1"})),
         ("daruma_plan_drain_next", "plan_id", json!({"id": "pln_1"})),
+        ("daruma_plan_next_task", "id", json!({"plan_id": "pln_1"})),
     ];
     let defs = tool_definitions();
     for (tool, key, args) in cases {

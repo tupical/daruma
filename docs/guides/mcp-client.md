@@ -162,7 +162,8 @@ Supported launch modes:
   the key tools — `daruma_get`, `daruma_update`, `daruma_set_status`,
   `daruma_complete`, `daruma_comment`, `daruma_relations`, `daruma_claim`,
   `daruma_release`, `daruma_plan_get`, `daruma_plan_progress`,
-  `daruma_plan_drain_next` — list both names and require neither; a call with
+  `daruma_plan_drain_next`, `daruma_plan_next_task` — list both names and
+  require neither; a call with
   neither fails with the accepted names. Bulk tools take
   `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
   different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
