@@ -68,16 +68,28 @@ npx daruma-codex-install --ide cursor     # equivalent to daruma install --curso
 npx daruma-codex-install --ide all        # equivalent to daruma install --all
 ```
 
-For Claude Code policy (`--claude`) the binary writes a CLAUDE.md managed block
-and prints the `claude mcp add` command to register the HTTP MCP server — it
-does **not** write into `~/.claude/settings.json`.
+For Claude Code policy (`--claude`) the binary only writes the CLAUDE.md managed
+block (plus the `.omc/AGENTS.md` guard when `.omc/` exists) and prints the paths
+it wrote. It does **not** register the MCP server and does **not** write into
+`~/.claude/settings.json` — register the server yourself as a separate step:
+
+```bash
+claude mcp add --transport http daruma http://localhost:8080/v1/mcp
+# authenticated deployment:
+claude mcp add --transport http daruma https://<host>/v1/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+Bare `daruma` (no subcommand) prints this command ready to paste, filled in
+from `~/.agents/daruma/credentials.json`. For the stdio transport use
+`claude mcp add daruma -- daruma mcp` instead.
 
 | IDE / Agent | Config path | Install command |
 |---|---|---|
 | **Cursor** | `~/.cursor/mcp.json` | `daruma install --cursor` |
 | **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | `daruma install --windsurf` |
 | **Codex** | `AGENTS.md` policy | `daruma install --codex` |
-| **Claude Code** | CLAUDE.md policy + `claude mcp add` | `daruma install --claude` |
+| **Claude Code** | CLAUDE.md policy; MCP via `claude mcp add` (manual) | `daruma install --claude`, then `claude mcp add …` |
 | **Manual** | any MCP host | see §Manual MCP entry below |
 
 #### Manual MCP entry (HTTP transport)
