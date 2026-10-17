@@ -3028,6 +3028,46 @@ async fn sibling_plan_evidence_does_not_satisfy_another_plans_rule() {
         .expect("evidence on the rule's own plan satisfies it");
 }
 
+/// Spec §1.3 satisfaction walks run→task→plan: evidence recorded at the plan
+/// counts for a member's direct transition even when the rule itself is
+/// project-scoped. Regression for 5d63496, where the evidence check got the
+/// plan-less chain and a Plan-reach `impact_assessment` cut it down to the
+/// task alone. A task of the same project outside the plan still blocks.
+#[tokio::test]
+async fn plan_scope_evidence_satisfies_a_project_rule_for_direct_member_start() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let plan = create_plan(&stack, project).await;
+    let mut rule = impact_check_rule();
+    rule.scope = RuleScope::Project { id: project };
+    install(&stack, rule).await;
+
+    let member = create_project_task(&stack, project, "Member").await;
+    attach(&stack, plan, member).await;
+    let outsider = create_project_task(&stack, project, "Outsider").await;
+
+    let err = set_in_progress(&stack, member, false)
+        .await
+        .expect_err("no evidence yet");
+    assert!(is_blocked(&err, "auth-impact-check"), "got: {err}");
+
+    let mut evidence = new_evidence(
+        EvidenceKind::ImpactAssessment,
+        RuleScope::Plan { id: plan },
+        Some("auth-module"),
+    );
+    evidence.payload = serde_json::json!({"risk_level": "low"});
+    record_evidence(&stack, evidence).await;
+
+    set_in_progress(&stack, member, false)
+        .await
+        .expect("plan-scope evidence satisfies the member's direct start");
+    let err = set_in_progress(&stack, outsider, false)
+        .await
+        .expect_err("plan evidence must not reach a task outside the plan");
+    assert!(is_blocked(&err, "auth-impact-check"), "got: {err}");
+}
+
 /// `RunCompleted` carries only the run id; the gate resolves the run's plan
 /// (and its ancestors) so a plan-scoped `run.before_complete` rule applies.
 #[tokio::test]
