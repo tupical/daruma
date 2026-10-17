@@ -1332,12 +1332,13 @@ impl CommandHandler {
         Ok(swept)
     }
 
-    /// Route freshly persisted events into the project's auto-created
-    /// `Interview` (agent activity) / `Human Log` (human milestones)
-    /// documents, honoring the per-project [`AutoAppendSettings`] toggles
-    /// (ON by default). Best-effort: failures are logged, never propagated,
-    /// so observability cannot break a command. Document and settings
-    /// events themselves are excluded to prevent recursion.
+    /// Route freshly persisted events into the project's `Interview` (agent
+    /// activity) / `Human Log` (human milestones) documents, when they
+    /// exist (`CreateProject` no longer seeds them), honoring the
+    /// per-project [`AutoAppendSettings`] toggles (ON by default).
+    /// Best-effort: failures are logged, never propagated, so
+    /// observability cannot break a command. Document and settings events
+    /// themselves are excluded to prevent recursion.
     ///
     /// [`AutoAppendSettings`]: daruma_domain::AutoAppendSettings
     async fn auto_append_logs(&self, persisted: &[EventEnvelope]) {
@@ -1365,7 +1366,7 @@ impl CommandHandler {
                 .list_by_project(project_id, Some(kind), false)
                 .await
             {
-                // The auto-created log is the oldest doc of its kind.
+                // The log is the oldest non-archived doc of its kind.
                 Ok(docs) => docs.into_iter().next(),
                 Err(e) => {
                     tracing::warn!(err = %e, "auto-append: document lookup failed");

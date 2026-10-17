@@ -1317,3 +1317,62 @@ async fn sweep_archives_legacy_documents_without_a_task() {
         daruma_domain::DocumentStatus::Archived
     );
 }
+
+// ── Auto-append target (docs/guides/documents-auto-append.md) ──────────────
+
+/// Auto-append only writes into a log document that already exists: a bare
+/// project logs nothing, the oldest non-archived doc of the kind receives
+/// every line, and archiving it (anchor cancelled) moves appends to the
+/// next-oldest one.
+#[tokio::test]
+async fn auto_append_targets_oldest_existing_log_doc() {
+    use daruma_domain::Status;
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+
+    // No Human Log yet: a user task creation must not create or fill one.
+    create_task(&handler, project_id, "before any log").await;
+    assert!(documents
+        .list_by_project(project_id, Some(DocumentKind::HumanLog), true)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let first_anchor = create_task(&handler, project_id, "first anchor").await;
+    let first = create_doc_for_task(
+        &handler,
+        project_id,
+        DocumentKind::HumanLog,
+        "A",
+        first_anchor,
+    )
+    .await;
+    let second = create_doc(&handler, project_id, DocumentKind::HumanLog, "B").await;
+    create_task(&handler, project_id, "probe").await;
+
+    let content = |id| {
+        let documents = documents.clone();
+        async move { documents.get(id).await.unwrap().unwrap().content }
+    };
+    let first_body = content(first).await;
+    assert!(!first_body.contains("before any log"), "{first_body}");
+    assert!(first_body.contains("Created task 'probe'"), "{first_body}");
+    assert!(content(second).await.is_empty());
+
+    handler
+        .handle(
+            Command::BulkSetStatus {
+                ids: vec![first_anchor],
+                status: Status::Cancelled,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    create_task(&handler, project_id, "after archive").await;
+
+    assert!(!content(first).await.contains("after archive"));
+    assert!(content(second)
+        .await
+        .contains("Created task 'after archive'"));
+}
