@@ -261,10 +261,11 @@ async fn post_pair_pinned(
 
     // Build a minimal HTTP/1.1 POST request by hand — avoids pulling in a
     // second HTTP client stack just for this one call.
-    let body_bytes = serde_json::to_vec(&serde_json::json!({
-        "token": token,
-        "device_label": hostname_label(),
-    }))?;
+    let body_bytes = serde_json::to_vec(&pair_request_body(
+        token,
+        expected_sha256_hex,
+        &hostname_label(),
+    ))?;
     let request = format!(
         "POST /v1/devices/pair HTTP/1.1\r\n\
          Host: {host}\r\n\
@@ -304,6 +305,21 @@ async fn post_pair_pinned(
     let pair_resp: PairResponse =
         serde_json::from_str(body).context("parse pairing response JSON")?;
     Ok(pair_resp)
+}
+
+/// JSON body of `POST /v1/devices/pair`.
+///
+/// `tls_fingerprint` is the digest of the leaf certificate observed in the
+/// handshake. [`FingerprintVerifier`] aborts the handshake unless that digest
+/// equals the pinned one, so by the time this body is sent the observed and
+/// pinned fingerprints are the same value; the server checks it again
+/// against the certificate it issued the ticket for.
+fn pair_request_body(token: &str, observed_sha256_hex: &str, label: &str) -> serde_json::Value {
+    serde_json::json!({
+        "token": token,
+        "tls_fingerprint": format!("sha256:{}", observed_sha256_hex.to_ascii_lowercase()),
+        "device_label": label,
+    })
 }
 
 /// Parse `"host:port"` or `"host"` (defaulting to port 8443).
@@ -546,6 +562,14 @@ mod tests {
     fn parse_pairing_url_missing_token() {
         let url = "daruma://pair?host=x%3A8443&fpr=sha256%3Aabc";
         assert!(parse_pairing_url(url).is_err());
+    }
+
+    #[test]
+    fn pair_request_body_sends_observed_fingerprint_with_one_prefix() {
+        let body = pair_request_body("tok", "ABCDEF", "laptop");
+        assert_eq!(body["token"], "tok");
+        assert_eq!(body["tls_fingerprint"], "sha256:abcdef");
+        assert_eq!(body["device_label"], "laptop");
     }
 
     #[test]

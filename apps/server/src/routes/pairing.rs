@@ -34,7 +34,8 @@ pub struct PairRequest {
     /// The single-use token from the `daruma://pair?token=…` URL.
     pub token: String,
     /// The TLS fingerprint the client observed while connecting, e.g.
-    /// `"sha256:ab12cd…"`.  Must match the server's actual certificate.
+    /// `"sha256:ab12cd…"` (bare hex is accepted too).  Must match the
+    /// server's actual certificate.
     pub tls_fingerprint: String,
     /// Optional human-readable device label (e.g. "Alice's MacBook").
     #[serde(default)]
@@ -88,12 +89,10 @@ pub async fn pair_device(
             ))
         })?;
 
-    // 3. Verify TLS fingerprint (the client must prefix it with "sha256:").
-    let expected = format!(
-        "sha256:{}",
-        ticket.tls_fingerprint.trim_start_matches("sha256:")
-    );
-    let provided = claimed_fpr.to_string();
+    // 3. Verify TLS fingerprint. Both sides are normalised to bare lowercase
+    //    hex, so `sha256:<hex>` (the documented form) and bare `<hex>` match.
+    let expected = normalize_fingerprint(&ticket.tls_fingerprint);
+    let provided = normalize_fingerprint(claimed_fpr);
     if !constant_eq_str(&expected, &provided) {
         tracing::warn!(
             device_label = body.device_label.as_deref().unwrap_or("<none>"),
@@ -167,7 +166,7 @@ pub async fn issue_pairing_ticket(
         .pairing
         .issue(
             state.tls_host.clone(),
-            format!("sha256:{}", state.tls_fingerprint),
+            format!("sha256:{}", normalize_fingerprint(&state.tls_fingerprint)),
         )
         .await;
 
@@ -181,12 +180,24 @@ pub async fn issue_pairing_ticket(
         "expires_at": ticket.expires_at,
         "qr_png_base64": base64_encode(&qr_png),
         "host": ticket.host,
-        "tls_fingerprint": format!("sha256:{}", ticket.tls_fingerprint),
+        // Already `sha256:<hex>` — the same value the pairing URL carries.
+        "tls_fingerprint": ticket.tls_fingerprint,
     });
     Ok(Json(response))
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Reduce a TLS fingerprint to bare lowercase hex: trims whitespace and one
+/// optional `sha256:` prefix (any case).
+fn normalize_fingerprint(raw: &str) -> String {
+    let raw = raw.trim();
+    let hex = match raw.get(..7) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("sha256:") => &raw[7..],
+        _ => raw,
+    };
+    hex.to_ascii_lowercase()
+}
 
 /// Constant-time string equality via XOR folding.
 fn constant_eq_str(a: &str, b: &str) -> bool {
@@ -204,4 +215,18 @@ fn constant_eq_str(a: &str, b: &str) -> bool {
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_fingerprint;
+
+    #[test]
+    fn normalize_fingerprint_strips_one_prefix_and_lowercases() {
+        assert_eq!(normalize_fingerprint("sha256:ABcd"), "abcd");
+        assert_eq!(normalize_fingerprint("  SHA256:abcd "), "abcd");
+        assert_eq!(normalize_fingerprint("abcd"), "abcd");
+        // Only one prefix is removed: a double prefix never equals the digest.
+        assert_eq!(normalize_fingerprint("sha256:sha256:ab"), "sha256:ab");
+    }
 }
