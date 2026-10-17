@@ -651,7 +651,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_plan_next_task",
             "Peek next eligible plan task",
             "Return the first eligible task in a plan for a given run, respecting dependencies. May acquire a claim when `claim_ttl_secs` is set — prefer `daruma_plan_drain_next` for parallel agents.",
-            schema_plan_next_task(),
+            with_id_alias(schema_plan_next_task(), "id", "plan_id"),
             Dom::Plans, F, E, Ann::Write,
         ),
         tool(
@@ -4173,7 +4173,7 @@ fn schema_plan_next_task() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "id":             {"type":"string","description":"Plan id (`plan_id` accepted as alias)"},
+            "id":             {"type":"string","description":"Plan id"},
             "run_id":         {"type":"string","description":"Run UUID; omit for a server-generated id."},
             "claim_ttl_secs": {"type":"integer","minimum":0}
         },
