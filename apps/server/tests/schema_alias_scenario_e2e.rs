@@ -155,6 +155,31 @@ async fn agent_works_a_task_with_the_aliases_tools_list_advertises() {
             .clone()
     };
 
+    // Task 01a14ae6: daruma_plan_next_task (full profile) lists `plan_id`
+    // beside `id`, so a schema-validating client peeks with the alias and
+    // no claim is taken.
+    let (full, trace) = admin.rpc("tools/list", json!({})).await;
+    println!("TRACE tools/list profile=full request_id={trace}");
+    let schema = &full["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "daruma_plan_next_task")
+        .expect("daruma_plan_next_task in full tools/list")["inputSchema"];
+    assert_eq!(
+        schema["properties"]["plan_id"]["type"], "string",
+        "{schema}"
+    );
+    assert!(schema["required"].is_null(), "{schema}");
+    let peeked = admin
+        .ok("daruma_plan_next_task", json!({ "plan_id": plan_id }))
+        .await;
+    assert_eq!(peeked["task_id"], task_id.as_str(), "peek: {peeked}");
+    assert!(
+        peeked["claim_expires_at"].is_null(),
+        "peek claims: {peeked}"
+    );
+
     let drained = agent
         .ok(
             "daruma_plan_drain_next",
