@@ -21,7 +21,7 @@ files for the client live under a single directory:
 | `DARUMA_PROJECT_ID` | Overrides the server-side scope binding for this session. |
 | `DARUMA_AGENT_DIR` | Override agent data root (default `~/.agents/daruma`). |
 | `DARUMA_WORKSPACES_FILE` | Override path of the legacy `workspaces.json` imported on startup (see [Migration](#migration)). |
-| `DARUMA_API_URL` / `DARUMA_TOKEN` | Remote server (see [ai-agent.md](ai-agent.md)). When unset, `daruma mcp` reads the active profile from `credentials.json`. |
+| `DARUMA_API_URL` / `DARUMA_TOKEN` | Remote server (see [ai-agent.md](ai-agent.md)). `daruma mcp --api-url … --token …` overrides both. Without a token, `daruma mcp` reads the active profile from `credentials.json`; an explicit URL still replaces the profile's `server_url`. |
 | `DARUMA_WORKSPACE_ID` | Optional workspace UUID sent as `X-Daruma-Workspace-Id`. If unset, uses `workspace_id` from the active profile in `credentials.json`, or a UUID-valued `DARUMA_WORKSPACE`. |
 
 Server SQLite and bootstrap tokens live under **`~/.agents/daruma/data/`**
