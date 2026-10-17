@@ -2831,6 +2831,170 @@ async fn plan_level_off_weakens_an_overridable_tenant_rule_for_members() {
     assert!(is_blocked(&err, "shared-read"), "got: {err}");
 }
 
+async fn create_project(stack: &Stack) -> ProjectId {
+    let envs = stack
+        .handler
+        .handle(
+            Command::CreateProject {
+                title: "P".into(),
+                description: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("create project");
+    match &envs[0].payload {
+        Event::ProjectCreated { project } => project.id,
+        other => panic!("expected ProjectCreated, got {other:?}"),
+    }
+}
+
+async fn create_project_task(stack: &Stack, project: ProjectId, title: &str) -> TaskId {
+    let mut new_task = daruma_domain::NewTask::new(title);
+    new_task.project_id = Some(project);
+    let envs = stack
+        .handler
+        .handle(Command::CreateTask { task: new_task }, Actor::user())
+        .await
+        .expect("create project task");
+    match &envs[0].payload {
+        Event::TaskCreated { task } => task.id.unwrap(),
+        other => panic!("expected TaskCreated, got {other:?}"),
+    }
+}
+
+/// Spec §2.3, `required → recommendation`: a plan-level weakening of an
+/// overridable *project* requirement replaces it for members — they get the
+/// plan's warning, not the parent's block. Regression for the 5d63496 union,
+/// where a plan-less chain kept the stale project requirement next to the
+/// plan override. Tasks of the same project outside the plan still block.
+#[tokio::test]
+async fn plan_recommendation_weakens_an_overridable_project_requirement_for_members() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let plan = create_plan(&stack, project).await;
+    let mut parent = design_read_rule(
+        "project-read",
+        RuleScope::Project { id: project },
+        RuleTrigger::TaskBeforeStart,
+    );
+    parent.override_allowed = true;
+    install(&stack, parent).await;
+    let mut weakened = design_read_rule(
+        "project-read",
+        RuleScope::Plan { id: plan },
+        RuleTrigger::TaskBeforeStart,
+    );
+    weakened.mode = RuleMode::Recommendation;
+    install(&stack, weakened).await;
+
+    let member = create_project_task(&stack, project, "Member").await;
+    attach(&stack, plan, member).await;
+    let outsider = create_project_task(&stack, project, "Outsider").await;
+
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: member,
+                status: Status::InProgress,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("plan recommendation replaces the overridable project requirement");
+    let codes: Vec<&str> = outcome.warnings.iter().map(|w| w.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        ["rule_warning:project-read"],
+        "one plan-level warning"
+    );
+    assert_eq!(
+        stack
+            .handler
+            .tasks
+            .get(member)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        Status::InProgress
+    );
+
+    let err = set_in_progress(&stack, outsider, false)
+        .await
+        .expect_err("a project task outside the plan still sees the requirement");
+    assert!(is_blocked(&err, "project-read"), "got: {err}");
+}
+
+/// Spec §2.3: weakening is only honoured when the parent allows override. A
+/// plan-level `off` under a non-overridable project requirement is ignored, so
+/// the member stays blocked by the parent rule.
+#[tokio::test]
+async fn plan_weakening_is_ignored_when_the_parent_requirement_forbids_override() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        design_read_rule(
+            "locked-read",
+            RuleScope::Project { id: project },
+            RuleTrigger::TaskBeforeStart,
+        ),
+    )
+    .await;
+    let mut off = design_read_rule(
+        "locked-read",
+        RuleScope::Plan { id: plan },
+        RuleTrigger::TaskBeforeStart,
+    );
+    off.mode = RuleMode::Off;
+    install(&stack, off).await;
+
+    let member = create_project_task(&stack, project, "Member").await;
+    attach(&stack, plan, member).await;
+
+    let err = set_in_progress(&stack, member, false)
+        .await
+        .expect_err("a non-overridable parent requirement survives plan weakening");
+    assert!(is_blocked(&err, "locked-read"), "got: {err}");
+}
+
+/// The plan level of a chain is the plan ancestry: a weakening on a parent
+/// plan drops the overridable parent requirement for members of a child plan.
+#[tokio::test]
+async fn parent_plan_weakening_drops_the_requirement_for_child_plan_members() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let parent_plan = create_plan(&stack, project).await;
+    let child_plan = create_child_plan(&stack, project, parent_plan).await;
+    let mut parent = design_read_rule(
+        "inherited-read",
+        RuleScope::Project { id: project },
+        RuleTrigger::TaskBeforeStart,
+    );
+    parent.override_allowed = true;
+    install(&stack, parent).await;
+    let mut off = design_read_rule(
+        "inherited-read",
+        RuleScope::Plan { id: parent_plan },
+        RuleTrigger::TaskBeforeStart,
+    );
+    off.mode = RuleMode::Off;
+    install(&stack, off).await;
+
+    let member = create_project_task(&stack, project, "Child member").await;
+    attach(&stack, child_plan, member).await;
+
+    set_in_progress(&stack, member, false)
+        .await
+        .expect("parent-plan weakening reaches child-plan members");
+}
+
 /// Each membership is its own chain: evidence on a sibling plan cannot
 /// satisfy another plan's rule; evidence on the rule's own plan can.
 #[tokio::test]
