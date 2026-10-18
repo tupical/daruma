@@ -5362,10 +5362,18 @@ const PROSE_ELLIPSIS: &str = "… [truncated]";
 /// (nothing trimmable), the full object is returned **unmarked and over
 /// budget**: protected fields win, and there is no truncation to mark. Budget
 /// is therefore best-effort. See `docs/mcp/TOKEN-ECONOMY.md`.
-fn bounded_excerpt(mut value: Value, budget_bytes: u64, pointer: &str, what: &str) -> Value {
+///
+/// Also returns whether content was actually withheld (`true` exactly when the
+/// `truncation` marker was attached) — session dedup must not record an excerpt.
+fn bounded_excerpt_flagged(
+    mut value: Value,
+    budget_bytes: u64,
+    pointer: &str,
+    what: &str,
+) -> (Value, bool) {
     let full = json_bytes(&value);
     if full <= budget_bytes {
-        return value;
+        return (value, false);
     }
     // Leave room for the marker we will append so the final response fits.
     let content_budget = budget_bytes.saturating_sub(EXCERPT_MARKER_RESERVE_BYTES);
@@ -5386,25 +5394,41 @@ fn bounded_excerpt(mut value: Value, budget_bytes: u64, pointer: &str, what: &st
     let excerpt = json_bytes(&value);
     if excerpt >= full {
         // Nothing could be trimmed — no truncation to mark.
-        return value;
+        return (value, false);
     }
     let remaining = full - excerpt;
     let marker = TruncationMarker::for_object_excerpt(pointer, remaining, what).to_value();
     if let Value::Object(map) = &mut value {
         map.insert("truncation".to_string(), marker);
     }
-    value
+    (value, true)
+}
+
+/// [`bounded_excerpt_flagged`] without the flag.
+#[cfg(test)]
+fn bounded_excerpt(value: Value, budget_bytes: u64, pointer: &str, what: &str) -> Value {
+    bounded_excerpt_flagged(value, budget_bytes, pointer, what).0
 }
 
 /// If the caller passed a positive `max_tokens`, return a bounded excerpt;
 /// otherwise return the full object unchanged (legacy behaviour).
 fn maybe_bounded(value: Value, args: &Map<String, Value>, pointer: &str, what: &str) -> Value {
+    maybe_bounded_flagged(value, args, pointer, what).0
+}
+
+/// [`maybe_bounded`] plus whether the emitted response is only an excerpt.
+fn maybe_bounded_flagged(
+    value: Value,
+    args: &Map<String, Value>,
+    pointer: &str,
+    what: &str,
+) -> (Value, bool) {
     match args.get("max_tokens").and_then(Value::as_u64) {
         Some(max_tokens) if max_tokens > 0 => {
             let budget = max_tokens.saturating_mul(BYTES_PER_TOKEN_ESTIMATE);
-            bounded_excerpt(value, budget, pointer, what)
+            bounded_excerpt_flagged(value, budget, pointer, what)
         }
-        _ => value,
+        _ => (value, false),
     }
 }
 
@@ -5468,10 +5492,12 @@ fn unchanged_marker(value: &Value, id: &str, since: &str) -> Value {
 /// Session dedup entry point (task D). Only engages when the caller opted in
 /// with `dedup: true` and the object carries an `updated_at`:
 ///
-/// * cache HIT (same `updated_at` already emitted this session) → return the
-///   compact `unchanged` marker;
-/// * cache MISS (new or changed) → record the current stamp and fall through to
-///   the normal full/bounded response.
+/// * cache HIT (same stamp already emitted *in full* this session) → return
+///   the compact `unchanged` marker;
+/// * cache MISS (new, changed, or previously only excerpted) → emit the normal
+///   full/bounded response, and record the stamp only when that response is
+///   the complete object. A `max_tokens` excerpt is never recorded: the caller
+///   did not receive the full text, so a later read must not claim it did.
 ///
 /// Without opt-in (or without an `updated_at`) this is exactly `maybe_bounded`.
 fn maybe_dedup(
@@ -5482,14 +5508,17 @@ fn maybe_dedup(
     what: &str,
     updated_at: Option<&str>,
 ) -> Value {
-    if dedup_requested(args) {
-        if let Some(stamp) = updated_at {
-            if let Some(since) = client.dedup_probe(id, stamp) {
-                return unchanged_marker(&value, id, &since);
-            }
+    let stamp = updated_at.filter(|_| dedup_requested(args));
+    if let Some(stamp) = stamp {
+        if let Some(since) = client.dedup_lookup(id, stamp) {
+            return unchanged_marker(&value, id, &since);
         }
     }
-    maybe_bounded(value, args, id, what)
+    let (out, truncated) = maybe_bounded_flagged(value, args, id, what);
+    if let (Some(stamp), false) = (stamp, truncated) {
+        client.dedup_record(id, stamp);
+    }
+    out
 }
 
 /// Mutable reference to the longest prose-keyed string anywhere in the tree,
@@ -6924,6 +6953,93 @@ mod tests {
         let second = maybe_dedup(&client, value.clone(), &args, "tsk_1", "task", None);
         assert_eq!(first, value);
         assert_eq!(second, value);
+    }
+
+    #[test]
+    fn maybe_dedup_excerpt_is_not_recorded_as_received() {
+        // Regression: a `max_tokens` excerpt used to record the stamp before
+        // truncation, so the next `dedup` read answered `unchanged` even though
+        // the session never got the full description.
+        let client = dedup_client();
+        let value = task_with_long_description(4000);
+        let stamp = "2026-01-01T00:00:00Z";
+        let bounded_args = json!({"id":"tsk_1","dedup":true,"max_tokens":200})
+            .as_object()
+            .unwrap()
+            .clone();
+        let excerpt = maybe_dedup(
+            &client,
+            value.clone(),
+            &bounded_args,
+            "tsk_1",
+            "task description",
+            Some(stamp),
+        );
+        assert!(
+            excerpt.get("truncation").is_some(),
+            "first read is an excerpt"
+        );
+
+        // Same version again: still a (bounded) payload, never `unchanged`.
+        let again = maybe_dedup(
+            &client,
+            value.clone(),
+            &bounded_args,
+            "tsk_1",
+            "task description",
+            Some(stamp),
+        );
+        assert!(again.get("unchanged").is_none(), "excerpt is not delivery");
+        assert!(again.get("truncation").is_some());
+
+        // An unbounded dedup read is a miss and returns the full object…
+        let full_args = json!({"id":"tsk_1","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let full = maybe_dedup(
+            &client,
+            value.clone(),
+            &full_args,
+            "tsk_1",
+            "task description",
+            Some(stamp),
+        );
+        assert_eq!(full, value, "full object after only excerpts were seen");
+        // …and only now is the session credited with the full text.
+        let marker = maybe_dedup(
+            &client,
+            value.clone(),
+            &bounded_args,
+            "tsk_1",
+            "task description",
+            Some(stamp),
+        );
+        assert_eq!(marker["unchanged"], true);
+        assert_eq!(marker["ref"], "tsk_1");
+    }
+
+    #[test]
+    fn maybe_dedup_untrimmed_bounded_read_counts_as_full_delivery() {
+        // A `max_tokens` read whose object already fits (no `truncation`
+        // marker) delivered everything, so it is recorded like a full read.
+        let client = dedup_client();
+        let value = json!({
+            "id": "tsk_1",
+            "status": "todo",
+            "priority": "p2",
+            "description": "short",
+            "updated_at": "2026-01-01T00:00:00Z",
+        });
+        let args = json!({"id":"tsk_1","dedup":true,"max_tokens":500})
+            .as_object()
+            .unwrap()
+            .clone();
+        let stamp = Some("2026-01-01T00:00:00Z");
+        let first = maybe_dedup(&client, value.clone(), &args, "tsk_1", "task", stamp);
+        assert_eq!(first, value);
+        let second = maybe_dedup(&client, value.clone(), &args, "tsk_1", "task", stamp);
+        assert_eq!(second["unchanged"], true);
     }
 
     #[test]

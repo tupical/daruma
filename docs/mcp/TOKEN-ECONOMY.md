@@ -113,6 +113,16 @@ marker instead of the whole payload:
   the no-compress contract) are still carried so a client can act on lifecycle
   state without hydrating.
 
+### Excerpts are not "received"
+
+Only a **complete** payload counts as handed over. When the same read also
+passes `max_tokens` and the object had to be trimmed (the response carries a
+`truncation` marker), the session is *not* credited with that version: the
+next `dedup: true` read of the unchanged object returns a payload again (full,
+or another bounded excerpt if `max_tokens` is still set), never `unchanged`.
+A bounded read whose object already fit the budget (no `truncation` marker)
+delivered everything and is recorded like a full read.
+
 ### Why it is opt-in
 
 Dedup is **off unless the client passes `dedup: true`**. Existing clients
@@ -128,7 +138,7 @@ who does not ask keeps today's behaviour byte-for-byte. Progress view
 The only signal is `updated_at`. Every task/plan mutation bumps it through the
 event pipeline, so a matching stamp is a correct-by-construction "nothing
 changed" — no payload hashing, no event subscription. The cache lives on the
-`ApiClient` (`crates/mcp/src/client.rs`, `dedup_probe`), whose lifetime *is* the
+`ApiClient` (`crates/mcp/src/client.rs`, `dedup_lookup` / `dedup_record`), whose lifetime *is* the
 MCP session: one stdio process = one client = one session, so — unlike a
 cross-session cache — the server only ever refers you back to content **this
 session already saw**. There is no blind-spot where `ref` points at content the
