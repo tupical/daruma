@@ -327,3 +327,113 @@ test("start spawns the same `daruma mcp` launcher doctor probes", { skip: proces
     assert.match(lines.join(""), new RegExp(`starting ${bin} mcp`));
   });
 });
+
+function cancellationHarness({ graceMs = 60_000 } = {}) {
+  const lines = [];
+  const events = [];
+  const cancel = _internal.createCancellation({
+    write: (s) => lines.push(s),
+    stop: async () => { events.push("stop"); },
+    exit: (code) => { events.push(`exit:${code}`); },
+    graceMs,
+  });
+  return { cancel, lines, events };
+}
+
+test("SIGINT with no omc team running closes MCP and exits 130 at once", async () => {
+  const { cancel, events } = cancellationHarness();
+  await cancel.onSignal();
+  assert.deepEqual(events, ["stop", "exit:130"]);
+  assert.equal(cancel.signal.aborted, true);
+});
+
+test("SIGINT with omc team running aborts it and waits instead of exiting", async () => {
+  const { cancel, lines, events } = cancellationHarness();
+  let finish;
+  cancel.teams.add("team-a");
+  cancel.track(new Promise((resolve) => { finish = resolve; }));
+  cancel.onSignal();
+  assert.equal(cancel.signal.aborted, true);
+  assert.equal(cancel.interrupted, true);
+  assert.deepEqual(events, []);
+  assert.match(lines.join(""), /stopping omc team team-a/);
+  finish();
+  cancel.dispose();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events, []);
+});
+
+test("second SIGINT or grace timeout exits and names the team to shut down", async () => {
+  const twice = cancellationHarness();
+  twice.cancel.teams.add("team-a");
+  twice.cancel.track(new Promise(() => {}));
+  twice.cancel.onSignal();
+  await twice.cancel.onSignal();
+  assert.deepEqual(twice.events, ["stop", "exit:130"]);
+  assert.match(twice.lines.join(""), /omc team shutdown team-a/);
+
+  const slow = cancellationHarness({ graceMs: 5 });
+  slow.cancel.teams.add("team-b");
+  slow.cancel.track(new Promise(() => {}));
+  slow.cancel.onSignal();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(slow.events, ["stop", "exit:130"]);
+  assert.match(slow.lines.join(""), /did not stop within .*omc team shutdown team-b/);
+});
+
+test("cancelled execution records a cancelled blocker and never retries", async () => {
+  const mcp = mockMcp();
+  const { cancel } = cancellationHarness();
+  let executions = 0;
+  const outcome = await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", title: "Task" }, maxRetries: 2,
+    stdout: { write() {}, isTTY: false }, write() {}, cancel,
+    async execute({ cancel: received }) {
+      executions++;
+      assert.equal(received, cancel);
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      throw new Error("omc team poll aborted");
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, "cancelled");
+  assert.equal(executions, 1);
+  assert(!mcp.calls.some((call) => call.name === "daruma_complete"));
+  assert(mcp.calls.some((call) => call.name === "daruma_comment" && call.args.kind === "blocker" && /cancelled by the operator/.test(call.args.body)));
+});
+
+test("cancelled plan run releases the claim and aborts the run as cancelled", async () => {
+  const mcp = mockMcp({ drains: [{ task_id: "a" }, { task_id: "b" }] });
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.runPlanLoop({
+    mcp, plan: { id: "plan", status: "active" }, cwd: "/tmp", write() {}, stdout: {}, maxRetries: 2, cancel,
+    executeTask: (args) => _internal.executeTaskWithRetries({ ...args, async execute() {
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      throw new Error("omc team poll aborted");
+    } }),
+  });
+  cancel.dispose();
+  assert.equal(outcome.reason, "cancelled");
+  assert(mcp.calls.some((call) => call.name === "daruma_release" && call.args.task_id === "a"));
+  assert(mcp.calls.some((call) => call.name === "daruma_run_abort" && call.args.reason === "cancelled"));
+  assert(!mcp.calls.some((call) => call.name === "daruma_get" && call.args.id === "b"));
+});
+
+test("Ctrl-C typed into the TTY prompt reaches the process SIGINT handler", async () => {
+  const { PassThrough } = await import("node:stream");
+  const prompt = _internal.makePrompt(new PassThrough(), new PassThrough());
+  let received = 0;
+  const handler = () => { received++; };
+  process.on("SIGINT", handler);
+  try {
+    // readline emits this for ^C on a raw-mode terminal instead of a signal.
+    prompt.rl.emit("SIGINT");
+  } finally {
+    process.off("SIGINT", handler);
+    prompt.close();
+  }
+  assert.equal(received, 1);
+});

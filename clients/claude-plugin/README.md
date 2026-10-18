@@ -200,7 +200,7 @@ OPENAI_API_KEY=sk-... ./target/release/daruma-server
 
 - Single fixed role: `--agent` selects one role for all workers; mixed roles (`1:planner + 2:executor + 1:verifier`) are TODO.
 - Artifact capture from `omc team` relies on text summaries written as daruma comments — not yet structured.
-- No `daruma-claude cancel`. Use the `cancelomc` keyword or interrupt the shell.
+- No `daruma-claude cancel`. Press Ctrl-C in the `start` / `team-from-plan` terminal: daruma-claude runs `omc team shutdown` for the running team, waits up to 60 s for it to stop, records the attempt as a `cancelled` blocker (plan runs release the claim and abort the run), then exits with code 130. A second Ctrl-C exits at once; if the team did not stop, the message names it — finish with `omc team shutdown <team>`.
 - `daruma-claude doctor` only probes the shell it's run from. On a Windows host run it from inside WSL.
 - Plan-mode retries reset task status to `todo` and re-execute — they do **not** mutate the plan (no re-decomposition on repeated failure in v1).
 

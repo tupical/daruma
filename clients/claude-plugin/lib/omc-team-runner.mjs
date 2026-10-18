@@ -194,6 +194,20 @@ function summaryToCounts(response) {
 // indefinitely; better to abort early and surface diagnostics than hang.
 const ZERO_TASKS_TIMEOUT_MS = 90_000;
 
+// Poll pause that ends early on abort, so Ctrl-C does not wait out a full
+// interval before the team is shut down.
+function sleep(ms, abortSignal) {
+  return new Promise((resolve) => {
+    if (abortSignal?.aborted) return resolve();
+    const onAbort = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      abortSignal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 async function pollUntilDone({ teamName, cwd, pollIntervalMs, maxWaitMs, abortSignal, onProgress }) {
   const start = Date.now();
   let firstNonZeroTotalAt = null;
@@ -209,7 +223,7 @@ async function pollUntilDone({ teamName, cwd, pollIntervalMs, maxWaitMs, abortSi
     } catch (err) {
       // Treat individual API hiccups as transient and retry on next tick.
       onProgress?.({ kind: "api_error", message: err.message });
-      await new Promise((r) => setTimeout(r, pollIntervalMs));
+      await sleep(pollIntervalMs, abortSignal);
       continue;
     }
     const counts = summaryToCounts(summary);
@@ -233,7 +247,7 @@ async function pollUntilDone({ teamName, cwd, pollIntervalMs, maxWaitMs, abortSi
         `  ${stateDir}/workers/*/inbox.md — what the workers actually saw`
       );
     }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    await sleep(pollIntervalMs, abortSignal);
   }
 }
 
@@ -297,8 +311,22 @@ export async function runOmcTeam({
   onProgress = null,
 }) {
   if (!prompt || !prompt.trim()) throw new Error("runOmcTeam: prompt is required");
+  if (abortSignal?.aborted) throw new Error("omc team start aborted");
 
-  const startResult = await startTeam({ prompt, workers, agentType, cwd, stderrLog, onProgress });
+  const spawnStartMs = Date.now();
+  let startResult;
+  try {
+    startResult = await startTeam({ prompt, workers, agentType, cwd, stderrLog, onProgress });
+  } catch (err) {
+    // Ctrl-C reaches the `omc team` start child too and can kill it after the
+    // team state dir exists but before we learn the name. Shut down whatever
+    // team that start left behind, otherwise its workers keep running.
+    if (abortSignal?.aborted) {
+      const orphan = await resolveTeamNameFromStateDir({ cwd, prompt, spawnStartMs });
+      if (orphan) await shutdownTeam(orphan, cwd);
+    }
+    throw err;
+  }
   const teamName = startResult.teamName;
   onProgress?.({ kind: "started", teamName });
 
