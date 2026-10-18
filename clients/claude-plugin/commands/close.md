@@ -13,11 +13,11 @@ The user invoked `/daruma-claude:close [<task_id> ...] [--cancel] [--comment "<t
 
 ### With explicit task IDs
 
-1. For each `<task_id>` (short suffixes resolved via
-   `daruma_search query=<id> scope="tasks" limit=5`):
-   a. `daruma_get task_id=<id>` — confirm it exists and is not already closed.
+1. For each `<task_id>`, resolve it to a full id first (see
+   [Resolving a short id](#resolving-a-short-id)), then:
+   a. `daruma_get id=<id>` — confirm it exists and is not already closed.
    b. If `--comment` was given: `daruma_comment task_id=<id> body="<text>"`.
-   c. `daruma_complete task_id=<id>` (or `daruma_set_status … status=cancelled`
+   c. `daruma_complete id=<id>` (or `daruma_set_status id=<id> status=cancelled`
       if `--cancel`).
    d. Print: `✅ Closed <short_id>: <title>`
 
@@ -40,6 +40,20 @@ The user invoked `/daruma-claude:close [<task_id> ...] [--cancel] [--comment "<t
 
 5. Ask: `Which task(s) to close? Enter numbers, IDs, or "all". (ctrl-c to cancel)`
 6. Close the selected tasks as above.
+
+## Resolving a short id
+
+`daruma_search` matches title and description text only, never ids, so it
+cannot resolve a short id. A full id (a UUID) is used as-is. For anything
+shorter:
+
+1. `daruma_list status="in_progress,in_review" project_id=<id> limit=100`
+   (project from `daruma_workspace_info`).
+2. Keep the rows whose `id` ends with the given suffix (case-insensitive).
+3. Exactly one match → use its full `id`. No match → print
+   `No in-progress task ends with <suffix> — pass the full task id.` and skip
+   it. Several matches → list them as `<full id> — <title>`, ask which one, and
+   close nothing for that suffix until the user answers.
 
 ## Guard rails
 
