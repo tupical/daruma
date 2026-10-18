@@ -15,8 +15,14 @@ Show full details for that specific task.
    matches title and description text only, never ids:
    a. `daruma_list status="active" project_id=<id> limit=100` (project from
       `daruma_workspace_info`).
-   b. Keep the rows whose `id` ends with `<arg>` (case-insensitive).
-   c. Exactly one match → `daruma_get id=<full id> comments=true`. No match →
+   b. While the response has `has_more: true`, call the same list again with
+      `cursor=<next_cursor>` and collect every page. One page is not the whole
+      project: deciding "no match" or "exactly one match" from the first page
+      misses tasks past the first 100. If a page fails to load, decide nothing
+      and print `Could not read every open task — pass the full task id.`
+   c. Keep the rows whose `id` ends with `<arg>` (case-insensitive).
+   d. Only after the last page: exactly one match →
+      `daruma_get id=<full id> comments=true`. No match →
       print `No open task ends with <arg> — pass the full task id.` and stop.
       Several matches → list them as `<full id> — <title>` and ask which one;
       show nothing until the user answers.
