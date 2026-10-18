@@ -232,7 +232,7 @@ export async function detectDaruma() {
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
         : `credentials: none at ${credentialsLocationHint()} — set DARUMA_API_URL + DARUMA_TOKEN or save a local profile`,
       mcpEntry.present
-        ? `MCP shim registered (${mcpEntry.command}) but status: ${mcpEntry.connected ? "connected" : "disconnected"}`
+        ? `MCP shim registered (${mcpEntry.command}): ${mcpEntry.connected ? "connected" : "disconnected"}`
         : "MCP shim not registered. Add it:  claude mcp add daruma -- daruma mcp",
       launcher.ok
         ? `start launcher: ${launchLine} (${launcher.version})`
