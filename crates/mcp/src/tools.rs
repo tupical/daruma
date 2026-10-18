@@ -5362,12 +5362,9 @@ const PROSE_ELLIPSIS: &str = "… [truncated]";
 /// (nothing trimmable), the full object is returned **unmarked and over
 /// budget**: protected fields win, and there is no truncation to mark. Budget
 /// is therefore best-effort. See `docs/mcp/TOKEN-ECONOMY.md`.
-fn bounded_excerpt(value: Value, budget_bytes: u64, pointer: &str, what: &str) -> Value {
-    bounded_excerpt_flagged(value, budget_bytes, pointer, what).0
-}
-
-/// [`bounded_excerpt`] plus whether content was actually withheld (`true`
-/// exactly when the `truncation` marker was attached).
+///
+/// Also returns whether content was actually withheld (`true` exactly when the
+/// `truncation` marker was attached) — session dedup must not record an excerpt.
 fn bounded_excerpt_flagged(
     mut value: Value,
     budget_bytes: u64,
@@ -5405,6 +5402,12 @@ fn bounded_excerpt_flagged(
         map.insert("truncation".to_string(), marker);
     }
     (value, true)
+}
+
+/// [`bounded_excerpt_flagged`] without the flag.
+#[cfg(test)]
+fn bounded_excerpt(value: Value, budget_bytes: u64, pointer: &str, what: &str) -> Value {
+    bounded_excerpt_flagged(value, budget_bytes, pointer, what).0
 }
 
 /// If the caller passed a positive `max_tokens`, return a bounded excerpt;
