@@ -30,12 +30,78 @@ const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_ITERATION_BUDGET = 100;
 const DEFAULT_WORKERS = 3;
 const DEFAULT_AGENT_TYPE = "claude";
+const DEFAULT_CANCEL_GRACE_MS = 60_000;
+
+// Ctrl-C handling. With no omc team running there is nothing to stop: close
+// MCP and exit 130 as before. With a team in flight, abort it — runOmcTeam
+// then runs `omc team shutdown` — and let the orchestrator unwind on its own,
+// so the attempt is recorded as `cancelled`, claims are released and the run
+// is aborted. If the team does not stop within `graceMs`, or Ctrl-C is
+// pressed again, exit anyway and name the team for manual shutdown.
+function createCancellation({
+  write, stop, exit = (code) => process.exit(code), graceMs = DEFAULT_CANCEL_GRACE_MS,
+}) {
+  const controller = new AbortController();
+  const inflight = new Set();
+  const teams = new Set();
+  let graceTimer = null;
+  let exiting = false;
+
+  const leftoverHint = () => (teams.size
+    ? `; stop it with: ${[...teams].map((t) => `omc team shutdown ${t}`).join(" && ")}`
+    : "");
+  const stopAndExit = async () => {
+    if (exiting) return;
+    exiting = true;
+    clearTimeout(graceTimer);
+    try { await stop(); } catch { /* best-effort */ }
+    exit(130);
+  };
+
+  return {
+    signal: controller.signal,
+    get interrupted() { return controller.signal.aborted; },
+    teams,
+    track(promise) {
+      inflight.add(promise);
+      const forget = () => { inflight.delete(promise); };
+      promise.then(forget, forget);
+      return promise;
+    },
+    onSignal() {
+      if (controller.signal.aborted) {
+        write(`\n[daruma-claude] second SIGINT — exiting without waiting for omc team${leftoverHint()}`);
+        return stopAndExit();
+      }
+      controller.abort();
+      if (inflight.size === 0) {
+        write("\n[daruma-claude] SIGINT — shutting down");
+        return stopAndExit();
+      }
+      write(`\n[daruma-claude] SIGINT — stopping omc team ${[...teams].join(", ") || "(starting)"}; ` +
+        `waiting up to ${Math.round(graceMs / 1000)}s (Ctrl-C again to exit now)`);
+      graceTimer = setTimeout(() => {
+        write(`[daruma-claude] omc team did not stop within ${Math.round(graceMs / 1000)}s${leftoverHint()}`);
+        stopAndExit();
+      }, graceMs);
+      return undefined;
+    },
+    dispose() { clearTimeout(graceTimer); },
+  };
+}
 
 function makePrompt(input, output) {
   const rl = readline.createInterface({ input, output });
+  // On a TTY readline holds the terminal in raw mode, so Ctrl-C arrives as a
+  // keystroke, not a signal: by default readline just closes itself and the
+  // orchestrator keeps running. Route it to the process SIGINT path instead.
+  rl.on("SIGINT", () => {
+    if (process.listenerCount("SIGINT") > 0) process.emit("SIGINT", "SIGINT");
+    else process.kill(process.pid, "SIGINT");
+  });
   const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
   const close = () => rl.close();
-  return { ask, close };
+  return { ask, close, rl };
 }
 
 function startSpinner(stdout, initialLabel) {
@@ -244,7 +310,7 @@ function executePromptFor(task) {
 }
 
 async function executeOnce({
-  task, workers, agentType, cwd, stderrLog, stdout, write,
+  task, workers, agentType, cwd, stderrLog, stdout, write, cancel = null,
 }) {
   const prompt = executePromptFor(task);
   const sp = startSpinner(stdout, "omc team: starting");
@@ -255,19 +321,23 @@ async function executeOnce({
     (c.failed ? `, ${c.failed} failed` : "") +
     (c.pending ? `, ${c.pending} pending` : "");
 
+  let teamName = null;
   try {
-    return await runOmcTeam({
+    const run = runOmcTeam({
       prompt,
       workers,
       agentType,
       cwd,
       stderrLog,
+      abortSignal: cancel?.signal ?? null,
       onProgress: (e) => {
         if (e.kind === "stale_team_cleanup") {
           sp.setLabel(`omc team: cleaning up stale team "${e.staleTeam}"`);
           if (!stdout.isTTY) write(`[omc team] cleaning up stale team from previous run: ${e.staleTeam}`);
         }
         if (e.kind === "started") {
+          teamName = e.teamName;
+          cancel?.teams.add(teamName);
           sp.setLabel(`omc team [${e.teamName}]: initialising`);
           if (!stdout.isTTY) write(`[omc team started: ${e.teamName}]`);
         }
@@ -285,8 +355,11 @@ async function executeOnce({
         }
       },
     });
+    return await (cancel ? cancel.track(run) : run);
   } finally {
     sp.stop();
+    // runOmcTeam's own finally has already run `omc team shutdown`.
+    if (teamName) cancel?.teams.delete(teamName);
   }
 }
 
@@ -298,12 +371,17 @@ async function executeTaskWithRetries({
   execute = executeOnce,
   runId = null,
   budget = { remaining: DEFAULT_ITERATION_BUDGET, reason: null },
+  cancel = null,
 }) {
   if (!Number.isSafeInteger(maxRetries) || maxRetries < 0) throw new Error("maxRetries must be a nonnegative integer");
   let lastResult = null;
   let lastError = null;
   let attempts = 0;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    if (cancel?.interrupted) {
+      budget.reason ??= "cancelled";
+      break;
+    }
     const current = payload(await callOrThrow(mcp, "daruma_get", { id: task.id }));
     if (!current || current.id !== task.id || !["todo", "in_progress"].includes(current.status)) {
       budget.reason = "task_no_longer_active";
@@ -335,11 +413,12 @@ async function executeTaskWithRetries({
     attempts++;
     let result;
     try {
-      result = await execute({ task, workers, agentType, cwd, stderrLog, stdout, write });
+      result = await execute({ task, workers, agentType, cwd, stderrLog, stdout, write, cancel });
     } catch (error) {
-      budget.reason = "executor_error";
+      budget.reason = cancel?.interrupted ? "cancelled" : "executor_error";
       result = { ok: false, counts: {}, artifact: String(error), error: String(error) };
     }
+    if (cancel?.interrupted) budget.reason ??= "cancelled";
     lastResult = result;
     write(`[task ${task.id}] omc team result: ok=${result.ok} completed=${result.counts.completed} failed=${result.counts.failed}`);
 
@@ -387,7 +466,9 @@ async function executeTaskWithRetries({
   const reason = budget.reason ??= "retry_limit_exhausted";
   await callOrThrow(mcp, "daruma_comment", {
     task_id: task.id, kind: "blocker",
-    body: `Execution stopped: ${reason}; attempts=${attempts}. Human decision required before another run.`,
+    body: reason === "cancelled"
+      ? `Execution stopped: cancelled by the operator (Ctrl-C); attempts=${attempts}. omc team was asked to shut down.`
+      : `Execution stopped: ${reason}; attempts=${attempts}. Human decision required before another run.`,
   });
   return { ok: false, attempts, result: lastResult, reason };
 }
@@ -419,7 +500,7 @@ async function mapLimit(items, limit, fn) {
 
 async function executeClaimedPlanTask({
   mcp, planId, runId, expectedTaskId, maxRetries, workers, agentType, cwd,
-  stderrLog, stdout, write, branch, agentId, budget, executeTask = executeTaskWithRetries,
+  stderrLog, stdout, write, branch, agentId, budget, executeTask = executeTaskWithRetries, cancel = null,
 }) {
   if (budget?.reason) return { ok: false, skipped: true, taskId: expectedTaskId, reason: budget.reason };
   const drainResp = await callOrThrow(mcp, "daruma_plan_drain_next", {
@@ -447,6 +528,7 @@ async function executeClaimedPlanTask({
       completeOnSuccess: false,
       runId,
       budget,
+      cancel,
     });
 
     if (outcome.ok) {
@@ -476,7 +558,7 @@ async function executeClaimedPlanTask({
 
 async function runTeamFromPlanWaves({
   mcp, planId, waves, maxRetries, workers, agentType, cwd, stderrLog, stdout,
-  write, branch = null, agentId, executeTask = executeTaskWithRetries,
+  write, branch = null, agentId, executeTask = executeTaskWithRetries, cancel = null,
 }) {
   const runId = await startRun(mcp, planId, agentId);
   const budget = { remaining: DEFAULT_ITERATION_BUDGET, reason: null };
@@ -489,7 +571,7 @@ async function runTeamFromPlanWaves({
       write(`\n=== wave ${wave.wave}: ${taskIds.length} task(s) ===`);
       const outcomes = await mapLimit(taskIds, workers, (expectedTaskId) => executeClaimedPlanTask({
         mcp, planId, runId, expectedTaskId, maxRetries, workers, agentType, cwd,
-        stderrLog, stdout, write, branch, agentId, budget, executeTask,
+        stderrLog, stdout, write, branch, agentId, budget, executeTask, cancel,
       }));
       summaries.push(...outcomes);
       const failed = outcomes.filter((o) => !o.ok);
@@ -504,11 +586,12 @@ async function runTeamFromPlanWaves({
   }
 
   const failed = summaries.find((item) => !item.ok);
-  await callOrThrow(mcp, failed ? "daruma_run_abort" : "daruma_run_complete", {
-    run_id: runId, ...(failed ? { reason: failed.reason ?? "task_failed" } : {}),
+  const stopped = failed ?? (budget.reason === "cancelled" ? { reason: "cancelled" } : null);
+  await callOrThrow(mcp, stopped ? "daruma_run_abort" : "daruma_run_complete", {
+    run_id: runId, ...(stopped ? { reason: stopped.reason ?? "task_failed" } : {}),
   });
   const planResp = await mcp.callTool("daruma_plan_get", { id: planId });
-  return { runId, summaries, planState: payload(planResp) };
+  return { runId, summaries, planState: payload(planResp), reason: budget.reason };
 }
 
 async function startRun(mcp, planId, agentId) {
@@ -520,7 +603,7 @@ async function startRun(mcp, planId, agentId) {
 
 async function runPlanLoop({
   mcp, plan, maxRetries, workers, agentType, cwd, stderrLog, stdout, write, branch = null,
-  executeTask = executeTaskWithRetries,
+  executeTask = executeTaskWithRetries, cancel = null,
 }) {
   const ws = payload(await callOrThrow(mcp, "daruma_workspace_info", { scope_path: cwd }));
   const agentId = ws?.mcp_agent_id;
@@ -535,7 +618,7 @@ async function runPlanLoop({
     while (!budget.reason) {
       const outcome = await executeClaimedPlanTask({
         mcp, planId: plan.id, runId, maxRetries, workers, agentType, cwd,
-        stderrLog, stdout, write, branch, agentId, budget, executeTask,
+        stderrLog, stdout, write, branch, agentId, budget, executeTask, cancel,
       });
       if (outcome.skipped) break;
       summaries.push(outcome);
@@ -580,6 +663,7 @@ export async function runDarumaStart({
 
   const mcp = new MCPClient();
   let sigintHandler = null;
+  let cancel = null;
 
   try {
     const { darumaMcpChildEnv, darumaMcpLaunch } = await import("./detect.mjs");
@@ -597,11 +681,8 @@ export async function runDarumaStart({
     const branch = await currentGitBranch(cwd);
     if (branch) write(`[branch] ${branch}`);
 
-    sigintHandler = async () => {
-      write("\n[daruma-claude] SIGINT — shutting down");
-      try { await mcp.stop(); } catch { /* best-effort */ }
-      process.exit(130);
-    };
+    cancel = createCancellation({ write, stop: () => mcp.stop() });
+    sigintHandler = () => { cancel.onSignal(); };
     process.on("SIGINT", sigintHandler);
 
     // --- Phase 1: parse + confirm ---------------------------------------
@@ -634,12 +715,12 @@ export async function runDarumaStart({
     if (plan) {
       outcome = await runPlanLoop({
         mcp, plan, projectId: resolvedProjectId, maxRetries,
-        workers, agentType, cwd, stderrLog: teamStderrLog, stdout, write, branch,
+        workers, agentType, cwd, stderrLog: teamStderrLog, stdout, write, branch, cancel,
       });
     } else {
       const single = await executeTaskWithRetries({
         mcp, task: rootTask, maxRetries, workers, agentType, cwd,
-        stderrLog: teamStderrLog, stdout, write, branch,
+        stderrLog: teamStderrLog, stdout, write, branch, cancel,
       });
       outcome = { summaries: [{ taskId: rootTask.id, ...single }], planState: null };
     }
@@ -654,7 +735,9 @@ export async function runDarumaStart({
       write(`Plan ${p.id ?? plan?.id}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
     }
     write(`Root task: ${rootTask.id}`);
+    if (cancel.interrupted) write("Cancelled by SIGINT.");
     return {
+      ...(cancel.interrupted ? { cancelled: true } : {}),
       ok: failed === 0 && !outcome.reason,
       rootTaskId: rootTask.id,
       planId: plan?.id ?? null,
@@ -663,6 +746,7 @@ export async function runDarumaStart({
     };
   } finally {
     if (sigintHandler) process.off("SIGINT", sigintHandler);
+    cancel?.dispose();
     userPrompt.close();
     try { await mcp.stop(); } catch { /* server already gone */ }
   }
@@ -688,6 +772,7 @@ export async function runDarumaTeamFromPlan({
   const userPrompt = makePrompt(stdin, stdout);
   const mcp = new MCPClient();
   let sigintHandler = null;
+  let cancel = null;
 
   try {
     const { darumaMcpChildEnv, darumaMcpLaunch } = await import("./detect.mjs");
@@ -705,11 +790,8 @@ export async function runDarumaTeamFromPlan({
     const branch = await currentGitBranch(cwd);
     if (branch) write(`[branch] ${branch}`);
 
-    sigintHandler = async () => {
-      write("\n[daruma-claude] SIGINT — shutting down");
-      try { await mcp.stop(); } catch { /* best-effort */ }
-      process.exit(130);
-    };
+    cancel = createCancellation({ write, stop: () => mcp.stop() });
+    sigintHandler = () => { cancel.onSignal(); };
     process.on("SIGINT", sigintHandler);
 
     write(`\n=== Phase 1: Plan ===`);
@@ -740,7 +822,7 @@ export async function runDarumaTeamFromPlan({
     if (!agentId) throw new Error("daruma_workspace_info returned no mcp_agent_id; cannot release failed claims");
     const outcome = await runTeamFromPlanWaves({
       mcp, planId, waves, maxRetries, workers, agentType, cwd,
-      stderrLog: teamStderrLog, stdout, write, branch, agentId,
+      stderrLog: teamStderrLog, stdout, write, branch, agentId, cancel,
     });
 
     write(`\n=== Final ===`);
@@ -752,7 +834,9 @@ export async function runDarumaTeamFromPlan({
       const p = outcome.planState;
       write(`Plan ${p.id ?? planId}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
     }
+    if (cancel.interrupted) write("Cancelled by SIGINT.");
     return {
+      ...(cancel.interrupted ? { cancelled: true } : {}),
       ok: failed === 0 && !outcome.reason,
       planId,
       summaries: outcome.summaries,
@@ -760,6 +844,7 @@ export async function runDarumaTeamFromPlan({
     };
   } finally {
     if (sigintHandler) process.off("SIGINT", sigintHandler);
+    cancel?.dispose();
     userPrompt.close();
     try { await mcp.stop(); } catch { /* server already gone */ }
   }
@@ -771,6 +856,9 @@ export const runDarumaStartLegacy = runDarumaStart;
 
 // Test-only exports.
 export const _internal = {
+  createCancellation,
+  executeOnce,
+  makePrompt,
   parseTitleAndDescription,
   executePromptFor,
   currentGitBranch,
