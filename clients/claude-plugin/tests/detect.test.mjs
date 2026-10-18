@@ -301,7 +301,7 @@ test("probeDarumaMcpSession: launcher that exits instead of serving fails at ini
     const got = await fakeSession(bin, "exit");
     assert.equal(got.ok, false);
     assert.equal(got.stage, "initialize");
-    assert.match(got.error, /exited|EPIPE/);
+    assert.equal(got.error, "MCP server exited (code=2, signal=null): unknown subcommand");
   });
 });
 

@@ -25,6 +25,7 @@ export class MCPClient {
   constructor({ requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
     this._requestTimeoutMs = requestTimeoutMs;
     this._deadError = null;
+    this._stderrTail = "";
     this._proc = null;
     this._buf = "";
     this._nextId = 1;
@@ -41,17 +42,22 @@ export class MCPClient {
     if (stderrLog) {
       this._stderrStream = createWriteStream(stderrLog, { flags: "a" });
       this._proc.stderr.pipe(this._stderrStream);
-    } else {
-      this._proc.stderr.on("data", () => {}); // drain to avoid backpressure
     }
+    // Also drains stderr when no log is kept; the tail explains an early exit.
+    this._proc.stderr.setEncoding("utf8");
+    this._proc.stderr.on("data", (chunk) => {
+      this._stderrTail = (this._stderrTail + chunk).slice(-2048);
+    });
 
     this._proc.stdout.setEncoding("utf8");
     this._proc.stdout.on("data", (chunk) => this._onData(chunk));
-    this._proc.on("exit", (code, signal) => this._onExit(code, signal));
+    // "close" (not "exit") fires once stdio is drained, so the stderr tail is complete.
+    this._proc.on("close", (code, signal) => this._onExit(code, signal));
     this._proc.on("error", (err) => this._markDead(err));
-    // A server that never started or already exited makes stdin writes fail
-    // with EPIPE; surface that as a failed request, not an uncaught error.
-    this._proc.stdin.on("error", (err) => this._markDead(err));
+    // A server that already exited makes stdin writes fail with EPIPE. Swallow
+    // it: the "close" event that follows rejects pending requests with the
+    // exit code and stderr, which say far more than EPIPE.
+    this._proc.stdin.on("error", () => {});
   }
 
   async initialize() {
@@ -160,7 +166,10 @@ export class MCPClient {
   }
 
   _onExit(code, signal) {
-    this._markDead(new Error(`MCP server exited (code=${code}, signal=${signal})`));
+    const lastLine = this._stderrTail.trim().split(/\r?\n/).pop();
+    this._markDead(new Error(
+      `MCP server exited (code=${code}, signal=${signal})${lastLine ? `: ${lastLine}` : ""}`,
+    ));
   }
 
   _markDead(err) {
