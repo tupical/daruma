@@ -98,7 +98,7 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 | `daruma-cursor uninstall [--global\|--project DIR]`    | Remove the entry.                                                       |
 | `daruma-cursor deeplink [--print-scheme]`              | Print the official Cursor Add-to-Cursor deeplink.                       |
 | `daruma-cursor rules [--project DIR] [--force]`        | Drop the three `.cursor/rules/*.mdc` (policy + contract + workspacegraph) into a project. |
-| `daruma-cursor doctor [--json\|--quiet]`               | Probe Cursor MCP config + HTTP server. Exit 0 ⇒ READY.                  |
+| `daruma-cursor doctor [--json\|--quiet]`               | Probe the server and auth of the `daruma` entry Cursor will use (project `mcp.json` over global): `GET <origin>/v1/healthz` plus an MCP `initialize` with the entry's token. Without a URL in that entry it falls back to env/credentials/localhost. Exit 0 ⇒ READY. |
 | `daruma-cursor setup`                                  | Print install hints for missing pieces.                                 |
 | `daruma-cursor marketplace`                            | Print the daruma plugin manifest (with live deeplink baked in).         |
 | `daruma-cursor --version` / `--help`                   |                                                                         |

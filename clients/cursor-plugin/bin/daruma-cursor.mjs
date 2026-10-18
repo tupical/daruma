@@ -455,6 +455,7 @@ async function cmdDoctor(rest) {
         mcpReady: report.daruma.mcpReady,
         cli: report.daruma.cli,
         http: report.daruma.http,
+        auth: report.daruma.auth,
         cursorMcp: report.daruma.cursorMcp,
         projectRules: report.daruma.projectRules,
         projectCommands: report.daruma.projectCommands,

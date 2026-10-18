@@ -97,7 +97,7 @@ daruma-cursor doctor             # проверка
 | `daruma-cursor uninstall [--global\|--project DIR]`    | Удалить запись.                                                         |
 | `daruma-cursor deeplink [--print-scheme]`              | Напечатать официальный Cursor Add-to-Cursor deeplink.                   |
 | `daruma-cursor rules [--project DIR] [--force]`        | Положить три `.cursor/rules/*.mdc` (policy + контракт + workspacegraph) в проект. |
-| `daruma-cursor doctor [--json\|--quiet]`               | Проверить Cursor MCP config + HTTP-сервер. Exit 0 ⇒ READY.              |
+| `daruma-cursor doctor [--json\|--quiet]`               | Проверить сервер и авторизацию той записи `daruma`, которую возьмёт Cursor (проектный `mcp.json` важнее глобального): `GET <origin>/v1/healthz` и MCP `initialize` с токеном из записи. Если в записи нет URL — откат на env/credentials/localhost. Exit 0 ⇒ READY. |
 | `daruma-cursor setup`                                  | Подсказки по установке отсутствующего.                                  |
 | `daruma-cursor marketplace`                            | Напечатать plugin-манифест daruma (со встроенным актуальным deeplink).  |
 | `daruma-cursor --version` / `--help`                   |                                                                         |
