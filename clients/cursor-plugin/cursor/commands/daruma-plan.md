@@ -15,8 +15,11 @@ bar. Use the daruma MCP server.
    `status = "active"`. Pick the most recently updated.
    If none, say "no active plan — create one with `daruma_plan_create`"
    and stop.
-3. `daruma_plan_get` with the chosen `plan_id`.
-4. Compute progress: `done_count / total_count`. Build a 20-cell bar like
+3. `daruma_plan_get` with the chosen `plan_id` and `view = "tasks"` —
+   the only view that lists every plan task (done included) with
+   `status`, `priority`, `depends_on` and `blocked_by`. The default
+   `progress` view caps each group at five open tasks; don't use it here.
+4. Compute progress: `progress.tasks_done / progress.tasks_total`. Build a 20-cell bar like
    `▓▓▓▓▓▓▓▓░░░░░░░░░░░░ 40%`.
 5. Render exactly:
 
@@ -37,9 +40,11 @@ bar. Use the daruma MCP server.
    ```
 
    - `[x]` only for `done`; everything else is `[ ]`.
-   - Status emoji: ⬜ todo, 🟢 in_progress, ✅ done, 📥 inbox.
+   - Status emoji: ⬜ todo, 🟢 in_progress, 🔍 in_review, ✅ done,
+     ❌ cancelled, 📥 inbox.
    - Priority shown only when `!= p2`.
-   - `blocked-by` rendered only when the dependency list is non-empty.
+   - `blocked-by` rendered only when `blocked_by` is non-empty (unfinished
+     `depends_on` tasks and active `blocks` relations).
 
 6. Below the list, suggest the next action one of these ways:
    - If any `in_progress` task exists → `→ continue: <title>`.
