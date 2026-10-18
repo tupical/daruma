@@ -20,7 +20,11 @@ import { createWriteStream } from "node:fs";
 const REQUEST_TIMEOUT_MS = 120_000;
 
 export class MCPClient {
-  constructor() {
+  // requestTimeoutMs bounds every JSON-RPC request; probes pass a short one so
+  // a hung server fails the check instead of stalling it for two minutes.
+  constructor({ requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+    this._requestTimeoutMs = requestTimeoutMs;
+    this._deadError = null;
     this._proc = null;
     this._buf = "";
     this._nextId = 1;
@@ -44,7 +48,10 @@ export class MCPClient {
     this._proc.stdout.setEncoding("utf8");
     this._proc.stdout.on("data", (chunk) => this._onData(chunk));
     this._proc.on("exit", (code, signal) => this._onExit(code, signal));
-    this._proc.on("error", (err) => this._failAll(err));
+    this._proc.on("error", (err) => this._markDead(err));
+    // A server that never started or already exited makes stdin writes fail
+    // with EPIPE; surface that as a failed request, not an uncaught error.
+    this._proc.stdin.on("error", (err) => this._markDead(err));
   }
 
   async initialize() {
@@ -79,8 +86,10 @@ export class MCPClient {
     try {
       proc.stdin.end();
     } catch { /* already closed */ }
-    // Give server up to 2s for graceful shutdown, then SIGTERM.
-    await new Promise((resolve) => {
+    // Give server up to 2s for graceful shutdown, then SIGTERM. A process that
+    // never spawned or already exited has nothing left to wait for.
+    const gone = proc.pid === undefined || proc.exitCode !== null || proc.signalCode !== null;
+    if (!gone) await new Promise((resolve) => {
       const timer = setTimeout(() => {
         try { proc.kill("SIGTERM"); } catch { /* gone */ }
         resolve();
@@ -94,12 +103,14 @@ export class MCPClient {
   // --- internals -----------------------------------------------------------
 
   _call(method, params) {
+    if (this._deadError) return Promise.reject(this._deadError);
     const id = this._nextId++;
+    const timeoutMs = this._requestTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(id);
-        reject(new Error(`MCP ${method} timeout after ${REQUEST_TIMEOUT_MS}ms`));
-      }, REQUEST_TIMEOUT_MS);
+        reject(new Error(`MCP ${method} timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
       this._pending.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
@@ -149,7 +160,12 @@ export class MCPClient {
   }
 
   _onExit(code, signal) {
-    this._failAll(new Error(`MCP server exited (code=${code}, signal=${signal})`));
+    this._markDead(new Error(`MCP server exited (code=${code}, signal=${signal})`));
+  }
+
+  _markDead(err) {
+    this._deadError ??= err;
+    this._failAll(err);
   }
 
   _failAll(err) {

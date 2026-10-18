@@ -18,6 +18,7 @@ import {
   darumaMcpReady,
   detectDaruma,
   probeDarumaLauncher,
+  probeDarumaMcpSession,
   formatReport,
 } from "../lib/detect.mjs";
 
@@ -170,13 +171,20 @@ test("darumaMcpLaunch: start spawns the unified binary as `daruma mcp`", () => {
 test("darumaMcpReady: connected Claude entry is not READY without a runnable launcher", () => {
   const claudeMcp = { present: true, connected: true, command: "daruma mcp" };
   const http = { ok: true };
-  assert.equal(darumaMcpReady({ launcher: { ok: false }, claudeMcp, http }), false);
-  assert.equal(darumaMcpReady({ launcher: { ok: true }, claudeMcp, http }), true);
+  const session = { ok: true };
+  assert.equal(darumaMcpReady({ launcher: { ok: false }, session, claudeMcp, http }), false);
+  assert.equal(darumaMcpReady({ launcher: { ok: true }, session, claudeMcp, http }), true);
   assert.equal(
-    darumaMcpReady({ launcher: { ok: true }, claudeMcp: { connected: false }, http }),
+    darumaMcpReady({ launcher: { ok: true }, session, claudeMcp: { connected: false }, http }),
     false,
   );
-  assert.equal(darumaMcpReady({ launcher: { ok: true }, claudeMcp, http: { ok: false } }), false);
+  assert.equal(darumaMcpReady({ launcher: { ok: true }, session, claudeMcp, http: { ok: false } }), false);
+});
+
+test("darumaMcpReady: a passing --version is not READY without a live authenticated session", () => {
+  const ok = { launcher: { ok: true }, claudeMcp: { connected: true }, http: { ok: true } };
+  assert.equal(darumaMcpReady({ ...ok, session: { ok: false, stage: "auth" } }), false);
+  assert.equal(darumaMcpReady(ok), false);
 });
 
 async function withTempDir(fn) {
@@ -198,6 +206,124 @@ test("probeDarumaLauncher: runs --version on the exact command start spawns", { 
   });
 });
 
+// Fake `daruma` launcher: `--version` always succeeds (what the old gate
+// trusted); `mcp` behaves per mode — a working session, a rejected token, an
+// immediate exit or a hung server.
+const FAKE_DARUMA = `
+const mode = process.env.FAKE_MODE;
+if (process.argv[2] === "--version") { console.log("daruma 0.2.0"); process.exit(0); }
+if (mode === "exit") { console.error("unknown subcommand"); process.exit(2); }
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("data", (chunk) => {
+  buf += chunk;
+  let nl;
+  while ((nl = buf.indexOf("\\n")) !== -1) {
+    const msg = JSON.parse(buf.slice(0, nl));
+    buf = buf.slice(nl + 1);
+    if (msg.id == null || mode === "hang") continue;
+    let result;
+    if (msg.method === "initialize") {
+      result = { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "daruma-mcp", version: "0.2.0" } };
+    } else if (msg.method === "tools/call" && msg.params.name === "daruma_project_list") {
+      result = mode === "unauthorized"
+        ? { content: [{ type: "text", text: "HTTP 401 Unauthorized: invalid token\\nmore" }], isError: true }
+        : { content: [{ type: "text", text: JSON.stringify({ token: process.env.DARUMA_TOKEN, items: [] }) }] };
+    } else {
+      result = { content: [{ type: "text", text: "unexpected " + msg.method }], isError: true };
+    }
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
+  }
+});
+`;
+
+async function withFakeDaruma(fn) {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "daruma");
+    await writeFile(bin, `#!${process.execPath}\n${FAKE_DARUMA}`);
+    await chmod(bin, 0o755);
+    await fn(bin);
+  });
+}
+
+const fakeSession = (bin, mode, extra = {}) => probeDarumaMcpSession({
+  launch: { command: bin, args: ["mcp"] },
+  env: { ...process.env, FAKE_MODE: mode, DARUMA_TOKEN: "ta_pat_probe" },
+  ...extra,
+});
+
+test("probeDarumaMcpSession: initialize + authenticated call pass through the start launcher", { skip: process.platform === "win32" }, async () => {
+  await withFakeDaruma(async (bin) => {
+    const got = await fakeSession(bin, "ok");
+    assert.deepEqual(got, {
+      command: bin, args: ["mcp"], tool: "daruma_project_list", ok: true, server: "daruma-mcp@0.2.0",
+    });
+  });
+});
+
+test("probeDarumaMcpSession: rejected token fails at auth although --version passes", { skip: process.platform === "win32" }, async () => {
+  await withFakeDaruma(async (bin) => {
+    assert.equal((await probeDarumaLauncher({ DARUMA_MCP_BIN: bin })).ok, true);
+    const session = await fakeSession(bin, "unauthorized");
+    assert.equal(session.ok, false);
+    assert.equal(session.stage, "auth");
+    assert.equal(session.error, "HTTP 401 Unauthorized: invalid token");
+
+    const report = {
+      ready: false,
+      omc: { name: "oh-my-claudecode", installed: true, cli: "4.13.6", npmVersion: null, installHint: "" },
+      daruma: {
+        name: "daruma",
+        installed: true,
+        mcpReady: darumaMcpReady({
+          launcher: { ok: true }, session, claudeMcp: { connected: true }, http: { ok: true },
+        }),
+        cli: null,
+        launcher: { ok: true, command: bin, args: ["mcp"], version: "daruma 0.2.0" },
+        session,
+        installHint: "",
+        mcpHint: "daruma server or MCP shim is not ready.",
+      },
+    };
+    assert.equal(report.daruma.mcpReady, false);
+    const text = formatReport(report);
+    assert.match(text, /mcp session: FAILED at auth \(HTTP 401 Unauthorized: invalid token\)/);
+    assert.doesNotMatch(text, /^READY$/m);
+    assert.deepEqual(cliReadinessSummary(report).daruma.session, {
+      ok: false, stage: "auth", error: "HTTP 401 Unauthorized: invalid token",
+    });
+  });
+});
+
+test("probeDarumaMcpSession: launcher that exits instead of serving fails at initialize", { skip: process.platform === "win32" }, async () => {
+  await withFakeDaruma(async (bin) => {
+    const got = await fakeSession(bin, "exit");
+    assert.equal(got.ok, false);
+    assert.equal(got.stage, "initialize");
+    assert.match(got.error, /exited|EPIPE/);
+  });
+});
+
+test("probeDarumaMcpSession: hung server fails within the request timeout", { skip: process.platform === "win32" }, async () => {
+  await withFakeDaruma(async (bin) => {
+    const started = Date.now();
+    const got = await fakeSession(bin, "hang", { requestTimeoutMs: 300 });
+    assert.equal(got.ok, false);
+    assert.equal(got.stage, "initialize");
+    assert.match(got.error, /MCP initialize timeout after 300ms/);
+    assert.ok(Date.now() - started < 5_000);
+  });
+});
+
+test("probeDarumaMcpSession: missing binary fails fast", async () => {
+  const missing = join(tmpdir(), "daruma-detect-missing", "daruma");
+  const got = await probeDarumaMcpSession({ launch: { command: missing, args: ["mcp"] }, env: process.env });
+  assert.equal(got.ok, false);
+  assert.equal(got.stage, "initialize");
+  assert.match(got.error, /ENOENT/);
+});
+
 test("probeDarumaLauncher: missing launcher fails the probe and the verdict", async () => {
   const missing = join(tmpdir(), "daruma-detect-missing", "daruma");
   const launcher = await probeDarumaLauncher({ DARUMA_MCP_BIN: missing });
@@ -212,7 +338,7 @@ test("probeDarumaLauncher: missing launcher fails the probe and the verdict", as
     daruma: {
       name: "daruma",
       installed: true,
-      mcpReady: darumaMcpReady({ launcher, claudeMcp, http }),
+      mcpReady: darumaMcpReady({ launcher, session: { ok: true }, claudeMcp, http }),
       cli: null,
       launcher,
       http,
