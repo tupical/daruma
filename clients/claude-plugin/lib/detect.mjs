@@ -3,8 +3,9 @@
 //
 // readiness gate = omc CLI present + daruma MCP server registered in Claude
 // + daruma HTTP server healthy + the stdio launcher `daruma-claude start`
-// spawns is runnable. The MCP probe parses `claude mcp list` output; the HTTP
-// probe hits DARUMA_BASE_URL/v1/healthz (default http://localhost:8080).
+// spawns is runnable + a live session through that launcher initializes and
+// passes an authenticated call. The MCP probe parses `claude mcp list` output;
+// the HTTP probe hits DARUMA_BASE_URL/v1/healthz (default http://localhost:8080).
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -19,12 +20,18 @@ import {
   resolveActiveProfile,
   resolveMcpEnvFromCredentials,
 } from "./agent-credentials.mjs";
+import { MCPClient } from "./mcp-client.mjs";
 
 const exec = promisify(execFile);
 
 const WIN_SHELL = process.platform === "win32";
 const PROBE_TIMEOUT_MS = 4_000;
 const HTTP_TIMEOUT_MS = 3_000;
+const SESSION_REQUEST_TIMEOUT_MS = 8_000;
+// Cheapest tool that always reaches the HTTP server with the token: GET
+// /v1/projects. `daruma_workspace_info` is not enough — it tolerates a failed
+// scope fetch and, for a pinned identity, never calls the server at all.
+const SESSION_AUTH_TOOL = "daruma_project_list";
 
 
 function stripAnsi(text) {
@@ -65,11 +72,45 @@ export async function probeDarumaLauncher(env = process.env) {
     : { ok: false, command: launch.command, args: launch.args, error: r.error };
 }
 
+function firstErrorLine(text) {
+  const line = String(text ?? "").trim().split(/\r?\n/, 1)[0] ?? "";
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line || "no error text";
+}
+
+// `--version` only proves the binary runs. This opens the same stdio session
+// start opens (same command, same child env), sends `initialize`, then one
+// authenticated tool call. stage = where it failed: initialize | auth.
+export async function probeDarumaMcpSession({
+  launch = darumaMcpLaunch(),
+  env,
+  requestTimeoutMs = SESSION_REQUEST_TIMEOUT_MS,
+} = {}) {
+  const client = new MCPClient({ requestTimeoutMs });
+  const base = { command: launch.command, args: launch.args, tool: SESSION_AUTH_TOOL };
+  let stage = "initialize";
+  try {
+    await client.start(launch.command, launch.args, { env: env ?? await darumaMcpChildEnv() });
+    const init = await client.initialize();
+    const info = init?.serverInfo;
+    const server = info?.name ? `${info.name}${info.version ? `@${info.version}` : ""}` : null;
+    stage = "auth";
+    const result = await client.callTool(SESSION_AUTH_TOOL, {});
+    if (result.isError) return { ...base, ok: false, stage, server, error: firstErrorLine(result.text) };
+    return { ...base, ok: true, server };
+  } catch (err) {
+    return { ...base, ok: false, stage, error: firstErrorLine(err?.message ?? err) };
+  } finally {
+    await client.stop().catch(() => {});
+  }
+}
+
 // Claude Code's registered `daruma` server serves the session; start opens its
 // own connection through the launcher. Both, plus the HTTP backend behind
-// them, must work — a connected Claude entry alone does not make start work.
-export function darumaMcpReady({ launcher, claudeMcp, http }) {
-  return Boolean(launcher?.ok && claudeMcp?.connected && http?.ok);
+// them, must work — a connected Claude entry alone does not make start work,
+// and neither does a launcher that answers `--version` but cannot open an
+// authenticated session. A missing session probe is not READY.
+export function darumaMcpReady({ launcher, session, claudeMcp, http }) {
+  return Boolean(launcher?.ok && session?.ok && claudeMcp?.connected && http?.ok);
 }
 
 async function pathExists(p) {
@@ -187,8 +228,9 @@ export async function detectDaruma() {
   // server. On a setup with several servers it routinely takes 5-15s — the
   // standard PROBE_TIMEOUT_MS would clip it. Give it a wider budget.
   const CLAUDE_MCP_LIST_TIMEOUT_MS = 20_000;
-  const [launcher, mcpList, httpProbe] = await Promise.all([
+  const [launcher, session, mcpList, httpProbe] = await Promise.all([
     probeDarumaLauncher(),
+    probeDarumaMcpSession(),
     tryExec("claude", ["mcp", "list"], { timeout: CLAUDE_MCP_LIST_TIMEOUT_MS }),
     probeDarumaHttp(probeUrl),
   ]);
@@ -198,9 +240,10 @@ export async function detectDaruma() {
     : { present: false, connected: false, command: null };
 
   // mcpReady = MCP server registered AND HTTP backend healthy AND the start
-  // launcher runnable. The MCP shim is just a transport into the HTTP
-  // server — without the server, all tools/call requests fail at runtime.
-  const mcpReady = darumaMcpReady({ launcher, claudeMcp: mcpEntry, http: httpProbe });
+  // launcher runnable AND its live session authenticated. The MCP shim is just
+  // a transport into the HTTP server — without the server, all tools/call
+  // requests fail at runtime.
+  const mcpReady = darumaMcpReady({ launcher, session, claudeMcp: mcpEntry, http: httpProbe });
   const installed = launcher.ok || mcpEntry.present || httpProbe.ok;
   const launchLine = `${launcher.command} ${launcher.args.join(" ")}`;
 
@@ -210,6 +253,7 @@ export async function detectDaruma() {
     mcpReady,
     cli: launcher.ok ? `${launcher.command}: ${launcher.version}` : null,
     launcher,
+    session,
     http: httpProbe.ok
       ? { ok: true, baseUrl: probeUrl, status: httpProbe.status, version: httpProbe.version }
       : { ok: false, baseUrl: probeUrl, error: httpProbe.error },
@@ -245,6 +289,9 @@ export async function detectDaruma() {
       launcher.ok
         ? `start launcher: ${launchLine} (${launcher.version})`
         : `start launcher not runnable: ${launchLine} (${launcher.error}) — put the unified daruma binary on PATH or set DARUMA_MCP_BIN to it`,
+      session.ok
+        ? `MCP session: initialize + ${session.tool} OK`
+        : `MCP session failed at ${session.stage}: ${session.error}`,
       httpProbe.ok
         ? `HTTP server: ${httpProbe.status}${httpProbe.version ? ` (v${httpProbe.version})` : ""}`
         : `HTTP server unreachable: ${httpProbe.error}`,
@@ -290,6 +337,9 @@ export function cliReadinessSummary(report) {
       },
       launcher: t.launcher
         ? { ok: t.launcher.ok, command: t.launcher.command, args: t.launcher.args }
+        : null,
+      session: t.session
+        ? { ok: t.session.ok, stage: t.session.stage ?? null, error: t.session.error ?? null }
         : null,
     },
     hints: {
@@ -340,6 +390,14 @@ export function formatReport(report) {
       const l = tool.launcher;
       lines.push(
         `       start launcher: ${l.command} ${l.args.join(" ")} → ${l.ok ? l.version : `NOT RUNNABLE (${l.error})`}`,
+      );
+    }
+    if (tool.session) {
+      const s = tool.session;
+      lines.push(
+        `       mcp session: ${s.ok
+          ? `initialize + ${s.tool} OK${s.server ? ` (${s.server})` : ""}`
+          : `FAILED at ${s.stage} (${s.error})`}`,
       );
     }
     if (!tool.installed) {
