@@ -1,6 +1,6 @@
 //! `daruma_complete` → `complete_task` wire contract for the `comment` alias.
 //!
-//! The shipped next-prompts told agents to close with
+//! Older shipped next-prompts told agents to close with
 //! `daruma_complete … comment="<summary>"`; the handler used to drop that
 //! argument, so the work summary was silently lost. The stub records the
 //! exact command body, pinning: `comment` (string or `{body}`) lands in
@@ -54,7 +54,10 @@ async fn string_comment_is_stored_as_result_summary() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0]["type"], "complete_task");
     assert_eq!(seen[0]["id"], "tsk_1");
-    assert_eq!(seen[0]["note"], json!({"result_summary": "shipped the fix"}));
+    assert_eq!(
+        seen[0]["note"],
+        json!({"result_summary": "shipped the fix"})
+    );
 }
 
 #[tokio::test]
@@ -90,7 +93,11 @@ async fn blank_comment_and_bare_id_keep_the_legacy_command() {
     ] {
         let (result, seen) = with_recording_stub(args.clone()).await;
         result.expect("call succeeds");
-        assert_eq!(seen[0], json!({"type": "complete_task", "id": "tsk_1"}), "{args}");
+        assert_eq!(
+            seen[0],
+            json!({"type": "complete_task", "id": "tsk_1"}),
+            "{args}"
+        );
     }
 }
 
