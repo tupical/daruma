@@ -125,8 +125,16 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
             .find(|n| n["task_id"] == json!(id))
             .map(|n| n["priority"].clone())
     };
-    assert_eq!(priority_of(a), Some(json!("p1")), "graph node carries priority: {graph}");
-    assert_eq!(priority_of(b), Some(json!("p2")), "default priority is p2: {graph}");
+    assert_eq!(
+        priority_of(a),
+        Some(json!("p1")),
+        "graph node carries priority: {graph}"
+    );
+    assert_eq!(
+        priority_of(b),
+        Some(json!("p2")),
+        "default priority is p2: {graph}"
+    );
     assert!(
         graph["edges"]
             .as_array()

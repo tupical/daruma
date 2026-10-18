@@ -5770,7 +5770,14 @@ fn plan_tasks_view(plan_resp: Value, graph: Value) -> Value {
         .map(|node| {
             let mut row = keep_keys(
                 node,
-                &["task_id", "title", "status", "priority", "position", "depends_on"],
+                &[
+                    "task_id",
+                    "title",
+                    "status",
+                    "priority",
+                    "position",
+                    "depends_on",
+                ],
             );
             if row.get("priority").is_none() {
                 row["priority"] = json!("p2");
@@ -5779,8 +5786,14 @@ fn plan_tasks_view(plan_resp: Value, graph: Value) -> Value {
             row
         })
         .collect();
-    tasks.sort_by_key(|row| row.get("position").and_then(Value::as_u64).unwrap_or(u64::MAX));
-    let obj = view.as_object_mut().expect("plan_progress_view returns an object");
+    tasks.sort_by_key(|row| {
+        row.get("position")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    });
+    let obj = view
+        .as_object_mut()
+        .expect("plan_progress_view returns an object");
     for key in ["active", "blocked", "next"] {
         obj.remove(key);
     }
@@ -7006,8 +7019,15 @@ mod tests {
         assert_eq!(tasks[0]["priority"], "p1");
         assert_eq!(tasks[0]["blocked_by"], json!([]));
         assert_eq!(tasks[7]["priority"], "p3");
-        assert_eq!(tasks[7]["blocked_by"], json!([]), "done dependency is satisfied");
-        assert_eq!(tasks[8]["priority"], "p2", "missing priority defaults to p2");
+        assert_eq!(
+            tasks[7]["blocked_by"],
+            json!([]),
+            "done dependency is satisfied"
+        );
+        assert_eq!(
+            tasks[8]["priority"], "p2",
+            "missing priority defaults to p2"
+        );
         assert_eq!(tasks[8]["depends_on"], json!(["t1", "done"]));
         assert_eq!(tasks[8]["blocked_by"], json!(["t1", "t2"]));
     }
