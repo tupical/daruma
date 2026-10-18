@@ -90,6 +90,122 @@ async function probeDarumaHttp(baseUrl) {
   }
 }
 
+const MCP_PATH_SUFFIX = /\/(v1\/)?mcp\/?$/;
+
+function trimUrl(url) {
+  return String(url).trim().replace(/\/$/, "");
+}
+
+/** Server origin behind a Cursor `url` entry: `https://h/v1/mcp?x` → `https://h`. */
+export function serverOriginFromMcpUrl(mcpUrl) {
+  try {
+    const u = new URL(mcpUrl);
+    u.search = "";
+    u.hash = "";
+    u.pathname = u.pathname.replace(MCP_PATH_SUFFIX, "");
+    return trimUrl(u.toString());
+  } catch {
+    return null;
+  }
+}
+
+function headerValue(headers, name) {
+  if (!headers || typeof headers !== "object") return null;
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+  return key ? headers[key] : null;
+}
+
+/**
+ * Where `doctor` must probe: the server and credentials of the Cursor
+ * mcp.json entry Cursor will actually use (project wins over global), so the
+ * address `install` wrote is the one verified. Without such an entry (or a
+ * stdio entry with no URL in `env`) fall back to env/credentials/localhost.
+ */
+export async function resolveDoctorTarget({ entry = null, scope = null, remote } = {}) {
+  const isHttp = entry?.type === "http" || Boolean(entry?.url);
+  if (entry && isHttp && entry.url) {
+    const origin = serverOriginFromMcpUrl(entry.url);
+    if (origin) {
+      const headers = {};
+      const auth = headerValue(entry.headers, "Authorization");
+      const workspace = headerValue(entry.headers, "X-Daruma-Workspace-Id");
+      if (auth) headers.Authorization = auth;
+      if (workspace) headers["X-Daruma-Workspace-Id"] = workspace;
+      return {
+        source: `mcp.json (${scope})`,
+        transport: "http",
+        baseUrl: origin,
+        mcpUrl: String(entry.url).trim(),
+        headers,
+      };
+    }
+  }
+  const envUrl = entry?.env?.DARUMA_API_URL ?? entry?.env?.DARUMA_BASE_URL;
+  if (entry && !isHttp && envUrl?.trim()) {
+    const baseUrl = trimUrl(envUrl);
+    const headers = {};
+    if (entry.env.DARUMA_TOKEN) headers.Authorization = `Bearer ${entry.env.DARUMA_TOKEN}`;
+    if (entry.env.DARUMA_WORKSPACE_ID) headers["X-Daruma-Workspace-Id"] = entry.env.DARUMA_WORKSPACE_ID;
+    return {
+      source: `mcp.json (${scope})`,
+      transport: "stdio",
+      baseUrl,
+      mcpUrl: `${baseUrl}/v1/mcp`,
+      headers,
+    };
+  }
+  const baseUrl = await resolveHttpProbeUrl({ remote });
+  return {
+    source: "env/credentials",
+    transport: entry ? (isHttp ? "http" : "stdio") : null,
+    baseUrl,
+    mcpUrl: null,
+    headers: null,
+  };
+}
+
+/**
+ * Check auth the way Cursor will: an MCP `initialize` to the configured URL
+ * with the configured headers. 401/403 without our own bearer on an http
+ * entry is the one-click OAuth case — Cursor signs in itself, so it is not
+ * a failure; with a bearer it means the token is rejected.
+ */
+export async function probeMcpAuth(target) {
+  if (!target?.mcpUrl) return { ok: true, status: "unchecked" };
+  const hasToken = Boolean(target.headers?.Authorization);
+  try {
+    const res = await fetch(target.mcpUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...target.headers,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "daruma-cursor-doctor", version: "0" },
+        },
+      }),
+      signal: timeoutSignal(HTTP_TIMEOUT_MS),
+    });
+    await res.text().catch(() => "");
+    if (res.ok) return { ok: true, status: hasToken ? "token accepted" : "no token required" };
+    if (res.status === 401 || res.status === 403) {
+      if (hasToken) return { ok: false, status: "token rejected", error: `HTTP ${res.status}` };
+      if (target.transport === "http") return { ok: true, status: "oauth (Cursor signs in)" };
+      return { ok: false, status: "token missing", error: `HTTP ${res.status}` };
+    }
+    return { ok: false, status: "error", error: `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, status: "error", error: err.message ?? String(err) };
+  }
+}
+
 export async function detectOmc({ projectDir } = {}) {
   const dir = projectDir ? resolve(projectDir) : process.cwd();
   const omcDir = join(dir, ".omc");
@@ -193,13 +309,11 @@ async function detectMcpRegistration({ projectDir } = {}) {
 }
 
 export async function detectDaruma({ projectDir, remote } = {}) {
-  const probeUrl = await resolveHttpProbeUrl({ remote });
   const creds = await loadCredentials();
   const profile = creds ? resolveActiveProfile(creds) : null;
 
-  const [mcpCli, http, registration, projectRules, projectCommands] = await Promise.all([
+  const [mcpCli, registration, projectRules, projectCommands] = await Promise.all([
     tryExecAny(["daruma", "daruma-mcp"], ["--version"]),
-    probeDarumaHttp(probeUrl),
     detectMcpRegistration({ projectDir }),
     detectProjectRules({ projectDir }),
     detectProjectCommands({ projectDir }),
@@ -210,13 +324,20 @@ export async function detectDaruma({ projectDir, remote } = {}) {
     registration.project.entry ??
     registration.global.entry ??
     null;
+  const activeScope = registration.project.entry ? "project" : registration.global.entry ? "global" : null;
+  const target = await resolveDoctorTarget({ entry: activeEntry, scope: activeScope, remote });
+  const probeUrl = target.baseUrl;
+  const [http, auth] = await Promise.all([
+    probeDarumaHttp(probeUrl),
+    probeMcpAuth(target),
+  ]);
   const isHttpEntry = activeEntry?.type === "http" || Boolean(activeEntry?.url);
   const configuredCommand = activeEntry?.command ?? null;
   const resolvedCommand = isHttpEntry
     ? { command: null, resolved: true, source: "http" }
     : await resolveMcpCommand({ command: configuredCommand ?? "daruma" });
   const commandReady = isHttpEntry || resolvedCommand.resolved || mcpCli.ok;
-  const mcpReady = registered && http.ok && commandReady;
+  const mcpReady = registered && http.ok && commandReady && auth.ok;
 
   return {
     name: "daruma",
@@ -224,7 +345,8 @@ export async function detectDaruma({ projectDir, remote } = {}) {
     mcpReady,
     cli: mcpCli.ok ? `${mcpCli.cmd}: ${mcpCli.output}` : null,
     mcpCommand: resolvedCommand,
-    http,
+    http: { ...http, source: target.source },
+    auth: { ...auth, url: target.mcpUrl },
     credentials: {
       path: credentialsLocationHint(),
       present: Boolean(profile?.token),
@@ -243,7 +365,7 @@ export async function detectDaruma({ projectDir, remote } = {}) {
     ].join("\n"),
     mcpHint: [
       "daruma is not yet wired into Cursor.",
-      `HTTP probe: GET ${probeUrl}/v1/healthz`,
+      `HTTP probe: GET ${probeUrl}/v1/healthz (from ${target.source})`,
       profile?.token
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
         : `credentials: none at ${credentialsLocationHint()} — run your Daruma installer to save credentials.json, then re-run install`,
@@ -259,6 +381,9 @@ export async function detectDaruma({ projectDir, remote } = {}) {
       http.ok
         ? `HTTP server: ${http.status}${http.version ? ` (v${http.version})` : ""}`
         : `HTTP server unreachable: ${http.error}`,
+      auth.ok
+        ? `auth: ${auth.status}`
+        : `auth: ${auth.status} (${auth.error}) at ${target.mcpUrl} — fix the token in ${activeScope ? registration[activeScope].path : "mcp.json"} or re-run \`daruma-cursor install --force\``,
       registered
         ? `mcp.json: registered (global=${registration.global.present}, project=${registration.project.present})`
         : "mcp.json: daruma entry missing — run `daruma-cursor install --global`",
@@ -296,7 +421,12 @@ export function formatReport(report) {
       lines.push(
         `       http: ${tool.http.ok
           ? `${tool.http.baseUrl} → ${tool.http.status}${tool.http.version ? ` (v${tool.http.version})` : ""}`
-          : `${tool.http.baseUrl} → ${tool.http.error}`}`,
+          : `${tool.http.baseUrl} → ${tool.http.error}`}${tool.http.source ? ` [${tool.http.source}]` : ""}`,
+      );
+    }
+    if (tool.auth && tool.auth.status !== "unchecked") {
+      lines.push(
+        `       auth: ${tool.auth.status}${tool.auth.ok ? "" : ` (${tool.auth.error})`}`,
       );
     }
     if (tool.credentials) {
