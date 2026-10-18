@@ -267,6 +267,41 @@ test("terminal task in server projection cannot be reopened by stale executor", 
   assert(!mcp.calls.some((call) => ["daruma_set_status", "daruma_complete"].includes(call.name)));
 });
 
+function projectCreateMcp(createResult) {
+  const calls = [];
+  return {
+    calls,
+    async callTool(name, args) {
+      calls.push({ name, args });
+      if (name === "daruma_workspace_info") return { parsed: { scopes: [] } };
+      if (name === "daruma_project_list") return { parsed: [{ id: "other", title: "unrelated" }] };
+      if (name === "daruma_project_create") return { parsed: createResult, text: JSON.stringify(createResult) };
+      return { parsed: { ok: true }, text: "{}" };
+    },
+  };
+}
+
+test("missing project is created and its project_id is used for the run", async () => {
+  // Same shape crates/mcp returns for daruma_project_create.
+  const mcp = projectCreateMcp({ project_id: "prj-new", events: { data: [] } });
+  const lines = [];
+  const projectId = await _internal.resolveProject({
+    mcp, cwd: "/work/fresh-repo", write: (line) => lines.push(line),
+  });
+  assert.equal(projectId, "prj-new");
+  const create = mcp.calls.find((call) => call.name === "daruma_project_create");
+  assert.equal(create.args.title, "fresh-repo");
+  assert.match(lines.join("\n"), /created new project "fresh-repo" \(prj-new\)/);
+});
+
+test("project creation without a returned project_id fails loudly", async () => {
+  const mcp = projectCreateMcp({ project_id: null, events: { data: [] } });
+  await assert.rejects(
+    _internal.resolveProject({ mcp, cwd: "/work/fresh-repo", write() {} }),
+    /daruma_project_create returned no project_id/,
+  );
+});
+
 test("start spawns the same `daruma mcp` launcher doctor probes", { skip: process.platform === "win32" }, async () => {
   await withTempDir(async (dir) => {
     const bin = join(dir, "daruma");

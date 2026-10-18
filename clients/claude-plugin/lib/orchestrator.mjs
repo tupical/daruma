@@ -169,12 +169,15 @@ async function resolveProject({ mcp, cwd, explicitProjectId, write }) {
     title: desired,
     description: `Auto-created by daruma-claude for ${cwd}`,
   });
+  // The MCP tool surfaces the new id as `project_id` (crates/mcp tools.rs);
+  // `id` is kept as a fallback for older servers.
   const created = payload(createResp) ?? {};
-  if (!created.id) {
-    throw new Error(`daruma_project_create returned no id; raw: ${createResp.text}`);
+  const createdId = created.project_id ?? created.id;
+  if (!createdId) {
+    throw new Error(`daruma_project_create returned no project_id; raw: ${createResp.text}`);
   }
-  write(`[project] created new project "${desired}" (${created.id})`);
-  return created.id;
+  write(`[project] created new project "${desired}" (${createdId})`);
+  return createdId;
 }
 
 function cleanPath(p) {
@@ -772,6 +775,7 @@ export const _internal = {
   executePromptFor,
   currentGitBranch,
   payload,
+  resolveProject,
   runTeamFromPlanWaves,
   executeTaskWithRetries,
   runPlanLoop,
