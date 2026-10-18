@@ -12,6 +12,7 @@ mod plan_only_intake;
 mod plan_parent_patch;
 mod plan_readiness_tools;
 mod run_steps;
+mod schema_id_alias_contract;
 mod session_artifacts;
 mod set_status_comment_wire;
 mod toolslist_size;
