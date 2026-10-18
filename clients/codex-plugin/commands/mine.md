@@ -6,22 +6,26 @@ The user invoked `/daruma:mine`. Read-only.
 
 ## Steps
 
-1. Resolve project (`daruma_workspace_info` → `default_project`,
-   capture the agent/session id from the response).
-2. `daruma_list` with `project_id = <resolved>`,
-   `status = ["in_progress"]`, `owner = "self"`. If the server rejects
-   `owner = "self"`, list everything in `in_progress` and filter
-   client-side by `owner == <agent_id from workspace_info>`.
+1. Resolve project (`daruma_workspace_info` → `default_project`) and
+   capture `mcp_agent_id` from the same response — that is this session's
+   agent id.
+2. `daruma_list` with `project_id = <resolved>`, `status = "in_progress"`
+   (a single string, not an array), limit 20. `daruma_list` has no owner
+   filter and its rows carry no claim data, so do not pass `owner`.
    **Never** use `status=all` unless the user explicitly asked for the
    full archive — `all` is token-heavy.
-3. Render:
+3. For each returned task, `daruma_get id=<task id>` (no comments) and keep
+   it only when `current_claim.is_mine == true` (equivalently,
+   `current_claim.agent_id == <mcp_agent_id>`). A task with
+   `current_claim = null` or another agent's claim is not yours.
+   Render the kept tasks:
 
    ```
    ## My active tasks — <N>
 
-   | # | Pri | Title | Plan | Claimed |
-   |---|-----|-------|------|---------|
-   | 1 | p1 | <title> | <plan_short> | <relative time, e.g. "2h ago"> |
+   | # | Pri | Title | Claimed | Expires |
+   |---|-----|-------|---------|---------|
+   | 1 | p1 | <title> | <current_claim.acquired_at, relative, e.g. "2h ago"> | <current_claim.expires_at, relative> |
    …
    ```
 

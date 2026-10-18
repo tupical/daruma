@@ -27,7 +27,7 @@ The user invoked `/daruma-claude:close [<task_id> ...] [--cancel] [--comment "<t
 ### Without arguments — interactive close
 
 1. Resolve project via `daruma_workspace_info`.
-2. `daruma_list status=["in_progress","in_review"] project_id=<id> limit=20`.
+2. `daruma_list status="in_progress,in_review" project_id=<id> limit=20`.
 3. If 0 items: `No in-progress tasks to close.` and stop.
 4. Render a numbered list:
 
