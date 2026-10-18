@@ -350,7 +350,12 @@ impl LifecycleGate for RuleEngineGate {
         let unblock: Vec<serde_json::Value> = acting
             .iter()
             .map(|(rule, reason, chain_index)| {
-                let mut hint = unblock_hint(rule, &chains[*chain_index], check.trigger);
+                let mut hint = unblock_hint(
+                    rule,
+                    &chains[*chain_index],
+                    check.trigger,
+                    &check.pending_plans,
+                );
                 if let (Some(reason), Some(hint)) = (reason, hint.as_object_mut()) {
                     hint.insert("reason".into(), json!(reason));
                 }
@@ -554,14 +559,24 @@ fn rule_outcome(rule: &Rule, decision: &str, reason: Option<&str>) -> serde_json
 /// mints a fresh one (`CreateTask`/`CreatePlan` assign ids server-side;
 /// `NewPlan` has no id field at all). Evidence recorded against the phantom
 /// id would never match, so the element the trigger itself creates is
-/// excluded from the advice and the parent scope is hinted instead. When no
+/// excluded from the advice and the parent scope is hinted instead. The same
+/// holds for every plan the batch stages (`staged_plans`, e.g.
+/// `MaterializePlan`'s new plan on its tasks' `task.created`): it has no row
+/// yet, `daruma_evidence_submit` would reject it as unknown, and a retry mints
+/// a fresh id — so the chain is cut at the first staged element and the
+/// nearest persisted ancestor in reach is hinted. When no
 /// remaining element sits inside the kind's reach — always the case for
 /// self-only kinds (`owner_assigned`, `acceptance_criteria_defined`,
 /// `completion_note`) on a creation trigger, since the parent is above their
 /// ceiling — the requirement cannot be satisfied before creation at all. The
 /// hint then carries no `scope` (none would work) and an honest `note`
 /// instead of pretending otherwise.
-fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serde_json::Value {
+fn unblock_hint(
+    rule: &Rule,
+    chain: &[RuleScope],
+    trigger: TriggerEvent,
+    staged_plans: &[(PlanId, Option<PlanId>)],
+) -> serde_json::Value {
     let (kind, target, _, _) = requirement_evidence(&rule.requirement);
     if let Requirement::IndependentTestVerification {
         executor_id,
@@ -598,7 +613,9 @@ fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serd
         TriggerEvent::ProjectCreated | TriggerEvent::PlanCreated | TriggerEvent::TaskCreated
     );
     // The slice of the chain the kind may be read from (mirrors `reachable`),
-    // minus the phantom element a creation trigger is about to persist.
+    // minus the phantom elements: the one a creation trigger is about to
+    // persist and every plan staged by the same batch (with whatever nests
+    // inside it).
     let start = match reach {
         EvidenceReach::SelfOnly => chain.len() - 1,
         _ => {
@@ -609,12 +626,17 @@ fn unblock_hint(rule: &Rule, chain: &[RuleScope], trigger: TriggerEvent) -> serd
                 .unwrap_or(chain.len() - 1)
         }
     };
+    let first_staged = chain.iter().position(|scope| {
+        matches!(scope, RuleScope::Plan { id } if staged_plans.iter().any(|(staged, _)| staged == id))
+    });
     let end = if creates_innermost {
         chain.len() - 1
     } else {
         chain.len()
-    };
-    let advised = chain[start..end].last();
+    }
+    .min(first_staged.unwrap_or(chain.len()));
+    // `start > end` when the only in-reach elements are phantoms.
+    let advised = chain.get(start..end).and_then(<[RuleScope]>::last);
 
     let mut evidence = json!({ "kind": kind.as_str() });
     if let Some(target) = target {
