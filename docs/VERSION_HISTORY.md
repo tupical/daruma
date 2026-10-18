@@ -196,9 +196,14 @@ Rollback is append-only. It never deletes, squashes, or rewrites old version
 records. `POST /v1/history/{version_id}/rollback` reads the selected version's
 `after` snapshot and dispatches ordinary mutation commands:
 
-- task rollback uses `Command::UpdateTask` with the mutable fields from the
-  snapshot (`title`, `description`, `status`, `priority`, `due_at`,
-  `project_id`);
+- task rollback compares the snapshot with the current task and restores
+  only the fields that differ. Execution-owned fields (`status`, `priority`,
+  `triage_state`, `due_at`, `git_context`) go through `Command::UpdateTask`.
+  Plan-owned fields (`title`, `description`, `project_id`) of a plan member go
+  through `Command::AmendPlanTask` against the owning plan, so rollback works
+  on the served plan-only intake server (ADR-0007 Q1) and additionally needs
+  `PlanWrite`; a task outside any plan keeps `Command::UpdateTask`, which
+  plan-only intake rejects with `plan_owned_immutable`;
 - document rollback uses `Command::RenameDocument` and/or
   `Command::ReplaceDocumentContent` when the current title/body differ.
 
