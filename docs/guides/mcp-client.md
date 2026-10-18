@@ -163,8 +163,12 @@ Supported launch modes:
   `daruma_complete`, `daruma_comment`, `daruma_relations`, `daruma_claim`,
   `daruma_release`, `daruma_plan_get`, `daruma_plan_progress`,
   `daruma_plan_drain_next`, `daruma_plan_next_task` — list both names and
-  require neither; a call with
-  neither fails with the accepted names. Bulk tools take
+  require neither, so a client that validates arguments against the schema
+  accepts either one; a call with neither passes the schema and fails in the
+  tool with the accepted names. "At least one of" is not expressed as a
+  top-level `anyOf`: the Anthropic API rejects tool schemas with a top-level
+  `anyOf`/`oneOf`/`allOf`, and no tool schema has one
+  (`crates/mcp/tests/it/schema_id_alias_contract.rs`). Bulk tools take
   `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
   different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
   generic `id` fill the missing one; `from_work_unit_id` / `to_work_unit_id` of
