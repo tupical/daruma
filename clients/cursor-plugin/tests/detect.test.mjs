@@ -141,6 +141,14 @@ test("probeMcpAuth: accepted, rejected, missing and OAuth cases", async () => {
     assert.equal(bad.ok, false);
     assert.equal(bad.status, "token rejected");
     assert.equal(bad.error, "HTTP 401");
+    assert.match(bad.hint, /X-Daruma-Workspace-Id/);
+    const badWithWs = await probeMcpAuth({
+      transport: "http",
+      mcpUrl,
+      headers: { Authorization: "Bearer nope", "X-Daruma-Workspace-Id": "ws" },
+    });
+    assert.equal(badWithWs.status, "token rejected");
+    assert.equal(badWithWs.hint, undefined);
     const oauth = await probeMcpAuth({ transport: "http", mcpUrl, headers: {} });
     assert.equal(oauth.ok, true);
     assert.match(oauth.status, /oauth/);

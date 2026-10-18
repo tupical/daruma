@@ -196,7 +196,13 @@ export async function probeMcpAuth(target) {
     await res.text().catch(() => "");
     if (res.ok) return { ok: true, status: hasToken ? "token accepted" : "no token required" };
     if (res.status === 401 || res.status === 403) {
-      if (hasToken) return { ok: false, status: "token rejected", error: `HTTP ${res.status}` };
+      if (hasToken) {
+        const rejected = { ok: false, status: "token rejected", error: `HTTP ${res.status}` };
+        if (!target.headers["X-Daruma-Workspace-Id"]) {
+          rejected.hint = "no X-Daruma-Workspace-Id header — a workspace-scoped token (cloud PAT) needs it";
+        }
+        return rejected;
+      }
       if (target.transport === "http") return { ok: true, status: "oauth (Cursor signs in)" };
       return { ok: false, status: "token missing", error: `HTTP ${res.status}` };
     }
@@ -383,7 +389,7 @@ export async function detectDaruma({ projectDir, remote } = {}) {
         : `HTTP server unreachable: ${http.error}`,
       auth.ok
         ? `auth: ${auth.status}`
-        : `auth: ${auth.status} (${auth.error}) at ${target.mcpUrl} — fix the token in ${activeScope ? registration[activeScope].path : "mcp.json"} or re-run \`daruma-cursor install --force\``,
+        : `auth: ${auth.status} (${auth.error}) at ${target.mcpUrl}${auth.hint ? `; ${auth.hint}` : ""} — fix the entry in ${activeScope ? registration[activeScope].path : "mcp.json"} or re-run \`daruma-cursor install --force\``,
       registered
         ? `mcp.json: registered (global=${registration.global.present}, project=${registration.project.present})`
         : "mcp.json: daruma entry missing — run `daruma-cursor install --global`",
