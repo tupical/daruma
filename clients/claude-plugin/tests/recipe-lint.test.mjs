@@ -109,3 +109,20 @@ test("mine recipes filter by the caller's live claim, not an owner list filter",
     assert.match(body, /capture `mcp_agent_id`/, file);
   }
 });
+
+const ID_RECIPES = [join(root, "commands", "close.md"), join(root, "commands", "status.md")];
+
+test("close/status recipes pass id to id-keyed tools and resolve short ids from a list, not search", async () => {
+  for (const file of ID_RECIPES) {
+    const body = await readFile(file, "utf8");
+    assert.doesNotMatch(body, /\bdaruma_(?:get|complete|set_status)\s+task_id\b/, file);
+    assert.match(body, /`daruma_get id=/, file);
+    assert.doesNotMatch(body, /\bdaruma_search\s+query=/, file);
+    assert.match(body, /`daruma_list status="[a-z_,]+" project_id=<id> limit=\d+`/, file);
+    assert.match(body, /ends with/, file);
+    assert.match(body, /Several matches → list them/, file);
+  }
+  const close = await readFile(ID_RECIPES[0], "utf8");
+  assert.match(close, /`daruma_complete id=<id>`/);
+  assert.match(close, /`daruma_set_status id=<id> status=cancelled`/);
+});

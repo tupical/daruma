@@ -10,9 +10,16 @@ The user invoked `/daruma-claude:status [<task_id_or_short>]`.
 
 Show full details for that specific task.
 
-1. `daruma_get task_id = <arg>` — if `<arg>` is a short suffix (≤8
-   hex chars), use `daruma_search query=<arg> scope="tasks" limit=5` to resolve
-   to a full id first.
+1. `daruma_get id=<arg> comments=true` when `<arg>` is a full id (a UUID).
+   A short suffix has to be resolved to a full id first — `daruma_search`
+   matches title and description text only, never ids:
+   a. `daruma_list status="active" project_id=<id> limit=100` (project from
+      `daruma_workspace_info`).
+   b. Keep the rows whose `id` ends with `<arg>` (case-insensitive).
+   c. Exactly one match → `daruma_get id=<full id> comments=true`. No match →
+      print `No open task ends with <arg> — pass the full task id.` and stop.
+      Several matches → list them as `<full id> — <title>` and ask which one;
+      show nothing until the user answers.
 2. Render:
 
    ```
