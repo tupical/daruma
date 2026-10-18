@@ -380,6 +380,41 @@ async fn idempotent_link_via_ccid() {
     );
 }
 
+/// Concurrent retries with one ccid must link once (MODULE_CONTRACT §3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_link_via_same_ccid_links_once() {
+    let h = build_harness().await;
+    let from = create_task(&h.app, &h.token, "Race From").await;
+    let to = create_task(&h.app, &h.token, "Race To").await;
+    let ccid = uuid::Uuid::new_v4();
+    let body =
+        format!(r#"{{"from":"{from}","to":"{to}","kind":"blocks","client_command_id":"{ccid}"}}"#);
+
+    let calls: Vec<_> = (0..8)
+        .map(|_| {
+            let app = h.app.clone();
+            let token = h.token.clone();
+            let body = body.clone();
+            tokio::spawn(async move { post_json(&app, &token, "/v1/relations", &body).await })
+        })
+        .collect();
+    let mut relation_ids = Vec::new();
+    for call in calls {
+        let (status, res) = call.await.unwrap();
+        assert_eq!(status, StatusCode::CREATED, "concurrent link failed: {res}");
+        relation_ids.push(res["data"]["relation_id"].clone());
+    }
+    relation_ids.dedup();
+    assert_eq!(relation_ids.len(), 1, "one relation_id: {relation_ids:?}");
+
+    let events = h.store.load_since(0, 100).await.unwrap();
+    let linked_count = events
+        .iter()
+        .filter(|e| e.payload.kind() == "task.linked")
+        .count();
+    assert_eq!(linked_count, 1, "exactly 1 TaskLinked event expected");
+}
+
 // ── AC-12: MutationResponse shape for link and unlink ────────────────────────
 
 /// AC-12: POST returns {success, event_id, event_seq, data: {relation_id}, client_command_id}.

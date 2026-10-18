@@ -592,13 +592,21 @@ project settings, device pairing, and binary downloads also live under
 Every mutation can carry an optional client-generated
 `client_command_id: Uuid` (UUIDv4) in the `CommandEnvelope`.
 
-`apps/server/src/routes.rs::dispatch_command` honours it:
+`apps/server/src/routes/mod.rs::dispatch_command` (and `POST
+/v1/relations`) honours it through `claim_client_command_id` /
+`settle_client_command_id`:
 
 1. If present, `idempotency.lookup(ccid)` → on hit, return the cached
    `MutationResponse { event_id, event_seq }` without calling the
    handler. The event log is **not** appended again.
-2. On miss, run the handler normally; after `append_batch` succeeds,
-   `idempotency.insert(ccid, last.id, last.seq)` so retries collapse.
+2. On miss, `idempotency.reserve(ccid)` writes a placeholder row
+   (`server_event_seq = 0`) with `INSERT OR IGNORE` **before** the
+   handler runs; the primary key lets exactly one concurrent request
+   win. A loser polls (≈5 s) until the winner's result appears and
+   replays it, or answers 409 `client_command_id_in_flight`.
+3. The winner runs the handler; on success
+   `idempotency.complete(ccid, last.id, last.seq)` fills the row, on
+   failure `idempotency.release(ccid)` drops it so a retry can run.
 
 `processed_command_ids` (migration 0008) is the canonical store:
 `(client_command_id PK, server_event_id, server_event_seq,
