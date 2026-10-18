@@ -4,6 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -11,6 +13,10 @@ import {
   parseClaudeMcpList,
   parseSemver,
   cliReadinessSummary,
+  darumaMcpLaunch,
+  darumaMcpReady,
+  probeDarumaLauncher,
+  formatReport,
 } from "../lib/detect.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +67,13 @@ test("parseClaudeMcpList: status with 'fail' wins over 'connected' substring", (
   const got = parseClaudeMcpList(text);
   assert.equal(got.present, true);
   assert.equal(got.connected, false);
+});
+
+test("parseClaudeMcpList: heavy ✔/✘ markers of current claude mcp list", () => {
+  const connected = parseClaudeMcpList("Checking MCP server health…\n\ndaruma: /usr/bin/daruma mcp - ✔ Connected\n");
+  assert.deepEqual(connected, { present: true, connected: true, command: "/usr/bin/daruma mcp" });
+  const failed = parseClaudeMcpList("daruma: /bin/true  - ✘ Failed to connect — CONNECTION_CLOSED: Connection closed\n");
+  assert.deepEqual(failed, { present: true, connected: false, command: "/bin/true" });
 });
 
 test("parseSemver: extracts version from arbitrary CLI output", () => {
@@ -141,4 +154,76 @@ test("cliReadinessSummary: tolerates missing claudeMcp on report", () => {
   assert.equal(got.daruma.claudeMcp.command, null);
   assert.equal(got.hints.omcInstall, "install omc");
   assert.equal(got.hints.darumaInstall, "install daruma");
+});
+
+test("darumaMcpLaunch: start spawns the unified binary as `daruma mcp`", () => {
+  assert.deepEqual(darumaMcpLaunch({}), { command: "daruma", args: ["mcp"] });
+  assert.deepEqual(
+    darumaMcpLaunch({ DARUMA_MCP_BIN: " /opt/daruma/bin/daruma " }),
+    { command: "/opt/daruma/bin/daruma", args: ["mcp"] },
+  );
+  assert.deepEqual(darumaMcpLaunch({ DARUMA_MCP_BIN: "  " }).command, "daruma");
+});
+
+test("darumaMcpReady: connected Claude entry is not READY without a runnable launcher", () => {
+  const claudeMcp = { present: true, connected: true, command: "daruma mcp" };
+  const http = { ok: true };
+  assert.equal(darumaMcpReady({ launcher: { ok: false }, claudeMcp, http }), false);
+  assert.equal(darumaMcpReady({ launcher: { ok: true }, claudeMcp, http }), true);
+  assert.equal(
+    darumaMcpReady({ launcher: { ok: true }, claudeMcp: { connected: false }, http }),
+    false,
+  );
+  assert.equal(darumaMcpReady({ launcher: { ok: true }, claudeMcp, http: { ok: false } }), false);
+});
+
+async function withTempDir(fn) {
+  const dir = await mkdtemp(join(tmpdir(), "daruma-detect-test-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("probeDarumaLauncher: runs --version on the exact command start spawns", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "daruma");
+    await writeFile(bin, "#!/bin/sh\n[ \"$1\" = --version ] && echo 'daruma 0.2.0'\n");
+    await chmod(bin, 0o755);
+    const got = await probeDarumaLauncher({ DARUMA_MCP_BIN: bin });
+    assert.deepEqual(got, { ok: true, command: bin, args: ["mcp"], version: "daruma 0.2.0" });
+  });
+});
+
+test("probeDarumaLauncher: missing launcher fails the probe and the verdict", async () => {
+  const missing = join(tmpdir(), "daruma-detect-missing", "daruma");
+  const launcher = await probeDarumaLauncher({ DARUMA_MCP_BIN: missing });
+  assert.equal(launcher.ok, false);
+  assert.equal(launcher.command, missing);
+
+  const claudeMcp = { present: true, connected: true, command: "daruma mcp" };
+  const http = { ok: true, baseUrl: "http://localhost:8080", status: "ok", version: null };
+  const report = {
+    ready: false,
+    omc: { name: "oh-my-claudecode", installed: true, cli: "4.13.6", npmVersion: null, installHint: "" },
+    daruma: {
+      name: "daruma",
+      installed: true,
+      mcpReady: darumaMcpReady({ launcher, claudeMcp, http }),
+      cli: null,
+      launcher,
+      http,
+      claudeMcp,
+      installHint: "",
+      mcpHint: "daruma server or MCP shim is not ready.",
+    },
+  };
+  assert.equal(report.daruma.mcpReady, false);
+  const text = formatReport(report);
+  assert.match(text, new RegExp(`start launcher: ${missing} mcp → NOT RUNNABLE`));
+  assert.doesNotMatch(text, /^READY$/m);
+  assert.deepEqual(cliReadinessSummary(report).daruma.launcher, {
+    ok: false, command: missing, args: ["mcp"],
+  });
 });

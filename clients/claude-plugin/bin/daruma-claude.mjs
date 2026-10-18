@@ -14,7 +14,7 @@
 //   daruma-claude platform                    Print execution mode (omc-team | task-fallback)
 //   daruma-claude --version                   Print version.
 //
-// `start` opens its own JSON-RPC connection to `daruma-mcp`, creates/picks a
+// `start` opens its own JSON-RPC connection to `daruma mcp`, creates/picks a
 // project, creates a root task (optionally decomposing into a plan), then uses
 // `omc team` as the executor for each eligible task. No nested Claude Code
 // session is opened at the daruma-claude level — `omc team` workers are the
