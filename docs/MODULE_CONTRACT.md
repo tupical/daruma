@@ -27,18 +27,28 @@ override.
    migration in `crates/storage/migrations/`.
 3. **Idempotency contract** — every mutating command may carry a
    `client_command_id: UUIDv4`. Two dispatches with the same id produce
-   the same `EventEnvelope.event_id` and the same `seq` (see
-   `processed_command_ids` table). Modules SHOULD send one for every
-   user-visible action.
+   the same `EventEnvelope.id` and the same `seq` (see
+   `processed_command_ids` table). On the wire the envelope field is
+   `id`; the `event_id` field of a mutation response carries the `id` of
+   the last envelope the command produced. Modules SHOULD send one for
+   every user-visible action.
 4. **Capability semantics.** A token with `TaskRead` cannot mutate; a
    token with `Admin` is the wildcard. Capabilities never narrow
    silently — removing a capability from an endpoint requires a `/v2`
    cut and a Sunset notice.
 5. **WS protocol stability.** Subscribe filters (`Channel::{Tasks,
    Comments, AgentStatus, Presence, Webhooks, Plans, Runs, Documents,
-   AiOps, WorkUnits, Artifacts, Rules}`) and the
-   `Resync` flow on `Lagged` are stable. `Hello` capabilities are
-   additive — new fields appear, old fields persist until a `/v2` cut.
+   AiOps, WorkUnits, Artifacts, Rules}`) and the lag-recovery flow are
+   stable. A subscriber that falls behind (its per-connection buffer is
+   full, or the server-side event bus overflowed) is not sent a
+   `Resync` frame: the server drops its subscriptions and closes the
+   socket with close code `1001` (going away). The client reconnects and
+   sends `Subscribe { since_seq }` with the last `seq` it applied; the
+   server replays the missed events from the log as a `Snapshot` before
+   live events resume. The `Resync` variant stays in the wire enum for
+   backward compatibility, but no server path emits it. `Hello`
+   capabilities are additive — new fields appear, old fields persist
+   until a `/v2` cut.
 6. **`/healthz` versioning.** `/healthz` returns
    `{status, version, core_version, api_version}` so probes can detect
    drift without parsing build manifests.
@@ -85,7 +95,8 @@ something not declared, the test 403s and CI fails. This keeps the
 
 ## Error contract
 
-All HTTP error responses are JSON of the shape:
+Errors returned by Daruma route handlers and middleware (auth, rate
+limit) are JSON of the shape:
 
 ```json
 { "error": { "code": "<stable_snake_case_code>", "message": "<human>" } }
@@ -99,6 +110,19 @@ forbidden`, plus route-specific codes (`auth_missing`, `auth_invalid`,
 `task_blocked`, `cycle_detected`, `idempotent_replay`, …) that are
 introduced via core PRs and documented in their respective sections of
 [ARCHITECTURE.md](ARCHITECTURE.md).
+
+Requests rejected by the HTTP framework before a handler runs do not get
+this shape. Clients must check `Content-Type` before parsing an error
+body:
+
+- a JSON body sent without `Content-Type: application/json` →
+  `415`, `text/plain` body;
+- a body that is not valid JSON, or does not match the request schema →
+  `400` / `422`, `text/plain` body;
+- an unknown route → `404` with an empty body; a known route with the
+  wrong method → `405` with an empty body.
+
+`apps/server/tests/error_contract.rs` pins this behaviour.
 
 ## Embed mode (in-process core)
 

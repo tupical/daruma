@@ -10,7 +10,9 @@
 //!     dropped or duplicated at the boundary.
 //!   * Per-project and per-channel filtering. Events without an inline
 //!     `project_id` are resolved against `TaskRepo` (task → project).
-//!   * `Resync { from_seq, dropped }` when the broadcast receiver lags.
+//!   * Lag recovery: a subscriber that falls behind is closed with code
+//!     `1001`; the client reconnects with `Subscribe { since_seq }` and
+//!     rehydrates via `Snapshot`. `Resync` is no longer emitted.
 //!   * Heartbeat: server `Ping` every 25 s; closes the socket if the
 //!     client misses two consecutive pongs.
 //!   * `?visibility=mine` on the upgrade: only events the principal authored
