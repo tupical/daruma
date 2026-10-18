@@ -160,16 +160,32 @@ export async function resolveMcpEnvFromCredentials(overrides = {}) {
   return env;
 }
 
-/** HTTP probe URL: credentials profile, then env, then self-host default. */
+/**
+ * Daruma connection vars set explicitly in the shell (non-empty only).
+ * They outrank the stored profile field by field, as in the `daruma` binary.
+ * `DARUMA_BASE_URL` is the legacy spelling of `DARUMA_API_URL`.
+ */
+export function explicitDarumaEnv(env = process.env) {
+  const out = {};
+  const url = [env.DARUMA_API_URL, env.DARUMA_BASE_URL]
+    .map((v) => v?.trim())
+    .find(Boolean);
+  if (url) out.DARUMA_API_URL = url.replace(/\/$/, "");
+  const token = env.DARUMA_TOKEN?.trim();
+  if (token) out.DARUMA_TOKEN = token;
+  const workspaceId = env.DARUMA_WORKSPACE_ID?.trim();
+  if (workspaceId) out.DARUMA_WORKSPACE_ID = workspaceId;
+  return out;
+}
+
+/** HTTP probe URL: env, then credentials profile, then self-host default. */
 export async function resolveHttpProbeUrl(overrides = {}) {
   const presetUrl = urlForApiPreset(overrides.remote);
   if (overrides.apiUrl) return overrides.apiUrl.replace(/\/$/, "");
   if (presetUrl) return presetUrl;
 
-  const fromEnv =
-    process.env.DARUMA_API_URL ??
-    process.env.DARUMA_BASE_URL;
-  if (fromEnv?.trim()) return fromEnv.trim().replace(/\/$/, "");
+  const fromEnv = explicitDarumaEnv().DARUMA_API_URL;
+  if (fromEnv) return fromEnv;
 
   const creds = await loadCredentials();
   const profile = creds ? resolveActiveProfile(creds) : null;

@@ -14,9 +14,9 @@ import { join } from "node:path";
 
 import {
   credentialsLocationHint,
+  explicitDarumaEnv,
   loadCredentials,
   resolveActiveProfile,
-  resolveHttpProbeUrl,
   resolveMcpEnvFromCredentials,
 } from "./agent-credentials.mjs";
 
@@ -174,9 +174,14 @@ async function probeDarumaHttp(baseUrl) {
 }
 
 export async function detectDaruma() {
-  const probeUrl = await resolveHttpProbeUrl();
+  // Probe the URL start/team-from-plan hand to `daruma mcp`, so doctor checks
+  // the server the client really connects to.
+  const probeUrl = (await darumaMcpChildEnv()).DARUMA_API_URL;
   const creds = await loadCredentials();
   const profile = creds ? resolveActiveProfile(creds) : null;
+  const tokenSource = explicitDarumaEnv().DARUMA_TOKEN
+    ? "env"
+    : profile?.token ? "credentials" : null;
 
   // `claude mcp list` runs a full health check against every registered MCP
   // server. On a setup with several servers it routinely takes 5-15s — the
@@ -213,6 +218,7 @@ export async function detectDaruma() {
       present: Boolean(profile?.token),
       mode: profile?.mode ?? null,
       profile: profile?.name ?? null,
+      tokenSource,
     },
     claudeMcp: mcpEntry,
     installHint: [
@@ -228,9 +234,11 @@ export async function detectDaruma() {
     mcpHint: [
       "daruma server or MCP shim is not ready.",
       `Server probe: GET ${probeUrl}/v1/healthz`,
-      profile?.token
-        ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
-        : `credentials: none at ${credentialsLocationHint()} — set DARUMA_API_URL + DARUMA_TOKEN or save a local profile`,
+      tokenSource === "env"
+        ? "credentials: DARUMA_TOKEN from env (overrides any saved profile)"
+        : profile?.token
+          ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
+          : `credentials: none at ${credentialsLocationHint()} — set DARUMA_API_URL + DARUMA_TOKEN or save a local profile`,
       mcpEntry.present
         ? `MCP shim registered (${mcpEntry.command}): ${mcpEntry.connected ? "connected" : "disconnected"}`
         : "MCP shim not registered. Add it:  claude mcp add daruma -- daruma mcp",
@@ -317,6 +325,9 @@ export function formatReport(report) {
       lines.push(
         `       credentials: ${c.present ? `${c.mode ?? "?"} (${c.profile ?? "?"})` : "absent"} — ${c.path}`,
       );
+      if (c.tokenSource === "env") {
+        lines.push("       token: DARUMA_TOKEN from env (overrides the saved profile)");
+      }
     }
     if (tool.claudeMcp) {
       const mcp = tool.claudeMcp;
@@ -397,10 +408,14 @@ export async function saveCachedDoctor(report, { cliVersion } = {}) {
   }
 }
 
-/** Env vars for spawning `daruma mcp` (credentials + process env). */
-export async function darumaMcpChildEnv(extra = {}) {
+/**
+ * Env vars for spawning `daruma mcp`: the saved profile fills only what the
+ * shell leaves unset — explicit DARUMA_API_URL / DARUMA_TOKEN /
+ * DARUMA_WORKSPACE_ID win (AGENTS.md "Token discovery order").
+ */
+export async function darumaMcpChildEnv(extra = {}, env = process.env) {
   const fromCreds = await resolveMcpEnvFromCredentials();
-  return { ...process.env, ...fromCreds, ...extra };
+  return { ...env, ...fromCreds, ...explicitDarumaEnv(env), ...extra };
 }
 
 export async function detectAllCached({ bypass = false, cliVersion }) {

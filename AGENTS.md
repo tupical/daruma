@@ -161,6 +161,13 @@ All daruma clients and the `daruma` binary resolve credentials in this order:
    place. If you use the binary alone, copy it yourself:
    `mkdir -p ~/.agents/daruma && cp ~/.config/daruma/credentials.json ~/.agents/daruma/`.
 
+The order applies per variable: a non-empty `DARUMA_API_URL`,
+`DARUMA_TOKEN` or `DARUMA_WORKSPACE_ID` in the environment wins, and the
+active profile fills only the ones left unset. `daruma-claude start` /
+`team-from-plan` pass exactly that merge to the `daruma mcp` they spawn, and
+`daruma-claude doctor` probes the same URL and reports when the token comes
+from the environment.
+
 For service / headless use, set `DARUMA_TOKEN` and optionally
 `DARUMA_API_URL`. No credentials file is needed.
 
