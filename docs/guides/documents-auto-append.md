@@ -27,6 +27,14 @@ every live document it must be anchored to a non-terminal task
   appends move to the next-oldest document of that kind, or stop if
   there is none. When the anchor task is done the document becomes
   `frozen`, is not archived and still receives appends.
+- **A frozen log is never rotated out automatically.** The cancel
+  cascade and the orphan sweep only close live (`draft`/`active`)
+  documents; they leave a `frozen` one as it is, even when its anchor is
+  later cancelled or deleted. It stays the oldest non-archived target
+  and keeps receiving appends. To move appends to a newer document,
+  archive the frozen one explicitly — MCP
+  `daruma_doc_archive { document_id }` (full profile) or
+  `POST /v1/documents/{id}/archive`.
 
 ## What lands where
 
