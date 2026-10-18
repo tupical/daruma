@@ -137,35 +137,46 @@ impl ApiClient {
         Ok(agent_id.to_string())
     }
 
-    /// Session dedup probe (task D). Given an object `id` and its current
-    /// `updated_at`, decide whether this session was already handed the same
-    /// object in full at the same `updated_at`:
+    /// Session dedup lookup (task D). Given an object `id` and its current
+    /// version stamp, decide whether this session was already handed the same
+    /// object in full at the same stamp:
     ///
-    /// * `Some(since)` — HIT: unchanged since `since` (the `updated_at` recorded
-    ///   at the earlier full emission, identical to the current one). The caller
+    /// * `Some(since)` — HIT: unchanged since `since` (the stamp recorded at the
+    ///   earlier full emission, identical to the current one). The caller
     ///   should return the compact `unchanged` marker instead of the payload.
-    /// * `None` — MISS: the object is new to this session or its `updated_at`
-    ///   changed. This call **records** the current stamp, so the caller must go
-    ///   on to emit the full object.
+    /// * `None` — MISS: the object is new to this session, its stamp changed,
+    ///   or the earlier emission was only a `max_tokens` excerpt.
+    ///
+    /// A lookup never records anything: the caller calls [`Self::dedup_record`]
+    /// only after it knows the response it emits is the complete object, so a
+    /// truncated excerpt can never be answered with `unchanged` later.
     ///
     /// `updated_at` is the single source of truth for "changed vs unchanged":
     /// every task/plan mutation bumps it through the event pipeline, so a stamp
     /// match is a correct-by-construction "nothing changed" signal without any
     /// payload hashing or event subscription.
-    pub fn dedup_probe(&self, id: &str, updated_at: &str) -> Option<String> {
-        let mut cache = match self.dedup_cache.lock() {
+    pub fn dedup_lookup(&self, id: &str, updated_at: &str) -> Option<String> {
+        let cache = match self.dedup_cache.lock() {
             Ok(guard) => guard,
             // A poisoned lock only means a prior panic while holding it; dedup is
-            // a best-effort optimisation, so fall back to "miss" (full emit).
+            // a best-effort optimisation, so the cache contents are still usable.
             Err(poisoned) => poisoned.into_inner(),
         };
         match cache.get(id) {
             Some(stamp) if stamp == updated_at => Some(stamp.clone()),
-            _ => {
-                cache.insert(id.to_string(), updated_at.to_string());
-                None
-            }
+            _ => None,
         }
+    }
+
+    /// Record that this session was just handed `id` **in full** at
+    /// `updated_at` (task D). Call it only for complete payloads — never for a
+    /// `max_tokens` excerpt — so a later `dedup` read can trust the stamp.
+    pub fn dedup_record(&self, id: &str, updated_at: &str) {
+        let mut cache = match self.dedup_cache.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        cache.insert(id.to_string(), updated_at.to_string());
     }
 
     /// Wire-format Actor for every command this process dispatches.
