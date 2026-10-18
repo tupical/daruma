@@ -1376,3 +1376,62 @@ async fn auto_append_targets_oldest_existing_log_doc() {
         .await
         .contains("Created task 'after archive'"));
 }
+
+/// A frozen log is never rotated out automatically: its anchor can be
+/// deleted and the orphan sweep still leaves it alone, so it stays the
+/// oldest non-archived target. Only an explicit archive moves appends on.
+#[tokio::test]
+async fn auto_append_frozen_log_stays_target_until_archived() {
+    let (handler, documents) = build_stack().await;
+    let project_id = create_bare_project(&handler).await;
+
+    let anchor = create_task(&handler, project_id, "frozen anchor").await;
+    let first =
+        create_doc_for_task(&handler, project_id, DocumentKind::HumanLog, "A", anchor).await;
+    let second = create_doc(&handler, project_id, DocumentKind::HumanLog, "B").await;
+
+    handler
+        .handle(
+            Command::CompleteTask {
+                id: anchor,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    handler
+        .handle(Command::DeleteTask { id: anchor }, Actor::user())
+        .await
+        .unwrap();
+    let swept = handler
+        .sweep_orphan_documents(daruma_shared::time::now())
+        .await
+        .unwrap();
+    assert_eq!(swept, 0, "the sweep only closes live documents");
+    assert_eq!(
+        documents.get(first).await.unwrap().unwrap().status,
+        daruma_domain::DocumentStatus::Frozen
+    );
+
+    let content = |id| {
+        let documents = documents.clone();
+        async move { documents.get(id).await.unwrap().unwrap().content }
+    };
+    create_task(&handler, project_id, "after delete").await;
+    assert!(content(first).await.contains("Created task 'after delete'"));
+    assert!(!content(second).await.contains("after delete"));
+
+    handler
+        .handle(
+            Command::ArchiveDocument { document_id: first },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    create_task(&handler, project_id, "after archive").await;
+    assert!(!content(first).await.contains("after archive"));
+    assert!(content(second)
+        .await
+        .contains("Created task 'after archive'"));
+}
