@@ -3740,58 +3740,52 @@ async fn dispatch_command(
     let needed = capability_for_command(&envelope.command);
     auth.require(needed).map_err(ApiError::from_missing_cap)?;
 
-    // Idempotency check (Linear A.1) — return cached result for seen commands.
-    if let Some(ccid) = envelope.client_command_id {
-        if let Some((eid, eseq)) = state
-            .idempotency
-            .lookup(ccid)
+    // Idempotency (Linear A.1): claim the key before the mutation runs so a
+    // concurrent retry replays this result instead of executing again.
+    let ccid = envelope.client_command_id;
+    let claim = claim_client_command_id(&state, ccid).await?;
+    if let CommandIdClaim::Replay {
+        event_id,
+        event_seq,
+    } = claim
+    {
+        let data = load_cached_event_data(&state, event_id, event_seq)
+            .await?
+            .unwrap_or(serde_json::Value::Null);
+        return Ok(Json(MutationResponse {
+            success: true,
+            event_id: Some(event_id),
+            event_seq: Some(event_seq),
+            data,
+            warnings: vec![],
+            client_command_id: ccid,
+        }));
+    }
+
+    let result = async {
+        let mut warnings = mutation_warnings(&state, &envelope.command)
             .await
-            .map_err(ApiError::from)?
-        {
-            let data = load_cached_event_data(&state, eid, eseq)
-                .await?
-                .unwrap_or(serde_json::Value::Null);
-            return Ok(Json(MutationResponse {
-                success: true,
-                event_id: Some(eid),
-                event_seq: Some(eseq),
-                data,
-                warnings: vec![],
-                client_command_id: Some(ccid),
-            }));
-        }
+            .map_err(ApiError::from)?;
+
+        // Lifecycle-gate warnings (docs/LIFECYCLE_RULES_SPEC.md §1.5) ride the
+        // same `warnings` channel; blocked checks surface as a Conflict error
+        // ("rule_blocked: …") from dispatch itself.
+        let outcome = state
+            .commands
+            .dispatch_authenticated_with_warnings(
+                envelope.command,
+                envelope.actor,
+                auth.agent_id,
+                auth.scope.capabilities.has(Capability::Admin),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        warnings.extend(outcome.warnings);
+        Ok::<_, ApiError>((warnings, outcome.events))
     }
-
-    let mut warnings = mutation_warnings(&state, &envelope.command)
-        .await
-        .map_err(ApiError::from)?;
-
-    // Lifecycle-gate warnings (docs/LIFECYCLE_RULES_SPEC.md §1.5) ride the
-    // same `warnings` channel; blocked checks surface as a Conflict error
-    // ("rule_blocked: …") from dispatch itself.
-    let outcome = state
-        .commands
-        .dispatch_authenticated_with_warnings(
-            envelope.command,
-            envelope.actor,
-            auth.agent_id,
-            auth.scope.capabilities.has(Capability::Admin),
-        )
-        .await
-        .map_err(ApiError::from)?;
-    warnings.extend(outcome.warnings);
-    let envelopes = outcome.events;
-
-    // Persist idempotency record for future retries.
-    if let Some(ccid) = envelope.client_command_id {
-        if let Some(last) = envelopes.last() {
-            state
-                .idempotency
-                .insert(ccid, last.id, last.seq)
-                .await
-                .map_err(ApiError::from)?;
-        }
-    }
+    .await;
+    let (warnings, envelopes) =
+        settle_client_command_id(&state, &claim, result, |(_, envs)| envs.last()).await?;
 
     let last = envelopes.last();
     let data = serde_json::to_value(&envelopes).unwrap_or(serde_json::Value::Null);
@@ -3801,7 +3795,7 @@ async fn dispatch_command(
         event_seq: last.map(|e| e.seq),
         data,
         warnings,
-        client_command_id: envelope.client_command_id,
+        client_command_id: ccid,
     }))
 }
 
@@ -4205,6 +4199,91 @@ fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string)
+}
+
+/// How long a request waits for a concurrent request holding the same
+/// `client_command_id` before answering 409 `client_command_id_in_flight`.
+const CLIENT_COMMAND_ID_WAIT_POLLS: u32 = 100;
+const CLIENT_COMMAND_ID_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Result of claiming a `client_command_id` before its mutation runs
+/// (docs/MODULE_CONTRACT.md §3).
+pub(crate) enum CommandIdClaim {
+    /// The request carried no `client_command_id`; dispatch without dedup.
+    Untracked,
+    /// This request owns the key and must settle it after dispatch.
+    Owned(uuid::Uuid),
+    /// An earlier request with this key already finished.
+    Replay {
+        event_id: daruma_shared::EventId,
+        event_seq: u64,
+    },
+}
+
+/// Claim `ccid` atomically before the mutation runs. A concurrent holder is
+/// awaited: its result is replayed, or the key is taken over when the holder
+/// failed and released it.
+pub(crate) async fn claim_client_command_id(
+    state: &AppState,
+    ccid: Option<uuid::Uuid>,
+) -> Result<CommandIdClaim, ApiError> {
+    let Some(ccid) = ccid else {
+        return Ok(CommandIdClaim::Untracked);
+    };
+    for attempt in 0..=CLIENT_COMMAND_ID_WAIT_POLLS {
+        if let Some((event_id, event_seq)) = state
+            .idempotency
+            .lookup(ccid)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Ok(CommandIdClaim::Replay {
+                event_id,
+                event_seq,
+            });
+        }
+        if state
+            .idempotency
+            .reserve(ccid)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Ok(CommandIdClaim::Owned(ccid));
+        }
+        if attempt < CLIENT_COMMAND_ID_WAIT_POLLS {
+            tokio::time::sleep(CLIENT_COMMAND_ID_POLL_INTERVAL).await;
+        }
+    }
+    Err(ApiError::from(CoreError::conflict(format!(
+        "client_command_id_in_flight: {ccid} is still being executed by another request"
+    ))))
+}
+
+/// Settle an owned claim: record the last envelope on success, release the
+/// key on failure (or when nothing was emitted) so a retry can run.
+pub(crate) async fn settle_client_command_id<T>(
+    state: &AppState,
+    claim: &CommandIdClaim,
+    result: Result<T, ApiError>,
+    last_event: impl FnOnce(&T) -> Option<&EventEnvelope>,
+) -> Result<T, ApiError> {
+    let CommandIdClaim::Owned(ccid) = *claim else {
+        return result;
+    };
+    let last = result
+        .as_ref()
+        .ok()
+        .and_then(|value| last_event(value).map(|env| (env.id, env.seq)));
+    let settled = match last {
+        Some((event_id, event_seq)) => state.idempotency.complete(ccid, event_id, event_seq).await,
+        None => state.idempotency.release(ccid).await,
+    };
+    if let Err(e) = settled {
+        // The mutation outcome stands; a stuck reservation only answers
+        // retries with `client_command_id_in_flight`, never a second run.
+        tracing::warn!(err = %e, client_command_id = %ccid, "idempotency settle failed");
+    }
+    result
 }
 
 async fn load_cached_event_data(

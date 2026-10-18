@@ -163,14 +163,21 @@ impl IdempotencyRepo {
         Ok(())
     }
 
-    pub async fn reserve_event_id(&self, client_event_id: EventId) -> Result<bool> {
+    /// Atomically claim `client_command_id` before its mutation runs.
+    ///
+    /// Writes a placeholder row (`server_event_seq = 0`) with `INSERT OR
+    /// IGNORE`; the primary key makes exactly one concurrent caller win.
+    /// Returns `true` for the winner, `false` when the id is already
+    /// reserved or completed.  The winner must call [`Self::complete`] on
+    /// success or [`Self::release`] on failure.
+    pub async fn reserve(&self, client_command_id: Uuid) -> Result<bool> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "INSERT OR IGNORE INTO processed_command_ids \
              (client_command_id, server_event_id, server_event_seq, created_at) \
              VALUES (?, ?, 0, ?)",
         )
-        .bind(client_event_id.as_uuid().to_string())
+        .bind(client_command_id.to_string())
         .bind(reserved_event_id().to_string())
         .bind(now)
         .execute(&self.pool)
@@ -179,15 +186,16 @@ impl IdempotencyRepo {
 
         {
             let mut filter = self.filter.write().expect("bloom filter RwLock poisoned");
-            filter.insert(&client_event_id.as_uuid());
+            filter.insert(&client_command_id);
         }
 
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn complete_event_id(
+    /// Fill a reservation made by [`Self::reserve`] with the command's result.
+    pub async fn complete(
         &self,
-        client_event_id: EventId,
+        client_command_id: Uuid,
         event_id: EventId,
         event_seq: u64,
     ) -> Result<()> {
@@ -198,11 +206,39 @@ impl IdempotencyRepo {
         )
         .bind(event_id.to_string())
         .bind(event_seq as i64)
-        .bind(client_event_id.as_uuid().to_string())
+        .bind(client_command_id.to_string())
         .execute(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// Drop an unfilled reservation so a retry with the same id can run.
+    /// Completed rows are never touched.
+    pub async fn release(&self, client_command_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM processed_command_ids \
+             WHERE client_command_id = ? AND server_event_seq = 0",
+        )
+        .bind(client_command_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn reserve_event_id(&self, client_event_id: EventId) -> Result<bool> {
+        self.reserve(client_event_id.as_uuid()).await
+    }
+
+    pub async fn complete_event_id(
+        &self,
+        client_event_id: EventId,
+        event_id: EventId,
+        event_seq: u64,
+    ) -> Result<()> {
+        self.complete(client_event_id.as_uuid(), event_id, event_seq)
+            .await
     }
 
     /// Delete rows older than `age` and return the number of rows removed.
@@ -297,6 +333,25 @@ mod tests {
             .unwrap();
         assert_eq!(stored_id, server_event_id);
         assert_eq!(stored_seq, 7);
+    }
+
+    #[tokio::test]
+    async fn release_frees_reservation_but_keeps_completed_rows() {
+        let (_db, repo) = make_repo().await;
+        let ccid = Uuid::new_v4();
+
+        assert!(repo.reserve(ccid).await.unwrap());
+        repo.release(ccid).await.unwrap();
+        assert!(
+            repo.reserve(ccid).await.unwrap(),
+            "released id is claimable"
+        );
+
+        let event_id = EventId::new();
+        repo.complete(ccid, event_id, 3).await.unwrap();
+        repo.release(ccid).await.unwrap();
+        assert!(!repo.reserve(ccid).await.unwrap());
+        assert_eq!(repo.lookup(ccid).await.unwrap(), Some((event_id, 3)));
     }
 
     #[tokio::test]

@@ -30,8 +30,12 @@ override.
    the same `EventEnvelope.id` and the same `seq` (see
    `processed_command_ids` table). On the wire the envelope field is
    `id`; the `event_id` field of a mutation response carries the `id` of
-   the last envelope the command produced. Modules SHOULD send one for
-   every user-visible action.
+   the last envelope the command produced. The id is reserved before
+   the command runs, so concurrent duplicates execute once: a duplicate
+   that arrives while the first is in flight waits and replays its
+   result (409 `client_command_id_in_flight` if that takes longer than
+   ≈5 s). A command that fails does not consume its id. Modules SHOULD
+   send one for every user-visible action.
 4. **Capability semantics.** A token with `TaskRead` cannot mutate; a
    token with `Admin` is the wildcard. Capabilities never narrow
    silently — removing a capability from an endpoint requires a `/v2`

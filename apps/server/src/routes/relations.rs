@@ -66,30 +66,29 @@ pub async fn link(
     auth.require(Capability::TaskRelationWrite)
         .map_err(ApiError::from_missing_cap)?;
 
-    // Idempotency check — return cached result if seen before.
-    if let Some(ccid) = body.client_command_id {
-        if let Some((eid, eseq)) = state
-            .idempotency
-            .lookup(ccid)
-            .await
-            .map_err(ApiError::from)?
-        {
-            let relation_id = load_cached_relation_id(&state, eid, eseq).await?;
-            return Ok((
-                StatusCode::CREATED,
-                Json(MutationResponse {
-                    success: true,
-                    event_id: Some(eid),
-                    event_seq: Some(eseq),
-                    data: json!({ "relation_id": relation_id }),
-                    warnings: vec![],
-                    client_command_id: Some(ccid),
-                }),
-            ));
-        }
+    // Idempotency: claim the key before the mutation runs so a concurrent
+    // retry replays this result instead of linking twice.
+    let claim = super::claim_client_command_id(&state, body.client_command_id).await?;
+    if let super::CommandIdClaim::Replay {
+        event_id: eid,
+        event_seq: eseq,
+    } = claim
+    {
+        let relation_id = load_cached_relation_id(&state, eid, eseq).await?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(MutationResponse {
+                success: true,
+                event_id: Some(eid),
+                event_seq: Some(eseq),
+                data: json!({ "relation_id": relation_id }),
+                warnings: vec![],
+                client_command_id: body.client_command_id,
+            }),
+        ));
     }
 
-    let envs = state
+    let result = state
         .commands
         .dispatch(
             Command::LinkTasks {
@@ -100,7 +99,8 @@ pub async fn link(
             super::actor_from(&auth, None),
         )
         .await
-        .map_err(ApiError::from)?;
+        .map_err(ApiError::from);
+    let envs = super::settle_client_command_id(&state, &claim, result, |envs| envs.last()).await?;
 
     // Extract relation_id from the emitted TaskLinked event.
     let relation_id = envs
@@ -113,17 +113,6 @@ pub async fn link(
             }
         })
         .ok_or_else(|| ApiError::from(CoreError::storage("expected TaskLinked event")))?;
-
-    // Persist idempotency record.
-    if let Some(ccid) = body.client_command_id {
-        if let Some(last) = envs.last() {
-            state
-                .idempotency
-                .insert(ccid, last.id, last.seq)
-                .await
-                .map_err(ApiError::from)?;
-        }
-    }
 
     let last = envs.last();
     Ok((
