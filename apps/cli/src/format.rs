@@ -11,12 +11,16 @@
 use comfy_table::{ContentArrangement, Table};
 use serde_json::Value;
 
-/// Pick the "next" claim-ready task from the project's task list.
+/// Pick the top-ranked task from the project's task list.
 ///
 /// Ordering rule (mirrors what an agent typing `daruma next` would
 /// expect): `todo` first, then `in_progress`, then `inbox`. Tasks already
 /// `done`/`cancelled` are skipped. Ties broken by priority (`p0` highest)
 /// and finally `updated_at` descending.
+///
+/// This is a ranking, not a readiness check: the task list carries no
+/// claim or dependency data, so a task claimed by another agent or blocked
+/// by an unfinished dependency can still be returned.
 ///
 /// Returns `None` when no task qualifies — the caller renders an empty
 /// hint in that case.

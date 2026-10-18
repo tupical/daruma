@@ -68,7 +68,11 @@ daruma install --mode local -y
 ## Verbs
 
 ```bash
-# Next claim-ready task in the current project (todo → in_progress → inbox).
+# Top-ranked active task in the current project: sorted todo → in_progress
+# → inbox, then by priority and recency. A ranking only — a task claimed by
+# another agent or waiting on an unfinished dependency is NOT excluded, so
+# the result is not guaranteed to be startable. To take a ready task, claim
+# it through the plan (MCP `daruma_plan_drain_next`).
 daruma next
 
 # Show one task + its comments.
