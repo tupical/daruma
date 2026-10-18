@@ -594,7 +594,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_get",
             "Get plan",
-            "Fetch a plan with progress metrics — the cheap way to summarize one plan (prefer over enumerating plans or tasks).",
+            "Fetch a plan with progress metrics — the cheap way to summarize one plan (prefer over enumerating plans or tasks). `view=tasks` lists every plan task (done included) with status, priority and blocked-by.",
             with_id_alias(schema_plan_get(), "id", "plan_id"),
             Dom::Plans, D, C, Ann::Read,
         ),
@@ -2096,7 +2096,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_plan_get" => {
             let id = resolve_plan_id(&args, "id")?;
-            let view = view_arg(&args, "progress", &["progress", "detail"])?;
+            let view = view_arg(&args, "progress", &["progress", "detail", "tasks"])?;
             let resp = client.get_json(&format!("/v1/plans/{id}")).await?;
             if view == "detail" {
                 // Dedup applies to the detail view only — `progress` is already
@@ -2116,7 +2116,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 ))
             } else {
                 let graph = client.get_json(&format!("/v1/plans/{id}/graph")).await?;
-                Ok(plan_progress_view(resp, graph))
+                if view == "tasks" {
+                    Ok(plan_tasks_view(resp, graph))
+                } else {
+                    Ok(plan_progress_view(resp, graph))
+                }
             }
         }
         "daruma_plan_list" => {
@@ -4069,9 +4073,9 @@ fn schema_plan_get() -> Value {
             "id": {"type":"string"},
             "view": {
                 "type":"string",
-                "enum":["progress","detail"],
+                "enum":["progress","detail","tasks"],
                 "default":"progress",
-                "description":"progress: identity, counts, active/blocked/next task titles; detail: full {plan, progress}."
+                "description":"progress: identity, counts, up to 5 active/blocked/next task titles; detail: full {plan, progress}; tasks: identity, counts and every plan task in order with status, priority, depends_on, blocked_by."
             },
             "max_tokens": {
                 "type":"integer",
@@ -5743,6 +5747,99 @@ fn plan_progress_view(plan_resp: Value, graph: Value) -> Value {
     view
 }
 
+/// Every plan task in plan order — the full-list counterpart of
+/// [`plan_progress_view`], which caps each group at five open tasks.
+fn plan_tasks_view(plan_resp: Value, graph: Value) -> Value {
+    let mut view = plan_progress_view(plan_resp, graph.clone());
+    let nodes = graph
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let status_by_id: HashMap<String, String> = nodes
+        .iter()
+        .filter_map(|node| {
+            Some((
+                node.get("task_id")?.as_str()?.to_string(),
+                node.get("status")?.as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    let mut tasks: Vec<Value> = nodes
+        .iter()
+        .map(|node| {
+            let mut row = keep_keys(
+                node,
+                &[
+                    "task_id",
+                    "title",
+                    "status",
+                    "priority",
+                    "position",
+                    "depends_on",
+                ],
+            );
+            if row.get("priority").is_none() {
+                row["priority"] = json!("p2");
+            }
+            row["blocked_by"] = json!(node_blockers(node, graph.get("edges"), &status_by_id));
+            row
+        })
+        .collect();
+    tasks.sort_by_key(|row| {
+        row.get("position")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    });
+    let obj = view
+        .as_object_mut()
+        .expect("plan_progress_view returns an object");
+    for key in ["active", "blocked", "next"] {
+        obj.remove(key);
+    }
+    obj.insert("tasks".into(), Value::Array(tasks));
+    view
+}
+
+/// Ids of unfinished tasks holding `node` back: plan `depends_on` entries
+/// plus active `blocks` relations pointing at it. Empty for done/cancelled.
+fn node_blockers(
+    node: &Value,
+    edges: Option<&Value>,
+    status_by_id: &HashMap<String, String>,
+) -> Vec<String> {
+    let status = node.get("status").and_then(Value::as_str).unwrap_or("");
+    if matches!(status, "done" | "cancelled") {
+        return Vec::new();
+    }
+    let Some(task_id) = node.get("task_id").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let unfinished = |id: &str| status_by_id.get(id).map(|s| s != "done").unwrap_or(true);
+    let mut out: Vec<String> = node
+        .get("depends_on")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|dep| unfinished(dep))
+        .map(str::to_string)
+        .collect();
+    for edge in edges.and_then(Value::as_array).into_iter().flatten() {
+        if edge.get("kind").and_then(Value::as_str) != Some("blocks")
+            || edge.get("to").and_then(Value::as_str) != Some(task_id)
+        {
+            continue;
+        }
+        if let Some(from) = edge.get("from").and_then(Value::as_str) {
+            if unfinished(from) && !out.iter().any(|id| id == from) {
+                out.push(from.to_string());
+            }
+        }
+    }
+    out
+}
+
 fn node_is_blocked(
     node: &Value,
     edges: Option<&Value>,
@@ -6879,6 +6976,60 @@ mod tests {
         assert_eq!(view["next"][0]["title"], "Next");
         assert!(view["plan"].get("goal").is_none());
         assert!(view["plan"].get("success_criteria").is_none());
+    }
+
+    #[test]
+    fn plan_tasks_view_lists_every_task_with_priority_and_blockers() {
+        let plan = json!({
+            "plan": {"id": "pln_1", "title": "Plan", "status": "active", "goal": "g"},
+            "progress": {"tasks_total": 8, "tasks_done": 1}
+        });
+        // Seven open todo tasks: more than the progress view's 5-per-group cap.
+        let mut nodes = vec![
+            json!({"task_id":"done","position":0,"title":"Done","status":"done","priority":"p1","depends_on":[]}),
+        ];
+        for i in 1..=7 {
+            nodes.push(json!({
+                "task_id": format!("t{i}"), "position": i, "title": format!("T{i}"),
+                "status": "todo", "priority": "p3", "depends_on": ["done"]
+            }));
+        }
+        // An older server omits priority; the last node is held back twice.
+        nodes.push(json!({
+            "task_id":"held","position":8,"title":"Held","status":"todo",
+            "depends_on":["t1","done"]
+        }));
+        nodes.reverse();
+        let graph = json!({
+            "nodes": nodes,
+            "edges": [{"from":"t2","to":"held","kind":"blocks"}]
+        });
+        let view = plan_tasks_view(plan, graph);
+
+        assert_eq!(view["plan"]["id"], "pln_1");
+        assert!(view["plan"].get("goal").is_none());
+        assert_eq!(view["progress"]["tasks_total"], 8);
+        for capped in ["active", "blocked", "next"] {
+            assert!(view.get(capped).is_none(), "{capped} replaced by tasks");
+        }
+        let tasks = view["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 9, "done task and >5 open tasks all listed");
+        assert_eq!(tasks[0]["task_id"], "done", "sorted by plan position");
+        assert_eq!(tasks[0]["status"], "done");
+        assert_eq!(tasks[0]["priority"], "p1");
+        assert_eq!(tasks[0]["blocked_by"], json!([]));
+        assert_eq!(tasks[7]["priority"], "p3");
+        assert_eq!(
+            tasks[7]["blocked_by"],
+            json!([]),
+            "done dependency is satisfied"
+        );
+        assert_eq!(
+            tasks[8]["priority"], "p2",
+            "missing priority defaults to p2"
+        );
+        assert_eq!(tasks[8]["depends_on"], json!(["t1", "done"]));
+        assert_eq!(tasks[8]["blocked_by"], json!(["t1", "t2"]));
     }
 
     #[test]

@@ -11,8 +11,11 @@ tasks or write to `.omc/plans/`.
 2. `daruma_plan_list` with `status = "active"`.
    Pick the most recently updated. If none, say
    "no active plan — `daruma_plan_materialize` first" and stop.
-3. `daruma_plan_get` with the chosen `plan_id`.
-4. Compute `done_count / total_count`. Build a 20-cell bar:
+3. `daruma_plan_get` with the chosen `plan_id` and `view = "tasks"` —
+   the only view that lists every plan task (done included) with
+   `status`, `priority`, `depends_on` and `blocked_by`. The default
+   `progress` view caps each group at five open tasks; don't use it here.
+4. Compute `progress.tasks_done / progress.tasks_total`. Build a 20-cell bar:
    `▓▓▓▓▓▓▓▓░░░░░░░░░░░░ 40%`.
 5. Render exactly:
 
@@ -33,9 +36,11 @@ tasks or write to `.omc/plans/`.
    ```
 
    - `[x]` only for `done`; everything else `[ ]`.
-   - Status emoji: ⬜ todo, 🟢 in_progress, ✅ done, 📥 inbox.
+   - Status emoji: ⬜ todo, 🟢 in_progress, 🔍 in_review, ✅ done,
+     ❌ cancelled, 📥 inbox.
    - Show priority only when `!= p2`.
-   - Show `blocked-by` only when dependencies exist.
+   - Show `blocked-by` only when `blocked_by` is non-empty (unfinished
+     `depends_on` tasks and active `blocks` relations).
 
 6. Suggest next action:
    - any `in_progress` → `→ continue: <title>`.

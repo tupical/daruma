@@ -3,7 +3,7 @@
 use daruma_shared::{time, PlanId, ProjectId, TaskId, Timestamp};
 use serde::{Deserialize, Serialize};
 
-use crate::task::Status;
+use crate::task::{Priority, Status};
 
 /// Deserialise `Option<Option<T>>` with proper three-way semantics:
 /// - key absent  → `None`          (no change intended)
@@ -268,6 +268,9 @@ pub struct PlanGraphNode {
     pub depends_on: Vec<TaskId>,
     pub title: String,
     pub status: Status,
+    /// Task priority; `p2` when an older server omits the field.
+    #[serde(default)]
+    pub priority: Priority,
 }
 
 /// Directed edge in a plan execution graph.
