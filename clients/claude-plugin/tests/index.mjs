@@ -1,5 +1,6 @@
 import "./detect.test.mjs";
 import "./hooks-manifest.test.mjs";
+import "./hooks-session-start.test.mjs";
 import "./hooks-stop.test.mjs";
 import "./hooks-user-prompt-submit.test.mjs";
 import "./omc-guard.test.mjs";

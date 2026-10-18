@@ -6,10 +6,14 @@
 // Exit 0 always so a daruma outage never blocks the session from opening.
 //
 // Environment variables used:
-//   DARUMA_MCP_CMD   — command to start the MCP server (default: "daruma")
-//   DARUMA_MCP_ARGS  — space-separated extra args (default: "mcp serve")
+//   DARUMA_MCP_BIN   — path to the unified daruma binary (default: "daruma")
+//   DARUMA_MCP_CMD   — full command override for the MCP server
+//   DARUMA_MCP_ARGS  — space-separated args override (default: "mcp")
 //   DARUMA_SCOPE     — optional project_scope path filter
 
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { darumaMcpLaunch } from "../lib/detect.mjs";
 import { MCPClient } from "../lib/mcp-client.mjs";
 
 const TIMEOUT_MS = 12_000;
@@ -35,17 +39,27 @@ function truncate(str, len) {
   return str.length > len ? str.slice(0, len - 1) + "…" : str;
 }
 
-function formatTask(t) {
+export function formatTask(t) {
   const e = emoji(t.status ?? "");
-  const pri = t.priority ? `p${t.priority}` : "  ";
+  // The server sends "p0".."p3"; bare numbers still get the prefix.
+  const raw = t.priority == null ? "" : String(t.priority);
+  const pri = raw ? (raw.startsWith("p") ? raw : `p${raw}`) : "  ";
   const title = truncate(t.title ?? t.subject ?? "(no title)", 60);
   return `  ${e} [${pri}] ${title}`;
 }
 
+// The unified CLI serves stdio MCP as `daruma mcp` and rejects `daruma mcp
+// serve`, so the default is the launcher `daruma-claude start` and doctor use.
+// DARUMA_MCP_CMD / DARUMA_MCP_ARGS still override it verbatim.
+export function sessionStartLaunch(env = process.env) {
+  const base = darumaMcpLaunch(env);
+  const command = env.DARUMA_MCP_CMD?.trim() || base.command;
+  const extraArgs = env.DARUMA_MCP_ARGS?.trim();
+  return { command, args: extraArgs ? extraArgs.split(/\s+/) : base.args };
+}
+
 async function fetchSummary() {
-  const cmd = process.env.DARUMA_MCP_CMD ?? "daruma";
-  const extraArgs = process.env.DARUMA_MCP_ARGS ?? "mcp serve";
-  const args = extraArgs.trim() ? extraArgs.trim().split(/\s+/) : ["mcp", "serve"];
+  const { command: cmd, args } = sessionStartLaunch();
   const scope = process.env.DARUMA_SCOPE;
 
   const client = new MCPClient();
@@ -138,4 +152,16 @@ async function main() {
   process.exit(0);
 }
 
-main();
+// Run only when executed as the hook, not when tests import the helpers.
+// realpath on both sides: a symlinked plugin root must still run the hook.
+function isMainModule() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (process.argv[1] && isMainModule()) {
+  main();
+}
