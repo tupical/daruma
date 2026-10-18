@@ -3774,7 +3774,9 @@ async fn dispatch_command(
             .commands
             .dispatch_authenticated_with_warnings(
                 envelope.command,
-                envelope.actor,
+                // Same rule as the typed routes: under `actor_strict` the
+                // envelope actor is ignored and the token decides.
+                actor_from(&auth, Some(envelope.actor)),
                 auth.agent_id,
                 auth.scope.capabilities.has(Capability::Admin),
             )
