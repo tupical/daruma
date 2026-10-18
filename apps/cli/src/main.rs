@@ -5,7 +5,7 @@
 //! `comfy-table` for humans or raw JSON for scripts via `--json`.
 //!
 //! Verbs (terse on purpose):
-//!   * `daruma next`            — pick the next claim-ready task
+//!   * `daruma next`            — top-ranked active task (ranking, not a readiness check)
 //!   * `daruma show <id>`       — task + comments
 //!   * `daruma done <id>`       — mark a task done
 //!   * `daruma list --status <filter>` — list with required status filter
@@ -99,7 +99,10 @@ enum Cmd {
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
     },
-    /// Show the next claim-ready task in the current project.
+    /// Show the top-ranked active task in the current project.
+    ///
+    /// A ranking only (todo → in_progress → inbox, then priority and
+    /// recency): claims and unfinished dependencies are not checked.
     Next {
         /// Project id (defaults to env / workspace).
         #[arg(long, env = "DARUMA_PROJECT_ID")]
@@ -790,7 +793,7 @@ async fn cmd_next(
             if as_json {
                 print_json(&Value::Null);
             } else {
-                println!("(no claim-ready tasks)");
+                println!("(no active tasks)");
             }
             Ok(())
         }
