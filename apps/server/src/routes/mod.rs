@@ -1000,7 +1000,7 @@ async fn rollback_history_version(
         "task" => {
             auth.require(Capability::TaskWrite)
                 .map_err(ApiError::from_missing_cap)?;
-            vec![rollback_task_command(after)?]
+            rollback_task_commands(&state, &auth, after).await?
         }
         "document" => {
             auth.require(Capability::DocumentWrite)
@@ -1045,23 +1045,76 @@ async fn rollback_history_version(
     }))
 }
 
-fn rollback_task_command(after: Value) -> Result<Command, ApiError> {
-    let task: Task = serde_json::from_value(after)
+/// Task rollback restores only the fields that differ from the current task,
+/// so an execution-only rollback (status/priority/...) never touches the
+/// plan-owned fields. Changed plan-owned fields (title/description/project_id)
+/// of a plan member go through the owning plan's `AmendPlanTask`, the path
+/// ADR-0007 Q1 leaves open under plan-only intake (needs `PlanWrite` too);
+/// a plan-less task keeps the legacy `UpdateTask`, which plan-only intake
+/// rejects with `plan_owned_immutable`.
+async fn rollback_task_commands(
+    state: &AppState,
+    auth: &AuthContext,
+    after: Value,
+) -> Result<Vec<Command>, ApiError> {
+    let target: Task = serde_json::from_value(after)
         .map_err(|e| ApiError::from(CoreError::serde(e.to_string())))?;
-    Ok(Command::UpdateTask {
-        id: task.id,
-        patch: TaskPatch {
-            title: Some(task.title),
-            description: Some(task.description),
-            status: Some(task.status),
-            priority: Some(task.priority),
-            triage_state: Some(task.triage_state),
-            due_at: Some(task.due_at),
-            project_id: Some(task.project_id),
-            git_context: Some(task.git_context),
-            pipeline_position: None,
-        },
-    })
+    let current = state
+        .tasks
+        .get(target.id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {}", target.id))))?;
+
+    let plan_owned = TaskPatch {
+        title: (current.title != target.title).then(|| target.title.clone()),
+        description: (current.description != target.description)
+            .then(|| target.description.clone()),
+        project_id: (current.project_id != target.project_id).then_some(target.project_id),
+        ..TaskPatch::default()
+    };
+    let execution = TaskPatch {
+        status: (current.status != target.status).then_some(target.status),
+        priority: (current.priority != target.priority).then_some(target.priority),
+        triage_state: (current.triage_state != target.triage_state).then_some(target.triage_state),
+        due_at: (current.due_at != target.due_at).then_some(target.due_at),
+        git_context: (current.git_context != target.git_context)
+            .then(|| target.git_context.clone()),
+        ..TaskPatch::default()
+    };
+
+    let mut commands = Vec::new();
+    if !plan_owned.is_empty() {
+        let owning_plan = state
+            .plans
+            .list_plans_for_task(target.id)
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .next();
+        match owning_plan {
+            Some(plan) => {
+                auth.require(Capability::PlanWrite)
+                    .map_err(ApiError::from_missing_cap)?;
+                commands.push(Command::AmendPlanTask {
+                    plan_id: plan.id,
+                    task_id: target.id,
+                    patch: plan_owned,
+                });
+            }
+            None => commands.push(Command::UpdateTask {
+                id: target.id,
+                patch: plan_owned,
+            }),
+        }
+    }
+    if !execution.is_empty() {
+        commands.push(Command::UpdateTask {
+            id: target.id,
+            patch: execution,
+        });
+    }
+    Ok(commands)
 }
 
 async fn rollback_document_commands(
