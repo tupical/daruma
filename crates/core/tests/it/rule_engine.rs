@@ -1665,6 +1665,234 @@ async fn self_only_creation_requirement_reports_that_it_cannot_be_satisfied() {
     }
 }
 
+/// `MaterializePlan` stages the plan AND its tasks: on the new tasks'
+/// `task.created` check the plan is as phantom as the task itself. A hint
+/// naming the staged plan would be rejected by `daruma_evidence_submit`
+/// ("plan not found") and, even if recorded, a retry mints a fresh plan id —
+/// so the existing ancestor inside the kind's reach is hinted instead, and
+/// evidence recorded there really lets the retry through.
+#[tokio::test]
+async fn new_plan_task_created_hint_skips_the_staged_plan() {
+    let stack = stack().await;
+    // A persisted project: the hint must name something evidence can bind to.
+    let envs = stack
+        .handler
+        .handle(
+            Command::CreateProject {
+                title: "Rules".into(),
+                description: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let Event::ProjectCreated { project } = &envs[0].payload else {
+        panic!("expected ProjectCreated, got {:?}", envs[0].payload);
+    };
+    let project = project.id;
+    install(
+        &stack,
+        new_rule(
+            "task-decision",
+            RuleScope::Tenant,
+            RuleTrigger::TaskCreated,
+            Requirement::DecisionRecord {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    let command = || Command::MaterializePlan {
+        plan: NewPlan::new("Fresh plan", project, Actor::user()),
+        tasks: vec![daruma_domain::NewTask::new("First step")],
+        plan_id: None,
+    };
+
+    let err = stack
+        .handler
+        .handle(command(), Actor::user())
+        .await
+        .expect_err("required task.created rule must block the new plan's tasks");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints.len(), 1);
+    let project_scope = serde_json::to_value(RuleScope::Project { id: project }).unwrap();
+    assert_eq!(
+        hints[0]["evidence"]["scope"], project_scope,
+        "the staged plan must not be suggested as evidence scope: {}",
+        hints[0]
+    );
+    assert!(hints[0].get("note").is_none(), "{}", hints[0]);
+
+    // The hint is ready to use: evidence at the hinted scope unblocks the retry.
+    let scope: RuleScope = serde_json::from_value(project_scope).unwrap();
+    record_evidence(
+        &stack,
+        new_evidence(EvidenceKind::DecisionRecord, scope, None),
+    )
+    .await;
+    stack
+        .handler
+        .handle(command(), Actor::user())
+        .await
+        .expect("evidence at the hinted scope must satisfy the rule");
+}
+
+/// A staged child plan under a persisted parent: the nearest EXISTING plan in
+/// reach is the parent, and plan-reach evidence there satisfies the retry.
+#[tokio::test]
+async fn staged_child_plan_hint_falls_back_to_the_persisted_parent() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let parent = create_plan(&stack, project).await;
+    install(
+        &stack,
+        new_rule(
+            "task-impact",
+            RuleScope::Tenant,
+            RuleTrigger::TaskCreated,
+            Requirement::ImpactCheck {
+                target: "api".into(),
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+    let command = || Command::MaterializePlan {
+        plan: NewPlan {
+            parent_plan_id: Some(parent),
+            ..NewPlan::new("Child", project, Actor::user())
+        },
+        tasks: vec![daruma_domain::NewTask::new("Child step")],
+        plan_id: None,
+    };
+
+    let err = stack
+        .handler
+        .handle(command(), Actor::user())
+        .await
+        .expect_err("required task.created rule must block the child plan's tasks");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints.len(), 1);
+    assert_eq!(
+        hints[0]["evidence"]["scope"],
+        serde_json::to_value(RuleScope::Plan { id: parent }).unwrap(),
+        "the persisted parent, not the staged child, is the hinted scope: {}",
+        hints[0]
+    );
+
+    record_evidence(
+        &stack,
+        new_evidence(
+            EvidenceKind::ImpactAssessment,
+            RuleScope::Plan { id: parent },
+            Some("api"),
+        ),
+    )
+    .await;
+    stack
+        .handler
+        .handle(command(), Actor::user())
+        .await
+        .expect("evidence at the persisted parent must satisfy the rule");
+}
+
+/// Plan-reach evidence for a brand-new top-level plan: the only scopes in
+/// reach are the staged plan and task, so no scope can work before creation.
+/// The hint says so instead of naming the phantom plan.
+#[tokio::test]
+async fn new_plan_plan_reach_hint_reports_it_cannot_be_satisfied() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    install(
+        &stack,
+        new_rule(
+            "task-impact",
+            RuleScope::Tenant,
+            RuleTrigger::TaskCreated,
+            Requirement::ImpactCheck {
+                target: "api".into(),
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+
+    let err = stack
+        .handler
+        .handle(
+            Command::MaterializePlan {
+                plan: NewPlan::new("Fresh plan", project, Actor::user()),
+                tasks: vec![daruma_domain::NewTask::new("First step")],
+                plan_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("required task.created rule must block the new plan's tasks");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints.len(), 1);
+    assert!(
+        hints[0]["evidence"].get("scope").is_none(),
+        "no persisted scope is in plan reach: {}",
+        hints[0]
+    );
+    assert_eq!(
+        hints[0]["note"],
+        "unsatisfiable before creation; requires override"
+    );
+}
+
+/// Appending to an already persisted plan is unaffected: that plan exists, so
+/// it stays the hinted scope.
+#[tokio::test]
+async fn existing_plan_task_created_hint_keeps_the_plan() {
+    let stack = stack().await;
+    let project = ProjectId::new();
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        new_rule(
+            "task-impact",
+            RuleScope::Tenant,
+            RuleTrigger::TaskCreated,
+            Requirement::ImpactCheck {
+                target: "api".into(),
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            false,
+        ),
+    )
+    .await;
+
+    let err = stack
+        .handler
+        .handle(
+            Command::MaterializePlan {
+                plan: NewPlan::new("Plan", project, Actor::user()),
+                tasks: vec![daruma_domain::NewTask::new("Appended")],
+                plan_id: Some(plan),
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("required task.created rule must block the appended task");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints.len(), 1);
+    assert_eq!(
+        hints[0]["evidence"]["scope"],
+        serde_json::to_value(RuleScope::Plan { id: plan }).unwrap(),
+        "{}",
+        hints[0]
+    );
+}
+
 #[tokio::test]
 async fn document_read_hint_keeps_innermost_scope_and_exposes_tenant_reach() {
     let stack = stack().await;
