@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { _internal } from "../lib/orchestrator.mjs";
+import { _internal, runDarumaStart } from "../lib/orchestrator.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -265,4 +265,30 @@ test("terminal task in server projection cannot be reopened by stale executor", 
   assert.equal(outcome.reason, "task_no_longer_active");
   assert.equal(outcome.attempts, 0);
   assert(!mcp.calls.some((call) => ["daruma_set_status", "daruma_complete"].includes(call.name)));
+});
+
+test("start spawns the same `daruma mcp` launcher doctor probes", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "daruma");
+    const argvOut = join(dir, "argv.txt");
+    // Records its argv, reads the initialize request, exits: start fails
+    // right after the spawn without the client writing into a closed pipe.
+    await writeFile(bin, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argvOut}'\nread -r _\nexit 3\n`);
+    await chmod(bin, 0o755);
+    const saved = { bin: process.env.DARUMA_MCP_BIN, agentDir: process.env.DARUMA_AGENT_DIR };
+    process.env.DARUMA_MCP_BIN = bin;
+    process.env.DARUMA_AGENT_DIR = join(dir, "agent");
+    const lines = [];
+    const stdout = { isTTY: false, write: (s) => { lines.push(s); return true; } };
+    try {
+      await assert.rejects(runDarumaStart({ task: "probe launcher", cwd: dir, stdout, autoYes: true }));
+    } finally {
+      for (const [key, value] of [["DARUMA_MCP_BIN", saved.bin], ["DARUMA_AGENT_DIR", saved.agentDir]]) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    assert.equal(await readFile(argvOut, "utf8"), "mcp\n");
+    assert.match(lines.join(""), new RegExp(`starting ${bin} mcp`));
+  });
 });

@@ -1,5 +1,5 @@
 // Outer orchestrator for `daruma-claude start`. Pipeline:
-//   1. spawn `daruma-mcp` (stdio JSON-RPC), connect MCP client.
+//   1. spawn `daruma mcp` (stdio JSON-RPC), connect MCP client.
 //   2. parse phase: derive {title, description} from input; show + confirm y/n.
 //   3. resolve project_id (workspace default or basename(cwd)).
 //   4. seed phase (plan-only intake, ADR-0007):
@@ -12,7 +12,7 @@
 //   6. report progress + final summary.
 //
 // Why MCP over direct HTTP: token discovery, env propagation, and command-shape
-// invariants are already encapsulated by `daruma-mcp`. The shim is just a
+// invariants are already encapsulated by `daruma mcp`. The shim is just a
 // JSON-RPC ↔ /v1/commands translator with bearer auth pulled from env. Reusing
 // it keeps daruma-claude code small and isolated from API churn.
 
@@ -30,7 +30,6 @@ const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_ITERATION_BUDGET = 100;
 const DEFAULT_WORKERS = 3;
 const DEFAULT_AGENT_TYPE = "claude";
-const DARUMA_MCP_BIN = process.env.DARUMA_MCP_BIN ?? "daruma-mcp";
 
 function makePrompt(input, output) {
   const rl = readline.createInterface({ input, output });
@@ -580,10 +579,11 @@ export async function runDarumaStart({
   let sigintHandler = null;
 
   try {
-    write(`[daruma-claude] starting daruma-mcp (logs: ${mcpStderrLog})`);
-    const { darumaMcpChildEnv } = await import("./detect.mjs");
+    const { darumaMcpChildEnv, darumaMcpLaunch } = await import("./detect.mjs");
+    const launch = darumaMcpLaunch();
+    write(`[daruma-claude] starting ${launch.command} ${launch.args.join(" ")} (logs: ${mcpStderrLog})`);
     const childEnv = await darumaMcpChildEnv();
-    await mcp.start(DARUMA_MCP_BIN, [], {
+    await mcp.start(launch.command, launch.args, {
       cwd,
       stderrLog: mcpStderrLog,
       // This private transport reads run journals; no full catalogue is sent to the model.
@@ -687,10 +687,11 @@ export async function runDarumaTeamFromPlan({
   let sigintHandler = null;
 
   try {
-    write(`[daruma-claude] starting daruma-mcp (logs: ${mcpStderrLog})`);
-    const { darumaMcpChildEnv } = await import("./detect.mjs");
+    const { darumaMcpChildEnv, darumaMcpLaunch } = await import("./detect.mjs");
+    const launch = darumaMcpLaunch();
+    write(`[daruma-claude] starting ${launch.command} ${launch.args.join(" ")} (logs: ${mcpStderrLog})`);
     const childEnv = await darumaMcpChildEnv();
-    await mcp.start(DARUMA_MCP_BIN, [], {
+    await mcp.start(launch.command, launch.args, {
       cwd,
       stderrLog: mcpStderrLog,
       // This private transport reads run journals; no full catalogue is sent to the model.

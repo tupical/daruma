@@ -33,6 +33,8 @@ Relevant env vars for `daruma mcp`:
 - `DARUMA_TOKEN` — bearer token.
 - `DARUMA_WORKSPACE_ID` — optional workspace UUID for scoped deployments.
 
+`daruma-claude start` opens its own `daruma mcp` connection, separate from the one Claude Code registered: put `daruma` on `PATH` or set `DARUMA_MCP_BIN` to the binary. `doctor` reports NOT READY until that launcher runs.
+
 ## Step 3 — oh-my-claudecode (needed for `daruma-claude start`)
 
 ```

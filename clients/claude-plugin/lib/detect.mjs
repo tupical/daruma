@@ -2,9 +2,9 @@
 // Used by both the `daruma-claude` CLI and the /daruma-claude:doctor skill.
 //
 // readiness gate = omc CLI present + daruma MCP server registered in Claude
-// + daruma HTTP server healthy. The MCP probe parses `claude mcp list`
-// output; the HTTP probe hits DARUMA_BASE_URL/v1/healthz (default
-// http://localhost:8080).
+// + daruma HTTP server healthy + the stdio launcher `daruma-claude start`
+// spawns is runnable. The MCP probe parses `claude mcp list` output; the HTTP
+// probe hits DARUMA_BASE_URL/v1/healthz (default http://localhost:8080).
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -47,12 +47,29 @@ async function tryExec(cmd, args, opts = {}) {
   }
 }
 
-async function tryExecAny(cmds, args, opts = {}) {
-  for (const cmd of cmds) {
-    const r = await tryExec(cmd, args, opts);
-    if (r.ok) return { ...r, cmd };
-  }
-  return { ok: false, error: `none of [${cmds.join(", ")}] succeeded` };
+// The command `daruma-claude start` / `team-from-plan` spawn for their private
+// stdio MCP connection: the unified `daruma` binary serves it as `daruma mcp`
+// (the standalone `daruma-mcp` binary is retired). Doctor probes exactly this
+// command, so READY cannot outlive what start actually launches.
+// DARUMA_MCP_BIN overrides the binary path, as in the Cursor plugin.
+export function darumaMcpLaunch(env = process.env) {
+  return { command: env.DARUMA_MCP_BIN?.trim() || "daruma", args: ["mcp"] };
+}
+
+// Runs `<launcher> --version` for the command darumaMcpLaunch resolves.
+export async function probeDarumaLauncher(env = process.env) {
+  const launch = darumaMcpLaunch(env);
+  const r = await tryExec(launch.command, ["--version"]);
+  return r.ok
+    ? { ok: true, command: launch.command, args: launch.args, version: r.output }
+    : { ok: false, command: launch.command, args: launch.args, error: r.error };
+}
+
+// Claude Code's registered `daruma` server serves the session; start opens its
+// own connection through the launcher. Both, plus the HTTP backend behind
+// them, must work — a connected Claude entry alone does not make start work.
+export function darumaMcpReady({ launcher, claudeMcp, http }) {
+  return Boolean(launcher?.ok && claudeMcp?.connected && http?.ok);
 }
 
 async function pathExists(p) {
@@ -116,13 +133,14 @@ export function parseClaudeMcpList(text, serverName = "daruma") {
   const lines = text.split(/\r?\n/);
   // Server lines look like:
   //   <name>: <command…> - <status-marker> <status-text>
-  // where the status-marker is one of ✓ / ✗ / ! (from `claude mcp list`).
+  // where the status-marker is one of ✓ / ✔ / ✗ / ✘ / ! (`claude mcp list`
+  // switched from ✓/✗ to the heavy ✔/✘ glyphs; accept both).
   // The command itself can contain dashes (e.g. `daruma-mcp`), so we
   // anchor the separator on the trailing status marker rather than the
   // first ` - ` we encounter.
   const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(
-    `^${escaped}\\s*:\\s*(.+?)\\s+-\\s+([✓✗!]\\s*[^\\n]+)$`,
+    `^${escaped}\\s*:\\s*(.+?)\\s+-\\s+([✓✔✗✘!]\\s*[^\\n]+)$`,
     "i",
   );
   for (const raw of lines) {
@@ -164,8 +182,8 @@ export async function detectDaruma() {
   // server. On a setup with several servers it routinely takes 5-15s — the
   // standard PROBE_TIMEOUT_MS would clip it. Give it a wider budget.
   const CLAUDE_MCP_LIST_TIMEOUT_MS = 20_000;
-  const [mcpCliVersion, mcpList, httpProbe] = await Promise.all([
-    tryExecAny(["daruma-mcp", "daruma"], ["--version"]),
+  const [launcher, mcpList, httpProbe] = await Promise.all([
+    probeDarumaLauncher(),
     tryExec("claude", ["mcp", "list"], { timeout: CLAUDE_MCP_LIST_TIMEOUT_MS }),
     probeDarumaHttp(probeUrl),
   ]);
@@ -174,17 +192,19 @@ export async function detectDaruma() {
     ? parseClaudeMcpList(mcpList.output, "daruma")
     : { present: false, connected: false, command: null };
 
-  // mcpReady = MCP server registered AND HTTP backend healthy. The MCP shim
-  // is just a transport into the HTTP server — without the server, all
-  // tools/call requests will fail at runtime.
-  const mcpReady = mcpEntry.connected && httpProbe.ok;
-  const installed = mcpCliVersion.ok || mcpEntry.present || httpProbe.ok;
+  // mcpReady = MCP server registered AND HTTP backend healthy AND the start
+  // launcher runnable. The MCP shim is just a transport into the HTTP
+  // server — without the server, all tools/call requests fail at runtime.
+  const mcpReady = darumaMcpReady({ launcher, claudeMcp: mcpEntry, http: httpProbe });
+  const installed = launcher.ok || mcpEntry.present || httpProbe.ok;
+  const launchLine = `${launcher.command} ${launcher.args.join(" ")}`;
 
   return {
     name: "daruma",
     installed,
     mcpReady,
-    cli: mcpCliVersion.ok ? `${mcpCliVersion.cmd}: ${mcpCliVersion.output}` : null,
+    cli: launcher.ok ? `${launcher.command}: ${launcher.version}` : null,
+    launcher,
     http: httpProbe.ok
       ? { ok: true, baseUrl: probeUrl, status: httpProbe.status, version: httpProbe.version }
       : { ok: false, baseUrl: probeUrl, error: httpProbe.error },
@@ -201,7 +221,7 @@ export async function detectDaruma() {
       "  cargo build --release -p daruma-server -p daruma-cli",
       "  ./target/release/daruma-server  # data: ~/.agents/daruma/data",
       "Register the MCP shim with Claude Code:",
-      "  claude mcp add daruma -- daruma-mcp",
+      "  claude mcp add daruma -- daruma mcp",
       "Set DARUMA_API_URL and DARUMA_TOKEN if you do not use credentials.json.",
       "Override agent dir: DARUMA_AGENT_DIR (default ~/.agents/daruma/).",
     ].join("\n"),
@@ -212,8 +232,11 @@ export async function detectDaruma() {
         ? `credentials: ${credentialsLocationHint()} (${profile.mode ?? "?"}/${profile.name ?? "?"})`
         : `credentials: none at ${credentialsLocationHint()} — set DARUMA_API_URL + DARUMA_TOKEN or save a local profile`,
       mcpEntry.present
-        ? `MCP shim registered (${mcpEntry.command}) but status: ${mcpEntry.connected ? "connected" : "disconnected"}`
-        : "MCP shim not registered. Add it:  claude mcp add daruma -- daruma-mcp",
+        ? `MCP shim registered (${mcpEntry.command}): ${mcpEntry.connected ? "connected" : "disconnected"}`
+        : "MCP shim not registered. Add it:  claude mcp add daruma -- daruma mcp",
+      launcher.ok
+        ? `start launcher: ${launchLine} (${launcher.version})`
+        : `start launcher not runnable: ${launchLine} (${launcher.error}) — put the unified daruma binary on PATH or set DARUMA_MCP_BIN to it`,
       httpProbe.ok
         ? `HTTP server: ${httpProbe.status}${httpProbe.version ? ` (v${httpProbe.version})` : ""}`
         : `HTTP server unreachable: ${httpProbe.error}`,
@@ -257,6 +280,9 @@ export function cliReadinessSummary(report) {
         connected: mcp.connected ?? false,
         command: mcp.command ?? null,
       },
+      launcher: t.launcher
+        ? { ok: t.launcher.ok, command: t.launcher.command, args: t.launcher.args }
+        : null,
     },
     hints: {
       omcInstall: report.omc.installed ? null : firstLine(report.omc.installHint),
@@ -298,6 +324,12 @@ export function formatReport(report) {
         ? `${mcp.connected ? "connected" : "DISCONNECTED"} (${mcp.command ?? "?"})`
         : "not registered";
       lines.push(`       claude mcp: ${summary}`);
+    }
+    if (tool.launcher) {
+      const l = tool.launcher;
+      lines.push(
+        `       start launcher: ${l.command} ${l.args.join(" ")} → ${l.ok ? l.version : `NOT RUNNABLE (${l.error})`}`,
+      );
     }
     if (!tool.installed) {
       lines.push("       install:");
@@ -365,7 +397,7 @@ export async function saveCachedDoctor(report, { cliVersion } = {}) {
   }
 }
 
-/** Env vars for spawning daruma-mcp (credentials + process env). */
+/** Env vars for spawning `daruma mcp` (credentials + process env). */
 export async function darumaMcpChildEnv(extra = {}) {
   const fromCreds = await resolveMcpEnvFromCredentials();
   return { ...process.env, ...fromCreds, ...extra };
