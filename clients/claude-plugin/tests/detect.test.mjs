@@ -13,8 +13,10 @@ import {
   parseClaudeMcpList,
   parseSemver,
   cliReadinessSummary,
+  darumaMcpChildEnv,
   darumaMcpLaunch,
   darumaMcpReady,
+  detectDaruma,
   probeDarumaLauncher,
   formatReport,
 } from "../lib/detect.mjs";
@@ -225,5 +227,95 @@ test("probeDarumaLauncher: missing launcher fails the probe and the verdict", as
   assert.doesNotMatch(text, /^READY$/m);
   assert.deepEqual(cliReadinessSummary(report).daruma.launcher, {
     ok: false, command: missing, args: ["mcp"],
+  });
+});
+
+const DARUMA_ENV_KEYS = [
+  "DARUMA_AGENT_DIR", "DARUMA_API_URL", "DARUMA_BASE_URL", "DARUMA_TOKEN",
+  "DARUMA_WORKSPACE_ID", "DARUMA_MCP_BIN", "PATH",
+];
+
+// Saved remote profile in a temp agent dir; process env scrubbed of Daruma
+// vars and restored afterwards.
+async function withSavedProfile(fn) {
+  const dir = await mkdtemp(join(tmpdir(), "daruma-detect-creds-"));
+  const saved = Object.fromEntries(DARUMA_ENV_KEYS.map((k) => [k, process.env[k]]));
+  try {
+    for (const k of DARUMA_ENV_KEYS) if (k !== "PATH") delete process.env[k];
+    process.env.DARUMA_AGENT_DIR = dir;
+    await writeFile(join(dir, "credentials.json"), JSON.stringify({
+      schema_version: 1,
+      active_profile: "remote-default",
+      profiles: {
+        "remote-default": {
+          mode: "remote",
+          server_url: "https://saved.example",
+          token: "ta_pat_saved",
+          workspace_id: "019e5fc5-0000-7000-8000-00000000000a",
+        },
+      },
+    }));
+    await fn(dir);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("darumaMcpChildEnv: explicit DARUMA_* env outranks the saved profile", async () => {
+  await withSavedProfile(async () => {
+    const env = await darumaMcpChildEnv({}, {
+      DARUMA_API_URL: "http://shell.example/",
+      DARUMA_TOKEN: "ta_pat_shell",
+      DARUMA_WORKSPACE_ID: "019e5fc5-0000-7000-8000-00000000000b",
+      OTHER: "kept",
+    });
+    assert.equal(env.DARUMA_API_URL, "http://shell.example");
+    assert.equal(env.DARUMA_TOKEN, "ta_pat_shell");
+    assert.equal(env.DARUMA_WORKSPACE_ID, "019e5fc5-0000-7000-8000-00000000000b");
+    assert.equal(env.OTHER, "kept");
+  });
+});
+
+test("darumaMcpChildEnv: profile fills only what env leaves unset or empty", async () => {
+  await withSavedProfile(async () => {
+    const tokenOnly = await darumaMcpChildEnv({}, { DARUMA_TOKEN: "ta_pat_shell" });
+    assert.equal(tokenOnly.DARUMA_TOKEN, "ta_pat_shell");
+    assert.equal(tokenOnly.DARUMA_API_URL, "https://saved.example");
+
+    const blank = await darumaMcpChildEnv({}, { DARUMA_TOKEN: "  ", DARUMA_API_URL: "" });
+    assert.equal(blank.DARUMA_TOKEN, "ta_pat_saved");
+    assert.equal(blank.DARUMA_API_URL, "https://saved.example");
+    assert.equal(blank.DARUMA_WORKSPACE_ID, "019e5fc5-0000-7000-8000-00000000000a");
+
+    const legacy = await darumaMcpChildEnv({}, { DARUMA_BASE_URL: "http://legacy.example" });
+    assert.equal(legacy.DARUMA_API_URL, "http://legacy.example");
+  });
+});
+
+test("detectDaruma probes the URL start hands to `daruma mcp` and reports the env token", async () => {
+  await withSavedProfile(async (dir) => {
+    // Closed loopback port: the probe fails fast; PATH without `claude`.
+    process.env.DARUMA_API_URL = "http://127.0.0.1:9";
+    process.env.DARUMA_TOKEN = "ta_pat_shell";
+    process.env.DARUMA_MCP_BIN = join(dir, "missing-daruma");
+    process.env.PATH = dir;
+    const child = await darumaMcpChildEnv();
+    const report = await detectDaruma();
+    assert.equal(report.http.baseUrl, child.DARUMA_API_URL);
+    assert.equal(report.http.baseUrl, "http://127.0.0.1:9");
+    assert.equal(report.credentials.tokenSource, "env");
+    assert.match(report.mcpHint, /DARUMA_TOKEN from env/);
+    const text = formatReport({ ready: false, omc: { name: "oh-my-claudecode", installed: true }, daruma: report });
+    assert.match(text, /token: DARUMA_TOKEN from env/);
+
+    delete process.env.DARUMA_API_URL;
+    delete process.env.DARUMA_TOKEN;
+    const saved = await detectDaruma();
+    assert.equal(saved.http.baseUrl, "https://saved.example");
+    assert.equal(saved.credentials.tokenSource, "credentials");
   });
 });
