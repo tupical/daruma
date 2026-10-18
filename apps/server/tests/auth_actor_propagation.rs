@@ -4,8 +4,9 @@
 //! * AC-1 — bot token → `Actor::Agent` is attributed to resulting events.
 //! * AC-2 — PAT token  → `Actor::User`  is attributed to resulting events.
 //! * AC-3 — Without `actor_strict` (default): explicit actor in command envelope
-//!   passes through unchanged. With `actor_strict`: individual route
-//!   handlers (actor_from) always derive the actor from the token.
+//!   passes through unchanged. With `actor_strict`: both the generic
+//!   `/v1/commands` route and individual route handlers (actor_from) always
+//!   derive the actor from the token.
 
 use axum::{
     body::Body,
@@ -149,4 +150,36 @@ async fn ac3_strict_route_handler_always_uses_token_derived_actor() {
         "with actor_strict, bot token must always produce Actor::Agent; got: {:?}",
         last.actor
     );
+}
+
+/// With `actor_strict` enabled the generic `/v1/commands` route follows the
+/// same rule as the typed routes: a bot token claiming `Actor::User` in the
+/// envelope is recorded as its own `Actor::Agent`.
+#[tokio::test]
+#[cfg(feature = "actor_strict")]
+async fn ac3_strict_generic_command_ignores_envelope_actor() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::TaskWrite, Capability::TaskRead].into();
+    let (token, agent_id) = mint_with_caps(&h.auth_store(), TokenKind::Bot, caps).await;
+
+    let body = serde_json::json!({
+        "command": { "type": "create_task", "task": { "title": "AC-3 strict task" } },
+        "actor": { "kind": "user", "name": "spoofed-human" }
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/commands")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let res = h.router.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let events = h.state.store.load_since(0, 100).await.unwrap();
+    let last = events.last().expect("event should be stored");
+    match &last.actor {
+        daruma_domain::Actor::Agent { id, .. } => assert_eq!(*id, agent_id),
+        other => panic!("with actor_strict, envelope actor must be ignored; got {other:?}"),
+    }
 }
