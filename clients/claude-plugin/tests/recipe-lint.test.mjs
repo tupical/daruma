@@ -24,6 +24,12 @@ function lintRecipeText(text, file = "<fixture>") {
     if (/\b["']?status["']?\s*[:=]\s*["']?all\b/i.test(line)) {
       violations.push(`${where} uses archive-wide status=all`);
     }
+    if (/\bstatus\s*[:=]\s*\[/i.test(line)) {
+      violations.push(`${where} passes status as an array; daruma_list takes one comma-separated string`);
+    }
+    if (/\bowner\s*[:=]\s*["']?self\b/i.test(line)) {
+      violations.push(`${where} passes owner=self; daruma_list has no owner filter`);
+    }
     if (/\b(?:daruma_)?workspacegraph(?:_|\b)/i.test(line)) {
       violations.push(`${where} uses workspacegraph`);
     }
@@ -77,5 +83,29 @@ test("recipe lint catches forbidden fixture examples", () => {
 \`daruma_search query=branch\`
 `;
 
-  assert.equal(lintRecipeText(bad).length, 5);
+  assert.equal(lintRecipeText(bad).length, 6);
+
+  const badArgs = lintRecipeText('`daruma_list status=["in_progress"] owner="self" project_id=p limit=5`');
+  assert.equal(badArgs.length, 2);
+  assert.match(badArgs[0], /status as an array/);
+  assert.match(badArgs[1], /owner=self/);
+});
+
+const MINE_RECIPES = [
+  join(root, "commands", "mine.md"),
+  join(root, "..", "codex-plugin", "commands", "mine.md"),
+  join(root, "..", "cursor-plugin", "cursor", "commands", "daruma-mine.md"),
+];
+
+test("mine recipes filter by the caller's live claim, not an owner list filter", async () => {
+  for (const file of MINE_RECIPES) {
+    const body = await readFile(file, "utf8");
+    const argViolations = lintRecipeText(body, file).filter((v) => /array|owner=self/.test(v));
+    assert.deepEqual(argViolations, [], file);
+    assert.match(body, /status = "in_progress"/, file);
+    assert.match(body, /daruma_get id=<task id>/, file);
+    assert.match(body, /current_claim\.is_mine == true/, file);
+    assert.match(body, /current_claim\.agent_id == <mcp_agent_id>/, file);
+    assert.match(body, /capture `mcp_agent_id`/, file);
+  }
 });

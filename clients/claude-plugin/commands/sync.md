@@ -17,7 +17,7 @@ does automatically.
 
 2. Fetch open tasks:
    - `daruma_list` with `project_id = <resolved>`,
-     `status = ["inbox", "todo", "in_progress", "in_review"]`, limit 50.
+     `status = "inbox,todo,in_progress,in_review"` (one string), limit 50.
 
 3. Render the summary:
 

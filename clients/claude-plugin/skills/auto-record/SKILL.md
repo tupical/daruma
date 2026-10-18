@@ -29,7 +29,7 @@ Skip silently when:
 
 Use `DARUMA_ACTIVE_TASK` as the task id. If the variable is absent,
 resolve the project with `daruma_workspace_info`, then fall back to
-`daruma_list status=["in_progress"] project_id=<resolved> limit=1` to
+`daruma_list status="in_progress" project_id=<resolved> limit=1` to
 find the most-recently updated in-progress task.
 
 ## Step 2 — Draft the lesson

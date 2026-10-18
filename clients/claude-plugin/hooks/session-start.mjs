@@ -71,7 +71,7 @@ async function fetchSummary() {
 
     // 2. List active tasks.
     const listArgs = {
-      status: ["inbox", "todo", "in_progress", "in_review"],
+      status: "inbox,todo,in_progress,in_review",
       limit: MAX_TASKS + 1,
     };
     if (projectId) listArgs.project_id = projectId;

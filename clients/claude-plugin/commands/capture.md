@@ -20,7 +20,7 @@ would save time in a future session. Skip for:
 
 1. **Identify the target task.**
    - `daruma_workspace_info` → `daruma_list` with
-     `project_id = <resolved>`, `status = ["in_progress"]`, limit 5;
+     `project_id = <resolved>`, `status = "in_progress"`, limit 5;
      pick the most-recently updated task.
    - If still none: ask the user which task to attach the lesson to.
 
