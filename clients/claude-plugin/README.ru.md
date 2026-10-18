@@ -85,7 +85,16 @@ daruma-claude doctor          # должен напечатать READY
 daruma-claude start "переписать модуль аутентификации на OAuth2 с PKCE"
 ```
 
-Это весь воркфлоу. Внутри Claude Code эквивалентные slash-команды: `/daruma-claude:start <задача>`, `/daruma-claude:doctor`, `/daruma-claude:setup`.
+Это весь воркфлоу в shell.
+
+**Для slash-команд плагин ставится отдельно.** `npm i -g daruma-claude` только кладёт CLI `daruma-claude` в `PATH`, а шаг 3 регистрирует только MCP-сервер daruma — ни то, ни другое не регистрирует плагин Claude Code. Чтобы появились `/daruma-claude:start <задача>`, `/daruma-claude:doctor`, `/daruma-claude:setup` и хуки SessionStart/Stop, добавь этот репозиторий как marketplace плагинов и установи плагин из него:
+
+```bash
+claude plugin marketplace add tupical/daruma
+claude plugin install daruma-claude@daruma
+```
+
+Или внутри сессии Claude Code: `/plugin marketplace add tupical/daruma`, затем `/plugin install daruma-claude@daruma`. После этого перезапусти Claude Code; `claude plugin list` должен показать `daruma-claude@daruma` как enabled.
 
 > **Требования.** Node.js ≥ 20, Rust toolchain (для сборки daruma), Claude Code на `PATH`.
 
@@ -141,7 +150,7 @@ daruma-claude start "переписать модуль аутентификац�
 | `daruma-claude platform`                       | Печатает режим исполнения (`omc-team` или `task-fallback`)            |
 | `daruma-claude --version` / `--help`           |                                                                       |
 
-Внутри сессии Claude Code:
+Внутри сессии Claude Code (после [установки плагина](#быстрый-старт) — один `npm i -g` их не регистрирует):
 
 | Slash                                  | Что делает                              |
 | -------------------------------------- | --------------------------------------- |

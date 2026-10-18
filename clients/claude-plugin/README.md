@@ -85,7 +85,16 @@ daruma-claude doctor          # should print READY
 daruma-claude start "refactor the auth module to use OAuth2 with PKCE"
 ```
 
-That's the whole workflow. Inside Claude Code, the equivalent slash commands are `/daruma-claude:start <task>`, `/daruma-claude:doctor`, `/daruma-claude:setup`.
+That's the whole shell workflow.
+
+**Slash commands need a separate plugin install.** `npm i -g daruma-claude` only puts the `daruma-claude` CLI on `PATH`, and step 3 only registers the daruma MCP server — neither registers the Claude Code plugin. To get `/daruma-claude:start <task>`, `/daruma-claude:doctor`, `/daruma-claude:setup` and the SessionStart/Stop hooks, add this repo as a plugin marketplace and install the plugin from it:
+
+```bash
+claude plugin marketplace add tupical/daruma
+claude plugin install daruma-claude@daruma
+```
+
+Or, inside a Claude Code session: `/plugin marketplace add tupical/daruma`, then `/plugin install daruma-claude@daruma`. Restart Claude Code afterwards; `claude plugin list` should show `daruma-claude@daruma` as enabled.
 
 > **Requirements.** Node.js ≥ 20, Rust toolchain (for daruma build), Claude Code on `PATH`.
 
@@ -141,7 +150,7 @@ That's the whole workflow. Inside Claude Code, the equivalent slash commands are
 | `daruma-claude platform`                        | Print execution mode (`omc-team` or `task-fallback`)                  |
 | `daruma-claude --version` / `--help`            |                                                                       |
 
-Inside a Claude Code REPL session:
+Inside a Claude Code REPL session (after the [plugin install](#quick-start) — `npm i -g` alone does not register these):
 
 | Slash                                  | Effect                              |
 | -------------------------------------- | ----------------------------------- |
