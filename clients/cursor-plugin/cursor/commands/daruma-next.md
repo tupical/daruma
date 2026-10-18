@@ -54,7 +54,7 @@ and render a compact briefing for the user.
 6. Finish with a short call-to-action:
 
    ```
-   → When done: daruma_complete task_id=<task_id> [comment="<summary>"]
+   → When done: daruma_complete task_id=<task_id> [result_summary="<summary>"]
    → On failure: daruma_comment task_id=<task_id> body=<reason>
      followed by daruma_set_status task_id=<task_id> status=todo
    ```

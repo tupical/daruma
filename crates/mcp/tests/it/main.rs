@@ -4,6 +4,7 @@
 
 mod ai_analyze_complexity;
 mod argument_aliases;
+mod complete_comment_alias;
 mod feature_tiers_doc;
 mod get_task_comments;
 mod list_project_selection;

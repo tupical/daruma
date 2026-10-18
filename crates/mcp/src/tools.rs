@@ -1947,6 +1947,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                     note.insert(key.to_string(), json!(v));
                 }
             }
+            if let Some(summary) = complete_comment_summary(&args, note.get("result_summary"))? {
+                note.insert("result_summary".to_string(), json!(summary));
+            }
             if let Some(arts) = args.get("related_artifacts").and_then(|v| v.as_array()) {
                 if !arts.is_empty() {
                     note.insert("related_artifacts".to_string(), json!(arts));
@@ -3364,6 +3367,38 @@ fn schema_bounded_read_ext(field: &str, id_desc: Option<&str>, with_dedup: bool)
         "properties": props,
         "required": [field]
     })
+}
+
+/// `comment` on `daruma_complete` is an alias of `result_summary`: the shipped
+/// next-prompts and client commands told agents to pass the work summary as
+/// `comment`, and dropping it silently lost that summary. Accepts a string or
+/// the `{body}` object `daruma_set_status` uses. Returns the summary to store
+/// when `result_summary` was not given; a different explicit `result_summary`
+/// is rejected before any request instead of losing either text.
+fn complete_comment_summary(
+    args: &Map<String, Value>,
+    result_summary: Option<&Value>,
+) -> anyhow::Result<Option<String>> {
+    let comment = match args.get("comment") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(text)) => text.as_str(),
+        Some(Value::Object(obj)) => obj
+            .get("body")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("`comment.body` (string) is required"))?,
+        Some(_) => anyhow::bail!("`comment` must be a string or an object with `body`"),
+    };
+    let comment = comment.trim();
+    if comment.is_empty() {
+        return Ok(None);
+    }
+    match result_summary.and_then(Value::as_str).map(str::trim) {
+        None | Some("") => Ok(Some(comment.to_string())),
+        Some(summary) if summary == comment => Ok(None),
+        Some(_) => anyhow::bail!(
+            "conflicting completion summaries: `comment` is an alias of `result_summary`; pass one"
+        ),
+    }
 }
 
 /// Complete a task with an optional completion note. The note fields are all
