@@ -133,6 +133,16 @@ scope in this order:
 4. `DARUMA_PROJECT_ID`
 5. nearest configured repo path prefix for `DARUMA_WORKSPACE` / process CWD
 
+A relative `scope_path` resolves against the local workspace key
+(`DARUMA_WORKSPACE`, else the CWD of `daruma mcp`), so it works only in a
+stdio session. A hosted (`/v1/mcp`) session has no workspace key: pass an
+absolute `scope_path` — POSIX (`/home/you/repo`), Windows (`C:\Repos\app`,
+`C:/Repos/app`) or UNC (`\\host\share`). A relative one is rejected with
+"relative `scope_path` … needs a local workspace; pass an absolute path", and
+`daruma_project_use` without `scope_path` fails with "no local workspace for
+this MCP session; pass `scope_path`". Step 5 never applies there either, so an
+unscoped hosted call has no default project.
+
 Supported launch modes:
 
 - When MCP starts inside one configured repo, unscoped calls use that repo's
