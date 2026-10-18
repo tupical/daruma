@@ -2,7 +2,7 @@
 
 use axum::http::StatusCode;
 use daruma_core::{Command, CommandBus};
-use daruma_domain::{Actor, NewPlan, NewTask, RelationKind, Status};
+use daruma_domain::{Actor, NewPlan, NewTask, Priority, RelationKind, Status};
 use daruma_events::Event;
 use daruma_shared::{PlanId, ProjectId, TaskId};
 use serde_json::json;
@@ -34,6 +34,9 @@ async fn seed_plan(bus: &CommandBus) -> (ProjectId, PlanId, TaskId, TaskId, Task
         let mut task = NewTask::new(title);
         task.id = Some(id);
         task.project_id = Some(project_id);
+        if id == a {
+            task.priority = Some(Priority::P1);
+        }
         bus.dispatch(Command::CreateTask { task }, actor.clone())
             .await
             .unwrap();
@@ -114,6 +117,16 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
     .await;
     assert_eq!(status, StatusCode::OK, "graph response: {graph}");
     assert_eq!(graph["nodes"].as_array().unwrap().len(), 3);
+    let priority_of = |id: TaskId| {
+        graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["task_id"] == json!(id))
+            .map(|n| n["priority"].clone())
+    };
+    assert_eq!(priority_of(a), Some(json!("p1")), "graph node carries priority: {graph}");
+    assert_eq!(priority_of(b), Some(json!("p2")), "default priority is p2: {graph}");
     assert!(
         graph["edges"]
             .as_array()

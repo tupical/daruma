@@ -59,6 +59,7 @@ pub async fn plan_graph(
                 depends_on: pt.depends_on.clone(),
                 title: task.title.clone(),
                 status: task.status,
+                priority: task.priority,
             })
         })
         .collect::<Vec<_>>();
