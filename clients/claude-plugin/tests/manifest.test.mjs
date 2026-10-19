@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -90,5 +92,50 @@ test("manifests only advertise commands and skills the plugin ships", async () =
       new RegExp(`\\b${name}\\b`, "i"),
       `manifest advertises "${name}" but neither commands/${name}.md nor skills/${name} exists`,
     );
+  }
+});
+
+test("README links into .github/ point at files that exist", async () => {
+  for (const readme of ["README.md", "README.ru.md"]) {
+    const body = await readText(join(ROOT, readme));
+    for (const [, rel] of body.matchAll(/\]\(((?:\.\.\/)*\.github\/[^)#\s]+)/g)) {
+      await assert.doesNotReject(fs.access(join(ROOT, rel)), `${readme} links to ${rel}, which does not exist`);
+    }
+    assert.doesNotMatch(body, /publish\.yml/, `${readme} mentions publish.yml, but no publish workflow exists`);
+  }
+});
+
+test("release scripts only bump the version: no git commit, tag or push", async () => {
+  const pkg = await readJson(join(ROOT, "package.json"));
+  const release = Object.entries(pkg.scripts).filter(([name]) => name.startsWith("release:"));
+  assert.ok(release.length > 0, "package.json must keep its release:* scripts");
+  for (const [name, cmd] of release) {
+    assert.match(cmd, /--no-git-tag-version/, `${name} must not let npm commit or tag`);
+    assert.doesNotMatch(cmd, /\bgit\s+(commit|tag|push)\b/, `${name} must not run git commit/tag/push`);
+  }
+});
+
+test("plugin.json version matches package.json", async () => {
+  const pkg = await readJson(join(ROOT, "package.json"));
+  const plugin = await readJson(join(ROOT, ".claude-plugin", "plugin.json"));
+  assert.equal(plugin.version, pkg.version);
+});
+
+test("version hook copies the bumped package.json version into plugin.json", async () => {
+  const pkg = await readJson(join(ROOT, "package.json"));
+  assert.equal(pkg.scripts.version, "node scripts/sync-plugin-version.mjs");
+  const dir = await fs.mkdtemp(join(tmpdir(), "claude-plugin-version-"));
+  try {
+    await fs.mkdir(join(dir, "scripts"));
+    await fs.mkdir(join(dir, ".claude-plugin"));
+    await fs.copyFile(join(ROOT, "scripts", "sync-plugin-version.mjs"), join(dir, "scripts", "sync-plugin-version.mjs"));
+    await fs.copyFile(join(ROOT, ".claude-plugin", "plugin.json"), join(dir, ".claude-plugin", "plugin.json"));
+    await fs.writeFile(join(dir, "package.json"), JSON.stringify({ ...pkg, version: "9.8.7" }));
+    execFileSync(process.execPath, [join(dir, "scripts", "sync-plugin-version.mjs")], { stdio: "pipe" });
+    const synced = await readJson(join(dir, ".claude-plugin", "plugin.json"));
+    const original = await readJson(join(ROOT, ".claude-plugin", "plugin.json"));
+    assert.deepEqual(synced, { ...original, version: "9.8.7" });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
   }
 });

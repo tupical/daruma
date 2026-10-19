@@ -44,8 +44,9 @@
   },
   "scripts": {
     "test": "node --test tests/**/*.test.mjs",
-    "release:patch": "npm version patch -m \"Release v%s\" && git push --follow-tags",
-    "release:minor": "npm version minor -m \"Release v%s\" && git push --follow-tags",
-    "release:major": "npm version major -m \"Release v%s\" && git push --follow-tags"
+    "version": "node scripts/sync-plugin-version.mjs",
+    "release:patch": "npm version patch --no-git-tag-version",
+    "release:minor": "npm version minor --no-git-tag-version",
+    "release:major": "npm version major --no-git-tag-version"
   }
 }
