@@ -1,12 +1,13 @@
 //! Prompt-injection hardening for grounding context.
 //!
-//! Task titles/descriptions, comments, documents, and event payloads that
-//! get interpolated into LLM prompts are **untrusted data**, not
-//! instructions: anyone (or any agent) who can write a task body could
+//! Every value interpolated into an LLM prompt at call time — task
+//! titles/descriptions, comments, documents, event payloads, and free-text
+//! request parameters such as a search query or a hint — is **untrusted
+//! data**, not instructions: anyone (or any agent) who can write one could
 //! otherwise smuggle directives into an AI call made later on top of it.
 //!
-//! Every place in this crate that feeds external content into a prompt
-//! routes it through [`wrap_untrusted`], which
+//! Every call site that feeds such a value into a prompt routes it through
+//! [`wrap_untrusted`], which
 //!
 //! 1. prefixes an explicit framing line telling the model the block is
 //!    data and that instructions inside it must be ignored, and
@@ -47,7 +48,8 @@ fn neutralize(content: &str) -> String {
 }
 
 /// Wrap external `content` (task bodies, comments, documents, event
-/// payloads) in an explicit untrusted-data fence with a framing line.
+/// payloads, caller-supplied free text) in an explicit untrusted-data fence
+/// with a framing line.
 /// `label` names the kind of content for the model (e.g. "task context").
 pub fn wrap_untrusted(label: &str, content: &str) -> String {
     format!(
