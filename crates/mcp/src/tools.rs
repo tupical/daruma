@@ -1544,14 +1544,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 out["comments"] = comments;
                 return Ok(out);
             }
-            let version_stamp = task_dedup_version(&resp);
+            let updated_at = resp
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             Ok(maybe_dedup(
                 client,
                 resp,
                 &args,
                 &id,
                 "task description",
-                version_stamp.as_deref(),
+                updated_at.as_deref(),
             ))
         }
         "daruma_update" => {
@@ -5439,25 +5442,17 @@ fn dedup_requested(args: &Map<String, Value>) -> bool {
     args.get("dedup").and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// A task's read version includes its mutable claim generation. Claim CAS does
-/// not edit `tasks.updated_at`, so using that timestamp alone can incorrectly
-/// collapse acquire, refresh, and release reads into an `unchanged` marker.
-fn task_dedup_version(task: &Value) -> Option<String> {
-    let updated_at = task.get("updated_at")?.as_str()?;
-    let claim = task.get("current_claim");
-    let claim_id = claim
-        .and_then(|claim| claim.get("claim_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let relation = match claim
-        .and_then(|claim| claim.get("is_mine"))
-        .and_then(Value::as_bool)
-    {
-        Some(true) => "mine",
-        Some(false) => "other",
-        None => "none",
-    };
-    Some(format!("{updated_at}|claim:{claim_id}|{relation}"))
+/// Dedup version of one read: the object's `updated_at` plus a fingerprint of
+/// the whole returned payload. `updated_at` alone is not enough — claim CAS
+/// does not bump a task's `updated_at`, and a plan's detail carries progress,
+/// `latest_activity_at` and `source_chain` that change when a task is added to
+/// or moves inside the plan while `plan.updated_at` stays put. Hashing what the
+/// caller actually receives makes `unchanged` mean "byte-identical".
+fn dedup_version(value: &Value, updated_at: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.to_string().hash(&mut hasher);
+    format!("{updated_at}|{:016x}", hasher.finish())
 }
 
 /// The object body carrying the protected fields: tasks/documents hold `id`
@@ -5492,8 +5487,8 @@ fn unchanged_marker(value: &Value, id: &str, since: &str) -> Value {
 /// Session dedup entry point (task D). Only engages when the caller opted in
 /// with `dedup: true` and the object carries an `updated_at`:
 ///
-/// * cache HIT (same stamp already emitted *in full* this session) → return
-///   the compact `unchanged` marker;
+/// * cache HIT (same [`dedup_version`] already emitted *in full* this
+///   session) → return the compact `unchanged` marker;
 /// * cache MISS (new, changed, or previously only excerpted) → emit the normal
 ///   full/bounded response, and record the stamp only when that response is
 ///   the complete object. A `max_tokens` excerpt is never recorded: the caller
@@ -5508,15 +5503,17 @@ fn maybe_dedup(
     what: &str,
     updated_at: Option<&str>,
 ) -> Value {
-    let stamp = updated_at.filter(|_| dedup_requested(args));
-    if let Some(stamp) = stamp {
-        if let Some(since) = client.dedup_lookup(id, stamp) {
+    let stamp = updated_at
+        .filter(|_| dedup_requested(args))
+        .map(|since| (dedup_version(&value, since), since));
+    if let Some((version, _)) = &stamp {
+        if let Some(since) = client.dedup_lookup(id, version) {
             return unchanged_marker(&value, id, &since);
         }
     }
     let (out, truncated) = maybe_bounded_flagged(value, args, id, what);
-    if let (Some(stamp), false) = (stamp, truncated) {
-        client.dedup_record(id, stamp);
+    if let (Some((version, since)), false) = (stamp, truncated) {
+        client.dedup_record(id, &version, since);
     }
     out
 }
@@ -6938,6 +6935,58 @@ mod tests {
         assert_eq!(marker["id"], "pln_1", "id pulled from nested plan body");
         assert_eq!(marker["status"], "active");
         assert!(marker.get("progress").is_none(), "full payload withheld");
+    }
+
+    #[test]
+    fn maybe_dedup_plan_membership_change_without_updated_at_bump_is_full() {
+        // Regression: adding a task to a plan changes its detail (progress,
+        // latest_activity_at) but not `plan.updated_at`; the stamp-only check
+        // answered `unchanged` for a payload the session had never seen.
+        let client = dedup_client();
+        let args = json!({"id":"pln_1","view":"detail","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let stamp = Some("2026-03-03T00:00:00Z");
+        let before = json!({
+            "plan": {"id":"pln_1","status":"active","updated_at":"2026-03-03T00:00:00Z"},
+            "progress": {"tasks_total": 1, "tasks_done": 0},
+            "latest_activity_at": "2026-03-03T00:00:00Z"
+        });
+        let after = json!({
+            "plan": {"id":"pln_1","status":"active","updated_at":"2026-03-03T00:00:00Z"},
+            "progress": {"tasks_total": 2, "tasks_done": 0},
+            "latest_activity_at": "2026-03-04T00:00:00Z"
+        });
+        let _ = maybe_dedup(&client, before, &args, "pln_1", "plan detail", stamp);
+        let out = maybe_dedup(&client, after.clone(), &args, "pln_1", "plan detail", stamp);
+        assert_eq!(out, after, "changed summary is delivered in full");
+        let again = maybe_dedup(&client, after, &args, "pln_1", "plan detail", stamp);
+        assert_eq!(again["unchanged"], json!(true));
+        assert_eq!(again["since"], "2026-03-03T00:00:00Z");
+    }
+
+    #[test]
+    fn maybe_dedup_task_claim_change_without_updated_at_bump_is_full() {
+        // Claim CAS does not bump `updated_at`; the payload fingerprint still
+        // sees the new `current_claim`, and `since` stays the plain timestamp.
+        let client = dedup_client();
+        let args = json!({"id":"tsk_1","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let stamp = Some("2026-01-01T00:00:00Z");
+        let free = json!({"id":"tsk_1","status":"todo","updated_at":"2026-01-01T00:00:00Z"});
+        let claimed = json!({
+            "id":"tsk_1","status":"todo","updated_at":"2026-01-01T00:00:00Z",
+            "current_claim": {"claim_id":"clm_1","is_mine":true}
+        });
+        let _ = maybe_dedup(&client, free, &args, "tsk_1", "task", stamp);
+        let out = maybe_dedup(&client, claimed.clone(), &args, "tsk_1", "task", stamp);
+        assert_eq!(out, claimed);
+        let again = maybe_dedup(&client, claimed, &args, "tsk_1", "task", stamp);
+        assert_eq!(again["unchanged"], json!(true));
+        assert_eq!(again["since"], "2026-01-01T00:00:00Z");
     }
 
     #[test]

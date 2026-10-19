@@ -107,8 +107,10 @@ marker instead of the whole payload:
   *are* short handles, e.g. `tsk_1` / `pln_1`; there is no separate ref format
   and no opaque hash). To hydrate the full object, re-read `ref` via the same
   tool **without** `dedup`.
-- `since` — the object's `updated_at` at the moment it last changed; "unchanged
-  since this timestamp".
+- `since` — the object's `updated_at` when this session last received it in
+  full. Parts of the payload that change without bumping `updated_at` (plan
+  progress and membership, a task's claim) still count as a change — see
+  [How change is detected](#how-change-is-detected).
 - `id` / `status` / `priority` — the protected structural fields (same set as
   the no-compress contract) are still carried so a client can act on lifecycle
   state without hydrating.
@@ -135,9 +137,15 @@ who does not ask keeps today's behaviour byte-for-byte. Progress view
 
 ### How change is detected
 
-The only signal is `updated_at`. Every task/plan mutation bumps it through the
-event pipeline, so a matching stamp is a correct-by-construction "nothing
-changed" — no payload hashing, no event subscription. The cache lives on the
+The version is the object's `updated_at` **plus a fingerprint of the whole
+returned payload**. `updated_at` alone is not enough: a claim acquire/refresh/
+release does not bump a task's `updated_at`, and a plan's detail carries
+`progress`, `latest_activity_at` and `source_chain` that change when a task is
+added to the plan or moves inside it while `plan.updated_at` stays put. A
+stamp-only check would answer `unchanged` for a summary the session never saw;
+fingerprinting what the caller actually receives makes `unchanged` mean
+byte-identical, with no event subscription. `since` still reports the plain
+`updated_at`. The cache lives on the
 `ApiClient` (`crates/mcp/src/client.rs`, `dedup_lookup` / `dedup_record`), whose lifetime *is* the
 MCP session: one stdio process = one client = one session, so — unlike a
 cross-session cache — the server only ever refers you back to content **this
