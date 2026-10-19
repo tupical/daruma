@@ -15,7 +15,7 @@
 //   daruma-claude --version                   Print version.
 //
 // `start` opens its own JSON-RPC connection to `daruma mcp`, creates/picks a
-// project, creates a root task (optionally decomposing into a plan), then uses
+// project, materializes the root task as a one-task plan, then uses
 // `omc team` as the executor for each eligible task. No nested Claude Code
 // session is opened at the daruma-claude level — `omc team` workers are the
 // only Claude Code panes.
@@ -96,10 +96,9 @@ daruma-claude start flags:
                       attempts = M + 1). Non-negative integer. Default 2.
   --agent T           Agent type for \`omc team\` workers (claude | codex | gemini).
                       Default claude.
-  --plan              Ask daruma to AI-decompose the root task into a plan
-                      of subtasks, then execute each subtask via \`omc team\`.
-                      Requires daruma_ai_decompose on the connected server
-                      (SaaS/Meisei); OSS servers fall back to single-task.
+  --plan              Execute the root task through the plan loop (daruma
+                      run + claim) instead of directly. Does not decompose;
+                      for several tasks use team-from-plan.
   --project ID        Use this daruma project id instead of auto-resolving
                       from workspace info / cwd basename.
   --yes               Skip y/n confirmation prompts (implied when stdin is

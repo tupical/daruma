@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -325,6 +325,92 @@ test("start spawns the same `daruma mcp` launcher doctor probes", { skip: proces
     }
     assert.equal(await readFile(argvOut, "utf8"), "mcp\n");
     assert.match(lines.join(""), new RegExp(`starting ${bin} mcp`));
+  });
+});
+
+// `--plan` executes the materialized one-task plan; nothing decomposes it, so
+// a server without any AI tool or provider runs it to completion (README "Plan mode").
+test("start --plan runs the root task as a one-task plan and never asks for AI decomposition", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "bin");
+    const repo = join(dir, "repo");
+    const log = join(dir, "requests.log");
+    await mkdir(bin);
+    await mkdir(repo);
+    // Fake `daruma mcp`: logs every JSON-RPC request, answers the plan-mode calls.
+    await writeFile(join(bin, "daruma"), `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const readline = require("node:readline");
+let drains = 0;
+const answers = {
+  daruma_plan_materialize: () => ({ data: [
+    { payload: { type: "plan_created", plan: { id: "pln", status: "active" } } },
+    { payload: { type: "task_created", task: { id: "tsk", title: "root" } } },
+  ] }),
+  daruma_workspace_info: () => ({ mcp_agent_id: "agent" }),
+  daruma_run_start: () => ({ data: { run_id: "00000000-0000-4000-8000-000000000002" } }),
+  daruma_plan_drain_next: () => (drains++ === 0 ? { task_id: "tsk" } : null),
+  daruma_get: () => ({ id: "tsk", title: "root", status: "todo" }),
+  daruma_run_notes_list: () => ({ notes: [] }),
+  daruma_plan_get: () => ({ id: "pln", status: "completed" }),
+};
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method: msg.method, params: msg.params }) + "\\n");
+  if (msg.id === undefined) return;
+  let result;
+  if (msg.method === "initialize") {
+    result = { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake", version: "0" } };
+  } else if (msg.method === "tools/call") {
+    const body = (answers[msg.params.name] ?? (() => ({ ok: true })))();
+    result = { content: [{ type: "text", text: JSON.stringify(body) }] };
+  } else {
+    result = { tools: [] };
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
+});
+`);
+    await writeFile(join(bin, "omc"), `#!/bin/sh
+if [ "$1 $2" = "team api" ]; then
+  case "$3" in
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"completed":1}}}}' ;;
+    *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "team shutdown" ]; then exit 0; fi
+mkdir -p .omc/state/team/plan-mode-team
+`);
+    await chmod(join(bin, "daruma"), 0o755);
+    await chmod(join(bin, "omc"), 0o755);
+    const saved = { bin: process.env.DARUMA_MCP_BIN, agentDir: process.env.DARUMA_AGENT_DIR, path: process.env.PATH };
+    process.env.DARUMA_MCP_BIN = join(bin, "daruma");
+    process.env.DARUMA_AGENT_DIR = join(dir, "agent");
+    process.env.PATH = `${bin}:${saved.path}`;
+    const lines = [];
+    const stdout = { isTTY: false, write: (s) => { lines.push(s); return true; } };
+    let result;
+    try {
+      result = await runDarumaStart({
+        task: "plan mode root", cwd: repo, stdout, autoYes: true, planMode: true, projectId: "prj", maxRetries: 0,
+      });
+    } finally {
+      for (const [key, value] of [["DARUMA_MCP_BIN", saved.bin], ["DARUMA_AGENT_DIR", saved.agentDir], ["PATH", saved.path]]) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const requests = (await readFile(log, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const tools = requests.filter((r) => r.method === "tools/call").map((r) => r.params.name);
+    assert.equal(result.ok, true);
+    assert.equal(result.planId, "pln");
+    assert.deepEqual(result.summaries.map((s) => s.taskId), ["tsk"]);
+    const materialize = requests.find((r) => r.params?.name === "daruma_plan_materialize");
+    assert.equal(materialize.params.arguments.tasks.length, 1);
+    assert(!tools.some((name) => /decompose/.test(name)), `unexpected decomposition call in ${tools}`);
+    assert(!requests.some((r) => r.method === "tools/list"));
+    assert(tools.includes("daruma_run_complete"));
+    assert.doesNotMatch(lines.join(""), /\[decompose\]/);
   });
 });
 
