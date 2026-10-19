@@ -85,7 +85,7 @@ pub use tenant_quota_repo::TenantQuotaRepo;
 pub use token_repo::TokenRepo;
 pub use webhook_enrichment::WebhookEnrichment;
 pub use webhook_repo::WebhookRepo;
-pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
+pub use work_lease_repo::{ReserveOutcome, SweptLeases, WorkLeaseRepo};
 pub use work_unit_repo::WorkUnitRepo;
 pub use workspace_graph_repo::{
     DuplicateTaskPair, GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode,

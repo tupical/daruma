@@ -8,7 +8,7 @@ use daruma_domain::{
 use daruma_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, ClaimId, CommentId, DeviceId,
     DocumentId, EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId,
-    RunNoteId, TaskId, Timestamp, WorkUnitId,
+    RunNoteId, TaskId, Timestamp, WorkLeaseId, WorkUnitId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -437,11 +437,17 @@ pub enum Event {
         leases: Vec<WorkLease>,
     },
 
-    /// All of an agent's file/path leases for a task were released
-    /// (task completed, explicit release, or TTL expiry).
+    /// An agent's file/path leases for a task were released (explicit
+    /// release or TTL expiry). `lease_ids: None` (explicit release and every
+    /// event persisted before the field existed) releases all of the
+    /// agent's leases on the task; `Some` releases only the listed leases —
+    /// the TTL sweeper uses it so one expired lease does not drop the
+    /// agent's still-live leases on the same task.
     FilesReleased {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_ids: Option<Vec<WorkLeaseId>>,
     },
 
     // ── Semantic plan/run events (Wave 1 / W1.3) ──────────────────────────────
