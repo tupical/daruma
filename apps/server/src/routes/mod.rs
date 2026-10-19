@@ -42,7 +42,7 @@ use daruma_core::{
     plan_readiness, plan_ready_to_close,
     repos::{ExternalRefRepository, PlanRepository},
     search::{FtsSearchProvider, SearchProvider, SearchQuery as CoreSearchQuery, SearchScope},
-    Command, CommandEnvelope,
+    Command,
 };
 use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, AnchorMismatch, ArtifactRelationKind,
@@ -3810,10 +3810,23 @@ async fn delete_project(
     }))
 }
 
+/// Body of `POST /v1/commands`: the wire shape of `CommandEnvelope`, except
+/// that `actor` stays optional. `CommandEnvelope` defaults a missing actor to
+/// an anonymous `Actor::User`, which would hide the omission from
+/// [`actor_from`]; here an omitted or `null` actor falls back to the token.
+#[derive(Debug, Deserialize)]
+struct CommandRequest {
+    command: Command,
+    #[serde(default)]
+    actor: Option<Actor>,
+    #[serde(default)]
+    client_command_id: Option<uuid::Uuid>,
+}
+
 async fn dispatch_command(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
-    Json(envelope): Json<CommandEnvelope>,
+    Json(envelope): Json<CommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if let Some(reason) = guarded_command_reason(&envelope.command) {
         return Err(ApiError::from(CoreError::forbidden(reason)));
@@ -3857,8 +3870,10 @@ async fn dispatch_command(
             .dispatch_authenticated_with_warnings(
                 envelope.command,
                 // Same rule as the typed routes: under `actor_strict` the
-                // envelope actor is ignored and the token decides.
-                actor_from(&auth, Some(envelope.actor)),
+                // envelope actor is ignored and the token decides; without it
+                // an explicit envelope actor wins and a missing one falls
+                // back to the token.
+                actor_from(&auth, envelope.actor),
                 auth.agent_id,
                 auth.scope.capabilities.has(Capability::Admin),
             )

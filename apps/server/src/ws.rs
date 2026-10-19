@@ -656,18 +656,9 @@ async fn handle_dispatch(
         return;
     }
 
-    // Resolve actor: with `actor_strict` always derive from the bearer token;
-    // without it (default) prefer the client-supplied actor for legacy compat.
-    let resolved_actor = {
-        #[cfg(feature = "actor_strict")]
-        {
-            auth.actor()
-        }
-        #[cfg(not(feature = "actor_strict"))]
-        {
-            auth.actor()
-        }
-    };
+    // WS frames carry no client actor: with or without `actor_strict` the
+    // bearer token decides.
+    let resolved_actor = auth.actor();
     let mut reserved_client_event_id = None;
     if let Some(client_event_id) = client_event_id {
         match reserve_or_ack_cached(state, out_tx, client_event_id).await {
