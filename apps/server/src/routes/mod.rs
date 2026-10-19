@@ -907,14 +907,18 @@ async fn compare_history_versions(
                 q.entity_type, q.entity_id, q.to
             )))
         })?;
+    // The stored `to.diff` only covers `to`'s own adjacent step; a compare of
+    // an arbitrary pair diffs the two selected snapshots directly.
+    let (changed_fields, pair_diff) =
+        daruma_storage::diff_snapshots(from.after.as_ref(), to.after.as_ref());
     let diff = json!({
         "kind": "version_compare",
         "from_version": from.version_number,
         "to_version": to.version_number,
         "before": from.after,
         "after": to.after,
-        "changed_fields": to.changed_fields,
-        "diff": to.diff,
+        "changed_fields": changed_fields,
+        "diff": pair_diff,
     });
     Ok(Json(json!({ "from": from, "to": to, "diff": diff })))
 }
@@ -3705,9 +3709,34 @@ async fn patch_task_triage(
     auth.require(Capability::TaskWrite)
         .map_err(ApiError::from_missing_cap)?;
     let id = parse_id(id_str, "task id")?;
+    // A triage decision is an ordinary execution-owned `UpdateTask`, so it
+    // lands in the event log and `entity_versions` like any other task edit
+    // (docs/VERSION_HISTORY.md) instead of a direct projection write.
+    state
+        .tasks
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
+    state
+        .commands
+        .dispatch_authenticated(
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    triage_state: Some(body.triage_state),
+                    ..TaskPatch::default()
+                },
+            },
+            actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
+        .await
+        .map_err(ApiError::from)?;
     let task = state
         .tasks
-        .set_triage_state(id, body.triage_state)
+        .get(id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;

@@ -259,25 +259,6 @@ impl TaskRepo {
         rows.iter().map(row_to_task).collect()
     }
 
-    pub async fn set_triage_state(
-        &self,
-        id: TaskId,
-        state: Option<TriageState>,
-    ) -> Result<Option<Task>> {
-        let n = sqlx::query("UPDATE tasks SET triage_state = ?, updated_at = ? WHERE id = ?")
-            .bind(state.map(TriageState::as_str))
-            .bind(chrono::Utc::now().to_rfc3339())
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?
-            .rows_affected();
-        if n == 0 {
-            return Ok(None);
-        }
-        self.get(id).await
-    }
-
     pub async fn get_many(&self, ids: &[TaskId]) -> Result<Vec<Task>> {
         if ids.is_empty() {
             return Ok(Vec::new());

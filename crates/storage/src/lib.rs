@@ -63,7 +63,7 @@ pub use comment_repo::CommentRepo;
 pub use db::Db;
 pub use device_repo::{Device, DeviceRepo};
 pub use document_repo::DocumentRepo;
-pub use entity_version::{EntityVersion, EntityVersionRepo};
+pub use entity_version::{diff_snapshots, EntityVersion, EntityVersionRepo};
 pub use event_store::SqliteEventStore;
 pub use evidence_repo::EvidenceRepo;
 pub use external_ref_repo::ExternalRefRepo;
