@@ -65,6 +65,11 @@ DARUMA_DATA_DIR=~/.agents/daruma/data \
 daruma install --mode local -y
 ```
 
+Local mode never inherits the currently active stored profile: the
+`local-default` profile gets `http://localhost:8080` and the bootstrap token
+unless `DARUMA_API_URL` / `DARUMA_TOKEN` (or `--api-url` / `--token`) are
+given explicitly. Other profiles in `credentials.json` are kept.
+
 ## Verbs
 
 ```bash

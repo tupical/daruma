@@ -191,6 +191,12 @@ async fn main() -> anyhow::Result<()> {
             force,
             project,
         }) => {
+            let (base, token) = install_connection(
+                mode.as_deref(),
+                cli.api_url.as_deref(),
+                cli.token.as_deref(),
+                daruma_mcp::credentials::resolve_from_agent_dir,
+            );
             return cmd_install(
                 &base,
                 &token,
@@ -362,6 +368,38 @@ fn resolve_mcp_connection(
     }
 }
 
+/// Resolve the connection `daruma install` acts on. `api_url` / `token` come
+/// from `--api-url` / `--token` (or their env fallbacks). `--mode local`
+/// describes this machine's own server, so it is built from local settings
+/// only: the explicit values, else `http://localhost:8080` and an empty token
+/// that `save_credentials` fills from `$DARUMA_DATA_DIR/bootstrap.token`. The
+/// stored active profile — possibly a remote one — is never inherited there;
+/// passing `--api-url` / `--token` is the opt-in. Other modes keep the
+/// stored-profile fallback.
+fn install_connection(
+    mode: Option<&str>,
+    api_url: Option<&str>,
+    token: Option<&str>,
+    stored: impl FnOnce() -> Option<daruma_mcp::credentials::ResolvedRemoteAuth>,
+) -> (String, String) {
+    let api_url = api_url.map(str::trim).filter(|u| !u.is_empty());
+    let token = token.map(str::trim).filter(|t| !t.is_empty());
+    let stored = if mode == Some("local") {
+        None
+    } else {
+        stored()
+    };
+    let base = api_url
+        .map(str::to_string)
+        .or_else(|| stored.as_ref().map(|auth| auth.api_url.clone()))
+        .unwrap_or_else(|| "http://localhost:8080".to_string());
+    let token = token
+        .map(str::to_string)
+        .or_else(|| stored.map(|auth| auth.token))
+        .unwrap_or_default();
+    (base, token)
+}
+
 /// Optional workspace scope sent as `X-Daruma-Workspace-Id`.
 fn workspace_id_from_env() -> Option<String> {
     if let Ok(id) = std::env::var("DARUMA_WORKSPACE_ID") {
@@ -395,9 +433,13 @@ fn cmd_install(
     force: bool,
     project: Option<&Path>,
 ) -> anyhow::Result<()> {
-    if let Some(mode) = mode {
-        save_credentials(mode, base, token, yes)?;
-    }
+    // Later integrations use the token actually saved (local mode may have
+    // read it from the bootstrap file).
+    let token = match mode {
+        Some(mode) => save_credentials(mode, base, token, yes)?,
+        None => token.to_string(),
+    };
+    let token = token.as_str();
 
     if let Some(target) = print_config {
         match target {
@@ -680,7 +722,8 @@ fn cursor_mcp_config(base: &str, token: &str) -> Value {
     })
 }
 
-fn save_credentials(mode: &str, base: &str, token: &str, yes: bool) -> anyhow::Result<()> {
+/// Persist `<mode>-default` as the active profile; returns the saved token.
+fn save_credentials(mode: &str, base: &str, token: &str, yes: bool) -> anyhow::Result<String> {
     if mode != "self-host" && mode != "local" {
         anyhow::bail!("unsupported install mode: {mode}");
     }
@@ -714,7 +757,7 @@ fn save_credentials(mode: &str, base: &str, token: &str, yes: bool) -> anyhow::R
     });
     write_credentials_doc(&path, &doc)?;
     println!("credentials saved: {}", path.display());
-    Ok(())
+    Ok(token)
 }
 
 fn read_local_bootstrap_token() -> anyhow::Result<String> {
@@ -1316,6 +1359,119 @@ mod tests {
         assert_eq!(
             doc["profiles"]["local-default"]["token"],
             "ta_svc_bootstrap"
+        );
+
+        std::env::remove_var(daruma_mcp::paths::ENV_AGENT_DIR);
+        std::env::remove_var("DARUMA_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn remote_auth() -> daruma_mcp::credentials::ResolvedRemoteAuth {
+        daruma_mcp::credentials::ResolvedRemoteAuth {
+            api_url: "https://remote.example".to_string(),
+            token: "ta_remote".to_string(),
+            workspace_id: Some("ws-remote".to_string()),
+        }
+    }
+
+    #[test]
+    fn install_local_ignores_stored_profile() {
+        let (base, token) = install_connection(Some("local"), None, None, || {
+            panic!("local install must not read the stored profile")
+        });
+        assert_eq!(base, "http://localhost:8080");
+        assert_eq!(token, "");
+    }
+
+    #[test]
+    fn install_local_keeps_explicit_opt_in() {
+        let (base, token) = install_connection(
+            Some("local"),
+            Some("https://remote.example/"),
+            Some(" ta_explicit "),
+            || panic!("local install must not read the stored profile"),
+        );
+        assert_eq!(base, "https://remote.example/");
+        assert_eq!(token, "ta_explicit");
+    }
+
+    #[test]
+    fn install_without_local_mode_falls_back_to_stored_profile() {
+        let (base, token) =
+            install_connection(Some("self-host"), None, None, || Some(remote_auth()));
+        assert_eq!(base, "https://remote.example");
+        assert_eq!(token, "ta_remote");
+
+        let (base, token) =
+            install_connection(None, Some("http://h:1"), None, || Some(remote_auth()));
+        assert_eq!(base, "http://h:1");
+        assert_eq!(token, "ta_remote");
+    }
+
+    #[test]
+    fn local_install_over_active_remote_profile_saves_local_connection() {
+        let _guard = env_lock().lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daruma-cli-local-over-remote-test-{}",
+            std::process::id()
+        ));
+        let agent_dir = root.join("agent");
+        let data_dir = root.join("data");
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(data_dir.join("bootstrap.token"), "ta_svc_bootstrap\n").unwrap();
+        std::env::set_var(daruma_mcp::paths::ENV_AGENT_DIR, &agent_dir);
+        std::env::set_var("DARUMA_DATA_DIR", &data_dir);
+        save_credentials("self-host", "https://remote.example", "ta_remote", true).unwrap();
+        assert!(daruma_mcp::credentials::resolve_from_agent_dir().is_some());
+
+        let (base, token) = install_connection(
+            Some("local"),
+            None,
+            None,
+            daruma_mcp::credentials::resolve_from_agent_dir,
+        );
+        cmd_install(
+            &base,
+            &token,
+            None,
+            Some("local"),
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            Some(&project),
+        )
+        .unwrap();
+
+        let path = daruma_mcp::credentials::credentials_path();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(doc["active_profile"], "local-default");
+        assert_eq!(
+            doc["profiles"]["local-default"]["server_url"],
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            doc["profiles"]["local-default"]["token"],
+            "ta_svc_bootstrap"
+        );
+        assert_eq!(doc["profiles"]["self-host-default"]["token"], "ta_remote");
+        let cursor: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.join(".cursor").join("mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cursor["mcpServers"]["daruma"]["url"],
+            "http://localhost:8080/v1/mcp"
+        );
+        assert_eq!(
+            cursor["mcpServers"]["daruma"]["headers"]["Authorization"],
+            "Bearer ta_svc_bootstrap"
         );
 
         std::env::remove_var(daruma_mcp::paths::ENV_AGENT_DIR);
