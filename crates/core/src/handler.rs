@@ -3397,9 +3397,15 @@ impl CommandHandler {
             // project it into the event log for audit + WS sync (idempotent).
             Command::ReserveFiles { leases } => Ok(vec![Event::FilesReserved { leases }]),
 
-            Command::ReleaseFiles { agent_id, task_id } => {
-                Ok(vec![Event::FilesReleased { agent_id, task_id }])
-            }
+            Command::ReleaseFiles {
+                agent_id,
+                task_id,
+                lease_ids,
+            } => Ok(vec![Event::FilesReleased {
+                agent_id,
+                task_id,
+                lease_ids,
+            }]),
 
             // ── Handoff contracts (P5) ─────────────────────────────────────────
             Command::RequestHandoff { handoff } => {

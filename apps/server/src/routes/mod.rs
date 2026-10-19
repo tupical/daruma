@@ -7889,7 +7889,11 @@ async fn release_files(
     let envs = state
         .commands
         .dispatch(
-            Command::ReleaseFiles { agent_id, task_id },
+            Command::ReleaseFiles {
+                agent_id,
+                task_id,
+                lease_ids: None,
+            },
             actor_from(&auth, None),
         )
         .await

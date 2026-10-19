@@ -334,10 +334,16 @@ async fn main() -> anyhow::Result<()> {
                 }
                 match leases_bg.sweep_expired().await {
                     Ok(released) => {
-                        for (agent_id, task_id) in released {
+                        // Scope each release to the swept lease ids: the
+                        // agent's unexpired leases on the task stay held.
+                        for swept in released {
                             let _ = bus_bg
                                 .dispatch(
-                                    daruma_core::Command::ReleaseFiles { agent_id, task_id },
+                                    daruma_core::Command::ReleaseFiles {
+                                        agent_id: swept.agent_id,
+                                        task_id: swept.task_id,
+                                        lease_ids: Some(swept.lease_ids),
+                                    },
                                     daruma_domain::Actor::user(),
                                 )
                                 .await;
