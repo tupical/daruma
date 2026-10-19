@@ -71,6 +71,15 @@ const ALIASED: [(&str, &str, &str, &str, &str); 11] = [
     ("daruma_plan_drain_next", "plan_id", "id", "{}", "pln_1"),
 ];
 
+/// Tools with an id alias in their schema that are catalogued ONLY in the
+/// `full` MCP profile — `rpc()` below always dispatches via
+/// `ToolProfile::Default`, so these can't share the `ALIASED` table above
+/// (dispatch would be rejected with "not available in the default profile"
+/// before the alias logic even runs). Covered by the catalogue assertion
+/// only; actual key/alias dispatch equivalence for these needs a
+/// Full-profile-aware variant of `rpc()` if it is ever added.
+const FULL_ONLY_ALIASED_TOOLS: [&str; 1] = ["daruma_plan_next_task"];
+
 /// Stub daruma API: records (method, path, body) and answers `status` with
 /// `reply` (lists get `[]` on success).
 async fn serve(
@@ -170,7 +179,11 @@ fn alias_pair(properties: &serde_json::Map<String, Value>) -> Option<(&'static s
 
 #[test]
 fn catalogue_advertises_aliases_on_exactly_the_aliased_tools() {
-    let expected: BTreeSet<&str> = ALIASED.iter().map(|case| case.0).collect();
+    let expected: BTreeSet<&str> = ALIASED
+        .iter()
+        .map(|case| case.0)
+        .chain(FULL_ONLY_ALIASED_TOOLS)
+        .collect();
     let mut advertised = BTreeSet::new();
     for tool in tool_definitions_for(ToolProfile::Full) {
         let Some(properties) = tool.input_schema["properties"].as_object() else {
@@ -202,8 +215,14 @@ fn catalogue_advertises_aliases_on_exactly_the_aliased_tools() {
         .into_iter()
         .map(|t| t.name)
         .collect();
-    for tool in &expected {
+    for tool in ALIASED.iter().map(|case| case.0) {
         assert!(default.contains(tool), "{tool} is in the default profile");
+    }
+    for tool in FULL_ONLY_ALIASED_TOOLS {
+        assert!(
+            !default.contains(tool),
+            "{tool} is in the default profile — move it from FULL_ONLY_ALIASED_TOOLS to ALIASED"
+        );
     }
 }
 

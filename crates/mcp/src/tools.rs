@@ -3581,15 +3581,15 @@ fn schema_plan_materialize() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             }
         },
         "required":["plan","tasks"]
@@ -3810,15 +3810,15 @@ fn schema_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "status": {
                 "type":"string",
@@ -3832,7 +3832,7 @@ fn schema_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"next_cursor; don't auto-fetch."
+                "description":"next_cursor; no auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3863,7 +3863,7 @@ fn schema_search() -> Value {
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "limit": {
                 "type":"integer",
@@ -3873,7 +3873,7 @@ fn schema_search() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"next_cursor; don't auto-fetch."
+                "description":"next_cursor; no auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3900,11 +3900,11 @@ fn schema_lesson_recall() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "limit": {
                 "type":"integer",
@@ -4102,15 +4102,15 @@ fn schema_plan_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "status": {
                 "type":"string",
@@ -4124,7 +4124,7 @@ fn schema_plan_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"next_cursor; don't auto-fetch."
+                "description":"next_cursor; no auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -4241,15 +4241,15 @@ fn schema_workspacegraph_search() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
         },
@@ -4376,7 +4376,7 @@ fn schema_claim() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from workspace_info."},
+            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID (workspace_info)."},
             "task_id":  {"type":"string"},
             "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
         },
@@ -4388,7 +4388,7 @@ fn schema_release() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from workspace_info."},
+            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID (workspace_info)."},
             "task_id":  {"type":"string"}
         },
         "required":["agent_id","task_id"]
@@ -4996,9 +4996,9 @@ fn schema_doc_list() -> Value {
                 "type":"string",
                 "description":"Project id. When omitted, the resolved repo project is used only if unambiguous."
             },
-            "scope": {"type":"string", "description":"Repo scope name."},
-            "project_scope": {"type":"string", "description":"Repo scope name (alias-safe)."},
-            "scope_path": {"type":"string", "description":"Path; the nearest configured scope applies."},
+            "scope": {"type":"string", "description":"Repo scope"},
+            "project_scope": {"type":"string", "description":"Repo scope (alias-safe)"},
+            "scope_path": {"type":"string", "description":"Path; nearest configured scope applies."},
             "kind":             {"type":"string","enum":["interview","human_log"]},
             "include_archived": {"type":"boolean","default":false}
         }
