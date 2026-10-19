@@ -245,6 +245,25 @@ Issues and PRs welcome. The whole point of this plugin is that it stays thin —
 
 ---
 
+## Releasing
+
+There is no CI publish workflow: `daruma-claude` is published to npm by hand, by a maintainer with publish rights on the package. From `clients/claude-plugin`:
+
+```bash
+npm run release:patch   # 0.3.1 → 0.3.2 (or release:minor / release:major)
+npm test
+```
+
+`release:*` only bumps the version — in `package.json` and, through the `version` hook, in `.claude-plugin/plugin.json`. It makes no git commit, tag or push: the plugin lives in a subdirectory of the daruma monorepo, so the bump lands through the normal change flow like any other edit. Once that change is on `main`:
+
+```bash
+npm publish             # from clients/claude-plugin, on the merged main
+```
+
+The Claude Code plugin itself needs no publish step — `/plugin install` reads `clients/claude-plugin` straight from this repository.
+
+---
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

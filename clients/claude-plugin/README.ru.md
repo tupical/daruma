@@ -229,6 +229,25 @@ Issues и PR приветствуются. Идея плагина в том, ч
 
 ---
 
+## Выпуск версии
+
+CI-workflow для публикации нет: `daruma-claude` публикуется в npm вручную — мейнтейнером с правами на публикацию пакета. Из `clients/claude-plugin`:
+
+```bash
+npm run release:patch   # 0.3.1 → 0.3.2 (или release:minor / release:major)
+npm test
+```
+
+`release:*` только поднимает версию — в `package.json` и, через хук `version`, в `.claude-plugin/plugin.json`. Коммита, тега и push он не делает: плагин лежит в подкаталоге монорепо daruma, поэтому бамп попадает в `main` обычным путём, как любая другая правка. После этого:
+
+```bash
+npm publish             # из clients/claude-plugin, на смёрженном main
+```
+
+Сам плагин Claude Code публиковать не нужно — `/plugin install` читает `clients/claude-plugin` прямо из этого репозитория.
+
+---
+
 ## Лицензия
 
 MIT — см. [LICENSE](./LICENSE).
