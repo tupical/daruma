@@ -176,7 +176,7 @@ HTTP routes are authenticated under `/v1` and legacy root aliases:
 |---|---|---|
 | `GET /v1/history?entity_type=task&entity_id=...&limit=50` | `task:read` or `document:read` by entity type | List one entity timeline, newest first. |
 | `GET /v1/history/{version_id}` | matching read capability | Fetch one immutable version record. |
-| `GET /v1/history/compare?entity_type=...&entity_id=...&from=1&to=2` | matching read capability | Compare two version numbers for the same entity. |
+| `GET /v1/history/compare?entity_type=...&entity_id=...&from=1&to=2` | matching read capability | Compare two version numbers for the same entity; see [Compare](#compare). |
 | `GET /v1/history/latest?limit=50` | any task/document read capability | Latest visible task/document changes. |
 | `GET /v1/history/summary?entity_type=...&entity_id=...&limit=50` | matching read capability | Compact agent-readable timeline. |
 | `POST /v1/history/{version_id}/rollback` | `task:write` or `document:write` by entity type | Restore the selected snapshot by writing new mutation events. |
@@ -189,6 +189,25 @@ MCP tools mirror the HTTP routes:
 - `daruma_history_latest`
 - `daruma_history_summary`
 - `daruma_history_rollback`
+
+## Compare
+
+`GET /v1/history/compare` (and `daruma_history_compare`) returns
+`{ from, to, diff }`, where `from` and `to` are the two stored version
+records and `diff` describes the selected pair:
+
+- `diff.before` / `diff.after` are `from.after` and `to.after`;
+- `diff.changed_fields` and `diff.diff` are computed between those two
+  snapshots (same diff envelope as a stored version, with
+  `metadata.source = "version_compare"`), so `from=1&to=3` reports every field
+  that differs between versions 1 and 3, not only the `2 → 3` step;
+- `to.diff` / `to.changed_fields` keep their stored meaning: the adjacent
+  `before → after` step of version `to` alone.
+
+Every task field write goes through a versioned command. The triage decision
+`PATCH /v1/tasks/{id}/triage` dispatches `Command::UpdateTask` with a
+`triage_state` patch, so it lands in the event log and gets a `task_updated`
+version like any other execution-owned edit.
 
 ## Rollback
 

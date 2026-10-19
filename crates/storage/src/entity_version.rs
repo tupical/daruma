@@ -236,6 +236,16 @@ pub(crate) async fn insert_entity_version(
     Ok(())
 }
 
+/// Diff two arbitrary snapshots of one entity, e.g. the `after` of versions
+/// `from` and `to` in a history compare. Returns `(changed_fields, diff)` in the
+/// same shape a stored version uses, with `metadata.source = "version_compare"`;
+/// a stored version's own `diff` only covers its adjacent `before → after` step.
+pub fn diff_snapshots(before: Option<&Value>, after: Option<&Value>) -> (Vec<String>, Value) {
+    let changed_fields = changed_fields(before, after);
+    let diff = field_diff(before, after, "version_compare", &changed_fields);
+    (changed_fields, diff)
+}
+
 pub(crate) fn update_summary(
     entity_label: &str,
     before: Option<&Value>,
@@ -526,6 +536,22 @@ mod tests {
         assert_eq!(diff["fields"]["title"]["before"], "old");
         assert_eq!(diff["fields"]["title"]["after"], "new");
         assert_eq!(diff["metadata"]["source"], "task_updated");
+    }
+
+    #[test]
+    fn diff_snapshots_spans_the_selected_pair_not_the_last_step() {
+        let v1 = json!({ "title": "v1", "status": "todo", "priority": "p2" });
+        let v3 = json!({ "title": "v3", "status": "todo", "priority": "p0" });
+
+        let (fields, diff) = diff_snapshots(Some(&v1), Some(&v3));
+
+        assert_eq!(fields, vec!["priority".to_string(), "title".to_string()]);
+        assert_eq!(diff["kind"], "field_json_patch");
+        assert_eq!(diff["fields"]["title"]["before"], "v1");
+        assert_eq!(diff["fields"]["title"]["after"], "v3");
+        assert_eq!(diff["fields"]["priority"]["before"], "p2");
+        assert_eq!(diff["metadata"]["source"], "version_compare");
+        assert!(diff_snapshots(Some(&v3), Some(&v3)).0.is_empty());
     }
 
     #[test]

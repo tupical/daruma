@@ -77,6 +77,65 @@ async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> Value {
     serde_json::from_str(&text).unwrap()
 }
 
+/// `compare from=1 to=3` must diff the two selected snapshots, not echo
+/// version 3's own adjacent `2 → 3` step (which would miss the v1 → v2 title
+/// change and report a `before` that is not version 1).
+#[tokio::test]
+async fn history_compare_diffs_the_selected_pair_not_the_last_adjacent_step() {
+    let h = test_app().await;
+    let task_id = create_and_update_task(&h.router, &h.admin_token).await;
+    let body = json!({
+        "command": {
+            "type": "update_task",
+            "id": task_id,
+            "patch": { "priority": "p0" }
+        }
+    });
+    let (status, update) = json_post(
+        h.router.clone(),
+        &h.admin_token,
+        "/v1/commands",
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update failed: {update}");
+
+    let (status, compared) = json_get(
+        h.router.clone(),
+        &h.admin_token,
+        &format!("/v1/history/compare?entity_type=task&entity_id={task_id}&from=1&to=3"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "compare failed: {compared}");
+    let diff = &compared["diff"];
+    assert_eq!(diff["from_version"], 1);
+    assert_eq!(diff["to_version"], 3);
+    let changed: Vec<&str> = diff["changed_fields"]
+        .as_array()
+        .expect("changed_fields array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(changed.contains(&"title"), "v1→v3 title change: {diff}");
+    assert!(
+        changed.contains(&"priority"),
+        "v1→v3 priority change: {diff}"
+    );
+    assert_eq!(diff["diff"]["fields"]["title"]["before"], "History v1");
+    assert_eq!(diff["diff"]["fields"]["title"]["after"], "History v2");
+    assert_eq!(diff["diff"]["fields"]["priority"]["after"], "p0");
+    assert_eq!(diff["diff"]["metadata"]["source"], "version_compare");
+
+    // Version 3's own record still only describes its adjacent step.
+    let to_changed: Vec<&str> = compared["to"]["changed_fields"]
+        .as_array()
+        .expect("to.changed_fields array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!to_changed.contains(&"title"), "v3 own step: {compared}");
+}
+
 #[tokio::test]
 async fn history_http_endpoints_expose_versions_and_compare() {
     let h = test_app().await;
