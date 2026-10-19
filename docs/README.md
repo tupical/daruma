@@ -12,7 +12,7 @@ with humans and AI.
 | [MODULE_CONTRACT.md](MODULE_CONTRACT.md) | Compatibility rules for core and module changes. |
 | [architecture-policy.md](architecture-policy.md) | Fixed policy decisions for backfill, cascade, and sequence IDs. |
 | [LIFECYCLE_RULES_SPEC.md](LIFECYCLE_RULES_SPEC.md) | Lifecycle rules engine: statuses, gates, evidence. |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Self-host deployment: ports, TLS, systemd. |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Self-host deployment: ports, TLS, device pairing, telemetry retention. |
 | [RELEASES.md](RELEASES.md) | Release checklist and tagging flow. |
 | [ROADMAP_FEATURE_GAP.md](ROADMAP_FEATURE_GAP.md) | Feature-gap notes vs. the product roadmap. |
 | [VERSION_HISTORY.md](VERSION_HISTORY.md) | Versioned task and document record history. |
