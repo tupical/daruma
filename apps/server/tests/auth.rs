@@ -149,6 +149,46 @@ async fn ac6_tasks_list_without_status_returns_400() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+/// The README quick-start `curl` is the first request most users copy; it
+/// must be one the server accepts for a `TaskRead` token, not a 400.
+#[tokio::test]
+async fn readme_quickstart_tasks_example_is_accepted() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("read README.md");
+    let line = readme
+        .lines()
+        .find(|l| l.starts_with("curl ") && l.contains("localhost:8080/v1/tasks"))
+        .expect("README quick-start has a curl for /v1/tasks");
+    let start = line.find("/v1/tasks").unwrap();
+    let uri: String = line[start..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+        .collect();
+
+    let h = test_app().await;
+    let (token, _) = mint_pat(
+        &h.auth_store(),
+        [Capability::TaskRead].into(),
+        ProjectFilter::All,
+    )
+    .await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(&uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = h.router.oneshot(req).await.unwrap();
+    let status = res.status();
+    let body = read_json(res).await;
+    assert_eq!(status, StatusCode::OK, "README example {uri} -> {body}");
+    assert!(
+        body.is_array() || body["items"].is_array(),
+        "list response for {uri}: {body}"
+    );
+}
+
 #[tokio::test]
 async fn ac6_token_with_task_read_can_list_tasks() {
     let h = test_app().await;

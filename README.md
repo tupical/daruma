@@ -63,7 +63,7 @@ cargo run -p daruma-server          # API on :8080, data in ~/.agents/daruma/dat
 
 # 2. Drive the API.
 export DARUMA_TOKEN=ta_svc_…
-curl -H "Authorization: Bearer $DARUMA_TOKEN" http://localhost:8080/v1/tasks
+curl -H "Authorization: Bearer $DARUMA_TOKEN" "http://localhost:8080/v1/tasks?status=active"
 
 # 3. Build the unified launcher and let it walk you through connecting.
 cargo build -p daruma-cli           # produces the `daruma` binary
