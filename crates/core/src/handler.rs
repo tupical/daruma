@@ -499,6 +499,8 @@ impl CommandHandler {
                 warnings: vec![],
             });
         }
+        self.ensure_run_completion_owner(&cmd, authenticated_agent_id, is_admin)
+            .await?;
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let owned_terminal = authenticated_agent_id.is_some()
@@ -996,6 +998,43 @@ impl CommandHandler {
             .await?
             .is_some_and(|run| run.status == RunStatus::Completed);
         Ok(completed && claims.run_owner(*run_id).await? == Some(caller))
+    }
+
+    /// docs/PLAN_RECONCILIATION.md: an open run holds its plan open until its
+    /// own completion, so an authenticated `CompleteRun` is gated on the run's
+    /// owner like `FailRun` / `AbortRun`: another agent gets `forbidden`
+    /// unless it is an admin. A run without a recorded owner (started on an
+    /// unauthenticated path, or before migration 0054) has no ownership to
+    /// enforce and stays completable by any `RunWrite` holder; unlike
+    /// fail/abort, completion releases no claims, so no admin is required.
+    /// The owner row is written once with `RunStarted` and read under the
+    /// plan/run lifecycle lock, so the check cannot race a concurrent start.
+    async fn ensure_run_completion_owner(
+        &self,
+        cmd: &Command,
+        authenticated_agent_id: Option<AgentId>,
+        is_admin: bool,
+    ) -> Result<()> {
+        let (Command::CompleteRun { run_id }, Some(caller), Some(runs), Some(claims)) =
+            (cmd, authenticated_agent_id, &self.runs, &self.claims)
+        else {
+            return Ok(());
+        };
+        // A missing or terminal run keeps its `not_found` / `run is not
+        // active` answer from build_events; the owner row outlives the run.
+        let active = runs
+            .get(*run_id)
+            .await?
+            .is_some_and(|run| run.status == RunStatus::Active);
+        if !active {
+            return Ok(());
+        }
+        match claims.run_owner(*run_id).await? {
+            Some(owner) if owner != caller && !is_admin => {
+                Err(CoreError::forbidden("run is owned by another agent"))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Whether the task's history holds a handoff transition at or after

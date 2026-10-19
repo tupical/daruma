@@ -730,6 +730,40 @@ async fn owner_retry_after_lost_response_is_noop_and_foreign_retry_conflicts() {
     );
 }
 
+// docs/PLAN_RECONCILIATION.md: run ownership is not bypassed. Another
+// RunWrite token cannot complete an active owned run (403, run stays active,
+// plan stays open); the owner still can.
+#[tokio::test]
+async fn foreign_complete_of_active_run_is_forbidden_and_owner_completes() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, _) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let complete = format!("/v1/runs/{run_id}/complete");
+
+    let (status, response) = post_json(&h.router, &foreign_token, &complete, "{}").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "foreign complete: {response}"
+    );
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+
+    let (status, response) = post_json(&h.router, &owner_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::OK, "owner complete: {response}");
+    assert_eq!(response["data"]["already_completed"], false, "{response}");
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Completed
+    );
+}
+
 #[tokio::test]
 async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutation() {
     let h = test_app().await;

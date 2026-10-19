@@ -76,6 +76,7 @@ Rules:
 | Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
 | `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). |
+| `run_complete` → 403 `run is owned by another agent` | The run's owner (`run_claim_owners`) is another agent. Only the owner or an admin completes an active owned run; finish through the token that opened it. |
 | Response of `run_complete` / `run_finish_step` lost | Repeat the same call with the same token. Success with `data.already_completed` / `data.already_finished = true` and `event_id: null` means the first call landed — see [Idempotent retry](#idempotent-retry-s4). |
 
 ## Related tools
@@ -219,6 +220,10 @@ repeats the call instead of guessing:
 - Any other agent (admin included), an unauthenticated caller, and a
   `Failed`/`Aborted` run still get `409 run is not active`; failed/aborted
   never turn into completed.
+- A first completion of an *active* owned run by another non-admin agent is
+  refused with `403 run is owned by another agent` and changes nothing
+  (docs/PLAN_RECONCILIATION.md). A run without a recorded owner stays
+  completable by any `RunWrite` holder.
 - `POST /v1/runs/{id}/step/finish` (`daruma_run_finish_step`) is a no-op when
   the task's latest attempt in the run is already closed with exactly the
   requested outcome: `data.already_finished: true`, `event_id: null`, no
