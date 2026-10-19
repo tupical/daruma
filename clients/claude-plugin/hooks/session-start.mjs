@@ -48,6 +48,74 @@ export function formatTask(t) {
   return `  ${e} [${pri}] ${title}`;
 }
 
+// An empty task list is the only proof that there is nothing open. A tool
+// error, an unselected project or an unknown payload must not read as
+// "no open tasks", so daruma_list is classified before anything is printed.
+export function classifyListResult(listResult) {
+  if (listResult?.isError) {
+    const message = String(listResult.text ?? "").trim() || "daruma_list failed";
+    return { kind: "error", message };
+  }
+  const raw = listResult?.parsed ?? listResult?.text;
+  if (raw?.needs_project_selection) {
+    const projects = Array.isArray(raw.projects) ? raw.projects : [];
+    return { kind: "needs_project", reason: raw.reason ?? null, projects };
+  }
+  const tasks = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.tasks)
+      ? raw.tasks
+      : Array.isArray(raw?.items)
+        ? raw.items
+        : null;
+  if (!tasks) {
+    return { kind: "error", message: "unexpected daruma_list response" };
+  }
+  return { kind: "tasks", tasks };
+}
+
+export function renderSummary({ list, projectTitle }) {
+  if (list.kind === "error") {
+    return [
+      `[daruma] Could not list open tasks: ${truncate(list.message.replace(/\s+/g, " "), 200)}`,
+      "→ /daruma-claude:doctor to diagnose the connection, then /daruma-claude:tasks to retry.",
+    ].join("\n") + "\n";
+  }
+
+  if (list.kind === "needs_project") {
+    const lines = [
+      "[daruma] No project is selected for this workspace — open tasks were not listed.",
+    ];
+    for (const p of list.projects.slice(0, MAX_TASKS)) {
+      lines.push(`  • ${truncate(p.title ?? p.slug ?? "(untitled)", 60)} (${p.id})`);
+    }
+    if (list.projects.length > MAX_TASKS) {
+      lines.push(`  …and ${list.projects.length - MAX_TASKS} more projects`);
+    }
+    lines.push("→ ask the user which project to use, then call daruma_project_use with its project_id.");
+    return lines.join("\n") + "\n";
+  }
+
+  const { tasks } = list;
+  if (tasks.length === 0) {
+    return "[daruma] No open tasks — run /daruma-claude:tasks to verify or /daruma-claude:start \"<goal>\" to create one.\n";
+  }
+
+  const shown = tasks.slice(0, MAX_TASKS);
+  const extra = tasks.length > MAX_TASKS ? tasks.length - MAX_TASKS : 0;
+
+  const header = projectTitle
+    ? `[daruma] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""} in "${projectTitle}":`
+    : `[daruma] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""}:`;
+
+  const lines = [header, ...shown.map(formatTask)];
+  if (extra > 0) {
+    lines.push(`  …and ${extra} more — /daruma-claude:tasks for full list`);
+  }
+  lines.push("→ /daruma-claude:next to claim the next task  |  /daruma-claude:status for details");
+  return lines.join("\n") + "\n";
+}
+
 // The unified CLI serves stdio MCP as `daruma mcp` and rejects `daruma mcp
 // serve`, so the default is the launcher `daruma-claude start` and doctor use.
 // DARUMA_MCP_CMD / DARUMA_MCP_ARGS still override it verbatim.
@@ -92,19 +160,11 @@ async function fetchSummary() {
     if (!projectId && scope) listArgs.project_scope = scope;
 
     const listResult = await client.callTool("daruma_list", listArgs);
-    const raw = listResult.parsed ?? listResult.text;
-    const tasks = Array.isArray(raw)
-      ? raw
-      : Array.isArray(raw?.tasks)
-        ? raw.tasks
-        : Array.isArray(raw?.items)
-          ? raw.items
-          : [];
 
     await client.stop();
     clearTimeout(timer);
 
-    return { tasks, projectTitle, projectId };
+    return { list: classifyListResult(listResult), projectTitle, projectId };
   } catch (err) {
     clearTimeout(timer);
     try { await client.stop(); } catch { /* ignore */ }
@@ -126,29 +186,7 @@ async function main() {
     process.exit(0);
   }
 
-  const { tasks, projectTitle } = data;
-
-  if (!tasks || tasks.length === 0) {
-    process.stdout.write(
-      "[daruma] No open tasks — run /daruma-claude:tasks to verify or /daruma-claude:start \"<goal>\" to create one.\n"
-    );
-    process.exit(0);
-  }
-
-  const shown = tasks.slice(0, MAX_TASKS);
-  const extra = tasks.length > MAX_TASKS ? tasks.length - MAX_TASKS : 0;
-
-  const header = projectTitle
-    ? `[daruma] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""} in "${projectTitle}":`
-    : `[daruma] ${tasks.length > MAX_TASKS ? MAX_TASKS + "+" : tasks.length} open task${tasks.length !== 1 ? "s" : ""}:`;
-
-  const lines = [header, ...shown.map(formatTask)];
-  if (extra > 0) {
-    lines.push(`  …and ${extra} more — /daruma-claude:tasks for full list`);
-  }
-  lines.push("→ /daruma-claude:next to claim the next task  |  /daruma-claude:status for details");
-
-  process.stdout.write(lines.join("\n") + "\n");
+  process.stdout.write(renderSummary(data));
   process.exit(0);
 }
 
