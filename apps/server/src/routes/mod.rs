@@ -454,6 +454,56 @@ async fn revoke_device(
     Ok(Json(json!({ "ok": true, "device_id": device_id })))
 }
 
+// ── Token project scope (`ProjectFilter`) ─────────────────────────────────────
+
+/// Gate a project-bound resource by the token's `ProjectFilter`. A `None`
+/// project (inbox task, project-agnostic resource) passes, as in
+/// [`ProjectFilter::allows`].
+fn require_project_scope(
+    auth: &AuthContext,
+    project_id: Option<ProjectId>,
+) -> Result<(), ApiError> {
+    if auth.scope.projects.allows(project_id) {
+        Ok(())
+    } else {
+        Err(ApiError::from(CoreError::forbidden(
+            "project access denied",
+        )))
+    }
+}
+
+/// [`require_project_scope`] by plan id. An unknown plan passes: the handler
+/// answers its own 404.
+async fn require_plan_scope(
+    state: &AppState,
+    auth: &AuthContext,
+    plan_id: PlanId,
+) -> Result<(), ApiError> {
+    if matches!(auth.scope.projects, ProjectFilter::All) {
+        return Ok(());
+    }
+    match state.plans.get(plan_id).await.map_err(ApiError::from)? {
+        Some(plan) => require_project_scope(auth, Some(plan.project_id)),
+        None => Ok(()),
+    }
+}
+
+/// [`require_project_scope`] by task id. An unknown task passes: the handler
+/// answers its own 404.
+async fn require_task_scope(
+    state: &AppState,
+    auth: &AuthContext,
+    task_id: TaskId,
+) -> Result<(), ApiError> {
+    if matches!(auth.scope.projects, ProjectFilter::All) {
+        return Ok(());
+    }
+    match state.tasks.get(task_id).await.map_err(ApiError::from)? {
+        Some(task) => require_project_scope(auth, task.project_id),
+        None => Ok(()),
+    }
+}
+
 // ── Task / project / event handlers ───────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
@@ -488,6 +538,7 @@ async fn list_tasks(
         Some("inbox") => state.tasks.list_by_project_filtered(None, filter).await,
         Some(raw) => {
             let pid = parse_id(raw, "project id")?;
+            require_project_scope(&auth, Some(pid))?;
             state
                 .tasks
                 .list_by_project_filtered(Some(pid), filter)
@@ -495,6 +546,7 @@ async fn list_tasks(
         }
     }
     .map_err(ApiError::from)?;
+    tasks.retain(|task| auth.scope.projects.allows(task.project_id));
     tasks.sort_by(|a, b| {
         a.created_at
             .cmp(&b.created_at)
@@ -558,7 +610,12 @@ async fn search(
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
     let requested_limit = collection_limit(q.limit);
-    let fetch_limit = if page {
+    // A project-scoped token drops foreign hits after the search: fetch them
+    // all so the page is not short of the hits it may see.
+    let scoped = !matches!(auth.scope.projects, ProjectFilter::All);
+    let fetch_limit = if scoped {
+        usize::MAX
+    } else if page {
         requested_limit
             .map(|limit| offset.saturating_add(limit).saturating_add(1))
             .unwrap_or(usize::MAX)
@@ -566,6 +623,9 @@ async fn search(
         requested_limit.unwrap_or(usize::MAX)
     };
     let project_id = parse_search_project(q.project_id.as_deref())?;
+    if project_id.is_some() {
+        require_project_scope(&auth, project_id)?;
+    }
     let provider = FtsSearchProvider::new(
         state.tasks.clone(),
         state.comments.clone(),
@@ -580,11 +640,16 @@ async fn search(
         })
         .await
         .map_err(ApiError::from)?;
+    let mut hits = hits;
+    hits.retain(|hit| auth.scope.projects.allows(hit.project_id));
 
     if page {
         let limit = requested_limit.unwrap_or_else(|| hits.len().saturating_sub(offset).max(1));
         Ok(Json(page_by_offset(hits, offset, limit)))
     } else {
+        if let Some(limit) = requested_limit {
+            hits.truncate(limit);
+        }
         Ok(Json(json!(hits)))
     }
 }
@@ -769,6 +834,7 @@ async fn get_task(
     let task_id = parse_id(&id, "task id")?;
     let task = state.tasks.get(task_id).await.map_err(ApiError::from)?;
     let t = task.ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
+    require_project_scope(&auth, t.project_id)?;
     let current_claim = state
         .claims
         .get_active_for_task(task_id)
@@ -1156,7 +1222,8 @@ async fn list_projects(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let projects = state.projects.list_all().await.map_err(ApiError::from)?;
+    let mut projects = state.projects.list_all().await.map_err(ApiError::from)?;
+    projects.retain(|project| auth.scope.projects.allows(Some(project.id)));
     Ok(Json(projects))
 }
 
@@ -5769,6 +5836,7 @@ async fn get_plan(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("plan {id_str}"))))?;
+    require_project_scope(&auth, Some(plan.project_id))?;
     let progress = state
         .plans
         .get_progress(plan_id)
@@ -5936,6 +6004,7 @@ async fn get_plan_progress(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
 
     let mut summary = state
         .plans
@@ -5968,6 +6037,7 @@ async fn get_plan_graph(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let graph = plan_readiness::plan_graph(&state.plans, &state.tasks, &state.relations, plan_id)
         .await
         .map_err(ApiError::from)?;
@@ -5982,6 +6052,7 @@ async fn get_plan_fanout(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let waves = plan_readiness::plan_fanout(&state.plans, &state.tasks, &state.relations, plan_id)
         .await
         .map_err(ApiError::from)?;
@@ -5996,6 +6067,7 @@ async fn get_can_start(
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
     let task_id = parse_id(id_str, "task id")?;
+    require_task_scope(&state, &auth, task_id).await?;
     // The question this endpoint answers is "would `set_status in_progress`
     // succeed", so it has to consult the same rule gate that transition does.
     let handler = state.commands.handler();
@@ -6038,6 +6110,7 @@ async fn list_task_plans(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let task_id = parse_id(id_str, "task id")?;
+    require_task_scope(&state, &auth, task_id).await?;
     let plans = state
         .plans
         .list_plans_for_task(task_id)
@@ -6132,6 +6205,9 @@ async fn list_plans(
             let source = daruma_domain::normalize_source_ref(source)
                 .map_err(|e| ApiError::from(CoreError::validation(e)))?;
             let project_id = pid.map(|pid| parse_id(pid, "project id")).transpose()?;
+            if project_id.is_some() {
+                require_project_scope(&auth, project_id)?;
+            }
             let mut found = state
                 .plans
                 .list_by_source(project_id, &source)
@@ -6144,6 +6220,7 @@ async fn list_plans(
         }
         (Some(pid), None) => {
             let project_id = parse_id(pid, "project id")?;
+            require_project_scope(&auth, Some(project_id))?;
             state
                 .plans
                 .list_by_project(project_id, status_filter.as_deref())
@@ -6156,6 +6233,7 @@ async fn list_plans(
             )))
         }
     };
+    plans.retain(|plan| auth.scope.projects.allows(Some(plan.project_id)));
     if let Some(channel) = q.channel.as_deref().map(str::trim) {
         plans.retain(|p| {
             p.source_ref.as_deref().is_some_and(|r| {
@@ -6489,6 +6567,7 @@ async fn get_next_task(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let run_id = q
         .run_id
         .as_deref()
@@ -6689,6 +6768,7 @@ async fn drain_next_task(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let run_id = match body.run_id {
         Some(run_id) => {
             state
@@ -6730,6 +6810,7 @@ async fn project_ready(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_id(q.project_id, "project id")?;
+    require_project_scope(&auth, Some(project_id))?;
 
     let plans = state
         .plans
@@ -6777,6 +6858,7 @@ async fn project_ready_drain(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_id(q.project_id, "project id")?;
+    require_project_scope(&auth, Some(project_id))?;
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
     let supplied_run = match body.run_id {
@@ -7306,6 +7388,7 @@ async fn list_plan_runs(
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let runs = state
         .runs
         .list_by_plan(plan_id)
