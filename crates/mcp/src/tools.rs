@@ -3047,9 +3047,10 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_doc_link_task" => {
             let id = resolve_doc_id(&args, "document_id")?;
-            // Explicit `task_id: null` (or absent) unlinks — the PATCH body
-            // distinguishes present-null from absent, so always send the key.
-            let task_id = match id_value(&args, "task_id")? {
+            // Explicit `task_id: null` (or absent with no task-side `id`)
+            // unlinks — the PATCH body distinguishes present-null from
+            // absent, so always send the key.
+            let task_id = match doc_link_task_id(&args, &id)? {
                 Some(task_id) => {
                     check_id_kind("task_id", task_id, IdKind::Task)?;
                     json!(task_id)
@@ -4957,7 +4958,7 @@ fn schema_doc_link_task() -> Value {
         "type":"object",
         "properties": {
             "document_id": {"type":"string"},
-            "task_id":     {"type":["string","null"],"description":"Task to bind the document to; omit or pass null to unlink."}
+            "task_id":     {"type":["string","null"],"description":"Task to bind the document to; pass null to unlink. When omitted, a generic `id` beside `document_id` names the task; omit both to unlink."}
         },
         "required":["document_id"]
     })
@@ -6252,6 +6253,30 @@ fn resolve_task_ids(args: &Map<String, Value>, key: &str) -> anyhow::Result<Vec<
         "`{key}` (array of task ids) is required (aliases: {}, `task_id`)",
         aliases.join(", ")
     ))
+}
+
+/// Task side of `daruma_doc_link_task`. `task_id` wins when its key is
+/// present (`null` = unlink). Without the key, a generic `id` beside an
+/// explicit `doc_id` / `document_id` names the task, as on the other two-id
+/// tools; dropping it would unlink silently. An `id` that is the document
+/// itself (the only id sent, or equal to it) leaves the task side empty.
+fn doc_link_task_id<'a>(
+    args: &'a Map<String, Value>,
+    doc_id: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    if args.contains_key("task_id") {
+        return id_value(args, "task_id");
+    }
+    let explicit_doc = ["doc_id", "document_id"]
+        .into_iter()
+        .any(|name| matches!(id_value(args, name), Ok(Some(_))));
+    match id_value(args, "id")? {
+        Some(id) if explicit_doc && id != doc_id => {
+            check_id_kind("id", id, IdKind::Task)?;
+            Ok(Some(id))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// `(plan_id, task_id)` of a plan-membership tool; see [`resolve_id_pair`].

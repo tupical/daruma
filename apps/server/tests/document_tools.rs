@@ -485,6 +485,23 @@ async fn doc_lifecycle_and_task_link_roundtrip() {
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
     assert_eq!(doc["document"]["task_id"], task_id.as_str(), "got: {doc}");
 
+    // Task 01a14534 (P2): a generic `id` beside `document_id` names the
+    // task. It used to be dropped as `task_id: null`, silently unlinking
+    // this `outdated` document.
+    let resp = call_tool(
+        &client,
+        "daruma_doc_link_task",
+        json!({ "document_id": doc_id, "id": anchor_task_id }),
+    )
+    .await;
+    assert_eq!(resp["success"], true, "link via `id` must succeed: {resp}");
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    assert_eq!(
+        doc["document"]["task_id"],
+        anchor_task_id.as_str(),
+        "got: {doc}"
+    );
+
     // Explicit null unlinks.
     let resp = call_tool(
         &client,
