@@ -103,7 +103,7 @@ async fn handle_socket(
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     // 1. Authenticate.
-    let auth_ctx = match authenticate(&state.auth_store, token.as_deref()).await {
+    let mut auth_ctx = match authenticate(&state.auth_store, token.as_deref()).await {
         Ok(ctx) => ctx,
         Err(err) => {
             let _ = ws_sink
@@ -115,7 +115,13 @@ async fn handle_socket(
             return;
         }
     };
-    let mine = mine.then(|| host.or(auth_ctx.principal_id).unwrap_or(auth_ctx.agent_id));
+    // Same trusted normalisation as the HTTP auth middleware: the embedding
+    // host's principal authors dispatched commands; claims and leases stay
+    // keyed by the token's `agent_id`.
+    if let Some(id) = host {
+        auth_ctx.principal_id = Some(id);
+    }
+    let mine = mine.then(|| auth_ctx.principal_id.unwrap_or(auth_ctx.agent_id));
     let device_id = auth_ctx.device_id;
     if let Some(device_id) = device_id {
         state.hub.device_connected(device_id);

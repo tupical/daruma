@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::Extension;
 use chrono::Utc;
-use daruma_auth::HostPrincipal;
+use daruma_auth::{Capability, HostPrincipal, TokenKind};
 use daruma_domain::{Actor, NewTask, Status};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{AgentId, ClaimId, ProjectId, TaskId};
@@ -22,7 +22,7 @@ use tokio_tungstenite::{
 };
 
 mod common;
-use common::{test_app, TestApp};
+use common::{mint_with_caps, test_app, TestApp};
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -44,6 +44,15 @@ async fn spawn_with_principal(app: &TestApp, principal: Option<AgentId>) -> Sock
 }
 
 async fn subscribe(addr: SocketAddr, token: &str, query: &str) -> (WsSink, WsStream) {
+    subscribe_frame(addr, token, query, json!({ "type": "subscribe" })).await
+}
+
+async fn subscribe_frame(
+    addr: SocketAddr,
+    token: &str,
+    query: &str,
+    frame: Value,
+) -> (WsSink, WsStream) {
     let mut req = format!("ws://{addr}/v1/ws{query}")
         .into_client_request()
         .unwrap();
@@ -54,11 +63,9 @@ async fn subscribe(addr: SocketAddr, token: &str, query: &str) -> (WsSink, WsStr
     let (ws, _) = connect_async(req).await.expect("WS connect");
     let (mut sink, mut stream) = ws.split();
     let _ = next_json(&mut stream, Duration::from_secs(2)).await; // Hello
-    sink.send(Message::Text(
-        json!({ "type": "subscribe" }).to_string().into(),
-    ))
-    .await
-    .unwrap();
+    sink.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(120)).await;
     (sink, stream)
 }
@@ -93,6 +100,7 @@ async fn event_tasks(stream: &mut WsStream, timeout: Duration) -> Vec<String> {
         let id = payload["task_id"]
             .as_str()
             .or_else(|| payload["task"]["id"].as_str())
+            .or_else(|| payload["comment"]["task_id"].as_str())
             .unwrap_or("-");
         seen.push(id.to_string());
     }
@@ -214,6 +222,118 @@ async fn mine_without_host_uses_token_principal() {
     assert_eq!(
         event_tasks(&mut mine, Duration::from_millis(600)).await,
         vec![own.as_uuid().to_string()]
+    );
+}
+
+/// Dispatch `add_comment` over `sink` and wait for its `ack`.
+async fn dispatch_comment(sink: &mut WsSink, stream: &mut WsStream, task_id: TaskId, body: &str) {
+    sink.send(Message::Text(
+        json!({
+            "type": "dispatch",
+            "command": {
+                "type": "add_comment",
+                "comment": { "task_id": task_id.as_uuid().to_string(), "body": body }
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let frame = next_json(stream, remaining)
+            .await
+            .expect("ack for add_comment");
+        match frame["type"].as_str() {
+            Some("ack") => return,
+            Some("error") => panic!("add_comment rejected: {frame}"),
+            _ => {}
+        }
+    }
+}
+
+async fn comment_author(app: &TestApp, task_id: TaskId, body: &str) -> Actor {
+    app.state
+        .comments
+        .list_for_task(task_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.body == body)
+        .expect("comment persisted")
+        .author
+}
+
+/// A host principal H with a valid non-Bot token of agent T: a comment
+/// dispatched over WS is authored by H (as over HTTP), and H's `mine` feed
+/// carries it although the task is someone else's.
+#[tokio::test]
+async fn ws_dispatch_is_authored_by_host_principal() {
+    let app = test_app().await;
+    let host = AgentId::new();
+    let (token, token_agent) = mint_with_caps(
+        &app.state.auth_store,
+        TokenKind::Pat,
+        [
+            Capability::TaskRead,
+            Capability::CommentWrite,
+            Capability::SubscribeTasks,
+            Capability::SubscribeComments,
+        ]
+        .into(),
+    )
+    .await;
+    assert_ne!(host, token_agent);
+    let addr = spawn_with_principal(&app, Some(host)).await;
+    let foreign = seed_task(&app, Actor::user_with_id(AgentId::new())).await;
+
+    let (_mine_sink, mut mine) = subscribe_frame(
+        addr,
+        &token,
+        "?visibility=mine",
+        json!({ "type": "subscribe", "channels": ["comments"] }),
+    )
+    .await;
+    let (mut sink, mut stream) = subscribe(addr, &token, "").await;
+    dispatch_comment(&mut sink, &mut stream, foreign, "via ws").await;
+
+    assert_eq!(
+        comment_author(&app, foreign, "via ws").await,
+        Actor::user_with_id(host),
+        "WS write is attributed to the host principal, not the token agent"
+    );
+    let seen = event_tasks(&mut mine, Duration::from_millis(800)).await;
+    assert!(
+        !seen.is_empty() && seen.iter().all(|t| *t == foreign.as_uuid().to_string()),
+        "mine feed of the host principal carries its own WS comment, got {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn ws_dispatch_without_host_is_authored_by_token_agent() {
+    let app = test_app().await;
+    let (token, token_agent) = mint_with_caps(
+        &app.state.auth_store,
+        TokenKind::Pat,
+        [
+            Capability::TaskRead,
+            Capability::CommentWrite,
+            Capability::SubscribeComments,
+        ]
+        .into(),
+    )
+    .await;
+    let addr = spawn_with_principal(&app, None).await;
+    let task = seed_task(&app, Actor::user_with_id(AgentId::new())).await;
+
+    let (mut sink, mut stream) = subscribe(addr, &token, "").await;
+    dispatch_comment(&mut sink, &mut stream, task, "no host").await;
+
+    assert_eq!(
+        comment_author(&app, task, "no host").await,
+        Actor::user_with_id(token_agent)
     );
 }
 
