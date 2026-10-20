@@ -129,9 +129,9 @@ impl GateCheck {
 /// Command-level override signal (spec §1.5). `force` alone only soft-acks
 /// `can_start` blockers; passing a *blocked rule* additionally requires a
 /// non-empty `override_reason` and per-rule `override_allowed` — both enforced
-/// by the gate implementation. NOTE: no `RuleOverridden` audit event exists yet,
-/// so an override currently lands in the log as a plain `RuleFired` warning and
-/// the reason is not persisted.
+/// by the gate implementation. A granted override comes back as
+/// [`GateDecision::Overridden`], and the core records every bypassed rule as
+/// `RuleFired { decision: overridden, override_reason }`.
 ///
 /// Both fields come straight off task or plan status commands.
 /// `override_reason` is an escape hatch, not the normal way past a rule: the
@@ -168,6 +168,16 @@ pub enum GateDecision {
     Allowed,
     /// Mutation proceeds; warnings ride `MutationResponse.warnings`.
     Warning(Vec<MutationWarning>),
+    /// Mutation proceeds past `required` rules on an explicit override (spec
+    /// §1.5). `overridden` are the bypassed blocks, `warnings` the plain
+    /// recommendations; both ride `MutationResponse.warnings` (recommendations
+    /// first). `reason` is the trimmed, non-empty `override_reason` the core
+    /// persists on each bypassed rule's audit event.
+    Overridden {
+        overridden: Vec<MutationWarning>,
+        warnings: Vec<MutationWarning>,
+        reason: String,
+    },
     /// Mutation is rejected before persist. `message` is shown to the
     /// executor ("what to do to pass"); `details` may carry the structured
     /// outcome list (all blocked rules) for richer clients.

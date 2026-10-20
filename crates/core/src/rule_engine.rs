@@ -8,6 +8,7 @@
 //!
 //! - `required`    → [`GateDecision::Blocked`]
 //! - `recommendation` → [`GateDecision::Warning`]
+//! - `required` + granted override → [`GateDecision::Overridden`]
 //!
 //! Determinism (spec invariant 8): no clock, no network — the only inputs are
 //! the check, the stored rules, and recorded evidence. Evidence-based
@@ -301,28 +302,25 @@ impl LifecycleGate for RuleEngineGate {
         }
 
         // Override path (spec §1.5): force + non-empty reason passes blocked
-        // rules, but only when *every* blocked rule allows override.
-        let override_ok = gate_override.force
-            && gate_override
-                .override_reason
-                .as_deref()
-                .map(|r| !r.trim().is_empty())
-                .unwrap_or(false)
-            && !override_forbidden;
-        if override_ok {
-            // Overridden blocks degrade to warnings so the executor still sees
-            // what was bypassed. The RuleOverridden audit trail does NOT exist
-            // yet, so the bypass is indistinguishable from a recommendation in
-            // the event log, and `override_reason` is checked for emptiness and
-            // then dropped.
-            for (rule, _) in blocked {
-                warnings.push(rule_warning(rule));
-            }
+        // rules, but only when *every* blocked rule allows override. The
+        // reason is trimmed here, once, so every transport persists the same
+        // value.
+        let override_reason = gate_override
+            .override_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty());
+        if let (true, Some(reason), false) =
+            (gate_override.force, override_reason, override_forbidden)
+        {
+            // The executor still sees what was bypassed (as a warning), while
+            // the core records each bypassed rule as `overridden` with the
+            // reason — distinct from an ignored recommendation in the log.
             return Ok((
-                if warnings.is_empty() {
-                    GateDecision::Allowed
-                } else {
-                    GateDecision::Warning(warnings)
+                GateDecision::Overridden {
+                    overridden: blocked.iter().map(|(rule, _)| rule_warning(rule)).collect(),
+                    warnings,
+                    reason: reason.to_string(),
                 },
                 observations,
             ));
