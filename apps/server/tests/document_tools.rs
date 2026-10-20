@@ -370,6 +370,26 @@ async fn live_anchor_guard_roundtrips_through_mcp_and_rest() {
         .unwrap();
     let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
     assert_eq!(doc["document"]["status"], "frozen");
+    // Task 01a14534 (P2): `id` beside `document_id` names the task; it used
+    // to be sent as `task_id: null` and silently unlinked the frozen doc.
+    let seq = handler.store.latest_seq().await.unwrap();
+    call_tool(
+        &client,
+        "daruma_doc_link_task",
+        json!({ "document_id": doc_id, "id": task_id }),
+    )
+    .await;
+    eprintln!(
+        "doc_link_task {{document_id, id}} on frozen doc: seq {seq} -> {}",
+        handler.store.latest_seq().await.unwrap()
+    );
+    let doc = call_tool(&client, "daruma_doc_get", json!({ "document_id": doc_id })).await;
+    eprintln!("doc after link via id: {}", doc["document"]);
+    assert_eq!(doc["document"]["status"], "frozen");
+    assert_eq!(
+        doc["document"]["task_id"], task_id,
+        "link must survive: {doc}"
+    );
     for (name, arguments) in [
         (
             "daruma_doc_set_status",
