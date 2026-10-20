@@ -43,7 +43,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/**/*.test.mjs",
+    "test": "node --test tests/*.test.mjs",
     "version": "node scripts/sync-plugin-version.mjs",
     "release:patch": "npm version patch --no-git-tag-version",
     "release:minor": "npm version minor --no-git-tag-version",
