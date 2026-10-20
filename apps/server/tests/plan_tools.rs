@@ -270,6 +270,94 @@ async fn plan_update_via_mcp_patches_fields() {
     );
 }
 
+/// The `docs/ARCHITECTURE.md` reparent example: `parent_plan_id` travels
+/// inside `patch`. The flat form (`parent_plan_id` next to `id`, no `patch`)
+/// is rejected and leaves the plan unchanged.
+#[tokio::test]
+async fn plan_update_reparents_only_via_patch_via_mcp() {
+    let (addr, token) = spawn_daruma_inline().await;
+    let client = ApiClient::new(format!("http://{addr}"), token);
+
+    let pid = create_project_via_mcp(&client, "Reparent Project").await;
+    let parent_id = create_plan_via_mcp(&client, &pid, "Parent").await["plan_id"]
+        .as_str()
+        .expect("plan_create must return plan_id")
+        .to_owned();
+    let child_id = create_plan_via_mcp(&client, &pid, "Child").await["plan_id"]
+        .as_str()
+        .expect("plan_create must return plan_id")
+        .to_owned();
+    assert_ne!(parent_id, child_id);
+
+    let parent_of = |plan: &serde_json::Value| plan["plan"]["parent_plan_id"].clone();
+
+    let flat = dispatch_request(
+        &client,
+        req(
+            "tools/call",
+            json!({
+                "name": "daruma_plan_update",
+                "arguments": { "id": child_id, "parent_plan_id": parent_id },
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    let flat_failed =
+        flat.error.is_some() || flat.result.as_ref().map(|r| r["isError"] == true) == Some(true);
+    println!(
+        "TRACE flat form -> error={:?} result={:?}",
+        flat.error, flat.result
+    );
+    assert!(flat_failed, "flat parent_plan_id must be rejected");
+    let plan = call_tool(
+        &client,
+        "daruma_plan_get",
+        json!({ "id": child_id, "view": "detail" }),
+    )
+    .await;
+    assert!(
+        parent_of(&plan).is_null(),
+        "flat form must not reparent: {plan}"
+    );
+
+    let resp = call_tool(
+        &client,
+        "daruma_plan_update",
+        json!({ "id": child_id, "patch": { "parent_plan_id": parent_id } }),
+    )
+    .await;
+    println!("TRACE patch form -> {resp}");
+    assert_eq!(resp["success"], true, "patch form must succeed: {resp}");
+    let plan = call_tool(
+        &client,
+        "daruma_plan_get",
+        json!({ "id": child_id, "view": "detail" }),
+    )
+    .await;
+    assert_eq!(
+        parent_of(&plan),
+        json!(parent_id),
+        "patch form must reparent: {plan}"
+    );
+
+    let resp = call_tool(
+        &client,
+        "daruma_plan_update",
+        json!({ "id": child_id, "patch": { "parent_plan_id": null } }),
+    )
+    .await;
+    println!("TRACE unparent -> {resp}");
+    assert_eq!(resp["success"], true, "null must unparent: {resp}");
+    let plan = call_tool(
+        &client,
+        "daruma_plan_get",
+        json!({ "id": child_id, "view": "detail" }),
+    )
+    .await;
+    assert!(parent_of(&plan).is_null(), "null must drop to root: {plan}");
+}
+
 // ── Smoke: list + get + add_task + remove_task + reorder via MCP ──────────────
 
 /// Quick smoke for the rest of the plan tool surface — exercises
