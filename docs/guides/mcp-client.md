@@ -186,9 +186,11 @@ Supported launch modes:
   schemas (`crates/mcp/tests/it/schema_id_alias_contract.rs`). Bulk tools take
   `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
   different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
-  generic `id` fill the missing one; `from_work_unit_id` / `to_work_unit_id` of
-  `daruma_handoff_request` take no alias. `run_id` is optional on
-  `daruma_plan_next_task` — the server generates one. An id whose prefix names
+  generic `id` fill the missing one; `daruma_doc_link_task` too: beside
+  `document_id` an `id` names the task, while an explicit `task_id: null`
+  still unlinks and `id` alone names the document. `from_work_unit_id` /
+  `to_work_unit_id` of `daruma_handoff_request` take no alias. `run_id` is
+  optional on `daruma_plan_next_task` — the server generates one. An id whose prefix names
   another kind (`pln_…` where a task is expected) fails before any request, and
   a missing id lists the accepted names. Bare UUIDs carry no kind, so a plan
   UUID sent to a task tool still reaches the server and returns 404. Project,

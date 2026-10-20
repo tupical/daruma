@@ -319,6 +319,47 @@ async fn wrong_kind_ids_fail_in_every_family() {
         .await,
         "`task_id` = \"pln_1\" is a plan id, but this tool needs a task id"
     );
+    assert_eq!(
+        error_of(
+            "daruma_doc_link_task",
+            json!({"document_id": "doc_1", "id": "pln_1"})
+        )
+        .await,
+        "`id` = \"pln_1\" is a plan id, but this tool needs a task id"
+    );
+}
+
+/// Task 01a14534 (P2): beside `document_id`, the generic `id` names the task
+/// of `daruma_doc_link_task` instead of being dropped as `task_id: null`,
+/// which silently unlinked a frozen/outdated/archived document.
+#[tokio::test]
+async fn doc_link_task_generic_id_fills_the_task_side() {
+    let uuid = "019e0000-0000-7000-8000-0000000000aa";
+    for (args, task_id) in [
+        (
+            json!({"document_id": "doc_1", "id": "tsk_1"}),
+            json!("tsk_1"),
+        ),
+        (json!({"document_id": "doc_1", "id": uuid}), json!(uuid)),
+        (json!({"doc_id": "doc_1", "id": "tsk_1"}), json!("tsk_1")),
+        // `task_id` wins over `id`, and its explicit `null` still unlinks.
+        (
+            json!({"document_id": "doc_1", "task_id": "tsk_2", "id": "tsk_1"}),
+            json!("tsk_2"),
+        ),
+        (
+            json!({"document_id": "doc_1", "task_id": null, "id": "tsk_1"}),
+            Value::Null,
+        ),
+        // An `id` that is the document itself leaves the task side empty.
+        (json!({"id": "doc_1"}), Value::Null),
+        (json!({"document_id": "doc_1", "id": "doc_1"}), Value::Null),
+        (json!({"document_id": "doc_1"}), Value::Null),
+    ] {
+        let (path, body) = request_of("daruma_doc_link_task", args.clone()).await;
+        assert_eq!(path, "/v1/documents/doc_1", "{args}");
+        assert_eq!(body, json!({"task_id": task_id}), "{args}");
+    }
 }
 
 /// Plan 01a06cfc, task 04eacc9f (schemas): the key task/plan tools advertise
