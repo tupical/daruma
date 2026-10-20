@@ -411,6 +411,18 @@ mkdir -p .omc/state/team/plan-mode-team
     assert(!requests.some((r) => r.method === "tools/list"));
     assert(tools.includes("daruma_run_complete"));
     assert.doesNotMatch(lines.join(""), /\[decompose\]/);
+    // The server rejects a non-UUID run_id: the client never invents one (no
+    // `daruma-claude-<timestamp>`); every run-scoped call reuses the id
+    // `daruma_run_start` returned.
+    const runStart = requests.find((r) => r.params?.name === "daruma_run_start");
+    assert.equal(runStart.params.arguments.run_id, undefined);
+    const runScoped = requests.filter((r) => r.method === "tools/call" && r.params.arguments?.run_id !== undefined);
+    assert(runScoped.some((r) => r.params.name === "daruma_plan_drain_next"));
+    assert(runScoped.some((r) => r.params.name === "daruma_run_complete"));
+    for (const r of runScoped) {
+      assert.equal(r.params.arguments.run_id, "00000000-0000-4000-8000-000000000002", `${r.params.name} run_id`);
+    }
+    assert.doesNotMatch(JSON.stringify(requests), /daruma-claude-\d/);
   });
 });
 
