@@ -6693,6 +6693,34 @@ async fn start_drain_run(
         .ok_or_else(|| ApiError::from(CoreError::storage("expected RunStarted event")))
 }
 
+/// Abort a run that this very drain call opened (`start_drain_run`) when the
+/// call hands out no task — nothing ready, or an error. Otherwise the run stays
+/// `Active` with no caller holding its id, and plan auto-close skips any plan
+/// with an active run. Best-effort: the drain's own result is returned either
+/// way; a caller-supplied run is never touched.
+async fn abort_implicit_drain_run(
+    state: &AppState,
+    auth: &AuthContext,
+    run_id: RunId,
+    reason: &str,
+) {
+    if let Err(err) = state
+        .commands
+        .dispatch_authenticated(
+            Command::AbortRun {
+                run_id,
+                reason: reason.to_string(),
+            },
+            actor_from(auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, run_id = %run_id, "implicit drain run abort failed");
+    }
+}
+
 async fn drain_next_task(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -6704,21 +6732,33 @@ async fn drain_next_task(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
-    let run_id = match body.run_id {
+    let (run_id, implicit_run) = match body.run_id {
         Some(run_id) => {
             state
                 .claims
                 .validate_run_assignment(auth.agent_id, run_id, plan_id)
                 .await
                 .map_err(ApiError::from)?;
-            run_id
+            (run_id, false)
         }
-        None => start_drain_run(&state, &auth, plan_id).await?,
+        None => (start_drain_run(&state, &auth, plan_id).await?, true),
     };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
-    let Some(task) = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await? else {
-        return Ok(Json(serde_json::Value::Null));
+    let task = match drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await {
+        Ok(Some(task)) => task,
+        Ok(None) => {
+            if implicit_run {
+                abort_implicit_drain_run(&state, &auth, run_id, "drain_next: no ready task").await;
+            }
+            return Ok(Json(serde_json::Value::Null));
+        }
+        Err(err) => {
+            if implicit_run {
+                abort_implicit_drain_run(&state, &auth, run_id, "drain_next: error").await;
+            }
+            return Err(err);
+        }
     };
     let project_id = state
         .plans
@@ -6821,14 +6861,31 @@ async fn project_ready_drain(
     }
 
     for plan in &plans {
-        let run_id = match supplied_run {
-            Some((run_id, run_plan_id)) if run_plan_id == plan.id => run_id,
+        let (run_id, implicit_run) = match supplied_run {
+            Some((run_id, run_plan_id)) if run_plan_id == plan.id => (run_id, false),
             Some(_) => continue,
-            None => start_drain_run(&state, &auth, plan.id).await?,
+            None => (start_drain_run(&state, &auth, plan.id).await?, true),
         };
-        if let Some(task) = drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await? {
-            let warning = drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;
-            return Ok(Json(with_warnings(task, warning)));
+        match drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await {
+            Ok(Some(task)) => {
+                let warning =
+                    drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;
+                return Ok(Json(with_warnings(task, warning)));
+            }
+            // This plan had nothing for us: drop the run opened for it before
+            // trying the next plan.
+            Ok(None) => {
+                if implicit_run {
+                    abort_implicit_drain_run(&state, &auth, run_id, "ready_drain: no ready task")
+                        .await;
+                }
+            }
+            Err(err) => {
+                if implicit_run {
+                    abort_implicit_drain_run(&state, &auth, run_id, "ready_drain: error").await;
+                }
+                return Err(err);
+            }
         }
     }
     Ok(Json(serde_json::Value::Null))
