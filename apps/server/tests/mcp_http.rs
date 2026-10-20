@@ -256,3 +256,112 @@ async fn http_mcp_profile_query_param_selects_surface() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
+
+async fn hosted_tool(
+    client: &reqwest::Client,
+    addr: &std::net::SocketAddr,
+    token: &str,
+    request_id: u64,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let body: serde_json::Value = client
+        .post(format!("http://{addr}/v1/mcp?profile=full"))
+        .bearer_auth(token)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{name}: {body}"));
+    serde_json::from_str(text).unwrap_or_else(|err| panic!("{name}: {err}: {text}"))
+}
+
+fn listed_session_ids(listed: &serde_json::Value) -> Vec<String> {
+    listed["sessions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("session list: {listed}"))
+        .iter()
+        .map(|session| session["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn stdio_session_defaults_to_workspace_info_agent_id() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let api = ApiClient::new(format!("http://{addr}"), app.admin_token.clone());
+    let workspace = call_tool(&api, "daruma_workspace_info", json!({}))
+        .await
+        .unwrap();
+    let agent_id = workspace["mcp_agent_id"].as_str().unwrap().to_string();
+    assert_ne!(
+        agent_id,
+        api.agent_id(),
+        "stdio process id must differ from the token-bound id for this test to bite"
+    );
+
+    let started = call_tool(&api, "daruma_session_start", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(started["data"]["agent_id"], agent_id.as_str());
+    let session_id = started["data"]["id"].as_str().unwrap().to_string();
+
+    let by_default = call_tool(&api, "daruma_session_list", json!({}))
+        .await
+        .unwrap();
+    assert!(listed_session_ids(&by_default).contains(&session_id));
+    let by_workspace_id = call_tool(&api, "daruma_session_list", json!({"agent_id": agent_id}))
+        .await
+        .unwrap();
+    assert!(listed_session_ids(&by_workspace_id).contains(&session_id));
+
+    let explicit = call_tool(
+        &api,
+        "daruma_session_start",
+        json!({"agent_id": api.agent_id()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(explicit["data"]["agent_id"], api.agent_id());
+}
+
+#[tokio::test]
+async fn hosted_session_defaults_to_workspace_info_agent_id() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let client = reqwest::Client::new();
+    let agent_id = workspace_agent_id(&client, &addr, &app.admin_token, 1).await;
+
+    let started = hosted_tool(
+        &client,
+        &addr,
+        &app.admin_token,
+        2,
+        "daruma_session_start",
+        json!({}),
+    )
+    .await;
+    assert_eq!(started["data"]["agent_id"], agent_id.as_str());
+    let session_id = started["data"]["id"].as_str().unwrap().to_string();
+
+    let listed = hosted_tool(
+        &client,
+        &addr,
+        &app.admin_token,
+        3,
+        "daruma_session_list",
+        json!({}),
+    )
+    .await;
+    assert!(listed_session_ids(&listed).contains(&session_id));
+}
