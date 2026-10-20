@@ -78,7 +78,9 @@ realtime, webhooks, and remote MCP.
 ## MCP
 
 `daruma` **is** the MCP server. The same tool surface — tasks, plans,
-documents, sessions, runs, webhooks — is served over stdio and over HTTP.
+documents, sessions, runs — is served over stdio and over HTTP. Webhooks are
+not part of it: they are managed only through the REST API
+(`/v1/webhooks`, `webhook:read` / `webhook:write`).
 
 ```sh
 # Claude Code / Claude Desktop (stdio)
