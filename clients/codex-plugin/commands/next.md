@@ -8,8 +8,8 @@ afterward, control returns to the user/agent to actually execute it.
 ## Steps
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
-2. Active plan: `daruma_plan_list` filtered to
-   `status = "active"`, most recent.
+2. Active plan: `daruma_plan_list` with `status = "active"`,
+   `sort = "updated"`, `limit = 1` — the most recently updated plan.
    If none, stop with "no active plan — `daruma_plan_materialize` first".
 3. `daruma_plan_drain_next` with `plan_id`. The server atomically claims
    the next ready (unblocked) task for this session and returns null when

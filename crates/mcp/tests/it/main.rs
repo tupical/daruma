@@ -8,6 +8,7 @@ mod feature_tiers_doc;
 mod get_task_comments;
 mod list_project_selection;
 mod mutation_response_projection;
+mod plan_list_sort;
 mod plan_only_intake;
 mod plan_parent_patch;
 mod plan_readiness_tools;
