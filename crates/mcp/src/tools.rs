@@ -664,7 +664,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
-            "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
+            "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start; the server then opens a run, returns its run_id with the task (close it with daruma_run_complete after the handoff, or daruma_run_abort), and aborts it itself when no task is handed out. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
             with_id_alias(schema_plan_drain_next(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Write,
         ),

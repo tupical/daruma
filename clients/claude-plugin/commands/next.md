@@ -13,7 +13,8 @@ afterward, control returns to the user/agent to actually execute it.
    If none, stop with "no active plan — `daruma_plan_materialize` first".
 3. `daruma_plan_drain_next` with `plan_id`. The server atomically claims
    the next ready (unblocked) task for this session and returns null when
-   nothing is ready.
+   nothing is ready. Keep the returned `run_id`: the server opened that run
+   for this claim. A null drain already aborted its own run — nothing to close.
 4. If "no ready task":
 
    ```
@@ -30,6 +31,7 @@ afterward, control returns to the user/agent to actually execute it.
 
    id:        <task_id>
    plan:      <plan_id>
+   run:       <run_id>
    priority:  <pX>
    status:    🟢 in_progress
    ```
@@ -49,9 +51,14 @@ afterward, control returns to the user/agent to actually execute it.
 
    ```
    → When done: daruma_complete task_id=<task_id> [comment="<summary>"]
+     then daruma_run_complete run_id=<run_id>
    → On failure: daruma_comment task_id=<task_id> body=<reason>
      followed by daruma_set_status task_id=<task_id> status=todo
+     and daruma_run_abort run_id=<run_id> reason=<reason>
    ```
+
+   An open run keeps the plan from auto-closing after its last task; the
+   `plan_close_blocked_by_run` warning names it in `details.run_id`.
 
 7. Do not start executing the task itself in this command — it's a
    briefing only. Wait for the user (or an explicit follow-up).

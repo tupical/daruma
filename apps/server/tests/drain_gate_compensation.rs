@@ -179,6 +179,12 @@ async fn blocked_drain_releases_claim_for_other_agents() {
         body_a.to_string().contains("rule_blocked"),
         "error body must mention rule_blocked: {body_a}"
     );
+    // The run A's drain opened for itself is aborted too — a failed drain
+    // must not leave an orphan Active run holding the plan open.
+    let (_s, runs) = get_json(&h.router, admin, &format!("/v1/plans/{plan_id}/runs")).await;
+    let runs = runs["runs"].as_array().expect("runs array");
+    assert_eq!(runs.len(), 1, "A's drain opened one run: {runs:?}");
+    assert_eq!(runs[0]["status"], "aborted", "{runs:?}");
 
     // Gate off → agent B drains the SAME task. This succeeds only if A's
     // claim was released by the compensation path; otherwise the resolver

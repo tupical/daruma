@@ -2,23 +2,32 @@
 //! (`plan_close_blocked_by_run`, `plan_draft_no_autoclose`) and an agent
 //! taking more work while it still holds in-progress tasks
 //! (`agent_has_open_tasks`). None of them blocks the operation.
+//!
+//! Also the run a drain opens for itself: an empty drain must not leave it
+//! `Active` (it would hold the plan open with nobody knowing its id), and a
+//! successful drain's `run_id` is the one `plan_close_blocked_by_run` names.
 
 use axum::{
     body::{to_bytes, Body},
     http::{Method, Request},
 };
+use daruma_auth::{Capabilities, Capability, ProjectFilter};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 mod common;
-use common::{test_app, TestApp};
+use common::{mint_pat, test_app, TestApp};
 
 async fn call(h: &TestApp, method: Method, uri: &str, body: Value) -> Value {
+    call_as(h, &h.admin_token, method, uri, body).await
+}
+
+async fn call_as(h: &TestApp, token: &str, method: Method, uri: &str, body: Value) -> Value {
     let req = Request::builder()
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", h.admin_token))
+        .header("authorization", format!("Bearer {token}"))
         .body(Body::from(body.to_string()))
         .unwrap();
     let res = h.router.clone().oneshot(req).await.unwrap();
@@ -300,5 +309,175 @@ async fn warnings_agree_with_core_autoclose() {
         let closed = status(plan) == "completed";
         assert_eq!(warnings.is_empty(), !expect_warn, "{warnings:?}");
         assert_eq!(closed, !expect_warn, "draft={draft} run={run}");
+    }
+}
+
+/// A second agent drains `plan_id` (claiming its next task under its own run)
+/// so the admin finds nothing ready there. Returns that agent's run id.
+async fn other_agent_drains(h: &TestApp, token: &str, plan_id: &str) -> String {
+    let r = call_as(
+        h,
+        token,
+        Method::POST,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        json!({}),
+    )
+    .await;
+    r["run_id"].as_str().unwrap().to_owned()
+}
+
+async fn other_agent(h: &TestApp) -> String {
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    mint_pat(&h.auth_store(), caps, ProjectFilter::All).await.0
+}
+
+/// Runs of `plan_id` as `(id, status)`.
+async fn plan_runs(h: &TestApp, plan_id: &str) -> Vec<(String, String)> {
+    let r = call(
+        h,
+        Method::GET,
+        &format!("/v1/plans/{plan_id}/runs"),
+        Value::Null,
+    )
+    .await;
+    r["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| {
+            (
+                run["id"].as_str().unwrap().to_owned(),
+                run["status"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Only `keep` (the other agent's run) may stay active; every other run of
+/// the plan — the admin's implicit drain run — must be aborted.
+fn assert_only_active(runs: &[(String, String)], keep: &str, ctx: &str) {
+    for (id, status) in runs {
+        let expected = if id == keep { "active" } else { "aborted" };
+        assert_eq!(status, expected, "{ctx}: run {id} in {runs:?}");
+    }
+}
+
+#[tokio::test]
+async fn empty_drain_aborts_its_implicit_run() {
+    let h = test_app().await;
+    let (plan_id, _) = plan_with_tasks(&h, 1, false).await;
+    // The only task is held by another agent: nothing ready for the admin.
+    let other = other_agent(&h).await;
+    let other_run = other_agent_drains(&h, &other, &plan_id).await;
+
+    let drained = post(&h, &format!("/v1/plans/{plan_id}/drain-next"), json!({})).await;
+    assert!(drained.is_null(), "nothing ready: {drained}");
+    let runs = plan_runs(&h, &plan_id).await;
+    assert_eq!(
+        runs.len(),
+        2,
+        "admin drain opened exactly one run: {runs:?}"
+    );
+    assert_only_active(&runs, &other_run, "empty plan");
+}
+
+#[tokio::test]
+async fn blocked_drain_aborts_its_implicit_run() {
+    let h = test_app().await;
+    let (plan_id, tasks) = plan_with_tasks(&h, 2, false).await;
+    // t0 blocks t1 and is held by another agent: nothing ready for the admin.
+    post(
+        &h,
+        "/v1/relations",
+        json!({"from":tasks[0],"to":tasks[1],"kind":"blocks"}),
+    )
+    .await;
+    let other = other_agent(&h).await;
+    let other_run = other_agent_drains(&h, &other, &plan_id).await;
+
+    let drained = post(&h, &format!("/v1/plans/{plan_id}/drain-next"), json!({})).await;
+    assert!(drained.is_null(), "everything blocked: {drained}");
+    let runs = plan_runs(&h, &plan_id).await;
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_only_active(&runs, &other_run, "blocked plan");
+}
+
+#[tokio::test]
+async fn drained_run_id_unblocks_plan_close_after_last_task() {
+    let h = test_app().await;
+    let (plan_id, tasks) = plan_with_tasks(&h, 1, false).await;
+    let drained = post(&h, &format!("/v1/plans/{plan_id}/drain-next"), json!({})).await;
+    let run_id = drained["run_id"]
+        .as_str()
+        .expect("drain returns its run_id");
+
+    // Completing the last task: the warning names exactly the drained run.
+    let warnings = complete(&h, &tasks[0]).await;
+    assert_eq!(
+        codes(&warnings),
+        ["plan_close_blocked_by_run"],
+        "{warnings:?}"
+    );
+    assert_eq!(warnings[0]["details"]["run_id"], run_id);
+
+    // Closing that run is the documented way out: the plan auto-closes.
+    post(&h, &format!("/v1/runs/{run_id}/complete"), json!({})).await;
+    let plan = call(
+        &h,
+        Method::GET,
+        &format!("/v1/plans/{plan_id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(plan["plan"]["status"], "completed", "{plan}");
+}
+
+#[tokio::test]
+async fn empty_drain_keeps_caller_supplied_run() {
+    let h = test_app().await;
+    let (plan_id, _) = plan_with_tasks(&h, 1, false).await;
+    let other = other_agent(&h).await;
+    let other_run = other_agent_drains(&h, &other, &plan_id).await;
+    let started = post(
+        &h,
+        "/v1/runs",
+        json!({"plan_id":plan_id,"agent_id":h.admin_agent_id}),
+    )
+    .await;
+    let run_id = started["data"]["run_id"].as_str().unwrap().to_owned();
+
+    let drained = post(
+        &h,
+        &format!("/v1/plans/{plan_id}/drain-next"),
+        json!({"run_id":run_id}),
+    )
+    .await;
+    assert!(drained.is_null(), "{drained}");
+    // Not the drain's own run: it stays with its owner, untouched.
+    let runs = plan_runs(&h, &plan_id).await;
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert!(
+        runs.iter()
+            .all(|(id, status)| status == "active" && (*id == run_id || *id == other_run)),
+        "{runs:?}"
+    );
+}
+
+#[tokio::test]
+async fn empty_project_ready_drain_aborts_every_implicit_run() {
+    let h = test_app().await;
+    let pid = new_project(&h).await;
+    let (plan_a, _) = plan_in(&h, &pid, "A", 1, false).await;
+    let (plan_b, _) = plan_in(&h, &pid, "B", 1, false).await;
+    let other = other_agent(&h).await;
+    let other_a = other_agent_drains(&h, &other, &plan_a).await;
+    let other_b = other_agent_drains(&h, &other, &plan_b).await;
+
+    let next = post(&h, &format!("/v1/ready/drain?project_id={pid}"), json!({})).await;
+    assert!(next.is_null(), "{next}");
+    for (plan_id, keep) in [(&plan_a, &other_a), (&plan_b, &other_b)] {
+        let runs = plan_runs(&h, plan_id).await;
+        assert_eq!(runs.len(), 2, "one admin run tried per plan: {runs:?}");
+        assert_only_active(&runs, keep, plan_id);
     }
 }

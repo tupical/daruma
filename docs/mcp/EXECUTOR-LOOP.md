@@ -6,6 +6,7 @@ Canonical agent loop for draining a plan without a human in the loop. Stateless 
 
 - Plan status **`active`** (use `daruma_plan_set_status` if still `draft`).
 - A **`run_id`** returned by `daruma_run_start`, or omit it when calling `daruma_plan_drain_next` so the server starts an authenticated run. Never invent a run UUID.
+  An omitted-`run_id` drain that hands out no task (null or error) aborts the run it opened itself; one that hands out a task returns that `run_id` — keep it, and after the task's handoff close it with `daruma_run_complete` (or `daruma_run_abort`), otherwise it holds the plan open (`plan_close_blocked_by_run` names it).
 - Workspace default project set (`daruma_project_use`) when tasks are project-scoped.
 
 ## Loop
