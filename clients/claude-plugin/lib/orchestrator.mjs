@@ -37,7 +37,8 @@ const DEFAULT_CANCEL_GRACE_MS = 60_000;
 // then runs `omc team shutdown` — and let the orchestrator unwind on its own,
 // so the attempt is recorded as `cancelled`, claims are released and the run
 // is aborted. If the team does not stop within `graceMs`, or Ctrl-C is
-// pressed again, exit anyway and name the team for manual shutdown.
+// pressed again, exit anyway and name the team for manual shutdown. A team
+// whose `omc team shutdown` failed stays in `teams`, so every exit names it.
 function createCancellation({
   write, stop, exit = (code) => process.exit(code), graceMs = DEFAULT_CANCEL_GRACE_MS,
 }) {
@@ -54,7 +55,11 @@ function createCancellation({
     if (exiting) return;
     exiting = true;
     clearTimeout(graceTimer);
-    try { await stop(); } catch { /* best-effort */ }
+    try {
+      await stop();
+    } catch (error) {
+      write(`[daruma-claude] failed to stop the daruma MCP server: ${error?.message ?? error}`);
+    }
     exit(130);
   };
 
@@ -62,6 +67,7 @@ function createCancellation({
     signal: controller.signal,
     get interrupted() { return controller.signal.aborted; },
     teams,
+    leftoverHint,
     track(promise) {
       inflight.add(promise);
       const forget = () => { inflight.delete(promise); };
@@ -75,7 +81,7 @@ function createCancellation({
       }
       controller.abort();
       if (inflight.size === 0) {
-        write("\n[daruma-claude] SIGINT — shutting down");
+        write(`\n[daruma-claude] SIGINT — shutting down${leftoverHint()}`);
         return stopAndExit();
       }
       write(`\n[daruma-claude] SIGINT — stopping omc team ${[...teams].join(", ") || "(starting)"}; ` +
@@ -322,6 +328,7 @@ async function executeOnce({
     (c.pending ? `, ${c.pending} pending` : "");
 
   let teamName = null;
+  let shutdownError = null;
   try {
     const run = runOmcTeam({
       prompt,
@@ -355,11 +362,23 @@ async function executeOnce({
         }
       },
     });
-    return await (cancel ? cancel.track(run) : run);
+    const result = await (cancel ? cancel.track(run) : run);
+    shutdownError = result.shutdownError ?? null;
+    return result;
+  } catch (error) {
+    shutdownError = error?.shutdownError ?? null;
+    if (shutdownError && error.teamName) teamName = error.teamName;
+    throw error;
   } finally {
     sp.stop();
-    // runOmcTeam's own finally has already run `omc team shutdown`.
-    if (teamName) cancel?.teams.delete(teamName);
+    // runOmcTeam has already run `omc team shutdown`; a team it failed to stop
+    // stays registered so the cancel messages keep naming it.
+    if (shutdownError) {
+      write(`[omc team] ${shutdownError}`);
+      if (teamName) cancel?.teams.add(teamName);
+    } else if (teamName) {
+      cancel?.teams.delete(teamName);
+    }
   }
 }
 
@@ -416,7 +435,10 @@ async function executeTaskWithRetries({
       result = await execute({ task, workers, agentType, cwd, stderrLog, stdout, write, cancel });
     } catch (error) {
       budget.reason = cancel?.interrupted ? "cancelled" : "executor_error";
-      result = { ok: false, counts: {}, artifact: String(error), error: String(error) };
+      result = {
+        ok: false, counts: {}, artifact: String(error), error: String(error),
+        teamName: error?.teamName, shutdownError: error?.shutdownError ?? null,
+      };
     }
     if (cancel?.interrupted) budget.reason ??= "cancelled";
     lastResult = result;
@@ -438,6 +460,12 @@ async function executeTaskWithRetries({
         run_id: runId,
         body: `task=${task.id}; attempt=${attempt}; ok=${result.ok}; ${resultSummary(result, attempt)}`,
       });
+    }
+    // Ctrl-C wins over a late success: the team may have finished while the
+    // operator was already cancelling (list-tasks, shutdown, comment, note).
+    if (cancel?.interrupted) {
+      budget.reason ??= "cancelled";
+      break;
     }
     if (result.ok) {
       if (completeOnSuccess) {
@@ -464,11 +492,15 @@ async function executeTaskWithRetries({
     }
   }
   const reason = budget.reason ??= "retry_limit_exhausted";
+  const leftover = lastResult?.shutdownError
+    ? ` ${lastResult.shutdownError} — omc team may still be running; stop it with: omc team shutdown ${lastResult.teamName ?? "<team>"}.`
+    : "";
   await callOrThrow(mcp, "daruma_comment", {
     task_id: task.id, kind: "blocker",
     body: reason === "cancelled"
-      ? `Execution stopped: cancelled by the operator (Ctrl-C); attempts=${attempts}. omc team was asked to shut down.`
-      : `Execution stopped: ${reason}; attempts=${attempts}. Human decision required before another run.`,
+      ? `Execution stopped: cancelled by the operator (Ctrl-C); attempts=${attempts}.` +
+        (leftover || (lastResult ? " omc team was shut down." : " No omc team was running."))
+      : `Execution stopped: ${reason}; attempts=${attempts}. Human decision required before another run.${leftover}`,
   });
   return { ok: false, attempts, result: lastResult, reason };
 }
@@ -502,6 +534,8 @@ async function executeClaimedPlanTask({
   mcp, planId, runId, expectedTaskId, maxRetries, workers, agentType, cwd,
   stderrLog, stdout, write, branch, agentId, budget, executeTask = executeTaskWithRetries, cancel = null,
 }) {
+  // Do not claim another task once Ctrl-C has been pressed.
+  if (cancel?.interrupted && budget) budget.reason ??= "cancelled";
   if (budget?.reason) return { ok: false, skipped: true, taskId: expectedTaskId, reason: budget.reason };
   const drainResp = await callOrThrow(mcp, "daruma_plan_drain_next", {
     plan_id: planId,
@@ -522,7 +556,7 @@ async function executeClaimedPlanTask({
   try {
     const taskResp = await callOrThrow(mcp, "daruma_get", { id: taskId });
     const task = payload(taskResp) ?? { id: taskId, title: taskId };
-    const outcome = await executeTask({
+    let outcome = await executeTask({
       mcp, task, maxRetries, workers, agentType, cwd, stderrLog, stdout, write, branch,
       manageStatus: false,
       completeOnSuccess: false,
@@ -531,6 +565,11 @@ async function executeClaimedPlanTask({
       cancel,
     });
 
+    if (outcome.ok && cancel?.interrupted) {
+      // A success that arrived after Ctrl-C is not completed: cancel wins.
+      if (budget) budget.reason ??= "cancelled";
+      outcome = { ...outcome, ok: false, reason: "cancelled" };
+    }
     if (outcome.ok) {
       await callOrThrow(mcp, "daruma_complete", {
         id: taskId,
@@ -735,9 +774,11 @@ export async function runDarumaStart({
       write(`Plan ${p.id ?? plan?.id}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
     }
     write(`Root task: ${rootTask.id}`);
-    if (cancel.interrupted) write("Cancelled by SIGINT.");
+    if (cancel.interrupted) write(`Cancelled by SIGINT${cancel.leftoverHint()}.`);
+    else if (cancel.teams.size) write(`omc team may still be running${cancel.leftoverHint()}.`);
     return {
       ...(cancel.interrupted ? { cancelled: true } : {}),
+      ...(cancel.teams.size ? { leftoverTeams: [...cancel.teams] } : {}),
       ok: failed === 0 && !outcome.reason,
       rootTaskId: rootTask.id,
       planId: plan?.id ?? null,
@@ -834,9 +875,11 @@ export async function runDarumaTeamFromPlan({
       const p = outcome.planState;
       write(`Plan ${p.id ?? planId}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
     }
-    if (cancel.interrupted) write("Cancelled by SIGINT.");
+    if (cancel.interrupted) write(`Cancelled by SIGINT${cancel.leftoverHint()}.`);
+    else if (cancel.teams.size) write(`omc team may still be running${cancel.leftoverHint()}.`);
     return {
       ...(cancel.interrupted ? { cancelled: true } : {}),
+      ...(cancel.teams.size ? { leftoverTeams: [...cancel.teams] } : {}),
       ok: failed === 0 && !outcome.reason,
       planId,
       summaries: outcome.summaries,

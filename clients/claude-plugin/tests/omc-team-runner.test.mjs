@@ -8,7 +8,7 @@ import { runOmcTeam } from "../lib/omc-team-runner.mjs";
 
 // Stub `omc` on a private PATH: logs every invocation, starts a team by
 // creating its state dir, reports it as still running, records shutdowns.
-async function withFakeOmc({ startExit = 0, startDelay = 0 } = {}, fn) {
+async function withFakeOmc({ startExit = 0, startDelay = 0, shutdownExit = 0, finished = false } = {}, fn) {
   const dir = await mkdtemp(join(tmpdir(), "daruma-omc-runner-test-"));
   const bin = join(dir, "bin");
   const cwd = join(dir, "repo");
@@ -19,12 +19,15 @@ async function withFakeOmc({ startExit = 0, startDelay = 0 } = {}, fn) {
 echo "$*" >> '${log}'
 if [ "$1 $2" = "team api" ]; then
   case "$3" in
-    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"in_progress":1}}}}' ;;
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,${finished ? '"completed":1' : '"in_progress":1'}}}}}' ;;
     *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
   esac
   exit 0
 fi
-if [ "$1 $2" = "team shutdown" ]; then exit 0; fi
+if [ "$1 $2" = "team shutdown" ]; then
+  [ ${shutdownExit} -eq 0 ] || echo "tmux: session not responding" >&2
+  exit ${shutdownExit}
+fi
 mkdir -p .omc/state/team/fake-team
 sleep ${startDelay}
 exit ${startExit}
@@ -90,4 +93,43 @@ test("failing start without abort does not shut anything down", { skip: process.
     await assert.rejects(runOmcTeam({ prompt: "broken", cwd }), /omc team exited with code 1/);
     assert(!(await calls()).some((line) => line.startsWith("team shutdown")));
   });
+});
+
+test("failed shutdown after abort is attached to the error, not swallowed", { skip: process.platform === "win32" }, async () => {
+  await withFakeOmc({ shutdownExit: 1 }, async ({ cwd, calls }) => {
+    const controller = new AbortController();
+    await assert.rejects(
+      runOmcTeam({
+        prompt: "long job",
+        cwd,
+        pollIntervalMs: 60_000,
+        abortSignal: controller.signal,
+        onProgress: (e) => { if (e.kind === "counts") controller.abort(); },
+      }),
+      (err) => {
+        assert.match(err.message, /omc team poll aborted/);
+        assert.equal(err.teamName, "fake-team");
+        assert.match(err.shutdownError, /^omc team shutdown fake-team failed: .*tmux: session not responding/);
+        return true;
+      },
+    );
+    assert.equal((await calls()).at(-1), "team shutdown fake-team");
+  });
+});
+
+test("finished team reports a failed shutdown in its result", { skip: process.platform === "win32" }, async () => {
+  for (const shutdownExit of [0, 1]) {
+    await withFakeOmc({ finished: true, shutdownExit }, async ({ cwd }) => {
+      const events = [];
+      const result = await runOmcTeam({ prompt: "done", cwd, pollIntervalMs: 10, onProgress: (e) => events.push(e.kind) });
+      assert.equal(result.ok, true);
+      if (shutdownExit === 0) {
+        assert.equal(result.shutdownError, null);
+        assert(!events.includes("shutdown_failed"));
+      } else {
+        assert.match(result.shutdownError, /^omc team shutdown fake-team failed:/);
+        assert(events.includes("shutdown_failed"));
+      }
+    });
+  }
 });
