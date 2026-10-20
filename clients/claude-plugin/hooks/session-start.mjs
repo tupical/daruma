@@ -74,7 +74,7 @@ export function classifyListResult(listResult) {
   return { kind: "tasks", tasks };
 }
 
-export function renderSummary({ list, projectTitle }) {
+export function renderSummary({ list, projectTitle, scopePath }) {
   if (list.kind === "error") {
     return [
       `[daruma] Could not list open tasks: ${truncate(list.message.replace(/\s+/g, " "), 200)}`,
@@ -92,7 +92,11 @@ export function renderSummary({ list, projectTitle }) {
     if (list.projects.length > MAX_TASKS) {
       lines.push(`  …and ${list.projects.length - MAX_TASKS} more projects`);
     }
-    lines.push("→ ask the user which project to use, then call daruma_project_use with its project_id.");
+    // An absolute scope_path: a parent folder with several repos (or a hosted
+    // MCP session) cannot bind without one. The cwd is context, not the
+    // value — in a parent folder it is not any repository's root.
+    lines.push('→ ask the user which project to use, then call daruma_project_use {"project_id": "<id>", "scope_path": "<absolute repo root>"}.');
+    if (scopePath) lines.push(`  Session cwd: ${scopePath}`);
     return lines.join("\n") + "\n";
   }
 
@@ -164,7 +168,7 @@ async function fetchSummary() {
     await client.stop();
     clearTimeout(timer);
 
-    return { list: classifyListResult(listResult), projectTitle, projectId };
+    return { list: classifyListResult(listResult), projectTitle, projectId, scopePath: process.cwd() };
   } catch (err) {
     clearTimeout(timer);
     try { await client.stop(); } catch { /* ignore */ }
