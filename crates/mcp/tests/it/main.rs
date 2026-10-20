@@ -12,6 +12,7 @@ mod plan_list_sort;
 mod plan_only_intake;
 mod plan_parent_patch;
 mod plan_readiness_tools;
+mod readme_mcp_surface;
 mod run_steps;
 mod schema_id_alias_contract;
 mod session_artifacts;
