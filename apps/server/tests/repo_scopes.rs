@@ -397,3 +397,80 @@ async fn server_mode_mcp_resolves_scopes_from_table() {
         .unwrap_or_default();
     assert!(msg.contains("no daruma scope configured"), "got: {body}");
 }
+
+/// Text of a tool call that must fail with `isError: true`.
+async fn mcp_tool_error(
+    addr: &std::net::SocketAddr,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> String {
+    let body: Value = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/mcp"))
+        .bearer_auth(token)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["result"]["isError"], true, "{name} must fail: {body}");
+    body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[tokio::test]
+async fn hosted_project_selection_hint_binds_and_resolves() {
+    // The needs_project_selection hint must work as given in a hosted session:
+    // with no local workspace key `project_id` alone cannot bind, the
+    // suggested absolute `scope_path` does, and later calls resolve through it.
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
+    let project_id = create_project(&app.router, &token, "Hint Target").await;
+
+    let selection = mcp_call(&addr, &token, "daruma_list", json!({ "status": "active" })).await;
+    assert_eq!(selection["needs_project_selection"], true, "{selection}");
+    let next_tool = &selection["next_tool"];
+    assert_eq!(next_tool["name"], "daruma_project_use");
+    assert_eq!(
+        next_tool["arguments"]["scope_path"],
+        "<absolute_repo_root_path>"
+    );
+
+    let without_scope = mcp_tool_error(
+        &addr,
+        &token,
+        "daruma_project_use",
+        json!({ "project_id": project_id }),
+    )
+    .await;
+    assert!(
+        without_scope.contains("no local workspace"),
+        "{without_scope}"
+    );
+
+    let mut arguments = next_tool["arguments"].clone();
+    arguments["project_id"] = json!(project_id);
+    arguments["scope_path"] = json!("/srv/tenant/hinted");
+    let bound = mcp_call(&addr, &token, "daruma_project_use", arguments).await;
+    assert_eq!(bound["scope"], "/srv/tenant/hinted");
+
+    let listed = mcp_call(
+        &addr,
+        &token,
+        "daruma_list",
+        json!({ "status": "active", "scope_path": "/srv/tenant/hinted" }),
+    )
+    .await;
+    assert!(
+        listed.get("needs_project_selection").is_none(),
+        "the bound scope_path must resolve: {listed}"
+    );
+}
