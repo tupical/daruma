@@ -629,9 +629,36 @@ impl CommandHandler {
                             &check,
                             &actor,
                             EventRuleDecision::Warning,
+                            None,
                             batch.iter().map(|w| (&w.details, w.message.as_str())),
                         ));
                         warnings.append(&mut batch);
+                    }
+                    GateDecision::Overridden {
+                        mut overridden,
+                        warnings: mut batch,
+                        reason,
+                    } => {
+                        // A bypassed `required` rule is audited as
+                        // `overridden` with its reason, never as a warning:
+                        // otherwise the log cannot tell a bypass of a mandatory
+                        // rule from an ignored recommendation (spec §1.6).
+                        rule_audit.extend(rule_fired_events(
+                            &check,
+                            &actor,
+                            EventRuleDecision::Warning,
+                            None,
+                            batch.iter().map(|w| (&w.details, w.message.as_str())),
+                        ));
+                        rule_audit.extend(rule_fired_events(
+                            &check,
+                            &actor,
+                            EventRuleDecision::Overridden,
+                            Some(&reason),
+                            overridden.iter().map(|w| (&w.details, w.message.as_str())),
+                        ));
+                        warnings.append(&mut batch);
+                        warnings.append(&mut overridden);
                     }
                     GateDecision::Blocked { message, details } => {
                         // Persist the block's audit trail before aborting, so a
@@ -642,6 +669,7 @@ impl CommandHandler {
                             &check,
                             &actor,
                             EventRuleDecision::Blocked,
+                            None,
                             blocked.iter().map(|(d, m)| (d, m.as_str())),
                         );
                         audit.splice(0..0, rule_metrics.drain(..));
@@ -4374,14 +4402,16 @@ fn relink_materialised_provenance(envelopes: &mut [EventEnvelope]) {
 
 /// Build one `RuleFired` audit event per acting rule from a gate decision.
 ///
-/// `outcomes` yields `(details, message)` for each rule that warned or blocked;
-/// `details` is the per-rule JSON the gate already assembled (`rule_id`,
-/// `rule_key`). A rule whose `details` carries no parseable `rule_id` is
-/// skipped — the audit log records identified rules, never guesses.
+/// `outcomes` yields `(details, message)` for each rule that warned, blocked or
+/// was overridden; `details` is the per-rule JSON the gate already assembled
+/// (`rule_id`, `rule_key`). A rule whose `details` carries no parseable
+/// `rule_id` is skipped — the audit log records identified rules, never
+/// guesses. `override_reason` rides every event of an `overridden` batch.
 fn rule_fired_events<'a>(
     check: &GateCheck,
     actor: &Actor,
     decision: EventRuleDecision,
+    override_reason: Option<&str>,
     outcomes: impl Iterator<Item = (&'a serde_json::Value, &'a str)>,
 ) -> Vec<Event> {
     let now = time::now();
@@ -4408,6 +4438,7 @@ fn rule_fired_events<'a>(
                 plan_id: check.plan_id,
                 task_id: check.task_id,
                 message: message.to_string(),
+                override_reason: override_reason.map(str::to_string),
                 at: now,
             })
         })

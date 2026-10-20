@@ -467,6 +467,19 @@ async fn plan_approve_override_passes_and_returns_the_bypassed_rule_as_a_warning
         outcome.warnings[0].code,
         "rule_warning:read-architecture-md"
     );
+    // The plan path audits the bypass the same way as the task path.
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        Event::RuleFired {
+            rule_key,
+            decision: daruma_events::event::RuleDecision::Overridden,
+            override_reason: Some(reason),
+            plan_id: Some(fired_on),
+            ..
+        } if rule_key == "read-architecture-md"
+            && reason == "urgent production repair"
+            && *fired_on == plan
+    )));
 }
 
 #[tokio::test]
@@ -636,6 +649,108 @@ async fn force_with_a_reason_overrides_a_rule_that_allows_it() {
         )
         .await
         .expect("force + reason must pass an override_allowed rule");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Done
+    );
+}
+
+/// A bypass of a mandatory rule is audited as `overridden` with the trimmed
+/// reason, apart from a recommendation that merely warned on the same
+/// transition: before, both landed as `RuleFired(warning)` and the reason was
+/// dropped, so the log could not tell a bypass from an ignored advisory.
+#[tokio::test]
+async fn an_override_is_audited_as_overridden_with_its_trimmed_reason() {
+    use daruma_events::event::RuleDecision;
+
+    let stack = stack().await;
+    let required = install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    let advisory = install(
+        &stack,
+        new_rule(
+            "auth-impact-check",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::ImpactCheck {
+                target: "auth-module".into(),
+                required_fields: vec!["risk_level".into()],
+            },
+            RuleMode::Recommendation,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let before_seq = stack.handler.store.latest_seq().await.unwrap();
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: true,
+                override_reason: Some("  hotfix: production is down \n".into()),
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("force + reason must pass an override_allowed rule");
+
+    // The executor still sees both rules, recommendation first.
+    let codes: Vec<_> = outcome.warnings.iter().map(|w| w.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        [
+            "rule_warning:auth-impact-check",
+            "rule_warning:completion-note"
+        ]
+    );
+
+    let fired: Vec<_> = stack
+        .handler
+        .store
+        .load_since(before_seq, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|env| match env.payload {
+            Event::RuleFired {
+                rule_id,
+                decision,
+                override_reason,
+                task_id,
+                ..
+            } => Some((rule_id, decision, override_reason, task_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fired,
+        [
+            (advisory.id, RuleDecision::Warning, None, Some(task)),
+            (
+                required.id,
+                RuleDecision::Overridden,
+                Some("hotfix: production is down".to_string()),
+                Some(task),
+            ),
+        ]
+    );
     assert_eq!(
         stack.handler.tasks.get(task).await.unwrap().unwrap().status,
         Status::Done
