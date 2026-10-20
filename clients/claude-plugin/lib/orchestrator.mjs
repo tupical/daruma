@@ -774,8 +774,8 @@ export async function runDarumaStart({
       write(`Plan ${p.id ?? plan?.id}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
     }
     write(`Root task: ${rootTask.id}`);
-    if (cancel.interrupted) write(`Cancelled by SIGINT.${cancel.leftoverHint()}`);
-    else if (cancel.teams.size) write(`omc team may still be running${cancel.leftoverHint()}`);
+    if (cancel.interrupted) write(`Cancelled by SIGINT${cancel.leftoverHint()}.`);
+    else if (cancel.teams.size) write(`omc team may still be running${cancel.leftoverHint()}.`);
     return {
       ...(cancel.interrupted ? { cancelled: true } : {}),
       ...(cancel.teams.size ? { leftoverTeams: [...cancel.teams] } : {}),
@@ -875,8 +875,8 @@ export async function runDarumaTeamFromPlan({
       const p = outcome.planState;
       write(`Plan ${p.id ?? planId}: status=${p.status ?? "?"} progress=${p.progress ?? "?"}`);
     }
-    if (cancel.interrupted) write(`Cancelled by SIGINT.${cancel.leftoverHint()}`);
-    else if (cancel.teams.size) write(`omc team may still be running${cancel.leftoverHint()}`);
+    if (cancel.interrupted) write(`Cancelled by SIGINT${cancel.leftoverHint()}.`);
+    else if (cancel.teams.size) write(`omc team may still be running${cancel.leftoverHint()}.`);
     return {
       ...(cancel.interrupted ? { cancelled: true } : {}),
       ...(cancel.teams.size ? { leftoverTeams: [...cancel.teams] } : {}),
