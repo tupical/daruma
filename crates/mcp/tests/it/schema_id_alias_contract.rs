@@ -234,3 +234,85 @@ fn no_tool_schema_uses_top_level_composition() {
         }
     }
 }
+
+/// `docs/guides/mcp-client.md` with every whitespace run collapsed to one
+/// space, so reflowing a paragraph does not move a phrase out of reach.
+fn mcp_client_doc() -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/guides/mcp-client.md");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `` `daruma_<tool> {<arg>}` `` call examples of the guide.
+fn doc_call_examples(doc: &str) -> Vec<(String, String)> {
+    doc.match_indices("`daruma_")
+        .filter_map(|(at, _)| {
+            let span = &doc[at + 1..];
+            let span = &span[..span.find('`')?];
+            let (tool, rest) = span.split_once(" {")?;
+            let arg = rest.strip_suffix('}')?;
+            let ident = !arg.is_empty() && arg.chars().all(|c| c == '_' || c.is_ascii_lowercase());
+            ident.then(|| (tool.to_string(), arg.to_string()))
+        })
+        .collect()
+}
+
+/// A schema-validating client sends `tool {arg}` (plus the tool's other,
+/// non-id arguments) only when `arg` is declared and no other id name is
+/// required.
+fn example_fits_schema(tool: &str, arg: &str) -> Result<(), String> {
+    let schema = schema_of(tool);
+    if schema["properties"].get(arg).is_none() {
+        return Err(format!("`{arg}` is not a declared property"));
+    }
+    for name in schema["required"].as_array().into_iter().flatten() {
+        let name = name.as_str().unwrap();
+        if name != arg && (name == "id" || name.ends_with("_id")) {
+            return Err(format!("requires `{name}`"));
+        }
+    }
+    Ok(())
+}
+
+/// Task 01a144fe-e537-7bb0-8e87-9c41d64f0245: the guide promised
+/// `daruma_run_complete {id}` while that schema requires `run_id`, so a
+/// validating client rejected a documented call. Every example in the guide
+/// must now pass the published schema.
+#[test]
+fn guide_call_examples_pass_the_published_schema() {
+    let examples = doc_call_examples(&mcp_client_doc());
+    assert!(
+        !examples.is_empty(),
+        "no call examples found in mcp-client.md"
+    );
+    for (tool, arg) in examples {
+        example_fits_schema(&tool, &arg).unwrap_or_else(|e| {
+            panic!("mcp-client.md shows `{tool} {{{arg}}}`, but its schema {e}")
+        });
+    }
+    // The check rejects the example the guide used to carry.
+    assert!(example_fits_schema("daruma_run_complete", "id").is_err());
+}
+
+/// The guide's key-tool list names exactly the tools whose schemas take
+/// either id name.
+#[test]
+fn guide_key_tool_list_matches_aliased_tools() {
+    let doc = mcp_client_doc();
+    let start = doc
+        .find("The schemas of the key tools")
+        .expect("key-tool sentence missing from mcp-client.md");
+    let end = start
+        + doc[start..]
+            .find("list both names")
+            .expect("key-tool sentence has no end");
+    let mut listed: Vec<&str> = doc[start..end].split('`').skip(1).step_by(2).collect();
+    listed.sort_unstable();
+    let mut covered: Vec<&str> = aliased_tools().iter().map(|(tool, ..)| *tool).collect();
+    covered.sort_unstable();
+    assert_eq!(listed, covered);
+}

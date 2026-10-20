@@ -167,18 +167,23 @@ Supported launch modes:
   unit, artifact and relation tool takes its schema name, the kind's own name
   (`task_id`, `plan_id`, `run_id`, `doc_id` / `document_id`, `session_id`,
   `rule_id`, `work_unit_id`, `artifact_id`, `relation_id`) or the generic `id`:
-  `daruma_get {task_id}` and `daruma_comment {id}` both work, as do
-  `daruma_plan_progress {id}` and `daruma_run_complete {id}`. The schemas of
-  the key tools — `daruma_get`, `daruma_update`, `daruma_set_status`,
-  `daruma_complete`, `daruma_comment`, `daruma_relations`, `daruma_claim`,
-  `daruma_release`, `daruma_plan_get`, `daruma_plan_progress`,
-  `daruma_plan_drain_next`, `daruma_plan_next_task` — list both names and
-  require neither, so a client that validates arguments against the schema
-  accepts either one; a call with neither passes the schema and fails in the
-  tool with the accepted names. "At least one of" is not expressed as a
-  top-level `anyOf`: the Anthropic API rejects tool schemas with a top-level
-  `anyOf`/`oneOf`/`allOf`, and no tool schema has one
-  (`crates/mcp/tests/it/schema_id_alias_contract.rs`). Bulk tools take
+  `daruma_get {task_id}`, `daruma_comment {id}` and
+  `daruma_plan_progress {id}` all work. The schemas of the key tools —
+  `daruma_get`, `daruma_update`, `daruma_set_status`, `daruma_complete`,
+  `daruma_comment`, `daruma_relations`, `daruma_claim`, `daruma_release`,
+  `daruma_plan_get`, `daruma_plan_progress`, `daruma_plan_drain_next`,
+  `daruma_plan_next_task` — list both names and require neither, so a client
+  that validates arguments against the schema accepts either one; a call with
+  neither passes the schema and fails in the tool with the accepted names.
+  Every other tool's schema lists and requires only its own name
+  (`daruma_run_complete` requires `run_id`): the tool itself still accepts the
+  alias, so a client that sends arguments unchecked may pass `id` there, but
+  a client that validates against the schema rejects that call before it is
+  sent — use the schema name outside the key tools. "At least one of" is not
+  expressed as a top-level `anyOf`: the Anthropic API rejects tool schemas
+  with a top-level `anyOf`/`oneOf`/`allOf`, and no tool schema has one. The
+  call examples and the key-tool list above are checked against the published
+  schemas (`crates/mcp/tests/it/schema_id_alias_contract.rs`). Bulk tools take
   `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
   different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
   generic `id` fill the missing one; `from_work_unit_id` / `to_work_unit_id` of
