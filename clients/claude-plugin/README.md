@@ -196,7 +196,7 @@ Bundled skills:
 
 - Single fixed role: `--agent` selects one role for all workers; mixed roles (`1:planner + 2:executor + 1:verifier`) are TODO.
 - Artifact capture from `omc team` relies on text summaries written as daruma comments — not yet structured.
-- No `daruma-claude cancel`. Press Ctrl-C in the `start` / `team-from-plan` terminal: daruma-claude runs `omc team shutdown` for the running team, waits up to 60 s for it to stop, records the attempt as a `cancelled` blocker (plan runs release the claim and abort the run), then exits with code 130. A second Ctrl-C exits at once; if the team did not stop, the message names it — finish with `omc team shutdown <team>`.
+- No `daruma-claude cancel`. Press Ctrl-C in the `start` / `team-from-plan` terminal: daruma-claude runs `omc team shutdown` for the running team, waits up to 60 s for it to stop, records the attempt as a `cancelled` blocker (plan runs release the claim and abort the run), then exits with code 130. Cancellation wins over a late success: a team that finishes after Ctrl-C is not completed in Daruma. A second Ctrl-C exits at once; if the team did not stop — or `omc team shutdown` itself failed — the terminal and the blocker name it with the failure reason — finish with `omc team shutdown <team>`.
 - `daruma-claude doctor` only probes the shell it's run from. On a Windows host run it from inside WSL.
 - Plan-mode retries reset task status to `todo` and re-execute — they do **not** mutate the plan (no re-planning on repeated failure in v1).
 

@@ -508,6 +508,121 @@ test("cancelled plan run releases the claim and aborts the run as cancelled", as
   assert(!mcp.calls.some((call) => call.name === "daruma_get" && call.args.id === "b"));
 });
 
+test("Ctrl-C while the final answer is pending wins over a late success", async () => {
+  const mcp = mockMcp();
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", title: "Task" }, maxRetries: 2,
+    stdout: { write() {}, isTTY: false }, write() {}, cancel,
+    async execute() {
+      // The team already finished; Ctrl-C lands during list-tasks/shutdown.
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      return { ok: true, teamName: "team-a", counts: { total: 1, completed: 1, failed: 0 }, artifact: "done", shutdownError: null };
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, "cancelled");
+  assert(!mcp.calls.some((call) => call.name === "daruma_complete"));
+  const blocker = mcp.calls.find((call) => call.name === "daruma_comment" && call.args.kind === "blocker");
+  assert.match(blocker.args.body, /cancelled by the operator \(Ctrl-C\); attempts=1\. omc team was shut down\./);
+});
+
+test("plan task whose success arrives after Ctrl-C is released, not completed", async () => {
+  const mcp = mockMcp({ drains: [{ task_id: "a" }, { task_id: "b" }] });
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.runPlanLoop({
+    mcp, plan: { id: "plan", status: "active" }, cwd: "/tmp", write() {}, stdout: {}, maxRetries: 2, cancel,
+    async executeTask() {
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      return { ok: true, attempts: 1, result: { teamName: "team-a", counts: { total: 1, completed: 1, failed: 0 } } };
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.reason, "cancelled");
+  assert(!mcp.calls.some((call) => call.name === "daruma_complete"));
+  assert(mcp.calls.some((call) => call.name === "daruma_release" && call.args.task_id === "a"));
+  assert(mcp.calls.some((call) => call.name === "daruma_run_abort" && call.args.reason === "cancelled"));
+  assert.equal(mcp.calls.filter((call) => call.name === "daruma_plan_drain_next").length, 1);
+});
+
+test("failed omc team shutdown after Ctrl-C is named in the blocker", async () => {
+  const mcp = mockMcp();
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", title: "Task" }, maxRetries: 2,
+    stdout: { write() {}, isTTY: false }, write() {}, cancel,
+    async execute() {
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      throw Object.assign(new Error("omc team poll aborted"), {
+        teamName: "team-x", shutdownError: "omc team shutdown team-x failed: timeout",
+      });
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.reason, "cancelled");
+  assert.equal(outcome.result.shutdownError, "omc team shutdown team-x failed: timeout");
+  const blocker = mcp.calls.find((call) => call.name === "daruma_comment" && call.args.kind === "blocker");
+  assert.match(blocker.args.body, /omc team shutdown team-x failed: timeout — omc team may still be running; stop it with: omc team shutdown team-x\./);
+  assert.doesNotMatch(blocker.args.body, /was shut down/);
+});
+
+test("executeOnce keeps a team whose shutdown failed registered for the exit message", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "bin");
+    const cwd = join(dir, "repo");
+    await mkdir(bin);
+    await mkdir(cwd);
+    await writeFile(join(bin, "omc"), `#!/bin/sh
+if [ "$1 $2" = "team api" ]; then
+  case "$3" in
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"completed":1}}}}' ;;
+    *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "team shutdown" ]; then echo "tmux: no server" >&2; exit 1; fi
+mkdir -p .omc/state/team/stuck-team
+`);
+    await chmod(join(bin, "omc"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    const { cancel, lines: cancelLines } = cancellationHarness();
+    const lines = [];
+    let result;
+    try {
+      result = await _internal.executeOnce({
+        task: { id: "task", title: "Task" }, workers: 1, agentType: "claude", cwd, stderrLog: null,
+        stdout: { isTTY: false, write() {} }, write: (s) => lines.push(s), cancel,
+      });
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    assert.equal(result.ok, true);
+    assert.match(result.shutdownError, /^omc team shutdown stuck-team failed: tmux: no server/);
+    assert.match(lines.join("\n"), /\[omc team\] omc team shutdown stuck-team failed/);
+    assert.deepEqual([...cancel.teams], ["stuck-team"]);
+    await cancel.onSignal();
+    assert.match(cancelLines.join(""), /SIGINT — shutting down; stop it with: omc team shutdown stuck-team/);
+  });
+});
+
+test("a failing MCP stop on Ctrl-C is reported, and the process still exits 130", async () => {
+  const lines = [];
+  const events = [];
+  const cancel = _internal.createCancellation({
+    write: (s) => lines.push(s),
+    stop: async () => { throw new Error("server pipe closed"); },
+    exit: (code) => { events.push(`exit:${code}`); },
+  });
+  await cancel.onSignal();
+  assert.deepEqual(events, ["exit:130"]);
+  assert.match(lines.join(""), /failed to stop the daruma MCP server: server pipe closed/);
+});
+
 test("Ctrl-C typed into the TTY prompt reaches the process SIGINT handler", async () => {
   const { PassThrough } = await import("node:stream");
   const prompt = _internal.makePrompt(new PassThrough(), new PassThrough());
