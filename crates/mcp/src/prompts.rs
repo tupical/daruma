@@ -102,11 +102,16 @@ bar. Use the daruma MCP server.
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
 2. `daruma_plan_list` with `project_id = <resolved>`,
-   `status = "active"`. Pick the most recently updated.
-   If none, say "no active plan — create one with `daruma_plan_create`"
-   and stop.
-3. `daruma_plan_get` with the chosen `plan_id`.
-4. Compute progress: `done_count / total_count`. Build a 20-cell bar like
+   `status = "active"`, `sort = "updated"`, `limit = 1` — the server orders
+   by `updated_at`, newest first, so the single row is the most recently
+   updated plan (the default order is by creation, and its first page can
+   miss it). If none, say "no active plan — `daruma_plan_materialize`
+   first" and stop.
+3. `daruma_plan_get` with the chosen `plan_id` and `view = "tasks"` —
+   the only view that lists every plan task (done included) with
+   `status`, `priority`, `depends_on` and `blocked_by`. The default
+   `progress` view caps each group at five open tasks; don't use it here.
+4. Compute progress: `progress.tasks_done / progress.tasks_total`. Build a 20-cell bar like
    `▓▓▓▓▓▓▓▓░░░░░░░░░░░░ 40%`.
 5. Render exactly:
 
@@ -127,9 +132,11 @@ bar. Use the daruma MCP server.
    ```
 
    - `[x]` only for `done`; everything else is `[ ]`.
-   - Status emoji: ⬜ todo, 🟢 in_progress, ✅ done, 📥 inbox.
+   - Status emoji: ⬜ todo, 🟢 in_progress, 🔍 in_review, ✅ done,
+     ❌ cancelled, 📥 inbox.
    - Priority shown only when `!= p2`.
-   - `blocked-by` rendered only when the dependency list is non-empty.
+   - `blocked-by` rendered only when `blocked_by` is non-empty (unfinished
+     `depends_on` tasks and active `blocks` relations).
 
 6. Below the list, suggest the next action one of these ways:
    - If any `in_progress` task exists → `→ continue: <title>`.
@@ -148,12 +155,14 @@ and render a compact briefing for the user.
 ## Steps
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
-2. Find the active plan: `daruma_plan_list` filtered to
-   `status = "active"`, pick most recent.
+2. Find the active plan: `daruma_plan_list` with `status = "active"`,
+   `sort = "updated"`, `limit = 1` — the most recently updated plan.
    If none, stop with "no active plan — `daruma_plan_materialize` first".
 3. Claim next: `daruma_plan_drain_next` with `plan_id`. The server
    atomically claims the next ready (unblocked) task for this session and
-   returns null when nothing is ready.
+   returns null when nothing is ready. Keep the returned `run_id`: the server
+   opened that run for this claim. A null drain already aborted its own run —
+   nothing to close.
 4. If the server returns "no ready task" (plan empty or all blocked),
    render:
 
@@ -171,6 +180,7 @@ and render a compact briefing for the user.
 
    id:        <task_id>
    plan:      <plan_id>
+   run:       <run_id>
    priority:  <pX>
    status:    🟢 in_progress
    ```
@@ -192,9 +202,14 @@ and render a compact briefing for the user.
 
    ```
    → When done: daruma_complete task_id=<task_id> [comment="<summary>"]
+     then daruma_run_complete run_id=<run_id>
    → On failure: daruma_comment task_id=<task_id> body=<reason>
      followed by daruma_set_status task_id=<task_id> status=todo
+     and daruma_run_abort run_id=<run_id> reason=<reason>
    ```
+
+   An open run keeps the plan from auto-closing after its last task; the
+   `plan_close_blocked_by_run` warning names it in `details.run_id`.
 
 7. Do not start executing the task yourself in this command — this is a
    briefing only. The user (or a follow-up agent prompt) drives execution.
@@ -203,25 +218,29 @@ and render a compact briefing for the user.
 const DARUMA_MINE: &str = r#"# /daruma-mine
 
 Show tasks that the current MCP session has claimed (`in_progress` with
-this session as owner). Useful for "what was I doing here?" after a chat
+an active claim held by this session's agent). Useful for "what was I doing here?" after a chat
 restart.
 
 ## Steps
 
-1. Resolve project (`daruma_workspace_info` → `default_project`).
-2. `daruma_list` with `project_id = <resolved>`,
-   `status = ["in_progress"]`, `owner = "self"` (the server resolves
-   `self` to the active session/agent). If the server does not support
-   `owner = "self"`, fall back to `daruma_list` then filter client-side
-   by `owner == <agent_id from workspace_info>`.
-3. Render:
+1. Resolve project (`daruma_workspace_info` → `default_project`) and
+   capture `mcp_agent_id` from the same response — that is this session's
+   agent id.
+2. `daruma_list` with `project_id = <resolved>`, `status = "in_progress"`
+   (a single string, not an array), limit 20. `daruma_list` has no owner
+   filter and its rows carry no claim data, so do not pass `owner`.
+3. For each returned task, `daruma_get id=<task id>` (no comments) and keep
+   it only when `current_claim.is_mine == true` (equivalently,
+   `current_claim.agent_id == <mcp_agent_id>`). A task with
+   `current_claim = null` or another agent's claim is not yours.
+   Render the kept tasks:
 
    ```
    ## My active tasks — <N>
 
-   | # | Pri | Title | Plan | Claimed |
-   |---|-----|-------|------|---------|
-   | 1 | p1 | <title>   | <plan_short> | <relative time, e.g. "2h ago"> |
+   | # | Pri | Title | Claimed | Expires |
+   |---|-----|-------|---------|---------|
+   | 1 | p1 | <title> | <current_claim.acquired_at, relative, e.g. "2h ago"> | <current_claim.expires_at, relative> |
    …
    ```
 

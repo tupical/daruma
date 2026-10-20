@@ -2129,6 +2129,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_plan_list" => {
             let status = string_or_default(&args, "status", "draft,active");
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
+            let sort = string_or_default(&args, "sort", "created");
+            let recently_updated_first = match sort.trim() {
+                "created" => false,
+                "updated" => true,
+                other => {
+                    anyhow::bail!("unknown sort: {other:?} (expected one of: created, updated)")
+                }
+            };
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
@@ -2151,11 +2159,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            let resp = mcp_page_by_id(
-                client.get_json(&format!("/v1/plans?{qs}")).await?,
-                cursor,
-                limit,
-            );
+            let mut rows = client.get_json(&format!("/v1/plans?{qs}")).await?;
+            if recently_updated_first {
+                sort_rows_recently_updated(&mut rows);
+            }
+            let resp = mcp_page_by_id(rows, cursor, limit);
             Ok(if view == "detail" {
                 resp
             } else {
@@ -4127,6 +4135,11 @@ fn schema_plan_list() -> Value {
                 "default":"summary",
                 "description":"summary: id/title/status/project; detail: full plan rows."
             },
+            "sort": {
+                "type":"string",
+                "enum":["created","updated"],
+                "description":"updated: newest first."
+            },
             "source": {"type":"string","description":"Source URI anywhere in the chain."},
             "channel": {"type":"string","description":"Scheme of the nearest source."}
         }
@@ -5233,6 +5246,41 @@ fn mcp_page_by_id(value: Value, cursor: Option<&str>, limit: usize) -> Value {
         },
         total,
     )
+}
+
+/// `daruma_plan_list sort=updated`: the server lists plans oldest-created
+/// first, so the latest-updated plan can sit past the first page. Ordering
+/// before paging lets `limit=1` answer "the most recently updated plan".
+fn sort_rows_recently_updated(value: &mut Value) {
+    let Value::Array(rows) = value else {
+        return;
+    };
+    let key = |row: &Value| {
+        (
+            row.get("updated_at")
+                .and_then(Value::as_str)
+                .map(rfc3339_utc_sort_key)
+                .unwrap_or_default(),
+            row.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    };
+    rows.sort_by_cached_key(|row| std::cmp::Reverse(key(row)));
+}
+
+/// chrono writes 0, 3, 6 or 9 fractional digits (`…:07Z`, `…:07.5Z`), which
+/// do not compare as strings: pad the fraction to nanoseconds for UTC values.
+fn rfc3339_utc_sort_key(raw: &str) -> String {
+    let Some(body) = raw.strip_suffix('Z') else {
+        return raw.to_owned();
+    };
+    let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+    if whole.len() != 19 || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return raw.to_owned();
+    }
+    format!("{whole}.{fraction:0<9}")
 }
 
 fn mcp_page_by_offset(value: Value, cursor: Option<&str>, limit: usize) -> Value {
