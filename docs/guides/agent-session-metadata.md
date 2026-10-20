@@ -6,7 +6,11 @@ When an MCP/IDE agent starts work, it should open a **Daruma session** with
 ## MCP workflow
 
 1. `daruma_workspace_info` — note `mcp_agent_id`.
-2. `daruma_session_start` with `metadata` (see schema below).
+2. `daruma_session_start` with `metadata` (see schema below). Omitted
+   `agent_id` defaults to that same `mcp_agent_id` — the token-bound identity
+   claims and runs use — in hosted and stdio MCP alike, so
+   `daruma_session_list` (same default) finds the session. A stdio process
+   also has a random local process id; it is never a session default.
 3. `daruma_plan_materialize` — the only intake path (plan-only intake) — then `daruma_comment` on the root task:
 
    ```text
@@ -117,7 +121,10 @@ GET /v1/sessions?agent_id={uuid}
 ## Resolving a bare agent UUID on a task
 
 Task fields `created_by` / `updated_by` may show `Actor::Agent { id, name: "mcp" }`.
-That `id` is the MCP process agent id — **not** the session id.
+That `id` is the MCP agent id — **not** the session id. Over hosted MCP it is
+the `mcp_agent_id` sessions are keyed by. A stdio process on a server built
+without `actor_strict` stamps its random local process id instead; no session
+is keyed by that id, so use step 4 for such tasks.
 
 To find context:
 
@@ -135,5 +142,5 @@ pointer for humans/tools outside Daruma.
 |------|------|
 | `daruma_session_start` | Create session + metadata |
 | `daruma_session_get` | Fetch session by id |
-| `daruma_session_list` | List sessions for `agent_id` |
+| `daruma_session_list` | List sessions for `agent_id` (default `mcp_agent_id`) |
 | `daruma_session_end` | Close session |

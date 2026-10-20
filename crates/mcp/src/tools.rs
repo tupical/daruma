@@ -1010,7 +1010,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_session_start",
             "Start agent session",
-            "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
+            "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to `daruma_workspace_info.mcp_agent_id`.",
             schema_session_start(),
             Dom::Sessions, F, X, Ann::Write,
         ),
@@ -1024,7 +1024,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_session_list",
             "List agent sessions",
-            "List agent sessions for an agent id (defaults to this MCP process).",
+            "List agent sessions for an agent id (defaults to daruma_workspace_info.mcp_agent_id).",
             schema_session_list(),
             Dom::Sessions, F, X, Ann::Read,
         ),
@@ -2867,11 +2867,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
         "daruma_session_start" => {
-            let agent_id = args
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| client.agent_id());
+            let agent_id = session_agent_id(client, &args).await;
             let mut body = json!({"agent_id": agent_id});
             if let Some(parent) = args.get("parent_agent_id").and_then(|v| v.as_str()) {
                 body["parent_agent_id"] = json!(parent);
@@ -2885,11 +2881,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&format!("/v1/sessions/{id}")).await
         }
         "daruma_session_list" => {
-            let agent_id = args
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| client.agent_id());
+            let agent_id = session_agent_id(client, &args).await;
             client
                 .get_json(&format!("/v1/sessions?agent_id={agent_id}"))
                 .await
@@ -4765,7 +4757,7 @@ fn schema_session_start() -> Value {
         "properties": {
             "agent_id":        {
                 "type":"string",
-                "description":"Defaults to this MCP process agent id (see daruma_workspace_info.mcp_agent_id)."
+                "description":"Defaults to daruma_workspace_info.mcp_agent_id (the token-bound identity), so session_list finds the session without passing it."
             },
             "parent_agent_id": {"type":"string"},
             "metadata":        {
@@ -4802,7 +4794,7 @@ fn schema_session_list() -> Value {
         "properties": {
             "agent_id": {
                 "type":"string",
-                "description":"Defaults to this MCP process agent id."
+                "description":"Defaults to daruma_workspace_info.mcp_agent_id, the same default as daruma_session_start."
             }
         },
         "required":[]
@@ -6117,6 +6109,26 @@ fn resolve_doc_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String
 
 fn resolve_run_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Run, key)
+}
+
+/// Agent id for `daruma_session_start` / `daruma_session_list`: the caller's
+/// `agent_id`, else the same identity `daruma_workspace_info` reports as
+/// `mcp_agent_id`. A stdio client's process id differs from that token-bound
+/// id, so defaulting to it made a session unfindable by the advertised id.
+/// When the identity lookup is unavailable `workspace_info` fails too and no
+/// `mcp_agent_id` exists to disagree with, so the process id stays the fallback.
+async fn session_agent_id(client: &ApiClient, args: &Map<String, Value>) -> String {
+    if let Some(agent_id) = args
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return agent_id.to_string();
+    }
+    client
+        .authenticated_agent_id()
+        .await
+        .unwrap_or_else(|_| client.agent_id().to_string())
 }
 
 fn resolve_session_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
