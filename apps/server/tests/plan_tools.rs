@@ -521,6 +521,163 @@ async fn run_complete_requires_step_handoff_via_mcp() {
     assert_eq!(completed["success"], true, "complete: {completed}");
 }
 
+async fn active_one_task_plan_via_mcp(client: &ApiClient, title: &str) -> (String, String) {
+    let pid = create_project_via_mcp(client, title).await;
+    let materialized = call_tool(
+        client,
+        "daruma_plan_materialize",
+        json!({ "plan": { "title": title, "project_id": pid }, "tasks": [ { "title": "Loop task" } ] }),
+    )
+    .await;
+    let created = |kind: &str, field: &str| -> String {
+        materialized["data"]
+            .as_array()
+            .and_then(|a| {
+                a.iter().find_map(|e| {
+                    let p = e.get("payload")?;
+                    (p.get("type")?.as_str()? == kind)
+                        .then(|| p.get(field)?.get("id")?.as_str().map(str::to_owned))?
+                })
+            })
+            .unwrap_or_else(|| panic!("{kind} in {materialized}"))
+    };
+    let plan_id = created("plan_created", "plan");
+    let task_id = created("task_created", "task");
+    let active = call_tool(
+        client,
+        "daruma_plan_set_status",
+        json!({ "plan_id": plan_id, "status": "active" }),
+    )
+    .await;
+    assert_eq!(active["success"], true, "activate: {active}");
+    (plan_id, task_id)
+}
+
+// docs/mcp/EXECUTOR-LOOP.md «MCP tool sequence», step by step through the
+// MCP surface: the documented loop (run_start_step before the work) completes
+// its run; the former order (complete, then run_finish_step with no started
+// step) is refused by run_complete (01a144fe-e537-7bb0-8e87-9c66985bf9a4).
+#[tokio::test]
+async fn executor_loop_doc_sequence_completes_run_via_mcp() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token);
+    let agent_id = app.admin_agent_id.as_uuid().to_string();
+
+    let (plan_id, task_id) = active_one_task_plan_via_mcp(&client, "Executor Loop Plan").await;
+    let run = call_tool(
+        &client,
+        "daruma_run_start",
+        json!({ "plan_id": plan_id, "agent_id": agent_id }),
+    )
+    .await;
+    let run_id = run["run_id"].as_str().expect("run_id").to_owned();
+    let progress = call_tool(
+        &client,
+        "daruma_plan_progress",
+        json!({ "plan_id": plan_id }),
+    )
+    .await;
+    eprintln!("step 2 progress: {progress}");
+    let next = call_tool(
+        &client,
+        "daruma_plan_next_task",
+        json!({ "id": plan_id, "run_id": run_id, "claim_ttl_secs": 300 }),
+    )
+    .await;
+    eprintln!("step 3 next: {next}");
+    assert_eq!(next["task_id"], task_id.as_str(), "next: {next}");
+    let step = call_tool(
+        &client,
+        "daruma_run_start_step",
+        json!({ "run_id": run_id, "task_id": task_id }),
+    )
+    .await;
+    assert_eq!(step["success"], true, "start_step: {step}");
+    let intent = call_tool(
+        &client,
+        "daruma_set_status",
+        json!({ "id": task_id, "status": "in_progress", "comment": { "body": "intent: loop scenario", "kind": "intent" } }),
+    )
+    .await;
+    eprintln!("step 5 set_status: {intent}");
+    let done = call_tool(
+        &client,
+        "daruma_complete",
+        json!({ "id": task_id, "reason": "loop scenario", "result_summary": "doc sequence" }),
+    )
+    .await;
+    eprintln!("step 7 complete: {done}");
+    let finished = call_tool(
+        &client,
+        "daruma_run_finish_step",
+        json!({ "run_id": run_id, "task_id": task_id, "outcome": { "kind": "done" } }),
+    )
+    .await;
+    assert_eq!(finished["success"], true, "finish_step: {finished}");
+    let progress = call_tool(
+        &client,
+        "daruma_plan_progress",
+        json!({ "plan_id": plan_id }),
+    )
+    .await;
+    eprintln!("step 2 again progress: {progress}");
+    assert!(progress["next_ready"].is_null(), "drained: {progress}");
+    let completed = call_tool(&client, "daruma_run_complete", json!({ "run_id": run_id })).await;
+    assert_eq!(completed["success"], true, "complete: {completed}");
+    let timeline = client
+        .get_json(&format!("/v1/runs/{run_id}/timeline"))
+        .await
+        .unwrap();
+    eprintln!("documented loop run {run_id} timeline: {timeline}");
+    assert_eq!(timeline["run"]["status"], "completed", "{timeline}");
+
+    let (plan_id, task_id) = active_one_task_plan_via_mcp(&client, "Former Loop Plan").await;
+    let run = call_tool(
+        &client,
+        "daruma_run_start",
+        json!({ "plan_id": plan_id, "agent_id": agent_id }),
+    )
+    .await;
+    let run_id = run["run_id"].as_str().expect("run_id").to_owned();
+    call_tool(
+        &client,
+        "daruma_plan_next_task",
+        json!({ "id": plan_id, "run_id": run_id, "claim_ttl_secs": 300 }),
+    )
+    .await;
+    call_tool(
+        &client,
+        "daruma_complete",
+        json!({ "id": task_id, "reason": "loop scenario", "result_summary": "former order" }),
+    )
+    .await;
+    call_tool(
+        &client,
+        "daruma_run_finish_step",
+        json!({ "run_id": run_id, "task_id": task_id, "outcome": { "kind": "done" } }),
+    )
+    .await;
+    let refused = dispatch_request(
+        &client,
+        req(
+            "tools/call",
+            json!({ "name": "daruma_run_complete", "arguments": { "run_id": run_id } }),
+        ),
+    )
+    .await
+    .unwrap();
+    let refused = format!("{refused:?}");
+    eprintln!("former loop run {run_id} run_complete: {refused}");
+    assert!(refused.contains("run_postcondition_unmet"), "{refused}");
+    assert!(refused.contains(&task_id), "{refused}");
+    let timeline = client
+        .get_json(&format!("/v1/runs/{run_id}/timeline"))
+        .await
+        .unwrap();
+    assert_eq!(timeline["run"]["status"], "active", "{timeline}");
+}
+
 #[tokio::test]
 async fn plan_status_override_reaches_http_and_returns_warning_via_mcp() {
     let app = TestAppBuilder::default()

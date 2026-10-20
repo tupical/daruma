@@ -243,6 +243,47 @@ async fn handoff_before_step_start_does_not_count() {
     assert_rejected(&db, &handler, run_id, task_id).await;
 }
 
+// The executor loop of docs/mcp/EXECUTOR-LOOP.md completes the task before
+// `run_finish_step`. Without `run_start_step` the finish opens the attempt at
+// its own timestamp, after the completion, so the run is rejected; with the
+// step started before the work the same order completes (01a144fe…9c66985bf9a4).
+#[tokio::test]
+async fn executor_loop_order_needs_run_start_step() {
+    let db = db().await;
+    let handler = handler_on(&db);
+
+    let skipped = in_progress_task(&handler).await;
+    let run_skipped = start_run(&handler).await;
+    handler
+        .handle(
+            Command::CompleteTask {
+                id: skipped,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    finish_step(&handler, run_skipped, skipped, RunOutcome::Done).await;
+    assert_rejected(&db, &handler, run_skipped, skipped).await;
+
+    let started = in_progress_task(&handler).await;
+    let run_started = start_run(&handler).await;
+    start_step(&handler, run_started, started).await;
+    handler
+        .handle(
+            Command::CompleteTask {
+                id: started,
+                note: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    finish_step(&handler, run_started, started, RunOutcome::Done).await;
+    complete(&handler, run_started).await.unwrap();
+}
+
 #[tokio::test]
 async fn reviewer_accept_and_reject_are_handoffs() {
     let db = db().await;
