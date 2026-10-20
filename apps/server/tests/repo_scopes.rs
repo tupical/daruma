@@ -459,8 +459,15 @@ async fn hosted_project_selection_hint_binds_and_resolves() {
     let mut arguments = next_tool["arguments"].clone();
     arguments["project_id"] = json!(project_id);
     arguments["scope_path"] = json!("/srv/tenant/hinted");
+    // `scope` itself may be stripped from the reply as request echo; the
+    // stored binding is the outcome that matters.
     let bound = mcp_call(&addr, &token, "daruma_project_use", arguments).await;
-    assert_eq!(bound["scope"], "/srv/tenant/hinted");
+    assert_eq!(bound["project_id"], project_id.as_str());
+    let (_, scopes) = json_get(app.router.clone(), &token, "/v1/repo-scopes").await;
+    let scopes = scopes.as_array().unwrap();
+    assert_eq!(scopes.len(), 1, "{scopes:?}");
+    assert_eq!(scopes[0]["scope_path"], "/srv/tenant/hinted");
+    assert_eq!(scopes[0]["project_id"], project_id.as_str());
 
     let listed = mcp_call(
         &addr,

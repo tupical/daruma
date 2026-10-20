@@ -238,7 +238,7 @@ async fn project_selection_next_tool_binds_without_local_workspace() {
         .expect("the suggested arguments bind once the placeholders are filled");
     server.abort();
 
-    assert_eq!(used["scope"], "/home/you/projects/daruma");
+    // `scope` may be stripped as request echo; the PUT body is the outcome.
     assert_eq!(used["project_id"], "prj_daruma");
     assert_eq!(
         *bound.lock().unwrap(),
