@@ -357,7 +357,9 @@ guard.
   a new `parent_plan_id` (whether reparenting to a new parent, to None,
   or staying the same). Recorded in `activity` projection with verb
   `"plan_modified"`.
-- **MCP:** `daruma_plan_update { id, parent_plan_id: string | null | omit }`.
+- **MCP:** `daruma_plan_update { id, patch: { parent_plan_id: string | null | omit } }`
+  — `parent_plan_id` goes inside `patch`; a top-level `parent_plan_id`
+  next to `id` is not read, and a call without `patch` fails.
   Null value unparents to root; omit leaves
   parent unchanged. Gated by `Capability::PlanWrite`.
 - **WS broadcast:** `PlanUpdated` diff in `Channel::Plans` includes
