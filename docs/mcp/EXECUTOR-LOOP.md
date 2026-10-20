@@ -24,6 +24,8 @@ next = plan_drain_next(plan_id, run_id, claim_ttl_secs=300)
   ↓
 <server claims task and sets in_progress>
   ↓
+run_start_step(run_id, task_id)        ← opens the attempt; before the work
+  ↓                                       and before any status transition
 <execute work in repo / run tests / edit files>
   ↓
 comment(task_id, body=<artifact summary>, kind=outcome)
@@ -42,12 +44,20 @@ repeat from plan_progress
 | 1 | `daruma_run_start` | `{ plan_id, agent_id }` |
 | 2 | `daruma_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
 | 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` — `plan_id` is accepted for `id`; `run_id` is optional (server-generated) |
-| 4 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
-| 5 | *(work)* | Agent edits codebase; no direct DB writes |
-| 6 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
-| 7 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
-| 8 | goto 2 | |
+| 4 | `daruma_run_start_step` | `{ run_id, task_id }` — opens the attempt **before** the work and before any status transition of this pass (see below) |
+| 5 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
+| 6 | *(work)* | Agent edits codebase; no direct DB writes |
+| 7 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
+| 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
+| 9 | goto 2 | |
 | ∞ | `daruma_run_complete` | When plan drained |
+
+Step 4 is not optional. `run_finish_step` without an open step for that task
+records an attempt that starts at the finish timestamp, so the `complete` of
+step 7 lies before the attempt and `run_complete` rejects the run with 409
+`run_postcondition_unmet` ([Pass completion contract](#pass-completion-contract)).
+`run_start_step` and `run_finish_step` are in the `full` profile
+([PROFILES.md](PROFILES.md)).
 
 ## Prompt template (drop into agent system context)
 
@@ -58,9 +68,10 @@ Loop until `daruma_plan_progress` returns no `next_ready` and all tasks are done
 
 1. Call `daruma_plan_progress` — if `next_ready` is absent and counts show completion, call `daruma_run_complete` and stop.
 2. Call `daruma_plan_next_task` with `claim_ttl_secs=300`.
-3. Set the task `in_progress`, do the work, leave an `outcome` comment summarizing changes.
-4. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "done" }`.
-5. On blocker: comment with `kind=blocker`, do not complete; move to the next ready task or stop and report.
+3. Call `daruma_run_start_step` with `{ run_id, task_id }` before any work or status change.
+4. Set the task `in_progress`, do the work, leave an `outcome` comment summarizing changes.
+5. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "done" }`.
+6. On blocker: comment with `kind=blocker`, do not complete; move to the next ready task or stop and report.
 
 Rules:
 - Never skip dependency order — trust `plan_next_task`.
@@ -76,7 +87,7 @@ Rules:
 | Claim expired | Re-call `plan_next_task` with fresh TTL or `daruma_claim`. |
 | Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
-| `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). |
+| `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). A `run_finish_step` without a preceding `run_start_step` starts the attempt at the finish time, so a handoff made earlier is not counted; start the step before the work. |
 | `run_complete` → 403 `run is owned by another agent` | The run's owner (`run_claim_owners`) is another agent. Only the owner or an admin completes an active owned run; finish through the token that opened it. |
 | Response of `run_complete` / `run_finish_step` lost | Repeat the same call with the same token. Success with `data.already_completed` / `data.already_finished = true` and `event_id: null` means the first call landed — see [Idempotent retry](#idempotent-retry-s4). |
 
