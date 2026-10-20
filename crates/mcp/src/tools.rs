@@ -5135,11 +5135,16 @@ async fn project_selection_response(
         "reason": "No default Daruma project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
         "requested_status": requested_status,
         "projects": projects,
-        "next_step": "Ask the user which project to use, then call daruma_project_use with that project_id. After that, retry daruma_list with the same status; the saved default project will be reused by later calls.",
+        // `scope_path` is always absolute: a hosted session has no workspace
+        // key to resolve a relative one against, and a parent folder with
+        // several bound repos cannot pick the scope by itself — exactly the
+        // situations that land here.
+        "next_step": "Suggested flow: the user picks a project; daruma_project_use binds it with that project_id and the absolute path of the repository root as scope_path. daruma_list is then retried with the same status and the same absolute scope_path (or that project_id); later calls pass one of them too, since a hosted or parent-folder session has no default project to fall back on.",
         "next_tool": {
             "name": "daruma_project_use",
             "arguments": {
-                "project_id": "<selected_project_id>"
+                "project_id": "<selected_project_id>",
+                "scope_path": "<absolute_repo_root_path>"
             }
         }
     }))

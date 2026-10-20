@@ -58,12 +58,14 @@ test("an unselected project lists the choices instead of \"no open tasks\"", () 
   };
   const list = classifyListResult({ isError: false, text: JSON.stringify(parsed), parsed });
   assert.equal(list.kind, "needs_project");
-  const out = renderSummary({ list });
+  const out = renderSummary({ list, scopePath: "/home/you/projects" });
   assert.doesNotMatch(out, /No open tasks/);
   assert.match(out, /No project is selected/);
   assert.match(out, /Alpha \(prj_a\)/);
   assert.match(out, /beta \(prj_b\)/);
-  assert.match(out, /daruma_project_use/);
+  assert.match(out, /daruma_project_use \{"project_id": "<id>", "scope_path": "<absolute repo root>"\}/);
+  assert.match(out, /Session cwd: \/home\/you\/projects/);
+  assert.doesNotMatch(renderSummary({ list }), /Session cwd/);
 });
 
 test("an unrecognised payload is not taken for an empty list", () => {

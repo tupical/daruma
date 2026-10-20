@@ -154,9 +154,13 @@ Supported launch modes:
 - When `daruma_list` is called without a resolvable project, it does not
   fall back to listing tasks from every project. It returns a compact
   `needs_project_selection` response with project ids/titles/slugs. Ask the
-  user which project to use, call `daruma_project_use` with that
-  `project_id`, then retry `daruma_list`; the selected project is persisted
-  as a server-side repo scope binding for later calls.
+  user which project to use and bind it with the repository's absolute root
+  path, e.g.
+  `daruma_project_use {"project_id": "<id>", "scope_path": "/home/you/projects/daruma"}`
+  (its `next_tool` carries the same two arguments). Then retry `daruma_list`
+  with that `scope_path` or `project_id`. The binding is persisted
+  server-side, but a parent folder or a hosted session still has no default
+  project, so later calls keep passing `scope_path` or `project_id`.
 - `status` is optional on the list tools: `daruma_list` defaults to `active`,
   `daruma_plan_list` to `draft,active`. There is no `ready`/`blocked` task
   status — ready plan tasks come from `daruma_plan_progress` /
@@ -197,8 +201,11 @@ Supported launch modes:
   agent, workspace, handoff, finding, history and graph-node ids keep their
   single name.
 - The same server-side bindings serve both modes. To bind projects while
-  running from a parent folder, call `daruma_project_use` with `scope_path`
-  (relative paths are resolved from `DARUMA_WORKSPACE` / process CWD).
+  running from a parent folder, call `daruma_project_use` once per repository
+  with an absolute `scope_path`, e.g.
+  `{"project_id": "<id>", "scope_path": "/home/you/projects/daruma"}`. A
+  relative `scope_path` resolves from `DARUMA_WORKSPACE` / process CWD only in
+  a stdio session; a hosted session rejects it.
 
 ## Migration
 
