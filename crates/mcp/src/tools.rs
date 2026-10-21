@@ -249,14 +249,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. To add follow-up tasks to an existing plan pass `plan.id` (no title); it keeps its project and source. Plans on the same branch/source chain give `plan_choice_required`: same subject → `plan.id`, else `plan.separate`. Raw ideas go through the idea pipeline, not here.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks; tasks inherit the plan's project, provenance and git_context. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`. Project policy may warn or reject; the error lists the allowed channels. Follow-up tasks for an existing plan: pass `plan.id` (no title); it keeps its project and source. Plans on the same branch/source chain give `plan_choice_required`: same subject → `plan.id`, else `plan.separate`. Raw ideas go through the idea pipeline, not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
         tool(
             "daruma_get",
             "Get task",
-            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version. `comments: true` also attaches the task's full comment list as `comments` (never trimmed by `max_tokens`, never replaced by the `unchanged` marker).",
+            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` bounds a large body; `dedup: true` returns a compact `unchanged` marker if this session holds the current version. `comments: true` attaches the full comment list as `comments` (never trimmed by `max_tokens` or replaced by `unchanged`).",
             with_id_alias(schema_get_task(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (default `active`): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
+            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error means the server is down). `view=summary` rows carry id/title/status/priority/project — `daruma_get`/`view=detail` only for description or comments. `status` (default `active`): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -483,7 +483,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_evidence_submit",
             "Record lifecycle evidence",
-            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Kinds: document_read_ack, impact_assessment, decision_record, completion_note, artifact_created, owner_assigned, acceptance_criteria_defined, risk_check_completed. Scope ceilings: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records satisfy nothing — use the described entity's scope. Evidence is immutable; `supersedes` replaces a prior record.",
+            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Scope ceilings per kind: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records satisfy nothing — use the described entity's scope. Evidence is immutable; `supersedes` replaces a prior record.",
             schema_evidence_submit(),
             // Default profile, not full: defining a rule is an admin act, but
             // attesting that a requirement is met is the executor's — and it is
@@ -3336,7 +3336,7 @@ fn schema_get_task() -> Value {
     schema["properties"]["comments"] = json!({
         "type":"boolean",
         "default": false,
-        "description":"Default false; true adds `comments` (GET /v1/tasks/{id}/comments) to the result."
+        "description":"Attach the full comment list."
     });
     schema
 }
@@ -3359,7 +3359,7 @@ fn schema_bounded_read_ext(field: &str, id_desc: Option<&str>, with_dedup: bool)
             json!({
                 "type":"boolean",
                 "default": false,
-                "description":"Default false; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
+                "description":"A hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }),
         );
     }
@@ -4089,7 +4089,7 @@ fn schema_plan_get() -> Value {
             "dedup": {
                 "type":"boolean",
                 "default": false,
-                "description":"Session dedup for detail, default false; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
+                "description":"Session dedup for detail; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }
         },
         "required":["id"]
