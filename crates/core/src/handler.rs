@@ -1032,11 +1032,17 @@ impl CommandHandler {
     /// own completion, so an authenticated `CompleteRun` is gated on the run's
     /// owner like `FailRun` / `AbortRun`: another agent gets `forbidden`
     /// unless it is an admin. A run without a recorded owner (started on an
-    /// unauthenticated path, or before migration 0054) has no ownership to
-    /// enforce and stays completable by any `RunWrite` holder; unlike
-    /// fail/abort, completion releases no claims, so no admin is required.
+    /// unauthenticated path, or before migration 0054) proves no caller's
+    /// ownership, so — as fail/abort cleanup in `AgentClaimRepo` — only an
+    /// admin may complete it.
     /// The owner row is written once with `RunStarted` and read under the
     /// plan/run lifecycle lock, so the check cannot race a concurrent start.
+    ///
+    /// Trust boundary: the unauthenticated entry (`handle`, no token
+    /// identity) is in-process only — sweepers, the desktop executor, tests.
+    /// Network entries reach run commands solely through the typed
+    /// authenticated endpoints; `/v1/commands` and WS dispatch refuse them
+    /// (`guarded_command_reason`), so that entry skips this check.
     async fn ensure_run_completion_owner(
         &self,
         cmd: &Command,
@@ -1058,10 +1064,10 @@ impl CommandHandler {
             return Ok(());
         }
         match claims.run_owner(*run_id).await? {
-            Some(owner) if owner != caller && !is_admin => {
-                Err(CoreError::forbidden("run is owned by another agent"))
-            }
-            _ => Ok(()),
+            _ if is_admin => Ok(()),
+            Some(owner) if owner == caller => Ok(()),
+            Some(_) => Err(CoreError::forbidden("run is owned by another agent")),
+            None => Err(CoreError::forbidden("run has no authenticated owner")),
         }
     }
 

@@ -234,8 +234,11 @@ repeats the call instead of guessing:
   never turn into completed.
 - A first completion of an *active* owned run by another non-admin agent is
   refused with `403 run is owned by another agent` and changes nothing
-  (docs/PLAN_RECONCILIATION.md). A run without a recorded owner stays
-  completable by any `RunWrite` holder.
+  (docs/PLAN_RECONCILIATION.md). A run without a recorded owner (in-process
+  start, or rows before migration 0054) proves nobody's ownership: like
+  fail/abort, a non-admin gets `403 run has no authenticated owner` and only
+  an admin completes it. Raw run commands over `/v1/commands` or WS dispatch
+  are refused (`403`), so every network completion is token-checked.
 - `POST /v1/runs/{id}/step/finish` (`daruma_run_finish_step`) is a no-op when
   the task's latest attempt in the run is already closed with exactly the
   requested outcome: `data.already_finished: true`, `event_id: null`, no

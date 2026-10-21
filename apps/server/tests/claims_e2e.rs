@@ -764,6 +764,58 @@ async fn foreign_complete_of_active_run_is_forbidden_and_owner_completes() {
     );
 }
 
+// A run without a recorded owner (in-process start, or rows before
+// migration 0054) proves nobody's ownership: `/v1/runs/{id}/complete` from a
+// non-admin `RunWrite` token is refused like fail/abort and changes nothing;
+// an admin token completes it.
+#[tokio::test]
+async fn ownerless_run_complete_is_forbidden_for_non_admin_and_allowed_for_admin() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (token, agent_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let run_id = h
+        .state
+        .commands
+        .dispatch(
+            Command::StartRun {
+                plan_id: plan_id.parse::<PlanId>().unwrap(),
+                agent_id,
+                parent_run_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            Event::RunStarted { run } => Some(run.id),
+            _ => None,
+        })
+        .unwrap();
+    let complete = format!("/v1/runs/{run_id}/complete");
+
+    let (status, response) = post_json(&h.router, &token, &complete, "{}").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "ownerless complete: {response}"
+    );
+    assert_eq!(response["error"]["code"], "forbidden", "{response}");
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+
+    let (status, response) = post_json(&h.router, &h.admin_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::OK, "admin complete: {response}");
+    assert_eq!(response["data"]["already_completed"], false, "{response}");
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Completed
+    );
+}
+
 #[tokio::test]
 async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutation() {
     let h = test_app().await;
@@ -790,7 +842,9 @@ async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutat
     let generation = drained["claim"]["claim_id"].clone();
 
     let bypasses = [
+        json!({"type": "complete_run", "run_id": run_id}),
         json!({"type": "fail_run", "run_id": run_id, "reason": "bypass"}),
+        json!({"type": "abort_run", "run_id": run_id, "reason": "bypass"}),
         json!({"type": "release_claim", "agent_id": owner_id, "task_id": task_id}),
         json!({"type": "archive_plan", "id": plan_id}),
         json!({"type": "delete_plan", "id": plan_id}),
@@ -1154,6 +1208,61 @@ async fn project_drain_rejects_invalid_supplied_runs_before_plan_iteration() {
         "terminal run must be rejected"
     );
     assert_no_claim(&h, &terminal_task).await;
+}
+
+// WS dispatch is a network entry too: raw run-terminal commands are refused
+// there like on `/v1/commands`, so the unauthenticated (trusted, in-process)
+// handler path is never reachable over the wire.
+#[tokio::test]
+async fn websocket_rejects_raw_run_terminal_commands_without_mutation() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let addr = spawn_server(&h).await;
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/v1/ws?token={}", h.admin_token))
+        .await
+        .unwrap();
+    ws.next().await.unwrap().unwrap(); // hello
+    let commands = [
+        json!({"type": "complete_run", "run_id": run_id}),
+        json!({"type": "fail_run", "run_id": run_id, "reason": "bypass"}),
+        json!({"type": "abort_run", "run_id": run_id, "reason": "bypass"}),
+    ];
+    for command in commands {
+        ws.send(Message::Text(
+            json!({"type": "dispatch", "command": command})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("timed out waiting for run command rejection")
+                .unwrap()
+                .unwrap();
+            let Message::Text(text) = frame else { continue };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            match frame["type"].as_str() {
+                Some("ack") => panic!("raw {command} bypass was accepted: {frame}"),
+                Some("error") => {
+                    assert_eq!(frame["code"], "forbidden", "unexpected rejection: {frame}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active,
+        "rejected WS commands must not terminate the run"
+    );
 }
 
 #[tokio::test]
