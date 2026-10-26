@@ -40,7 +40,7 @@ async fn check(state: &AppState, auth: &AuthContext, req: Request) -> Result<Req
         ["mcp"] => return Ok(req),
         ["tasks" | "projects" | "plans" | "search" | "repo-scopes"] if read => return Ok(req),
         ["tasks", id] if read => task(state, auth, parse_id(id.to_string(), "task")?).await?,
-        ["tasks", id, "comments" | "activity" | "can_start" | "plans"] if read => {
+        ["tasks", id, "comments" | "can_start" | "plans"] if read => {
             task(state, auth, parse_id(id.to_string(), "task")?).await?;
         }
         ["plans", id] if read => plan(state, auth, parse_id(id.to_string(), "plan")?).await?,
@@ -265,6 +265,15 @@ async fn check(state: &AppState, auth: &AuthContext, req: Request) -> Result<Req
 }
 
 async fn task(state: &AppState, auth: &AuthContext, id: TaskId) -> Result<(), ApiError> {
+    task_scope(state, auth, id, false).await
+}
+
+async fn task_scope(
+    state: &AppState,
+    auth: &AuthContext,
+    id: TaskId,
+    include_history: bool,
+) -> Result<(), ApiError> {
     let t = state
         .tasks
         .get(id)
@@ -287,6 +296,10 @@ async fn task(state: &AppState, auth: &AuthContext, id: TaskId) -> Result<(), Ap
         .await
         .map_err(ApiError::from)?
     {
+        // Closed dependencies are audit history, not active access-expanding references.
+        if !include_history && relation.kind == daruma_domain::RelationKind::WasBlocking {
+            continue;
+        }
         for other in [relation.from, relation.to] {
             let t = state
                 .tasks
@@ -393,8 +406,8 @@ async fn command(state: &AppState, auth: &AuthContext, cmd: &Command) -> Result<
                 require_project_scope(auth, project)?;
             }
         }
+        DeleteTask { id } => task_scope(state, auth, *id, true).await?,
         CompleteTask { id, .. }
-        | DeleteTask { id }
         | SetStatus { id, .. }
         | SetPriority { id, .. }
         | AdvancePipeline { id, .. }

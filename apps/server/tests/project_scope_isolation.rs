@@ -422,3 +422,104 @@ async fn run_timeline_cannot_reveal_a_foreign_step_in_an_allowed_plan() {
         assert!(!body.to_string().contains(&foreign));
     }
 }
+
+#[tokio::test]
+async fn historical_foreign_blocker_does_not_hide_own_work_but_history_stays_private() {
+    let h = test_app().await;
+    let a = create_project(&h, "A").await;
+    let b = create_project(&h, "B").await;
+    let foreign = create_task(&h, &b, "private old blocker").await;
+    let (s, body) = json_post(h.router.clone(), &h.admin_token, "/v1/commands", &json!({"command":{"type":"materialize_plan","plan":{"project_id":a,"title":"own plan","owner":{"kind":"user"}},"tasks":[{"title":"own work","status":"todo"}]}}).to_string()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let task = created_id(&body, "task_created", "task");
+    let plan = created_id(&body, "plan_created", "plan");
+    let (s, body) = json_post(
+        h.router.clone(),
+        &h.admin_token,
+        "/v1/commands",
+        &json!({"command":{"type":"link_tasks","from":foreign,"to":task,"kind":"blocks"}})
+            .to_string(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let token = mint_pat(
+        &h.auth_store(),
+        Capabilities::from([Capability::Admin]),
+        ProjectFilter::Only {
+            projects: vec![a.parse().unwrap()],
+        },
+    )
+    .await
+    .0;
+    assert_eq!(
+        json_get(h.router.clone(), &token, &format!("/v1/tasks/{task}"))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (s, body) = json_post(
+        h.router.clone(),
+        &h.admin_token,
+        "/v1/commands",
+        &json!({"command":{"type":"complete_task","id":foreign}}).to_string(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    for path in [
+        format!("/v1/tasks/{task}"),
+        format!("/v1/tasks/{task}/comments"),
+        format!("/v1/plans/{plan}"),
+    ] {
+        let (s, body) = json_get(h.router.clone(), &token, &path).await;
+        assert_eq!(s, StatusCode::OK, "{path}: {body}");
+        assert!(!body.to_string().contains(&foreign));
+    }
+    let (s, body) = json_post(
+        h.router.clone(),
+        &token,
+        "/v1/claims",
+        &json!({"task_id":task,"ttl_secs":300}).to_string(),
+    )
+    .await;
+    assert!(s.is_success(), "{body}");
+    let (s, body) = json_post(
+        h.router.clone(),
+        &token,
+        &format!("/v1/tasks/{task}/comments"),
+        &json!({"body":"own progress"}).to_string(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    for command in [
+        json!({"type":"set_status","id":task,"status":"in_progress"}),
+        json!({"type":"complete_task","id":task}),
+    ] {
+        let (s, body) = json_post(
+            h.router.clone(),
+            &token,
+            "/v1/commands",
+            &json!({"command":command}).to_string(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert!(!body.to_string().contains(&foreign));
+    }
+    for path in [
+        format!("/v1/tasks/{foreign}"),
+        format!("/v1/tasks/{foreign}/comments"),
+        format!("/v1/tasks/{task}/activity"),
+    ] {
+        let (s, body) = json_get(h.router.clone(), &token, &path).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{path}: {body}");
+        assert!(!body.to_string().contains(&foreign));
+    }
+    let (s, body) = json_post(
+        h.router.clone(),
+        &token,
+        "/v1/commands",
+        &json!({"command":{"type":"delete_task","id":task}}).to_string(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(!body.to_string().contains(&foreign));
+}
