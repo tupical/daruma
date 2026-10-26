@@ -121,6 +121,10 @@ async fn handle_socket(
     if let Some(id) = host {
         auth_ctx.principal_id = Some(id);
     }
+    // Global event projections do not yet resolve every event's project.
+    if !matches!(auth_ctx.scope.projects, ProjectFilter::All) {
+        return;
+    }
     let mine = mine.then(|| auth_ctx.principal_id.unwrap_or(auth_ctx.agent_id));
     let device_id = auth_ctx.device_id;
     if let Some(device_id) = device_id {

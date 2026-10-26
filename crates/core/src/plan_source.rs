@@ -222,7 +222,8 @@ impl CommandHandler {
     /// the handler's command lock, so the check, the auto-parent lookup, the
     /// node upserts and the plan creation are one atomic step; a refusal
     /// (enforce 422, link conflict) writes nothing.
-    pub(crate) async fn resolve_plan_source(
+    /// May also be used for authorization preflight: this method never persists events.
+    pub async fn resolve_plan_source(
         &self,
         plan: &mut NewPlan,
         actor: &Actor,
