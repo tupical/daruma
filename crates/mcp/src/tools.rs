@@ -354,7 +354,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_comment",
             "Comment on task",
-            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected).",
+            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected). intent/progress move a todo task to in_progress; outcome moves todo/in_progress to in_review.",
             with_id_alias(schema_comment(), "task_id", "id"),
             Dom::Tasks, D, E, Ann::Write,
         ),
@@ -840,7 +840,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_run_start_step",
             "Start run step",
-            "Mark the beginning of a task step within a run.",
+            "Mark the beginning of a task step within a run; a todo task moves to in_progress.",
             schema_run_step(),
             Dom::Runs, F, E, Ann::Write,
         ),
@@ -890,7 +890,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_claim",
             "Claim task",
-            "Claim a task optimistically for a TTL in seconds; agent UUID from daruma_workspace_info.mcp_agent_id.",
+            "Claim a task optimistically for a TTL in seconds. agent_id is optional: the claim goes to the authenticated agent (daruma_workspace_info.mcp_agent_id). A todo task moves to in_progress.",
             with_id_alias(schema_claim(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::Write,
         ),
@@ -2368,8 +2368,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Run tools (W3.2) ──────────────────────────────────────────────
         "daruma_run_start" => {
             let plan_id = resolve_plan_id(&args, "plan_id")?;
-            let agent_id = required_string(&args, "agent_id")?;
-            let mut body = json!({"plan_id": plan_id, "agent_id": agent_id});
+            // agent_id is optional: the server defaults it to the token's agent.
+            let mut body = json!({"plan_id": plan_id});
+            if let Some(agent_id) = optional_agent_id(&args) {
+                body["agent_id"] = json!(agent_id);
+            }
             if let Some(parent) = args.get("parent_run_id").and_then(|v| v.as_str()) {
                 body["parent_run_id"] = json!(parent);
             }
@@ -2458,18 +2461,18 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Claim tools (W3.2) ────────────────────────────────────────────
         "daruma_claim" => {
-            let agent_id = required_string(&args, "agent_id")?;
+            // The server claims for the authenticated agent; agent_id is optional.
             let task_id = resolve_task_id(&args, "task_id")?;
             let ttl_secs = args.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(300);
-            client
-                .post_json(
-                    "/v1/claims",
-                    json!({"agent_id": agent_id, "task_id": task_id, "ttl_secs": ttl_secs}),
-                )
-                .await
+            let mut body = json!({"task_id": task_id, "ttl_secs": ttl_secs});
+            if let Some(agent_id) = optional_agent_id(&args) {
+                body["agent_id"] = json!(agent_id);
+            }
+            client.post_json("/v1/claims", body).await
         }
         "daruma_release" => {
-            let agent_id = required_string(&args, "agent_id")?;
+            // `me` = the authenticated holder when agent_id is omitted.
+            let agent_id = optional_agent_id(&args).unwrap_or_else(|| "me".to_string());
             let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/claims/{agent_id}/{task_id}"))
@@ -4279,15 +4282,24 @@ fn schema_workspacegraph_impact() -> Value {
 
 // ── Run schemas (W3.2) ───────────────────────────────────────────────────────
 
+/// Non-empty `agent_id` argument, if the caller passed one.
+fn optional_agent_id(args: &Map<String, Value>) -> Option<String> {
+    args.get("agent_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn schema_run_start() -> Value {
     json!({
         "type":"object",
         "properties": {
             "plan_id":       {"type":"string"},
-            "agent_id":      {"type":"string"},
+            "agent_id":      {"type":"string","description":"Optional; defaults to the authenticated agent."},
             "parent_run_id": {"type":"string"}
         },
-        "required":["plan_id","agent_id"]
+        "required":["plan_id"]
     })
 }
 
@@ -4385,11 +4397,11 @@ fn schema_claim() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID (workspace_info)."},
+            "agent_id": {"type":"string","format":"uuid","description":"Optional; defaults to the authenticated agent."},
             "task_id":  {"type":"string"},
             "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
         },
-        "required":["agent_id","task_id"]
+        "required":["task_id"]
     })
 }
 
@@ -4397,10 +4409,10 @@ fn schema_release() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID (workspace_info)."},
+            "agent_id": {"type":"string","format":"uuid","description":"Optional; defaults to the authenticated agent."},
             "task_id":  {"type":"string"}
         },
-        "required":["agent_id","task_id"]
+        "required":["task_id"]
     })
 }
 
