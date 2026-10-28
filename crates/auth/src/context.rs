@@ -28,6 +28,30 @@ pub struct AuthContext {
     /// claims and leases stay keyed by `agent_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_id: Option<AgentId>,
+    /// Self-reported MCP client (`X-Daruma-Client`, see
+    /// [`CLIENT_HEADER`]) stamped onto [`AuthContext::actor`]. Attribution
+    /// only — never an authorization input. Set per request, never cached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+}
+
+/// Request header naming the MCP client a call came through (the hosted MCP
+/// gateway copies `clientInfo.name` / the User-Agent product into it).
+pub const CLIENT_HEADER: &str = "x-daruma-client";
+
+/// Longest client name kept; longer values are truncated.
+pub const CLIENT_MAX_CHARS: usize = 64;
+
+/// Normalise a raw client name: trimmed, control characters dropped,
+/// truncated to [`CLIENT_MAX_CHARS`]; `None` when nothing is left.
+pub fn sanitize_client(raw: &str) -> Option<String> {
+    let name: String = raw
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(CLIENT_MAX_CHARS)
+        .collect();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Principal asserted by an embedding host (the cloud gateway: the account
@@ -61,11 +85,13 @@ impl AuthContext {
             TokenKind::Bot => Actor::Agent {
                 id: self.agent_id,
                 name: format!("bot.{}", self.agent_id),
+                client: None,
             },
             TokenKind::Pat | TokenKind::Svc | TokenKind::Usr | TokenKind::License => {
                 Actor::user_with_id(self.principal_id.unwrap_or(self.agent_id))
             }
         }
+        .or_client(self.client.as_deref())
     }
 }
 

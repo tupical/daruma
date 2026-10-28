@@ -324,6 +324,10 @@ impl TaskRepo {
                 };
                 let after = task_value(&task)?;
                 self.upsert_task_tx(&mut tx, &task).await?;
+                // Entering the initial status is a status change: without it a
+                // task that never moves stays NULL and is invisible to the
+                // "stuck in status" audit (the todo backlog it exists for).
+                stamp_status_changed_at(&mut tx, task.id, occurred_at).await?;
                 insert_task_version(&mut tx, envelope, task.id, None, Some(after)).await?;
                 tx.commit()
                     .await
@@ -416,6 +420,7 @@ impl TaskRepo {
                 let mut tx = self.begin_tx().await?;
                 if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
                     let before = task_value(&task)?;
+                    let entered_done = task.status != Status::Done;
                     task.status = Status::Done;
                     task.updated_at = occurred_at;
                     task.completed_at = Some(*completed_at);
@@ -424,6 +429,9 @@ impl TaskRepo {
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
                     self.upsert_task_tx(&mut tx, &task).await?;
+                    if entered_done {
+                        stamp_status_changed_at(&mut tx, *task_id, occurred_at).await?;
+                    }
                     insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
@@ -1075,6 +1083,144 @@ mod tests {
             .await
             .unwrap();
         assert!(other.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_stuck_in_status_sees_tasks_that_never_changed_status() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = TaskRepo::new(db.pool().clone());
+        let project = ProjectId::new();
+
+        // Created straight into todo and never moved: TaskCreated alone.
+        let backlog = TaskId::new();
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: daruma_domain::NewTask {
+                    id: Some(backlog),
+                    project_id: Some(project),
+                    status: Some(Status::Todo),
+                    ..daruma_domain::NewTask::new("never touched")
+                },
+            },
+        ))
+        .await
+        .unwrap();
+        // Closed through TaskCompleted only (no TaskStatusChanged).
+        let closed = TaskId::new();
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: daruma_domain::NewTask {
+                    id: Some(closed),
+                    project_id: Some(project),
+                    status: Some(Status::Todo),
+                    ..daruma_domain::NewTask::new("closed directly")
+                },
+            },
+        ))
+        .await
+        .unwrap();
+        repo.apply_event(&EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCompleted {
+                task_id: closed,
+                completed_at: chrono::Utc::now(),
+                completion_note: None,
+            },
+        ))
+        .await
+        .unwrap();
+
+        let future = chrono::Utc::now() + chrono::Duration::hours(1);
+        let todo = repo
+            .list_stuck_in_status(Some(project), Status::Todo, future)
+            .await
+            .unwrap();
+        assert_eq!(
+            todo.iter().map(|s| s.task.id).collect::<Vec<_>>(),
+            vec![backlog]
+        );
+        let done = repo
+            .list_stuck_in_status(Some(project), Status::Done, future)
+            .await
+            .unwrap();
+        assert_eq!(
+            done.iter().map(|s| s.task.id).collect::<Vec<_>>(),
+            vec![closed]
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_migration_stamps_rows_left_null() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = TaskRepo::new(db.pool().clone());
+        let project = ProjectId::new();
+        let mut ids = Vec::new();
+        for title in ["legacy todo", "legacy done"] {
+            let id = TaskId::new();
+            repo.apply_event(&EventEnvelope::new(
+                Actor::user(),
+                Event::TaskCreated {
+                    task: daruma_domain::NewTask {
+                        id: Some(id),
+                        project_id: Some(project),
+                        status: Some(Status::Todo),
+                        ..daruma_domain::NewTask::new(title)
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        // Simulate rows projected before this fix: created at a known instant,
+        // one later completed, and status_changed_at never stamped.
+        sqlx::query(
+            "UPDATE tasks SET status_changed_at = NULL, \
+             created_at = '2026-01-01T00:00:00+00:00', updated_at = '2026-03-01T00:00:00+00:00'",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE tasks SET status = 'done', completed_at = '2026-02-01T00:00:00+00:00' \
+             WHERE id = ?",
+        )
+        .bind(ids[1].to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../migrations/0062_task_status_changed_at_backfill.sql"
+        ))
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let cutoff = chrono::Utc::now();
+        let todo = repo
+            .list_stuck_in_status(Some(project), Status::Todo, cutoff)
+            .await
+            .unwrap();
+        assert_eq!(todo.len(), 1);
+        assert_eq!(todo[0].task.id, ids[0]);
+        assert_eq!(
+            todo[0].status_changed_at.to_rfc3339(),
+            "2026-01-01T00:00:00+00:00"
+        );
+        let done = repo
+            .list_stuck_in_status(Some(project), Status::Done, cutoff)
+            .await
+            .unwrap();
+        assert_eq!(done.len(), 1);
+        assert_eq!(
+            done[0].status_changed_at.to_rfc3339(),
+            "2026-02-01T00:00:00+00:00"
+        );
     }
 
     #[tokio::test]

@@ -365,3 +365,116 @@ async fn hosted_session_defaults_to_workspace_info_agent_id() {
     .await;
     assert!(listed_session_ids(&listed).contains(&session_id));
 }
+
+async fn hosted_tool_as_client(
+    addr: &std::net::SocketAddr,
+    token: &str,
+    client_name: Option<&str>,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let mut request = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/mcp?profile=full"))
+        .bearer_auth(token);
+    if let Some(client_name) = client_name {
+        request = request.header("X-Daruma-Client", client_name);
+    }
+    let body: serde_json::Value = request
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{name}: {body}"));
+    serde_json::from_str(text).unwrap_or_else(|err| panic!("{name}: {err}: {text}"))
+}
+
+/// T1 (01a17eb7-2039): the hosting gateway names the MCP client in
+/// `X-Daruma-Client`; TaskCreated / TaskStatusChanged / CommentAdded written
+/// through that MCP call carry it in `actor.client`. Without the header the
+/// actor keeps its legacy shape (no `client`).
+#[tokio::test]
+async fn hosted_mcp_attributes_task_events_to_the_named_client() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let token = app.admin_token.clone();
+    let codex = Some("codex-mcp-client");
+
+    let project = hosted_tool_as_client(
+        &addr,
+        &token,
+        codex,
+        "daruma_project_create",
+        json!({"title": "Client attribution"}),
+    )
+    .await;
+    let pid = project["project_id"].as_str().unwrap().to_owned();
+    let materialized = hosted_tool_as_client(
+        &addr,
+        &token,
+        codex,
+        "daruma_plan_materialize",
+        json!({
+            "plan": {"title": "Client plan", "project_id": pid},
+            "tasks": [{"title": "Attributed task"}]
+        }),
+    )
+    .await;
+    let task_id = materialized["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| {
+            let p = e.get("payload")?;
+            (p.get("type")?.as_str()? == "task_created")
+                .then(|| p["task"]["id"].as_str().map(str::to_owned))?
+        })
+        .unwrap_or_else(|| panic!("task_created in {materialized}"));
+    hosted_tool_as_client(
+        &addr,
+        &token,
+        codex,
+        "daruma_set_status",
+        json!({"id": task_id, "status": "in_progress"}),
+    )
+    .await;
+    hosted_tool_as_client(
+        &addr,
+        &token,
+        codex,
+        "daruma_comment",
+        json!({"task_id": task_id, "body": "attributed comment"}),
+    )
+    .await;
+    // Same principal, no header: legacy shape, no client.
+    hosted_tool_as_client(
+        &addr,
+        &token,
+        None,
+        "daruma_comment",
+        json!({"task_id": task_id, "body": "anonymous client comment"}),
+    )
+    .await;
+
+    let events = app.state.store.load_since(0, 1000).await.unwrap();
+    let clients = |kind: &str| -> Vec<Option<String>> {
+        events
+            .iter()
+            .filter(|e| e.kind() == kind)
+            .map(|e| e.actor.client().map(str::to_owned))
+            .collect()
+    };
+    let codex = Some("codex-mcp-client".to_string());
+    assert_eq!(clients("task_created"), vec![codex.clone()]);
+    assert_eq!(clients("task_status_changed"), vec![codex.clone()]);
+    assert_eq!(clients("comment_added"), vec![codex, None]);
+}

@@ -2513,6 +2513,7 @@ async fn independent_test_attestation_binds_task_revision_and_authenticated_veri
                 Actor::Agent {
                     id: verifier,
                     name: "forged envelope".into(),
+                    client: None,
                 },
                 authenticated,
                 false,
@@ -2546,6 +2547,7 @@ async fn independent_test_attestation_binds_task_revision_and_authenticated_veri
             Actor::Agent {
                 id: verifier,
                 name: "unverified".into(),
+                client: None,
             },
         )
         .await
@@ -2629,6 +2631,7 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
             Actor::User {
                 id: Some(forged),
                 name: Some("owner@example.com".into()),
+                client: None,
             },
             principal,
             false,
@@ -2660,6 +2663,7 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
             Actor::Agent {
                 id: forged,
                 name: "bot".into(),
+                client: None,
             },
             principal,
             false,
