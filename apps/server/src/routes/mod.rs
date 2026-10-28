@@ -3260,6 +3260,10 @@ async fn record_evidence(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
+    let evidence_task = body.evidence.task_id.or(match body.evidence.scope {
+        daruma_domain::RuleScope::Task { id } => Some(id),
+        _ => None,
+    });
     let envs = state
         .commands
         .dispatch_authenticated(
@@ -3276,13 +3280,17 @@ async fn record_evidence(
         Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
         _ => None,
     });
+    let warnings = match evidence_task {
+        Some(task_id) => start_task_implicitly(&state, &auth, task_id).await,
+        None => Vec::new(),
+    };
     let last = envs.last();
     Ok(Json(MutationResponse {
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
         data: json!({ "evidence": evidence }),
-        warnings: vec![],
+        warnings,
         client_command_id: None,
     }))
 }
@@ -3934,6 +3942,13 @@ async fn dispatch_command(
         }));
     }
 
+    // Attaching where the work lives is a work-start signal.
+    let git_context_task = match &envelope.command {
+        Command::UpdateTask { id, patch } if matches!(patch.git_context, Some(Some(_))) => {
+            Some(*id)
+        }
+        _ => None,
+    };
     let result = async {
         let mut warnings = mutation_warnings(&state, &envelope.command)
             .await
@@ -3957,6 +3972,9 @@ async fn dispatch_command(
             .await
             .map_err(ApiError::from)?;
         warnings.extend(outcome.warnings);
+        if let Some(task_id) = git_context_task {
+            warnings.extend(start_task_implicitly(&state, &auth, task_id).await);
+        }
         Ok::<_, ApiError>((warnings, outcome.events))
     }
     .await;
@@ -5255,7 +5273,31 @@ async fn add_comment(
             }
         })
         .ok_or_else(|| ApiError::from(CoreError::storage("expected CommentAdded event")))?;
-    Ok((StatusCode::CREATED, Json(comment)))
+    let warnings = match kind {
+        Some(CommentKind::Intent | CommentKind::Progress) => {
+            start_task_implicitly(&state, &auth, task_id).await
+        }
+        Some(CommentKind::Outcome) => {
+            advance_task_implicitly(
+                &state,
+                &auth,
+                task_id,
+                &[
+                    daruma_domain::Status::Todo,
+                    daruma_domain::Status::InProgress,
+                ],
+                daruma_domain::Status::InReview,
+            )
+            .await
+        }
+        Some(CommentKind::Blocker | CommentKind::Research) | None => Vec::new(),
+    };
+    let mut response = serde_json::to_value(&comment)
+        .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    if !warnings.is_empty() {
+        response["warnings"] = json!(warnings);
+    }
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 async fn list_task_comments(
@@ -6648,6 +6690,75 @@ async fn get_next_task(
 /// claim with an `in_progress` transition. Returns the task JSON on success, or
 /// `None` when the plan has no unclaimed ready task. Shared by single-plan
 /// `drain_next` and the project-wide ready drain.
+/// Implicit lifecycle transition: the agent's own write moves the task, so
+/// status follows what the agent did instead of what it remembered to set.
+/// Work-start writes (claim, `intent`/`progress` comment, run step start,
+/// evidence, git_context) take `todo → in_progress`; an `outcome` comment takes
+/// `todo | in_progress → in_review`. Same `SetStatus … force` as drain:
+/// relation blockers are acked, lifecycle rules stay hard. A blocked rule (or
+/// any other refusal) leaves the status as it is and comes back as a warning —
+/// the write that triggered it already persisted and stands. Callers without
+/// `TaskWrite` never move status this way.
+async fn advance_task_implicitly(
+    state: &AppState,
+    auth: &AuthContext,
+    task_id: TaskId,
+    from: &[daruma_domain::Status],
+    to: daruma_domain::Status,
+) -> Vec<MutationWarning> {
+    if !auth.scope.capabilities.has(Capability::TaskWrite) {
+        return Vec::new();
+    }
+    let current = match state.tasks.get(task_id).await {
+        Ok(Some(task)) => task.status,
+        _ => return Vec::new(),
+    };
+    if !from.contains(&current) {
+        return Vec::new();
+    }
+    match state
+        .commands
+        .dispatch_with_warnings(
+            Command::SetStatus {
+                id: task_id,
+                status: to,
+                force: true,
+                override_reason: None,
+                comment: None,
+            },
+            actor_from(auth, None),
+        )
+        .await
+    {
+        Ok(outcome) => outcome.warnings,
+        Err(err) => vec![MutationWarning {
+            code: "implicit_status_blocked".into(),
+            message: format!(
+                "task stays {}: implicit move to {} refused: {err}",
+                current.as_str(),
+                to.as_str()
+            ),
+            details: json!({ "task_id": task_id, "status": current, "target": to }),
+        }],
+    }
+}
+
+/// `todo → in_progress` on a work-start write; see [`advance_task_implicitly`].
+async fn start_task_implicitly(
+    state: &AppState,
+    auth: &AuthContext,
+    task_id: TaskId,
+) -> Vec<MutationWarning> {
+    advance_task_implicitly(
+        state,
+        auth,
+        task_id,
+        &[daruma_domain::Status::Todo],
+        daruma_domain::Status::InProgress,
+    )
+    .await
+}
+
 async fn drain_one_plan(
     state: &AppState,
     auth: &AuthContext,
@@ -7103,7 +7214,9 @@ fn suggest_paths_from_text(text: &str) -> Vec<String> {
 #[derive(Deserialize)]
 struct StartRunBody {
     plan_id: PlanId,
-    agent_id: AgentId,
+    /// Defaults to the authenticated agent.
+    #[serde(default)]
+    agent_id: Option<AgentId>,
     #[serde(default)]
     parent_run_id: Option<RunId>,
 }
@@ -7120,7 +7233,7 @@ async fn start_run(
         .dispatch_authenticated(
             Command::StartRun {
                 plan_id: body.plan_id,
-                agent_id: body.agent_id,
+                agent_id: body.agent_id.unwrap_or(auth.agent_id),
                 parent_run_id: body.parent_run_id,
             },
             actor_from(&auth, None),
@@ -7175,13 +7288,14 @@ async fn run_start_step(
         )
         .await
         .map_err(ApiError::from)?;
+    let warnings = start_task_implicitly(&state, &auth, body.task_id).await;
     let last = envs.last();
     Ok(Json(MutationResponse {
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
         data: serde_json::json!({ "run_id": run_id, "task_id": body.task_id }),
-        warnings: vec![],
+        warnings,
         client_command_id: None,
     }))
 }
@@ -7919,6 +8033,8 @@ async fn acquire_claim(
             event,
         } => {
             let last = Some(&event);
+            let mut warnings: Vec<_> = warning.into_iter().collect();
+            warnings.extend(start_task_implicitly(&state, &auth, body.task_id).await);
             Ok(Json(MutationResponse {
                 success: true,
                 event_id: last.map(|e| e.id),
@@ -7930,7 +8046,7 @@ async fn acquire_claim(
                     "claim_id": claim_id,
                     "claim_expires_at": expires_at,
                 }),
-                warnings: warning.into_iter().collect(),
+                warnings,
                 client_command_id: None,
             }))
         }
@@ -7944,7 +8060,12 @@ async fn release_claim(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = parse_id(agent_id_str, "agent id")?;
+    // `me` = the authenticated holder, so callers need not know their own id.
+    let agent_id = if agent_id_str == "me" {
+        auth.agent_id
+    } else {
+        parse_id(agent_id_str, "agent id")?
+    };
     let task_id = parse_id(&task_id_str, "task id")?;
     if agent_id != auth.agent_id {
         return Err(ApiError::from(CoreError::forbidden(
