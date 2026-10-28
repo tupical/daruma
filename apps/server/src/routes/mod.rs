@@ -4028,6 +4028,7 @@ struct McpHttpQuery {
 
 async fn mcp_http(
     auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<McpHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
@@ -4061,6 +4062,9 @@ async fn mcp_http(
     {
         client = client.with_client_name(name);
     }
+    if request.method == "initialize" {
+        client = client.with_open_tasks(open_tasks_in_process(&state, &auth).await);
+    }
 
     match dispatch_mcp_request(&client, profile, request).await {
         Some(response) => {
@@ -4078,6 +4082,52 @@ async fn mcp_http(
             Ok(StatusCode::ACCEPTED.into_response())
         }
     }
+}
+
+/// The caller's open tasks for `initialize.instructions`, read in-process.
+/// Same selection as the stdio HTTP lookup (`daruma_mcp::open_tasks`): the
+/// agent's visible live claims in claim order, at most
+/// [`daruma_mcp::MAX_CLAIMS_READ`], whose task is `in_progress`/`in_review`,
+/// at most [`daruma_mcp::MAX_OPEN_TASKS`]. Over HTTP each read would pass this
+/// server's rate limiter again and spend the caller's tool-call budget on a
+/// handshake. Any failure or missing read capability yields no tasks.
+async fn open_tasks_in_process(state: &AppState, auth: &AuthContext) -> Vec<daruma_mcp::OpenTask> {
+    let caps = &auth.scope.capabilities;
+    if !caps.has(Capability::RunRead) || !caps.has(Capability::TaskRead) {
+        return Vec::new();
+    }
+    let Ok(claims) = state.claims.list_active(None).await else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut read = 0;
+    let mut open = Vec::new();
+    for claim in claims {
+        if claim.agent_id != auth.agent_id || !seen.insert(claim.task_id) {
+            continue;
+        }
+        let Ok(Some(task)) = state.tasks.get(claim.task_id).await else {
+            continue;
+        };
+        if !project_visible(auth, task.project_id) {
+            continue;
+        }
+        read += 1;
+        if matches!(
+            task.status,
+            daruma_domain::Status::InProgress | daruma_domain::Status::InReview
+        ) {
+            open.push(daruma_mcp::OpenTask {
+                id: claim.task_id.as_uuid().to_string(),
+                title: task.title,
+                status: task.status.as_str().to_string(),
+            });
+        }
+        if open.len() == daruma_mcp::MAX_OPEN_TASKS || read == daruma_mcp::MAX_CLAIMS_READ {
+            break;
+        }
+    }
+    open
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -4,7 +4,9 @@
 //! live claim that are still `in_progress` or `in_review`, at most
 //! [`MAX_OPEN_TASKS`], one line. Deterministic and AI-free; any failure to
 //! read them (no identity, server down, slow) yields no line, never a failed
-//! `initialize`.
+//! `initialize`. A hosting server reads them in-process and pins them with
+//! [`ApiClient::with_open_tasks`], so the handshake costs no REST call against
+//! the caller's rate limit; the HTTP lookup is the stdio path.
 //!
 //! The line has a character budget: the whole `instructions` text must fit
 //! [`MAX_INSTRUCTIONS_CHARS`] (the strictest measured client truncates past
@@ -31,7 +33,7 @@ pub const OPEN_TASKS_META_KEY: &str = "daruma/open_tasks";
 const TITLE_MAX_CHARS: usize = 40;
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Claims read back at most; an agent with more is an anomaly anyway.
-const MAX_CLAIMS_READ: usize = 20;
+pub const MAX_CLAIMS_READ: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenTask {
@@ -42,8 +44,12 @@ pub struct OpenTask {
 
 /// Tasks under the authenticated agent's live claims whose status is
 /// `in_progress` or `in_review`, claim order, at most [`MAX_OPEN_TASKS`].
-/// Empty on any error or after [`LOOKUP_TIMEOUT`].
+/// Empty on any error or after [`LOOKUP_TIMEOUT`]. Tasks pinned with
+/// [`ApiClient::with_open_tasks`] are returned as they are, without a request.
 pub async fn fetch_open_tasks(client: &ApiClient) -> Vec<OpenTask> {
+    if let Some(open) = client.preloaded_open_tasks() {
+        return open.to_vec();
+    }
     tokio::time::timeout(LOOKUP_TIMEOUT, lookup(client))
         .await
         .ok()
