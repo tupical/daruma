@@ -83,6 +83,34 @@ claim, and the stall is reported as a claim-expired signal.
 optional — the server uses the authenticated agent (`DELETE
 /v1/claims/me/{task_id}` releases the caller's own claim).
 
+## Lifecycle hints in results
+
+Task mutations answer with where the task is now and which lifecycle step
+follows, as data (`next_tool: {name, arguments}` or `null`; the client
+decides whether to call it):
+
+| Tool | Added fields | `next_tool` |
+|------|--------------|-------------|
+| `daruma_plan_materialize` | `task_ids` (plan order) | `daruma_plan_drain_next {plan_id}` |
+| `daruma_plan_drain_next`, `daruma_claim` | `task {id, status, claim_expires_at?}` | `daruma_comment {task_id, kind: outcome}` |
+| `daruma_comment kind=outcome` | `task {…}` | `daruma_complete {id}` while the task is open, else `null` |
+| `daruma_complete` | `task {…}` | `null` |
+
+`task` is read back after the mutation (`claim_expires_at` only for the
+caller's own claim); when the read fails, `task` is absent and the
+comment's `next_tool` is `null` — the mutation result itself is never lost.
+Other comment kinds carry no hint. `verbose: true` returns the raw body
+without hints.
+
+`initialize.instructions` ends with `Open tasks of this agent: <id> —
+"<title>" — <status>; …` when the token's agent holds live claims on
+`in_progress`/`in_review` tasks (at most 5, titles cut to 40 chars, quoted).
+The whole text stays within 2048 chars: entries that do not fit become
+`+N more` (full list: `daruma_list status=active`). The same tasks ride
+`initialize._meta["daruma/open_tasks"]`, so a hosting gateway that appends
+its own rules re-renders the line after them within the same ceiling. The
+lookup is bounded (2 s); on any failure the line is simply absent.
+
 ## Prompt template (drop into agent system context)
 
 ```markdown
