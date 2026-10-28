@@ -5755,6 +5755,13 @@ async fn delete_webhook(
 /// - `actor_strict` feature **disabled** (default): prefer `client_actor` when
 ///   `Some`, fall back to the token-derived actor.  Preserves legacy behaviour
 ///   for callers that do not yet supply an explicit actor.
+///
+/// The MCP client of the request (`auth.client`, from the `X-Daruma-Client`
+/// header) is attributed in both modes: the token-derived actor carries it,
+/// and without `actor_strict` a client-supplied actor that names no `client`
+/// gets it filled in (a supplied `client` is kept). Attribution only — it
+/// does not authenticate the user or agent. See
+/// `docs/architecture-policy.ru.md` §2.1, §2.3.
 fn actor_from(auth: &AuthContext, client_actor: Option<Actor>) -> Actor {
     #[cfg(feature = "actor_strict")]
     {
