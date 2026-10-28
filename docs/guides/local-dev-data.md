@@ -11,6 +11,7 @@ All local server state lives under **`~/.agents/daruma/data/`** (override with
     daruma.sqlite
     workspacegraph.sqlite
     bootstrap.token
+    tls/             # self-signed TLS cert.pem + private key.pem
 ```
 
 `daruma-web` does not choose the database — only the `daruma-server`
@@ -90,6 +91,9 @@ mode** (`journal_mode=WAL`, `synchronous=NORMAL`, see
   daruma.sqlite-shm    # WAL shared-memory index (transient)
   workspacegraph.sqlite   # sidecar index — REBUILDABLE, optional
   bootstrap.token         # local admin token — back up if you rely on it
+  tls/cert.pem            # self-signed TLS certificate (port 8443)
+  tls/key.pem             # its PRIVATE key — keep secret; back up to keep the
+                          # fingerprint paired devices already trust
 ```
 
 ### Safe backup with the server running
@@ -173,14 +177,34 @@ starting the server forces the same full rebuild and stays a safe manual fallbac
 ### Self-host in a repo
 
 If you point `DARUMA_DATA_DIR` inside a working copy, gitignore the
-data files:
+**whole directory**, not individual file names. Besides the SQLite files and
+`bootstrap.token`, the server writes `tls/cert.pem` and the private key
+`tls/key.pem` there on first start (`CertBundle::load_or_generate` in
+`crates/discovery/src/tls.rs`), and a list of file patterns silently misses
+anything it adds later. For a data directory named `runtime-data` at the repo
+root:
 
 ```gitignore
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-bootstrap.token
+/runtime-data/
 ```
+
+Use the directory you actually chose; an anchored directory rule covers
+`daruma.sqlite*`, `workspacegraph.sqlite*`, `bootstrap.token` and `tls/`
+alike. Check it before the first commit:
+
+```bash
+git check-ignore -v runtime-data/tls/key.pem runtime-data/bootstrap.token
+git status --short --untracked-files=all runtime-data/   # must print nothing
+```
+
+`.gitignore` does not untrack files that are already committed and does not
+rewrite history. If `tls/key.pem` or `bootstrap.token` was ever committed or
+pushed, `git rm --cached` them, then treat them as leaked: stop the server,
+delete `tls/` so a new key and certificate are generated on the next start
+(paired devices must pair again — the fingerprint changes). Deleting
+`bootstrap.token` does **not** reissue it — the server only bootstraps when no
+active token exists — so issue a new admin token (`POST /v1/tokens`) and revoke
+the leaked one (`DELETE /v1/tokens/{id}`).
 
 ### Future work
 
