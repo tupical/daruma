@@ -354,7 +354,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_comment",
             "Comment on task",
-            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected). intent/progress move a todo task to in_progress; outcome moves todo/in_progress to in_review.",
+            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected). intent/progress: todo→in_progress; outcome: →in_review.",
             with_id_alias(schema_comment(), "task_id", "id"),
             Dom::Tasks, D, E, Ann::Write,
         ),
@@ -890,7 +890,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_claim",
             "Claim task",
-            "Claim a task optimistically for a TTL in seconds. agent_id is optional: the claim goes to the authenticated agent (daruma_workspace_info.mcp_agent_id). A todo task moves to in_progress.",
+            "Claim a task for a TTL in seconds; agent_id defaults to daruma_workspace_info.mcp_agent_id. Moves todo to in_progress.",
             with_id_alias(schema_claim(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::Write,
         ),
@@ -4296,7 +4296,7 @@ fn schema_run_start() -> Value {
         "type":"object",
         "properties": {
             "plan_id":       {"type":"string"},
-            "agent_id":      {"type":"string","description":"Optional; defaults to the authenticated agent."},
+            "agent_id":      {"type":"string"},
             "parent_run_id": {"type":"string"}
         },
         "required":["plan_id"]
@@ -4397,7 +4397,7 @@ fn schema_claim() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Optional; defaults to the authenticated agent."},
+            "agent_id": {"type":"string","format":"uuid","description":"Default: token's agent."},
             "task_id":  {"type":"string"},
             "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
         },
@@ -4409,7 +4409,7 @@ fn schema_release() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Optional; defaults to the authenticated agent."},
+            "agent_id": {"type":"string","format":"uuid","description":"Default: token's agent."},
             "task_id":  {"type":"string"}
         },
         "required":["task_id"]
