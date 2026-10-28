@@ -14,13 +14,13 @@ The runtime AI is an **autonomous task operator**, not a chat assistant.
 | Surface | Role |
 |---------|------|
 | `crates/ai-infra` | AI client (OpenAI Responses, Chat Completions, Anthropic Messages), provider abstraction, prompt engine, tool schemas |
-| `apps/server` | `POST /v1/ai/*` HTTP endpoints; the deprecated `analyze_complexity` shim lives in `apps/server/src/ai.rs` (prompts in `apps/server/prompts/*.toml`) |
+| `apps/server` | `POST /v1/ai/*` HTTP endpoints; Daruma's batch complexity scoring (`analyze_complexity`) lives in `apps/server/src/ai.rs` (prompts in `apps/server/prompts/*.toml`) |
 | MCP (`daruma mcp`) | `daruma_ai_analyze_complexity` for external agents |
 | MCP agents (Cursor, Claude) | Primary consumers — use MCP tools, not raw SQL |
 
 ## HTTP / MCP tools (high level)
 
-- `ai_analyze_complexity` (deprecated shim)
+- `ai_analyze_complexity` — batch complexity scoring owned by Daruma; writes `task_complexity_hints`
 - Intake (new tasks): `daruma_plan_materialize` — the only path (plan-only intake); `daruma_create`/`daruma_capture`/`daruma_capture_batch` are removed from the catalogue and return a bridge error naming the replacement
 - Follow-up tasks for an existing plan (same issue/branch): `daruma_plan_materialize` with `plan.id` (no title) — the tasks are appended after the plan's last one, the plan keeps its title, project and source (a different incoming source is commented on each new task); a completed plan is reopened, an abandoned/archived one refuses
 - A new plan next to plans it may continue (draft/active, or completed within 7 days; their tasks share the git branch — not main/master/develop/dev/trunk — or their source lies in the same source chain — on the path from the incoming source up to its root, or below the incoming source; sibling branches of the source tree, e.g. issue → meeting A → plan and issue → meeting B → new plan, are candidates only through a shared git branch): `daruma_plan_materialize` answers 409 `plan_choice_required` with up to 10 candidates (title, goal, status, updated_at, source label chain, last 3 tasks). The agent decides by subject: same work → `plan.id`, another subject → `plan.separate: true`. The server never merges plans on its own
