@@ -1407,7 +1407,165 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
     if verbose || !is_mutation_tool(name) {
         return Ok(result);
     }
-    Ok(strip_request_echo(result, &args))
+    let result = strip_request_echo(result, &args);
+    Ok(attach_lifecycle_hint(client, name, &args, result).await)
+}
+
+/// Declarative lifecycle hint on task mutations: `task` — the task's state
+/// after the call (`{id, status, claim_expires_at?}`), `next_tool` — the
+/// lifecycle step that follows (`{name, arguments}`, or `null` when the
+/// lifecycle is over), and `task_ids` for a materialize. Data, not a command
+/// (docs/mcp-tool-poisoning-policy.md §3.1): the client decides. Added after
+/// the echo projection, so nothing here can be stripped as echo. Reading the
+/// task back is best effort — a failed read drops `task`, never the mutation
+/// result.
+async fn attach_lifecycle_hint(
+    client: &ApiClient,
+    name: &str,
+    args: &Map<String, Value>,
+    mut result: Value,
+) -> Value {
+    if !result.is_object() || result.get("success").and_then(Value::as_bool) == Some(false) {
+        return result;
+    }
+    let (task_id, next_tool) = match name {
+        "daruma_plan_materialize" => {
+            let (plan_id, task_ids) = materialized_ids(&result, args);
+            result["task_ids"] = json!(task_ids);
+            let next_tool = plan_id.map(|plan_id| {
+                json!({"name": "daruma_plan_drain_next", "arguments": {"plan_id": plan_id}})
+            });
+            result["next_tool"] = next_tool.unwrap_or(Value::Null);
+            return result;
+        }
+        "daruma_plan_drain_next" | "daruma_claim" => {
+            let task_id = result_task_id(&result).or_else(|| {
+                (name == "daruma_claim")
+                    .then(|| resolve_task_id(args, "task_id").ok())
+                    .flatten()
+            });
+            let Some(task_id) = task_id else {
+                return result;
+            };
+            let next = json!({
+                "name": "daruma_comment",
+                "arguments": {"task_id": task_id, "kind": "outcome"},
+            });
+            (task_id, Some(next))
+        }
+        "daruma_comment" => {
+            let outcome = args
+                .get("kind")
+                .and_then(Value::as_str)
+                .and_then(|kind| normalise_comment_kind(kind).ok())
+                == Some("outcome");
+            let Ok(task_id) = resolve_task_id(args, "task_id") else {
+                return result;
+            };
+            if !outcome {
+                return result;
+            }
+            (task_id, None)
+        }
+        "daruma_complete" => {
+            let Ok(task_id) = resolve_task_id(args, "id") else {
+                return result;
+            };
+            (task_id, None)
+        }
+        _ => return result,
+    };
+    let task = match client.get_json(&format!("/v1/tasks/{task_id}")).await {
+        Ok(task) => task_state(&task_id, &task),
+        Err(_) => None,
+    };
+    let next_tool = match name {
+        // The outcome is recorded; completion is the next step while the task
+        // is still open. An unread task state proposes nothing.
+        "daruma_comment" => task
+            .as_ref()
+            .and_then(|task| task["status"].as_str())
+            .filter(|status| !matches!(*status, "done" | "cancelled"))
+            .map(|_| json!({"name": "daruma_complete", "arguments": {"id": task_id}})),
+        _ => next_tool,
+    };
+    if let Some(task) = task {
+        if result.get("task").is_none() {
+            result["task"] = task;
+        }
+    }
+    result["next_tool"] = next_tool.unwrap_or(Value::Null);
+    result
+}
+
+/// `{id, status, claim_expires_at?}` of a `GET /v1/tasks/{id}` body;
+/// `claim_expires_at` only for the caller's own live claim.
+fn task_state(task_id: &str, task: &Value) -> Option<Value> {
+    let status = task.get("status").and_then(Value::as_str)?;
+    let mut state = json!({"id": task_id, "status": status});
+    let claim = task
+        .get("current_claim")
+        .filter(|claim| claim["is_mine"] == true);
+    if let Some(expires_at) = claim.and_then(|claim| claim.get("expires_at")) {
+        state["claim_expires_at"] = expires_at.clone();
+    }
+    Some(state)
+}
+
+/// Task id a drain/claim response was issued for: top-level `task_id`, the
+/// `MutationResponse.data` envelope, or an embedded `task` object.
+fn result_task_id(result: &Value) -> Option<String> {
+    ["/task_id", "/data/task_id", "/task/id", "/data/task/id"]
+        .iter()
+        .find_map(|pointer| result.pointer(pointer).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+/// Plan id and the plan's task ids, in creation order, from the event
+/// envelopes of a materialize (`plan_task_added`, or `task_created` /
+/// `plan_created` when no membership event is present). Falls back to the
+/// `plan.id` the caller appended to.
+fn materialized_ids(result: &Value, args: &Map<String, Value>) -> (Option<String>, Vec<String>) {
+    let events = result
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut plan_id = None;
+    let mut added = Vec::new();
+    let mut created = Vec::new();
+    for event in &events {
+        let payload = &event["payload"];
+        match payload["type"].as_str() {
+            Some("plan_task_added") => {
+                plan_id = plan_id.or_else(|| payload["plan_id"].as_str().map(str::to_string));
+                if let Some(id) = payload["task_id"].as_str() {
+                    added.push(id.to_string());
+                }
+            }
+            Some("plan_created") => {
+                plan_id = plan_id.or_else(|| payload["plan"]["id"].as_str().map(str::to_string));
+            }
+            Some("task_created") => {
+                if let Some(id) = payload["task"]["id"].as_str() {
+                    created.push(id.to_string());
+                }
+                plan_id =
+                    plan_id.or_else(|| payload["task"]["plan_id"].as_str().map(str::to_string));
+            }
+            _ => {}
+        }
+    }
+    let plan_id = plan_id.or_else(|| {
+        args.get("plan")
+            .and_then(|plan| plan.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let mut task_ids = if added.is_empty() { created } else { added };
+    let mut seen = HashSet::new();
+    task_ids.retain(|id| seen.insert(id.clone()));
+    (plan_id, task_ids)
 }
 
 /// ADR-0009 plan source arguments shared by plan_materialize and
