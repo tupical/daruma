@@ -109,7 +109,10 @@ The whole text stays within 2048 chars: entries that do not fit become
 `+N more` (full list: `daruma_list status=active`). The same tasks ride
 `initialize._meta["daruma/open_tasks"]`, so a hosting gateway that appends
 its own rules re-renders the line after them within the same ceiling. The
-lookup is bounded (2 s); on any failure the line is simply absent.
+lookup is bounded (2 s, `OPEN_TASKS_LOOKUP_TIMEOUT`) on both paths — the
+stdio process reading over HTTP and a hosting server reading in-process; past
+it or on any failure the line is simply absent and `initialize` still
+succeeds.
 
 ## Prompt template (drop into agent system context)
 

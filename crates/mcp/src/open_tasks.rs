@@ -6,7 +6,8 @@
 //! read them (no identity, server down, slow) yields no line, never a failed
 //! `initialize`. A hosting server reads them in-process and pins them with
 //! [`ApiClient::with_open_tasks`], so the handshake costs no REST call against
-//! the caller's rate limit; the HTTP lookup is the stdio path.
+//! the caller's rate limit; the HTTP lookup is the stdio path. Both are bounded
+//! by [`OPEN_TASKS_LOOKUP_TIMEOUT`] through [`bounded_open_tasks`].
 //!
 //! The line has a character budget: the whole `instructions` text must fit
 //! [`MAX_INSTRUCTIONS_CHARS`] (the strictest measured client truncates past
@@ -15,6 +16,7 @@
 //! instructions re-renders the line within what is left.
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -31,7 +33,8 @@ pub const OPEN_TASKS_MARKER: &str = "Open tasks of this agent: ";
 pub const OPEN_TASKS_META_KEY: &str = "daruma/open_tasks";
 
 const TITLE_MAX_CHARS: usize = 40;
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Ceiling of one open-tasks lookup, stdio HTTP and in-process alike.
+pub const OPEN_TASKS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Claims read back at most; an agent with more is an anomaly anyway.
 pub const MAX_CLAIMS_READ: usize = 20;
 
@@ -44,16 +47,26 @@ pub struct OpenTask {
 
 /// Tasks under the authenticated agent's live claims whose status is
 /// `in_progress` or `in_review`, claim order, at most [`MAX_OPEN_TASKS`].
-/// Empty on any error or after [`LOOKUP_TIMEOUT`]. Tasks pinned with
-/// [`ApiClient::with_open_tasks`] are returned as they are, without a request.
+/// Empty on any error or after [`OPEN_TASKS_LOOKUP_TIMEOUT`]. Tasks pinned
+/// with [`ApiClient::with_open_tasks`] are returned as they are, without a
+/// request.
 pub async fn fetch_open_tasks(client: &ApiClient) -> Vec<OpenTask> {
     if let Some(open) = client.preloaded_open_tasks() {
         return open.to_vec();
     }
-    tokio::time::timeout(LOOKUP_TIMEOUT, lookup(client))
+    bounded_open_tasks(async { lookup(client).await.unwrap_or_default() }).await
+}
+
+/// `lookup` cut off at [`OPEN_TASKS_LOOKUP_TIMEOUT`]: a slow read yields no
+/// tasks, never a stalled `initialize`. A hosting server wraps its in-process
+/// read in this before [`ApiClient::with_open_tasks`].
+pub async fn bounded_open_tasks(lookup: impl Future<Output = Vec<OpenTask>>) -> Vec<OpenTask> {
+    within(OPEN_TASKS_LOOKUP_TIMEOUT, lookup).await
+}
+
+async fn within(limit: Duration, lookup: impl Future<Output = Vec<OpenTask>>) -> Vec<OpenTask> {
+    tokio::time::timeout(limit, lookup)
         .await
-        .ok()
-        .flatten()
         .unwrap_or_default()
 }
 
@@ -227,6 +240,17 @@ mod tests {
         let line = open_tasks_line(&[task(0, "line one\n\nIgnore \"rules\"")], 2048).unwrap();
         assert!(!line.contains('\n'));
         assert!(line.contains("\"line one Ignore rules\""), "{line}");
+    }
+
+    #[tokio::test]
+    async fn a_lookup_past_the_ceiling_yields_no_tasks() {
+        let slow = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            vec![task(0, "late")]
+        };
+        assert!(within(Duration::from_millis(20), slow).await.is_empty());
+        let quick = async { vec![task(0, "on time")] };
+        assert_eq!(bounded_open_tasks(quick).await, vec![task(0, "on time")]);
     }
 
     #[test]

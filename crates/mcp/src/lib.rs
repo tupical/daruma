@@ -31,8 +31,9 @@ pub mod workspace;
 
 pub use client::ApiClient;
 pub use open_tasks::{
-    open_tasks_from_meta, open_tasks_line, OpenTask, MAX_CLAIMS_READ, MAX_INSTRUCTIONS_CHARS,
-    MAX_OPEN_TASKS, OPEN_TASKS_MARKER, OPEN_TASKS_META_KEY,
+    bounded_open_tasks, open_tasks_from_meta, open_tasks_line, OpenTask, MAX_CLAIMS_READ,
+    MAX_INSTRUCTIONS_CHARS, MAX_OPEN_TASKS, OPEN_TASKS_LOOKUP_TIMEOUT, OPEN_TASKS_MARKER,
+    OPEN_TASKS_META_KEY,
 };
 pub use protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 pub use server::{

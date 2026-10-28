@@ -4063,7 +4063,8 @@ async fn mcp_http(
         client = client.with_client_name(name);
     }
     if request.method == "initialize" {
-        client = client.with_open_tasks(open_tasks_in_process(&state, &auth).await);
+        let open = daruma_mcp::bounded_open_tasks(open_tasks_in_process(&state, &auth)).await;
+        client = client.with_open_tasks(open);
     }
 
     match dispatch_mcp_request(&client, profile, request).await {
@@ -4090,7 +4091,8 @@ async fn mcp_http(
 /// [`daruma_mcp::MAX_CLAIMS_READ`], whose task is `in_progress`/`in_review`,
 /// at most [`daruma_mcp::MAX_OPEN_TASKS`]. Over HTTP each read would pass this
 /// server's rate limiter again and spend the caller's tool-call budget on a
-/// handshake. Any failure or missing read capability yields no tasks.
+/// handshake. Any failure or missing read capability yields no tasks; the
+/// caller bounds the read with [`daruma_mcp::bounded_open_tasks`].
 async fn open_tasks_in_process(state: &AppState, auth: &AuthContext) -> Vec<daruma_mcp::OpenTask> {
     let caps = &auth.scope.capabilities;
     if !caps.has(Capability::RunRead) || !caps.has(Capability::TaskRead) {
