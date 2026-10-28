@@ -39,6 +39,8 @@ async fn path_of(tool: &str, args: Value) -> String {
 }
 
 /// Path and JSON body (`null` when empty) of the single request `tool` sends.
+/// A task mutation may follow it with one lifecycle read-back of the task
+/// (`GET /v1/tasks/{id}`, see `lifecycle_hint`); that one is not counted.
 async fn request_of(tool: &str, args: Value) -> (String, Value) {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let (client, handle) = serve(captured.clone()).await;
@@ -47,7 +49,14 @@ async fn request_of(tool: &str, args: Value) -> (String, Value) {
         .unwrap_or_else(|e| panic!("{tool}: {e:#}"));
     handle.abort();
     let requests = captured.lock().unwrap().clone();
-    assert_eq!(requests.len(), 1, "{tool}: {requests:?}");
+    let read_back = requests
+        .get(1)
+        .is_some_and(|(path, body)| path.starts_with("/v1/tasks/") && body.is_null());
+    assert_eq!(
+        requests.len(),
+        1 + usize::from(read_back),
+        "{tool}: {requests:?}"
+    );
     requests[0].clone()
 }
 

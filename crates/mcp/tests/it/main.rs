@@ -6,6 +6,7 @@ mod ai_analyze_complexity;
 mod argument_aliases;
 mod feature_tiers_doc;
 mod get_task_comments;
+mod lifecycle_hint;
 mod list_project_selection;
 mod mutation_response_projection;
 mod plan_list_sort;
