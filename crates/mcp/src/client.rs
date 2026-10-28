@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use daruma_shared::AgentId;
+
+use crate::open_tasks::OpenTask;
 use serde_json::{json, Value};
 
 /// HTTP-hop client used by every tool handler.
@@ -38,6 +40,9 @@ pub struct ApiClient {
     /// empty and dedup simply degrades to always-full responses — safe because
     /// dedup is opt-in (see `crate::tools`).
     dedup_cache: Arc<Mutex<HashMap<String, DedupEntry>>>,
+    /// Open tasks the hosting server already read in-process for this
+    /// `initialize` (see [`Self::with_open_tasks`]); `None` → HTTP lookup.
+    open_tasks: Option<Vec<OpenTask>>,
 }
 
 /// One dedup cache entry: the version the session holds in full and the
@@ -65,6 +70,7 @@ impl ApiClient {
             agent_id_is_authenticated: false,
             client_name: None,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
+            open_tasks: None,
         }
     }
 
@@ -111,7 +117,21 @@ impl ApiClient {
             agent_id_is_authenticated: false,
             client_name: None,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
+            open_tasks: None,
         }
+    }
+
+    /// Hand `initialize` the agent's open tasks read by the hosting server
+    /// itself. The HTTP lookup would come back through the server's rate
+    /// limiter and spend the caller's tool-call budget on every handshake.
+    pub fn with_open_tasks(mut self, open: Vec<OpenTask>) -> Self {
+        self.open_tasks = Some(open);
+        self
+    }
+
+    /// Open tasks pinned by [`Self::with_open_tasks`], if any.
+    pub fn preloaded_open_tasks(&self) -> Option<&[OpenTask]> {
+        self.open_tasks.as_deref()
     }
 
     /// Stable MCP process agent id (UUID string).
