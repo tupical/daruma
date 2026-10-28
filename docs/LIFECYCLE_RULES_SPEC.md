@@ -89,7 +89,7 @@ struct Rule {
 | `plan.before_approve`  | `SetPlanStatus` draft→active                           | ✓ |
 | `plan.before_start`    | reserved: в текущей модели совпадает с before_approve  | — |
 | `task.created`         | `CreateTask` (и capture-пути, проходящие через него)   | ✓ |
-| `task.before_start`    | переход status→`in_progress` ЛЮБЫМ путём: `SetStatus`, claim/drain — все пути диспатчат `Command::SetStatus`, гейт в CommandHandler покрывает их | ✓ |
+| `task.before_start`    | переход status→`in_progress` ЛЮБЫМ путём: `SetStatus`, claim/drain, неявные переходы (comment intent/progress, run step, evidence, git_context — [EXECUTOR-LOOP](mcp/EXECUTOR-LOOP.md#implicit-status-transitions)) — все пути диспатчат `Command::SetStatus`, гейт в CommandHandler покрывает их; блок неявного перехода — warning, сама запись проходит | ✓ |
 | `task.before_complete` | переход в терминальный статус: `SetStatus`(done) И `CompleteTask` — оба пути через один гейт | ✓ |
 | `run.created`          | reserved: синоним before_execute в текущей модели      | — |
 | `run.before_execute`   | `StartRun`                                             | ✓ |

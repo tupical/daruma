@@ -12,7 +12,7 @@ Canonical agent loop for draining a plan without a human in the loop. Stateless 
 ## Loop
 
 ```text
-run_start(plan_id, agent_id)
+run_start(plan_id)                     ← agent_id defaults to the token's agent
   ↓
 ┌──────────────────────────────────────┐
 │  progress = plan_progress(plan_id)   │  ← cheap snapshot
@@ -41,7 +41,7 @@ repeat from plan_progress
 
 | Step | Tool | Notes |
 |------|------|-------|
-| 1 | `daruma_run_start` | `{ plan_id, agent_id }` |
+| 1 | `daruma_run_start` | `{ plan_id }` — `agent_id` is optional and defaults to the authenticated agent |
 | 2 | `daruma_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
 | 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` — `plan_id` is accepted for `id`; `run_id` is optional (server-generated) |
 | 4 | `daruma_run_start_step` | `{ run_id, task_id }` — opens the attempt **before** the work and before any status transition of this pass (see below) |
@@ -58,6 +58,30 @@ step 7 lies before the attempt and `run_complete` rejects the run with 409
 `run_postcondition_unmet` ([Pass completion contract](#pass-completion-contract)).
 `run_start_step` and `run_finish_step` are in the `full` profile
 ([PROFILES.md](PROFILES.md)).
+
+## Implicit status transitions
+
+Status follows what the agent did, so a forgotten `set_status` does not leave
+work invisible:
+
+| Write | From | To |
+|-------|------|----|
+| `daruma_claim`, `daruma_comment kind=intent\|progress`, `daruma_run_start_step`, task-scoped evidence, `git_context` attached via `daruma_update` | `todo` | `in_progress` |
+| `daruma_comment kind=outcome` | `todo`, `in_progress` | `in_review` |
+
+`kind=blocker`, `kind=research` and plain comments move nothing; neither does
+any write on another status (`inbox`, `in_review`, terminal). The move is the
+same `SetStatus … force` as drain: relation blockers are acknowledged,
+lifecycle rules (`task.before_start`, …) still apply. When a rule blocks it,
+the write itself succeeds, the status stays and the response carries a
+warning `implicit_status_blocked` with the rule message. Callers without
+`TaskWrite` never move status this way. `todo → done` stays allowed. An
+expired claim never changes status: the claim TTL sweep only removes the
+claim, and the stall is reported as a claim-expired signal.
+
+`daruma_claim`, `daruma_release` and `daruma_run_start` take `agent_id` as
+optional — the server uses the authenticated agent (`DELETE
+/v1/claims/me/{task_id}` releases the caller's own claim).
 
 ## Prompt template (drop into agent system context)
 
