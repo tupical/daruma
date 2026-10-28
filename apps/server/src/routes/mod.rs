@@ -4927,23 +4927,6 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
     Ok(())
 }
 
-/// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.
-///
-/// Loads the plan's task list, builds a `TaskBrief` per task, hands them to
-/// [`crate::ai::analyze_complexity_batch`] as **one** LLM call, and upserts
-/// the resulting hints into the `task_complexity_hints` projection. The
-/// response surfaces `batch_id` + the freshly written hints so callers (e.g.
-/// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
-///
-/// **Deprecated delegation-shim.** The complexity *analysis* (raw tasks →
-/// scores/hints) is planning-layer logic whose canonical home is
-/// `yatagarasu::analyze_complexity_batch` (`planning_oss`). This route is
-/// retained unchanged until the cloud cutover wires the call to the
-/// planning layer (separate plan); only the **write-back** half — building
-/// `TaskBrief`s and upserting `task_complexity_hints` — is structural
-/// execution work that stays in core regardless. The standalone write-back
-/// contract already exists as `POST /v1/complexity-hints`
-/// ([`upsert_complexity_hints`]): planning analyses, core persists.
 /// Optional body for `POST /v1/ai/analyze-complexity/{plan_id}`.
 ///
 /// Pre-§3.8.13 callers send no body (or `{}`); the new
@@ -4956,6 +4939,19 @@ struct AiAnalyzeComplexityBody {
     use_research_provider: Option<bool>,
 }
 
+/// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.
+///
+/// Loads the plan's task list, builds a `TaskBrief` per task, hands them to
+/// [`crate::ai::analyze_complexity_batch`] as **one** LLM call, and upserts
+/// the resulting hints into the `task_complexity_hints` projection. The
+/// response surfaces `batch_id` + the freshly written hints so callers (e.g.
+/// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
+///
+/// Daruma owns both halves: the scoring call goes through `daruma-ai-infra`
+/// in [`crate::ai`], and the write-back assigns `batch_id` + `generated_at`
+/// here. Nothing is delegated to an upper layer; Yatagarasu decompose/scope
+/// are separate draft operations. Externally computed hints use
+/// `POST /v1/complexity-hints` ([`upsert_complexity_hints`]).
 async fn ai_analyze_complexity(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -5076,9 +5072,9 @@ async fn ai_analyze_complexity(
     })))
 }
 
-/// One complexity hint draft as posted by the planning layer. Mirrors
-/// `yatagarasu::ComplexityHintDraft`: deliberately free of `batch_id` /
-/// `generated_at` — persistence identity is assigned here, by core.
+/// One externally computed complexity hint draft: deliberately free of
+/// `batch_id` / `generated_at` — persistence identity is assigned here, by
+/// core.
 #[derive(Deserialize)]
 struct ComplexityHintDraftBody {
     task_id: TaskId,
@@ -5096,16 +5092,13 @@ struct UpsertComplexityHintsBody {
     hints: Vec<ComplexityHintDraftBody>,
 }
 
-/// `POST /v1/complexity-hints` — the projection write-back contract of the
-/// execution/planning layer boundary.
+/// `POST /v1/complexity-hints` — write-back of externally computed
+/// complexity hints into the `task_complexity_hints` projection.
 ///
-/// The planning layer (`yatagarasu::analyze_complexity_batch`) returns pure
-/// [`ComplexityHintDraftBody`]-shaped drafts and **never writes to storage**;
-/// its caller posts them here, and core assigns `batch_id` + `generated_at`
-/// and upserts the `task_complexity_hints` projection. This is the same
-/// write-back half the deprecated `/ai/analyze-complexity/{plan_id}` shim
-/// performs internally today; at the cloud cutover callers switch to
-/// planning-layer analysis + this endpoint and the shim is removed.
+/// The caller posts [`ComplexityHintDraftBody`]-shaped drafts; core assigns
+/// `batch_id` + `generated_at` and upserts the projection — the same
+/// write-back [`ai_analyze_complexity`] performs after Daruma's own batch
+/// scoring.
 async fn upsert_complexity_hints(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,

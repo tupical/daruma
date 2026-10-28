@@ -516,9 +516,9 @@ guard.
 
 ### `daruma-ai-infra`
 - `OpenAiClient` wraps the OpenAI Responses API. Returns `Command`
-  values only — never touches storage. The deprecated
-  `analyze_complexity` delegation-shim lives in
-  `apps/server/src/ai.rs`.
+  values only — never touches storage. Daruma's own batch
+  complexity scoring (`analyze_complexity`) lives in
+  `apps/server/src/ai.rs` and uses this crate for the provider call.
 
 ### `apps/server` (Axum)
 
@@ -530,7 +530,7 @@ guard.
 | `/v1`    | `GET /healthz`, `GET /ws`                                   | —    | Public surface. WS bearer auth via `Sec-WebSocket-Protocol`; `?token=…` is legacy fallback; `?visibility=mine` keeps only the principal's events and tasks (unknown value → 400). |
 | `/v1`    | `GET /tasks`, `GET /tasks/{id}`, `GET /projects`,           | ✔    | Bearer middleware + per-handler `require(Capability)`. |
 |          | `POST /commands`, `GET /events?since&limit`,                |      |  Each command kind maps to a `task:write`/`comment:write`/etc gate. |
-|          | `POST /ai/analyze-complexity/{plan_id}`,                    |      | `agent:dispatch` (deprecated shim). |
+|          | `POST /ai/analyze-complexity/{plan_id}`,                    |      | `agent:dispatch`. Batch complexity scoring; upserts `task_complexity_hints`. |
 |          | `GET  /tasks/{task_id}/activity?cursor&limit&verbs`,        |      | `task:read`. Cursor-paginated audit log. Deleted-task fallback via audit rows. |
 |          | `POST /tasks/{task_id}/comments`,                           |      | `comment:write`. |
 |          | `GET  /tasks/{task_id}/comments`,                           |      | `comment:read`. |
