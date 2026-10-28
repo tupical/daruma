@@ -10,6 +10,7 @@
 //! observable.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::any, Router};
 use daruma_mcp::tools::call_tool;
@@ -110,11 +111,22 @@ fn respond(stub: &Stub, method: &str, path: &str, body: &Value) -> (StatusCode, 
 }
 
 async fn serve(stub: Stub) -> (ApiClient, tokio::task::JoinHandle<()>) {
+    serve_with_claims_delay(stub, Duration::ZERO).await
+}
+
+/// [`serve`] whose `GET /v1/claims` answers only after `delay`.
+async fn serve_with_claims_delay(
+    stub: Stub,
+    delay: Duration,
+) -> (ApiClient, tokio::task::JoinHandle<()>) {
     let router = Router::new().fallback(any(move |req: Request<Body>| {
         let stub = stub.clone();
         async move {
             let method = req.method().to_string();
             let path = req.uri().path().to_string();
+            if method == "GET" && path == "/v1/claims" {
+                tokio::time::sleep(delay).await;
+            }
             let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
                 .await
                 .unwrap_or_default();
@@ -292,4 +304,30 @@ async fn initialize_without_a_server_keeps_the_static_rules() {
     let text = result["instructions"].as_str().unwrap();
     assert!(!text.contains(OPEN_TASKS_MARKER));
     assert!(result.get("_meta").is_none());
+}
+
+#[tokio::test]
+async fn initialize_past_the_lookup_ceiling_keeps_the_static_rules() {
+    let stub = Stub {
+        status: Some("in_progress"),
+        requests: Arc::default(),
+    };
+    let late = daruma_mcp::OPEN_TASKS_LOOKUP_TIMEOUT + Duration::from_secs(1);
+    let (client, handle) = serve_with_claims_delay(stub, late).await;
+    let started = Instant::now();
+    let response = dispatch_request_with_profile(&client, ToolProfile::Default, initialize())
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    handle.abort();
+    let result = response.result.expect("initialize succeeds");
+    let text = result["instructions"].as_str().unwrap();
+    assert!(text.contains("outcome comment → in_review; daruma_complete → done"));
+    assert!(!text.contains(OPEN_TASKS_MARKER));
+    assert!(result.get("_meta").is_none());
+    // Cut off at the ceiling: it waited on the slow read, but not for it.
+    assert!(
+        elapsed >= daruma_mcp::OPEN_TASKS_LOOKUP_TIMEOUT && elapsed < late,
+        "initialize waited {elapsed:?}"
+    );
 }
