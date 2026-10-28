@@ -4035,6 +4035,14 @@ async fn mcp_http(
     if let Some(workspace_id) = header_string(&headers, "x-daruma-workspace-id") {
         client = client.with_workspace_id(workspace_id);
     }
+    // Attribution: the hosting gateway names the MCP client (clientInfo.name
+    // or the User-Agent product); every command this call dispatches carries it.
+    if let Some(name) = header_string(&headers, daruma_auth::CLIENT_HEADER)
+        .as_deref()
+        .and_then(daruma_auth::sanitize_client)
+    {
+        client = client.with_client_name(name);
+    }
 
     match dispatch_mcp_request(&client, profile, request).await {
         Some(response) => {
@@ -5663,7 +5671,9 @@ fn actor_from(auth: &AuthContext, client_actor: Option<Actor>) -> Actor {
     }
     #[cfg(not(feature = "actor_strict"))]
     {
-        client_actor.unwrap_or_else(|| auth.actor())
+        client_actor
+            .map(|actor| actor.or_client(auth.client.as_deref()))
+            .unwrap_or_else(|| auth.actor())
     }
 }
 

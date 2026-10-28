@@ -126,6 +126,13 @@ the `mcp_agent_id` sessions are keyed by. A stdio process on a server built
 without `actor_strict` stamps its random local process id instead; no session
 is keyed by that id, so use step 4 for such tasks.
 
+The actor may also carry `client` — the MCP client the call came through
+(`{"kind":"agent","id":…,"name":"mcp","client":"codex-mcp-client"}`). It comes
+from the `X-Daruma-Client` request header (the hosted gateway fills it from
+`clientInfo.name` or the User-Agent product), applies to `User` and `Agent`
+actors alike, and is self-reported attribution, never an authorization input.
+Absent header → no `client` key; older events never have one.
+
 To find context:
 
 1. `GET /v1/sessions?agent_id=<uuid>` — list sessions for that agent.

@@ -30,7 +30,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use daruma_auth::{verify_bearer, AuthContext, HostPrincipal, TokenStore, VerifyError};
+use daruma_auth::{
+    sanitize_client, verify_bearer, AuthContext, HostPrincipal, TokenStore, VerifyError,
+    CLIENT_HEADER,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -145,6 +148,12 @@ fn insert_auth_context(req: &mut Request, mut ctx: AuthContext) {
     if let Some(HostPrincipal(id)) = req.extensions().get::<HostPrincipal>().copied() {
         ctx.principal_id = Some(id);
     }
+    // Per request: the cached context must not carry a previous call's client.
+    ctx.client = req
+        .headers()
+        .get(CLIENT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(sanitize_client);
     req.extensions_mut().insert(ctx);
 }
 

@@ -451,8 +451,12 @@ impl CommandHandler {
         // id is pinned here; the kind is not rewritten.
         let actor = match (&cmd, authenticated_agent_id) {
             (Command::RecordEvidence { .. }, Some(id)) => match actor {
-                Actor::Agent { name, .. } => Actor::Agent { id, name },
-                Actor::User { name, .. } => Actor::User { id: Some(id), name },
+                Actor::Agent { name, client, .. } => Actor::Agent { id, name, client },
+                Actor::User { name, client, .. } => Actor::User {
+                    id: Some(id),
+                    name,
+                    client,
+                },
             },
             _ => actor,
         };

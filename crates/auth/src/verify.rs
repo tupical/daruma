@@ -141,6 +141,7 @@ pub async fn verify_bearer(
             scope: candidate.scope,
             token_kind: candidate.kind,
             principal_id: None,
+            client: None,
         });
     }
 

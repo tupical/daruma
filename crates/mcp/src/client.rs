@@ -25,6 +25,9 @@ pub struct ApiClient {
     /// MCP clients are pinned at construction; stdio clients resolve it through
     /// the hosted MCP surface when workspace info is requested.
     agent_id_is_authenticated: bool,
+    /// MCP client this session serves (`clientInfo.name`), forwarded as
+    /// `X-Daruma-Client` so the server attributes emitted events to it.
+    client_name: Option<String>,
     /// Session-scoped dedup cache (task D): object id → the version this
     /// session was last handed the object *in full*, paired with the
     /// `updated_at` reported back as `since`. Shared across `.clone()`s
@@ -60,6 +63,7 @@ impl ApiClient {
             http: reqwest::Client::new(),
             agent_id: fresh_agent_id(),
             agent_id_is_authenticated: false,
+            client_name: None,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -69,6 +73,15 @@ impl ApiClient {
         let id = workspace_id.into();
         if !id.trim().is_empty() {
             self.workspace_id = Some(id);
+        }
+        self
+    }
+
+    /// Name the MCP client this session serves; blank names are ignored.
+    pub fn with_client_name(mut self, client: impl Into<String>) -> Self {
+        let client = client.into();
+        if !client.trim().is_empty() {
+            self.client_name = Some(client.trim().to_string());
         }
         self
     }
@@ -96,6 +109,7 @@ impl ApiClient {
             http,
             agent_id: fresh_agent_id(),
             agent_id_is_authenticated: false,
+            client_name: None,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -232,9 +246,12 @@ impl ApiClient {
     }
 
     fn auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let builder = builder
+        let mut builder = builder
             .bearer_auth(&self.token)
             .header("X-Daruma-Plugin-Contract", "1");
+        if let Some(client) = &self.client_name {
+            builder = builder.header("X-Daruma-Client", client.as_str());
+        }
         match &self.workspace_id {
             Some(id) => builder.header("X-Daruma-Workspace-Id", id.as_str()),
             None => builder,
