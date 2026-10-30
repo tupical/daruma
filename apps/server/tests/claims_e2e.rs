@@ -69,12 +69,13 @@ async fn get_json(app: &axum::Router, token: &str, uri: &str) -> (StatusCode, Va
 }
 
 /// Create a task and return its UUID string (raw UUID, no `tsk_` prefix).
+/// Todo, not the default inbox: drain only hands out triaged work.
 async fn create_task(app: &axum::Router, token: &str) -> String {
     let (s, ev) = post_json(
         app,
         token,
         "/v1/commands",
-        r#"{"command":{"type":"create_task","task":{"title":"Claim target"}}}"#,
+        r#"{"command":{"type":"create_task","task":{"title":"Claim target","status":"todo"}}}"#,
     )
     .await;
     assert_eq!(s, StatusCode::OK, "create_task failed: {ev}");
@@ -1393,6 +1394,90 @@ async fn terminal_tasks_are_neither_ready_nor_claimable_via_any_drain() {
         assert_no_claim(&h, &ids[0]).await;
         assert_no_claim(&h, &ids[1]).await;
     }
+}
+
+/// An inbox task waits for the owner's triage: neither ready nor drained, and
+/// — first by position — it must not hide the ready todo task behind it.
+#[tokio::test]
+async fn inbox_tasks_are_neither_ready_nor_drained_and_do_not_block_the_plan() {
+    let h = test_app().await;
+    let project = create_project(&h.router, &h.admin_token).await;
+    let plan = create_active_plan_in_project(&h.router, &h.admin_token, &project).await;
+    let (code, ev) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/commands",
+        r#"{"command":{"type":"create_task","task":{"title":"Needs triage"}}}"#,
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{ev}");
+    let inbox = ev["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| {
+            let p = e.get("payload")?;
+            (p.get("type")?.as_str()? == "task_created")
+                .then(|| p["task"]["id"].as_str().unwrap().to_owned())
+        })
+        .unwrap();
+    let (_, task) = get_json(&h.router, &h.admin_token, &format!("/v1/tasks/{inbox}")).await;
+    assert_eq!(task["status"], "inbox", "{task}");
+    attach_task(&h.router, &h.admin_token, &plan, &inbox).await;
+    let todo = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan, &todo).await;
+
+    for uri in [
+        format!("/v1/plans/{plan}/next-task"),
+        format!("/v1/ready?project_id={project}"),
+        format!("/v1/plans/{plan}/progress"),
+    ] {
+        let (code, response) = get_json(&h.router, &h.admin_token, &uri).await;
+        assert_eq!(code, StatusCode::OK, "{response}");
+        let encoded = response.to_string();
+        assert!(encoded.contains(&todo), "{uri}: {response}");
+        assert!(!encoded.contains(&inbox), "{uri}: {response}");
+    }
+    let (code, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan}/drain-next"),
+        "{}",
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{response}");
+    assert_eq!(response["task_id"], todo, "{response}");
+    assert_no_claim(&h, &inbox).await;
+
+    // Only the inbox task is left: nothing to hand out, and it stays inbox.
+    let (code, done) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/commands",
+        &json!({"command":{"type":"set_status", "id":todo, "status":"done", "force":true}})
+            .to_string(),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{done}");
+    let (_, next) = get_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan}/next-task"),
+    )
+    .await;
+    assert!(next.is_null(), "{next}");
+    let (code, drained) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/ready/drain?project_id={project}"),
+        "{}",
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{drained}");
+    assert!(drained.is_null(), "{drained}");
+    assert_no_claim(&h, &inbox).await;
+    let (_, task) = get_json(&h.router, &h.admin_token, &format!("/v1/tasks/{inbox}")).await;
+    assert_eq!(task["status"], "inbox", "{task}");
 }
 
 #[tokio::test]

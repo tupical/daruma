@@ -58,8 +58,11 @@ async fn create_project(app: &axum::Router, token: &str) -> String {
     extract_id(&ev, "project_created", "project")
 }
 
+/// Todo, not the default inbox: drain only hands out triaged work.
 async fn create_task(app: &axum::Router, token: &str, title: &str) -> String {
-    let body = format!(r#"{{"command":{{"type":"create_task","task":{{"title":"{title}"}}}}}}"#);
+    let body = format!(
+        r#"{{"command":{{"type":"create_task","task":{{"title":"{title}","status":"todo"}}}}}}"#
+    );
     let (_s, ev) = post_json(app, token, "/v1/commands", &body).await;
     extract_id(&ev, "task_created", "task")
 }
