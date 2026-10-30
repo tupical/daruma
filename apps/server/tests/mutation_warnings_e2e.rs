@@ -102,7 +102,8 @@ async fn plan_in(
         let r = post(
             h,
             "/v1/commands",
-            json!({"command":{"type":"create_task","task":{"title":format!("{title}-t{i}"),"project_id":pid}}}),
+            // Todo, not the default inbox: drain only hands out triaged work.
+            json!({"command":{"type":"create_task","task":{"title":format!("{title}-t{i}"),"project_id":pid,"status":"todo"}}}),
         )
         .await;
         let tid = created_id(&r, "task_created", "task");
@@ -274,10 +275,17 @@ async fn claim_warns_about_other_held_task_but_not_renewal() {
     );
     assert_eq!(claim["warnings"][0]["details"]["task_ids"], json!([held]));
 
-    // Renewing the held task itself must not warn about itself.
+    // Renewing the held task itself must not warn about itself — only about
+    // `other`, which the todo-claim above moved to in_progress too.
     let renew = post(&h, "/v1/claims", json!({"task_id":held,"ttl_secs":60})).await;
-    assert!(
-        renew["warnings"].as_array().is_none_or(|w| w.is_empty()),
+    assert_eq!(
+        codes(renew["warnings"].as_array().unwrap()),
+        ["agent_has_open_tasks"],
+        "{renew}"
+    );
+    assert_eq!(
+        renew["warnings"][0]["details"]["task_ids"],
+        json!([other]),
         "{renew}"
     );
 }

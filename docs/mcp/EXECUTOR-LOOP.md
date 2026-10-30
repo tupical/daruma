@@ -193,6 +193,13 @@ tasks. Explicit dependency success still requires `done`: cancelling a prerequis
 does not assert that its deliverable exists. `can_start` returns `terminal_task`
 for a terminal target; reopen deliberately before attempting a new claim.
 
+`next-task`, drain (plan and project), `plan_progress.next_ready` and the
+project ready list also skip `inbox` tasks: inbox means "awaiting the owner's
+triage", not "ready for an agent". An inbox task first by position therefore
+no longer hides the `todo` tasks after it; a plan holding only inbox (or
+terminal) tasks drains to `null`. Plan fanout still lists inbox tasks — it is
+the dependency graph, not the agent queue. Move a task to `todo` once triaged.
+
 HTTP `/claims` and run-bound drain use the same recorded claim transaction.
 A missing task returns 404, a terminal task 409. A failed audit append rolls back
 the holder, preventing invisible claims. Claim acquisition also shares the handler

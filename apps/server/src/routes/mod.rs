@@ -7075,7 +7075,17 @@ async fn project_ready(
                 .map_err(ApiError::from)?;
         if let Some(wave0) = waves.first() {
             for task_id in &wave0.tasks {
-                if seen.insert(*task_id)
+                // Wave 0 is graph readiness only; like the drain resolver,
+                // an inbox task still waits for the owner's triage, so it is
+                // not ready for an agent.
+                let inbox = state
+                    .tasks
+                    .get(*task_id)
+                    .await
+                    .map_err(ApiError::from)?
+                    .is_some_and(|task| task.status == daruma_domain::Status::Inbox);
+                if !inbox
+                    && seen.insert(*task_id)
                     && state
                         .claims
                         .is_claimed_by_other(*task_id, auth.agent_id)

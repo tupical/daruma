@@ -137,7 +137,8 @@ async fn blocked_drain_releases_claim_for_other_agents() {
         &h.router,
         admin,
         "/v1/commands",
-        r#"{"command":{"type":"create_task","task":{"title":"gated-task"}}}"#,
+        // Todo, not the default inbox: drain only hands out triaged work.
+        r#"{"command":{"type":"create_task","task":{"title":"gated-task","status":"todo"}}}"#,
     )
     .await;
     let task_id = extract_id(&ev, "task_created", "task");
