@@ -1567,26 +1567,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Insert a minimal row into `runs` so `inherit_run_project_id` can resolve it.
-    #[allow(dead_code)]
-    async fn seed_run(
-        pool: &sqlx::SqlitePool,
-        run_id: daruma_shared::RunId,
-        plan_id: daruma_shared::PlanId,
-    ) {
-        let now = time::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO runs (id, plan_id, agent_id, started_at, status) \
-             VALUES (?, ?, 'agent-test', ?, 'active')",
-        )
-        .bind(run_id.to_string())
-        .bind(plan_id.to_string())
-        .bind(&now)
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
     #[tokio::test]
     async fn plan_created_writes_plan_row() {
         use daruma_domain::{Plan, PlanStatus};
