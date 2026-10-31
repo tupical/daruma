@@ -14,7 +14,6 @@ tokio-rustls = { workspace = true }
 
 # Async / serde
 tokio       = { workspace = true, features = ["io-util", "io-std", "rt", "rt-multi-thread", "macros", "sync", "time"] }
-async-trait = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tracing     = { workspace = true }

@@ -661,7 +661,6 @@ name = "daruma-mcp"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
  "daruma-shared",
  "reqwest",
