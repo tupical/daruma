@@ -520,7 +520,6 @@ dependencies = [
 name = "daruma-api-dto"
 version = "0.4.0"
 dependencies = [
- "chrono",
  "daruma-domain",
  "daruma-events",
  "daruma-shared",
