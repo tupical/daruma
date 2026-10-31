@@ -1432,11 +1432,28 @@ async fn attach_lifecycle_hint(
         "daruma_plan_materialize" => {
             let (plan_id, task_ids) = materialized_ids(&result, args);
             result["task_ids"] = json!(task_ids);
-            let next_tool = plan_id.map(|plan_id| {
-                json!({"name": "daruma_plan_drain_next", "arguments": {"plan_id": plan_id}})
-            });
-            result["next_tool"] = next_tool.unwrap_or(Value::Null);
-            return result;
+            // A `claim` that granted a task continues like a drain; any other
+            // outcome (or no `claim`) leaves draining as the next step.
+            let claimed = result
+                .pointer("/claim/task_id")
+                .filter(|_| result["claim"]["outcome"] == "claimed")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(task_id) = claimed {
+                (
+                    task_id.clone(),
+                    Some(json!({
+                        "name": "daruma_comment",
+                        "arguments": {"task_id": task_id, "kind": "outcome"},
+                    })),
+                )
+            } else {
+                let next_tool = plan_id.map(|plan_id| {
+                    json!({"name": "daruma_plan_drain_next", "arguments": {"plan_id": plan_id}})
+                });
+                result["next_tool"] = next_tool.unwrap_or(Value::Null);
+                return result;
+            }
         }
         "daruma_plan_drain_next" | "daruma_claim" => {
             let task_id = result_task_id(&result).or_else(|| {
@@ -1519,6 +1536,67 @@ fn result_task_id(result: &Value) -> Option<String> {
         .iter()
         .find_map(|pointer| result.pointer(pointer).and_then(Value::as_str))
         .map(str::to_string)
+}
+
+/// `daruma_plan_materialize` with `claim`: the plan is created first, then the
+/// same call drains the plan's next ready task (`POST /v1/plans/{id}/drain-next`)
+/// under the caller's TTL/run. Two steps, not one transaction: a failed or
+/// empty drain leaves the plan in place and is reported as an explicit
+/// partial outcome in `claim` — `{outcome: "not_claimed", reason, plan_id}` —
+/// so the caller retries `daruma_plan_drain_next` instead of re-materializing.
+/// A claimed task comes back as `{outcome: "claimed", task_id, run_id,
+/// claim_id, agent_id, in_batch}`; `in_batch` is false when an appended plan
+/// handed out an older task first.
+async fn claim_after_materialize(
+    client: &ApiClient,
+    args: &Map<String, Value>,
+    claim: &Value,
+    mut result: Value,
+) -> Value {
+    if result.get("success").and_then(Value::as_bool) == Some(false) {
+        return result;
+    }
+    let (plan_id, task_ids) = materialized_ids(&result, args);
+    let Some(plan_id) = plan_id else {
+        result["claim"] = json!({"outcome": "not_claimed", "reason": "no_plan_id"});
+        return result;
+    };
+    let mut body = json!({});
+    if let Some(ttl) = claim.get("ttl_secs").and_then(Value::as_u64) {
+        body["claim_ttl_secs"] = json!(ttl);
+    }
+    if let Some(run_id) = claim.get("run_id").and_then(Value::as_str) {
+        body["run_id"] = json!(run_id);
+    }
+    let not_claimed =
+        |reason: String| json!({"outcome": "not_claimed", "reason": reason, "plan_id": plan_id});
+    result["claim"] = match client
+        .post_json(&format!("/v1/plans/{plan_id}/drain-next"), body)
+        .await
+    {
+        Ok(drained) if drained.is_null() => not_claimed("no_ready_task".to_string()),
+        Ok(drained) => match result_task_id(&drained) {
+            Some(task_id) => {
+                let mut granted = json!({
+                    "outcome": "claimed",
+                    "task_id": task_id,
+                    "in_batch": task_ids.contains(&task_id),
+                });
+                if let Some(run_id) = drained.get("run_id") {
+                    granted["run_id"] = run_id.clone();
+                }
+                for key in ["claim_id", "agent_id"] {
+                    if let Some(v) = drained.pointer(&format!("/claim/{key}")) {
+                        granted[key] = v.clone();
+                    }
+                }
+                granted
+            }
+            None => not_claimed(format!("unexpected drain response: {drained}")),
+        },
+        Err(err) => not_claimed(err.to_string()),
+    };
+    result
 }
 
 /// Plan id and the plan's task ids, in creation order, from the event
@@ -1688,7 +1766,12 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some((id, _)) = existing_plan {
                 command["plan_id"] = json!(id);
             }
-            client.post_command(command).await
+            let claim = args.get("claim").filter(|claim| !claim.is_null()).cloned();
+            let result = client.post_command(command).await?;
+            match claim {
+                Some(claim) => Ok(claim_after_materialize(client, &args, &claim, result).await),
+                None => Ok(result),
+            }
         }
         "daruma_get" => {
             let id = resolve_task_id(&args, "id")?;
@@ -3743,6 +3826,10 @@ fn schema_plan_materialize() -> Value {
                     },
                     "required":["title"]
                 }
+            },
+            "claim": {
+                "type":"object",
+                "description":"{ttl_secs, run_id}: also claim the next ready task. Not atomic; see result `claim.outcome`."
             },
             "scope": {
                 "type":"string",
