@@ -769,12 +769,10 @@ version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
- "chrono",
  "daruma-auth",
  "daruma-domain",
  "daruma-events",
  "daruma-shared",
- "futures",
  "hex",
  "hmac",
  "reqwest",
