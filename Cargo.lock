@@ -751,15 +751,12 @@ dependencies = [
 name = "daruma-sync"
 version = "0.4.0"
 dependencies = [
- "async-trait",
  "daruma-api-dto",
  "daruma-core",
  "daruma-domain",
  "daruma-events",
  "daruma-shared",
  "dashmap",
- "futures",
- "serde",
  "serde_json",
  "tokio",
  "tracing",

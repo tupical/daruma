@@ -12,10 +12,7 @@ daruma-events  = { workspace = true, features = ["runtime"] }
 daruma-core    = { workspace = true }
 daruma-api-dto = { workspace = true }
 tokio   = { workspace = true }
-serde   = { workspace = true }
 serde_json = { workspace = true }
-async-trait = { workspace = true }
-futures = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 uuid    = { workspace = true }
