@@ -3822,3 +3822,124 @@ async fn wip_limit_placement_is_validated_on_create_and_update() {
         .expect_err("a before_complete rule cannot become a wip_limit");
     assert!(matches!(err, CoreError::Validation(_)), "got: {err}");
 }
+
+// ── ADR-0018: every clause code has a counterexample ────────────────────────
+
+/// The counterexample corpus of the rule-engine policy pack (ADR-0018), one
+/// row per `Requirement` type. Base input: a task about to start with nothing
+/// recorded for it and one other task already in progress — it starts. The
+/// single mutation is one `required` tenant rule of the row's type; the
+/// verdict must then be `blocked` on exactly that type. The comment on each
+/// row says why the violation is realistic.
+fn counterexamples() -> Vec<Requirement> {
+    vec![
+        // Spec §5 example 1: work begins without reading the architecture doc.
+        Requirement::ReadArtifact {
+            doc_ref: "docs/ARCHITECTURE.md".into(),
+            min_version: "latest".into(),
+        },
+        // A promised artifact (e.g. a migration) that nobody recorded.
+        Requirement::CreateArtifact {
+            artifact_kind: "migration".into(),
+        },
+        // Spec §5 example 2: an auth change started without an impact check.
+        Requirement::ImpactCheck {
+            target: "auth-module".into(),
+            required_fields: vec![],
+        },
+        // An architectural choice made in chat, never recorded.
+        Requirement::DecisionRecord {
+            required_fields: vec![],
+        },
+        // Spec §5 example 3: a transition with no who/when/why note.
+        Requirement::CompletionNote {
+            required_fields: vec![],
+        },
+        // An orphan task nobody owns.
+        Requirement::OwnerRequired,
+        // `task.no_acceptance_criteria` audit finding: no done criterion.
+        Requirement::AcceptanceCriteriaRequired,
+        // An executor vouching for its own tests (no independent attestation).
+        Requirement::IndependentTestVerification {
+            executor_id: AgentId::new(),
+            source_revision: "a".repeat(40),
+        },
+        // Work on a task with no spec document bound to it.
+        Requirement::DocumentLinked,
+        // A risky change started without a risk assessment.
+        Requirement::RiskCheck {
+            target: "billing".into(),
+            required_fields: vec![],
+        },
+        // ADR-0015: a second start while the only WIP slot is taken.
+        Requirement::WipLimit { max_in_progress: 1 },
+    ]
+}
+
+fn start_check(task: TaskId) -> GateCheck {
+    GateCheck {
+        trigger: TriggerEvent::TaskBeforeStart,
+        project_id: None,
+        task_id: Some(task),
+        plan_id: None,
+        run_id: None,
+        document_id: None,
+        handoff_id: None,
+        status_from: Some(Status::Inbox),
+        status_to: Some(Status::InProgress),
+        plan_status_from: None,
+        plan_status_to: None,
+        task_title: None,
+        pending_plan_ids: vec![],
+        pending_plans: vec![],
+        pending_statuses: vec![],
+    }
+}
+
+/// ADR-0018 completeness: the corpus covers `Requirement::ALL_TYPES` exactly
+/// once each, and every row blocks on its own type while the base input
+/// passes. A clause code without a counterexample is not a clause.
+#[tokio::test]
+async fn every_requirement_type_has_a_counterexample() {
+    let rows = counterexamples();
+    let mut covered: Vec<&str> = rows.iter().map(Requirement::type_str).collect();
+    covered.sort_unstable();
+    let mut declared = Requirement::ALL_TYPES.to_vec();
+    declared.sort_unstable();
+    assert_eq!(covered, declared, "one counterexample per clause code");
+
+    for requirement in rows {
+        let code = requirement.type_str();
+        let stack = stack().await;
+        let occupant = create_task(&stack, "Occupant").await;
+        start(&stack, occupant).await.expect("no rules yet");
+        let task = create_task(&stack, "Counterexample").await;
+        let (check, actor, no_override) =
+            (start_check(task), Actor::user(), GateOverride::default());
+        let decide = || stack.gate.check(&actor, &check, &no_override);
+
+        let base = decide().await.expect("gate");
+        assert!(
+            matches!(base, GateDecision::Allowed),
+            "{code}: base input must pass, got {base:?}"
+        );
+        install(
+            &stack,
+            new_rule(
+                code,
+                RuleScope::Tenant,
+                RuleTrigger::TaskBeforeStart,
+                requirement,
+                RuleMode::Required,
+                true,
+            ),
+        )
+        .await;
+        match decide().await.expect("gate") {
+            GateDecision::Blocked { details, .. } => {
+                assert_eq!(details["requirement"]["type"], code, "{code}: {details}")
+            }
+            other => panic!("{code}: counterexample must block, got {other:?}"),
+        }
+    }
+}
