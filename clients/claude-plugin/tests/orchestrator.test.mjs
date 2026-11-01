@@ -256,6 +256,20 @@ test("each retry reads fresh Daruma state and run journal into executor prompt",
 });
 
 
+test("executor prompt carries the rerun-before-edit rule for failed checks (ADR-0013)", () => {
+  for (const task of [
+    { id: "task", title: "Only title" },
+    { id: "task", title: "Title", description: "Statement", execution_context: { task_id: "task", notes: [] } },
+  ]) {
+    const prompt = _internal.executePromptFor(task);
+    assert(prompt.startsWith(task.title));
+    assert(prompt.includes("rerun only the failed target once on the unchanged tree before editing any file"));
+    assert(prompt.includes("`flap: <first error line>`"));
+    assert(prompt.includes("Compile, parse, type and lint errors are deterministic: no rerun."));
+    assert(prompt.includes("`runs`, `passed`"));
+  }
+});
+
 test("terminal task in server projection cannot be reopened by stale executor", async () => {
   const mcp = mockMcp({ tasks: { task: { id: "task", status: "done" } } });
   const outcome = await _internal.executeTaskWithRetries({

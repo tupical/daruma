@@ -8,7 +8,7 @@
 | [architecture-policy.ru.md](architecture-policy.ru.md) | Зафиксированные policy-решения (RU): actors, cascade, sequence_id |
 | [guides/ai-agent.md](guides/ai-agent.md) | Правила AI-слоя и обзор tools |
 | [guides/mcp-client.md](guides/mcp-client.md) | Локальные файлы MCP-клиента (`~/.agents/daruma/`) |
-| [guides/comment-conventions.md](guides/comment-conventions.md) | Префиксы в теле комментария (`lesson:`, `branch:`) |
+| [guides/comment-conventions.md](guides/comment-conventions.md) | Префиксы в теле комментария (`lesson:`, `flap:`, `branch:`) |
 | [mcp/EXECUTOR-LOOP.md](mcp/EXECUTOR-LOOP.md) | Канонический цикл drain plan → execute → complete |
 | [adr/workspacegraph.md](adr/workspacegraph.md) | ADR WorkspaceGraph: sidecar index, nodes/edges, non-goals |
 | Cursor rule `workspacegraph.mdc` | Guardrails для `daruma_workspacegraph_*` (граф — для связей/impact, не для списка задач). Ставится в `.cursor/rules/` командой `daruma-cursor install` вместе с `daruma-policy.mdc` и `daruma.mdc`. |

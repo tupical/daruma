@@ -26,8 +26,8 @@ next = plan_drain_next(plan_id, run_id, claim_ttl_secs=300)
   ↓
 run_start_step(run_id, task_id)        ← opens the attempt; before the work
   ↓                                       and before any status transition
-<execute work in repo / run tests / edit files>
-  ↓
+<execute work in repo / run tests / edit files>   ← a red check is rerun
+  ↓                                                   before the first edit
 comment(task_id, body=<artifact summary>, kind=outcome)
   ↓
 complete(task_id)
@@ -58,6 +58,56 @@ step 7 lies before the attempt and `run_complete` rejects the run with 409
 `run_postcondition_unmet` ([Pass completion contract](#pass-completion-contract)).
 `run_start_step` and `run_finish_step` are in the `full` profile
 ([PROFILES.md](PROFILES.md)).
+
+## Failed checks: rerun before the first edit
+
+A red executable check is not yet a defect ([ADR-0013](https://github.com/tupical/meisei.ru/blob/main/adr/0013-flap-is-not-a-defect.md)).
+The server sees no edits inside `in_progress`, so this rule is the
+executor's, and it is a MUST:
+
+1. After the **first** red result of an executable check (test runner,
+   integration check, e2e) the executor reruns the failed target **once, on
+   the unchanged tree, before editing any file** — narrowed to the failed
+   test where possible (`cargo test -p <crate> <test_name>`).
+2. **Reproduced** — a defect: edits are allowed.
+3. **Not reproduced** — a flap: no edit in response to that failure. Record
+   it (below) and continue the task.
+4. Compile, parse, type and lint errors are deterministic: no rerun.
+
+Restarting the executor or retrying the whole attempt (as
+`clients/claude-plugin/lib/orchestrator.mjs` does on a failed attempt) does
+not replace the rerun; it comes after it.
+
+**Evidence payload of a passing check.** Evidence the executor submits for
+an executable check (`daruma_evidence_submit`, `payload` is free JSON)
+carries the check's stability, not a single green result:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `runs` | integer ≥ 1 | How many times the check ran within the task |
+| `passed` | integer, `passed ≤ runs` | How many of those runs passed |
+| `flaps` | array, optional | Failures that did not reproduce: `{ "observed_at": "<RFC 3339>", "signature": "<first error line or exit code>", "rerun_passed": true }` |
+
+```json
+{ "runs": 3, "passed": 2,
+  "flaps": [{ "observed_at": "2026-11-01T07:10:00Z",
+              "signature": "test result: FAILED. 41 passed; 1 failed",
+              "rerun_passed": true }] }
+```
+
+With flaps the record is fit only when the **last two runs passed**
+(`runs ≥ 2`). `signature` is the first line of the error, never a stack
+trace (paths and secrets stay out of evidence). The `check_passed`
+evidence kind of ADR-0010 carries these keys once it exists; until then
+the same keys ride whatever evidence the task's rules ask for. A rule
+that wants the trail lists them in `required_fields: ["runs", "passed"]`
+— the existing check ([LIFECYCLE_RULES_SPEC.md](../LIFECYCLE_RULES_SPEC.md))
+then refuses evidence without them. The server checks presence only, not
+values (`passed ≤ runs`, last two green).
+
+**A flap without a green finish.** When the task ends with a blocker rather
+than a passing check, record the flap as a comment with the body prefix
+`flap: <signature>` ([comment-conventions.md](../guides/comment-conventions.md)).
 
 ## Implicit status transitions
 
@@ -132,6 +182,7 @@ Loop until `daruma_plan_progress` returns no `next_ready` and all tasks are done
 Rules:
 - Never skip dependency order — trust `plan_next_task`.
 - Prefer small diffs; update docs when behavior changes.
+- After the first red test, integration or e2e result, rerun only the failed target once on the unchanged tree before editing any file. Reproduced: fix it. Not reproduced: a flap — no edit for it; record `flap: <first error line>` and carry `runs`/`passed`/`flaps` in the check's evidence payload. Compile, parse, type and lint errors need no rerun.
 - Record post-mortems as `lesson: …` in comment body (see docs/guides/comment-conventions.md).
 ```
 
@@ -141,6 +192,7 @@ Rules:
 |-----------|--------|
 | `plan_next_task` returns null but tasks remain | Check plan status; verify blockers via `daruma_relations` (`blocks` edges). |
 | Claim expired | Re-call `plan_next_task` with fresh TTL or `daruma_claim`. |
+| Executable check red for the first time | Rerun the failed target once on the unchanged tree before any edit — see [Failed checks](#failed-checks-rerun-before-the-first-edit). |
 | Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
 | `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). A `run_finish_step` without a preceding `run_start_step` starts the attempt at the finish time, so a handoff made earlier is not counted; start the step before the work. |
@@ -155,7 +207,7 @@ Rules:
 
 ## See also
 
-- [../guides/comment-conventions.md](../guides/comment-conventions.md) — `lesson:` prefix
+- [../guides/comment-conventions.md](../guides/comment-conventions.md) — `lesson:` and `flap:` prefixes
 - [../guides/ai-agent.md](../guides/ai-agent.md) — AI layer rules
 - `clients/claude-plugin/lib/orchestrator.mjs` — reference implementation using `plan_next_task`
 
