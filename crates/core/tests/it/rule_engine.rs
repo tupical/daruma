@@ -1105,6 +1105,7 @@ async fn required_fields_reject_incomplete_evidence_and_explain_why() {
         task_title: None,
         pending_plan_ids: vec![],
         pending_plans: vec![],
+        pending_statuses: vec![],
     };
     let GateDecision::Blocked { details, .. } = stack
         .gate
@@ -1175,6 +1176,7 @@ async fn read_artifact_min_version_is_enforced_numerically() {
             task_title: None,
             pending_plan_ids: vec![],
             pending_plans: vec![],
+            pending_statuses: vec![],
         };
         let decision = stack
             .gate
@@ -2164,6 +2166,7 @@ async fn blocked_details_keep_outcomes_beside_unblock_hints() {
         task_title: None,
         pending_plan_ids: vec![],
         pending_plans: vec![],
+        pending_statuses: vec![],
     };
 
     let GateDecision::Blocked { details, .. } = stack
@@ -3519,6 +3522,7 @@ async fn cyclic_plan_ancestry_fails_closed() {
         task_title: None,
         pending_plan_ids: vec![],
         pending_plans: vec![],
+        pending_statuses: vec![],
     };
     check.pending_plans = vec![(a, Some(b)), (b, Some(a))];
     let err = stack
@@ -3530,4 +3534,291 @@ async fn cyclic_plan_ancestry_fails_closed() {
         err.to_string().contains("cyclic plan scope ancestry"),
         "got: {err}"
     );
+}
+
+// ── ADR-0015: wip_limit on task.before_start ──────────────────────────────
+
+fn wip_rule(scope: RuleScope, max_in_progress: u8, mode: RuleMode) -> NewRule {
+    new_rule(
+        "wip-ceiling",
+        scope,
+        RuleTrigger::TaskBeforeStart,
+        Requirement::WipLimit { max_in_progress },
+        mode,
+        true,
+    )
+}
+
+/// The ceiling counts the rule's project, never the starting task itself and
+/// never another project; the block names the occupant, carries no evidence
+/// to submit, and a freed slot or an explicit override lets the start through.
+#[tokio::test]
+async fn wip_limit_blocks_a_second_start_in_the_project_and_names_the_occupant() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let other_project = create_project(&stack).await;
+    install(
+        &stack,
+        wip_rule(RuleScope::Project { id: project }, 1, RuleMode::Required),
+    )
+    .await;
+    let first = create_project_task(&stack, project, "first").await;
+    let second = create_project_task(&stack, project, "second").await;
+    let elsewhere = create_project_task(&stack, other_project, "elsewhere").await;
+
+    set_in_progress(&stack, first, false)
+        .await
+        .expect("an empty project has a free slot");
+    set_in_progress(&stack, elsewhere, false)
+        .await
+        .expect("another project's tasks do not count");
+
+    let err = set_in_progress(&stack, second, false)
+        .await
+        .expect_err("second start in the project exceeds the ceiling");
+    assert!(is_blocked(&err, "wip-ceiling"), "got: {err}");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints[0]["requirement_type"], "wip_limit", "{hints:?}");
+    assert_eq!(hints[0]["max_in_progress"], 1);
+    assert_eq!(
+        hints[0]["in_progress_task_ids"],
+        serde_json::json!([first]),
+        "the occupant is named, the other project's task is not: {hints:?}"
+    );
+    assert!(hints[0].get("evidence").is_none(), "{hints:?}");
+    assert!(
+        hints[0]["reason"].as_str().unwrap().contains("1 of 1"),
+        "{hints:?}"
+    );
+    assert!(
+        !stack.can_start(second).await.ready,
+        "can_start agrees with the gate"
+    );
+
+    // An explicit override passes an overridable ceiling.
+    set_in_progress(&stack, second, true)
+        .await
+        .expect("force + override_reason passes an overridable wip_limit");
+
+    // Freeing the slots lets a fresh task start without override.
+    for task in [first, second] {
+        stack
+            .handler
+            .handle(
+                Command::SetStatus {
+                    id: task,
+                    status: Status::Done,
+                    force: false,
+                    override_reason: None,
+                    comment: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+    }
+    let third = create_project_task(&stack, project, "third").await;
+    set_in_progress(&stack, third, false)
+        .await
+        .expect("finished tasks free their slots");
+}
+
+/// Phase A of the ADR pilot: `recommendation` warns with the occupants and the
+/// start proceeds.
+#[tokio::test]
+async fn wip_limit_recommendation_warns_with_the_occupants_and_proceeds() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    install(
+        &stack,
+        wip_rule(
+            RuleScope::Project { id: project },
+            1,
+            RuleMode::Recommendation,
+        ),
+    )
+    .await;
+    let first = create_project_task(&stack, project, "first").await;
+    let second = create_project_task(&stack, project, "second").await;
+    set_in_progress(&stack, first, false).await.unwrap();
+
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: second,
+                status: Status::InProgress,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("recommendation must not block");
+    assert_eq!(outcome.warnings.len(), 1);
+    assert_eq!(outcome.warnings[0].code, "rule_warning:wip-ceiling");
+    assert_eq!(
+        outcome.warnings[0].details["in_progress_task_ids"],
+        serde_json::json!([first])
+    );
+    assert_eq!(
+        stack
+            .handler
+            .tasks
+            .get(second)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        Status::InProgress
+    );
+}
+
+/// The batch counts, not only the projection: one `BulkSetStatus` starting two
+/// tasks under a ceiling of one is blocked even though nothing is persisted
+/// `in_progress` yet; a ceiling of two lets the same batch through.
+#[tokio::test]
+async fn wip_limit_counts_tasks_started_by_the_same_batch() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let rule = install(
+        &stack,
+        wip_rule(RuleScope::Project { id: project }, 1, RuleMode::Required),
+    )
+    .await;
+    let a = create_project_task(&stack, project, "a").await;
+    let b = create_project_task(&stack, project, "b").await;
+    let bulk = || Command::BulkSetStatus {
+        ids: vec![a, b],
+        status: Status::InProgress,
+    };
+    let err = stack
+        .handler
+        .handle(bulk(), Actor::user())
+        .await
+        .expect_err("two starts in one batch exceed a ceiling of one");
+    assert!(is_blocked(&err, "wip-ceiling"), "got: {err}");
+    for task in [a, b] {
+        assert_ne!(
+            stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+            Status::InProgress,
+            "a blocked batch persists nothing"
+        );
+    }
+
+    stack
+        .handler
+        .handle(
+            Command::UpdateRule {
+                id: rule.id,
+                patch: daruma_domain::RulePatch {
+                    requirement: Some(Requirement::WipLimit { max_in_progress: 2 }),
+                    ..Default::default()
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    stack
+        .handler
+        .handle(bulk(), Actor::user())
+        .await
+        .expect("two starts fit a ceiling of two");
+}
+
+/// Plan scope counts plan members only (a direct start resolves the task's
+/// plan memberships); project tasks outside the plan neither count nor are
+/// limited.
+#[tokio::test]
+async fn wip_limit_on_a_plan_counts_its_members_only() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        wip_rule(RuleScope::Plan { id: plan }, 1, RuleMode::Required),
+    )
+    .await;
+    let member_a = create_project_task(&stack, project, "member a").await;
+    let member_b = create_project_task(&stack, project, "member b").await;
+    let outsider = create_project_task(&stack, project, "outsider").await;
+    attach(&stack, plan, member_a).await;
+    attach(&stack, plan, member_b).await;
+
+    set_in_progress(&stack, outsider, false)
+        .await
+        .expect("a non-member is outside the plan rule");
+    set_in_progress(&stack, member_a, false)
+        .await
+        .expect("the outsider does not take a plan slot");
+    let err = set_in_progress(&stack, member_b, false)
+        .await
+        .expect_err("second member start exceeds the plan ceiling");
+    assert_eq!(
+        unblock_hints(&err)[0]["in_progress_task_ids"],
+        serde_json::json!([member_a])
+    );
+}
+
+/// A ceiling only means something on a start and on a multi-task scope; the
+/// core rejects every other placement on create and on update.
+#[tokio::test]
+async fn wip_limit_placement_is_validated_on_create_and_update() {
+    let stack = stack().await;
+    let task = create_task(&stack, "t").await;
+    let cases = [
+        wip_rule(RuleScope::Task { id: task }, 1, RuleMode::Required),
+        wip_rule(RuleScope::Tenant, 0, RuleMode::Required),
+        new_rule(
+            "wip-ceiling",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::WipLimit { max_in_progress: 1 },
+            RuleMode::Required,
+            true,
+        ),
+    ];
+    for rule in cases {
+        let err = stack
+            .handler
+            .handle(Command::CreateRule { rule }, Actor::user())
+            .await
+            .expect_err("invalid wip_limit placement");
+        assert!(
+            matches!(err, CoreError::Validation(_)) && err.to_string().contains("wip_limit"),
+            "got: {err}"
+        );
+    }
+
+    let complete_rule = install(
+        &stack,
+        new_rule(
+            "note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    let err = stack
+        .handler
+        .handle(
+            Command::UpdateRule {
+                id: complete_rule.id,
+                patch: daruma_domain::RulePatch {
+                    requirement: Some(Requirement::WipLimit { max_in_progress: 1 }),
+                    ..Default::default()
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("a before_complete rule cannot become a wip_limit");
+    assert!(matches!(err, CoreError::Validation(_)), "got: {err}");
 }

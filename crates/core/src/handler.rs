@@ -3733,6 +3733,9 @@ impl CommandHandler {
                 if rule.rule_key.trim().is_empty() {
                     return Err(CoreError::validation("rule_key must not be empty"));
                 }
+                if let Some(err) = rule.requirement.placement_error(&rule.scope, rule.trigger) {
+                    return Err(CoreError::validation(err));
+                }
                 // Keep this invariant at the command boundary so HTTP, MCP and
                 // future ingress paths cannot create rules with dangling scopes.
                 let scope_exists = match &rule.scope {
@@ -3787,6 +3790,12 @@ impl CommandHandler {
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("rule {id}")))?;
                 let updated = patch.apply(current, time::now());
+                if let Some(err) = updated
+                    .requirement
+                    .placement_error(&updated.scope, updated.trigger)
+                {
+                    return Err(CoreError::validation(err));
+                }
                 Ok(vec![Event::RuleUpdated { rule: updated }])
             }
 
