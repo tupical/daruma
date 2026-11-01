@@ -193,6 +193,28 @@ evidence не требуется. Требование выполнено, ко�
 дополняет статусный `GateCheck` проектом и планами задачи из проекции
 (статусное событие несёт только `task_id`).
 
+Evidence прохождения проверки — пара `check_passed` (meisei.ru ADR-0010; в
+перечислении `EvidenceKind` её пока нет, до реализации те же ключи едут в
+evidence, которого требуют правила задачи). Её `payload`, кроме
+`exit_status`, `head_sha`, `duration_ms`, `artifact_ref` и ADR-0013
+`runs`/`passed`/`flaps`, называет среду прогона (ADR-0016) двумя плоскими
+ключами:
+
+| Ключ | Значение |
+|------|----------|
+| `env_kind` | закрытый словарь `ci` \| `container` \| `host` \| `manual` |
+| `env_ref` | неизменяемый id среды: `ci` — конкретный прогон (не workflow, не ветка); `container` — digest `sha256:…`, не тег; `host` — `<hostname>:<toolchain-id>`; `manual` — протокол проверки `doc_ref@version` |
+
+Обязательность — только составом `required_fields`, отдельного требования
+и нового `EvidenceKind` нет. Правило проверки, которое handoff выставляет
+задаче, при `policy_snapshot.fujin_strictness = strict` включает
+`env_kind`, `env_ref` (вместе с `runs`, `passed`); при `soft` (default) — не
+включает, и evidence без среды засчитывается как `soft_assertion` (отчётный
+признак, не статус). `rule_key` один в обоих режимах. Проект ужесточает свой
+scope обычным правилом с теми же `required_fields`. Сервер проверяет только
+присутствие ключей; значения (словарь, `env_ref` без `latest`/имени ветки)
+— вторая фаза в policy pack, по триггеру ADR-0016.
+
 ```rust
 struct Evidence {
     id: EvidenceId,

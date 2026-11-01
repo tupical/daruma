@@ -87,13 +87,45 @@ carries the check's stability, not a single green result:
 | `runs` | integer ≥ 1 | How many times the check ran within the task |
 | `passed` | integer, `passed ≤ runs` | How many of those runs passed |
 | `flaps` | array, optional | Failures that did not reproduce: `{ "observed_at": "<RFC 3339>", "signature": "<first error line or exit code>", "rerun_passed": true }` |
+| `env_kind` | string | Where the check ran: `ci`, `container`, `host` or `manual` |
+| `env_ref` | string | Immutable id of that environment (table below) |
 
 ```json
 { "runs": 3, "passed": 2,
   "flaps": [{ "observed_at": "2026-11-01T07:10:00Z",
               "signature": "test result: FAILED. 41 passed; 1 failed",
-              "rerun_passed": true }] }
+              "rerun_passed": true }],
+  "env_kind": "host", "env_ref": "av-wsl:rustc-1.89.0" }
 ```
+
+**Where the check ran** (meisei.ru ADR-0016). `head_sha` names the code,
+not the environment; the same SHA can pass on one toolchain and fail on
+another. The executor **MUST** name the real environment of the run:
+
+| `env_kind` | `env_ref` |
+|------------|-----------|
+| `ci` | Id or URL of that exact CI run — not the workflow, not the branch |
+| `container` | Image digest `sha256:…`, not a tag |
+| `host` | `<hostname>:<toolchain-id>`, e.g. `av-wsl:rustc-1.89.0` |
+| `manual` | Check protocol as `doc_ref@version` (as in `read_artifact`) |
+
+Claiming `ci` for a local run is forbidden. `manual` is submitted by a
+human, never by an agent. Seed, environment variables or data slice are
+free payload keys, never required. Reference consumers fill the pair
+automatically: `daruma-claude start` (`orchestrator.mjs`) puts it into the
+executor prompt — `ci` with the run URL when `GITHUB_RUN_ID`, GitLab
+`CI_JOB_URL` or Woodpecker `CI_PIPELINE_URL` is set, otherwise `host` with
+the hostname and the project toolchain (`rustc -V` for a Cargo project,
+the Node version otherwise).
+
+Evidence without the pair is a claim, not proof. Under the `Strict`
+policy (`policy_snapshot.fujin_strictness`) a rule that handoff lowers for
+a check lists `env_kind` and `env_ref` in `required_fields` next to
+`runs` and `passed`, so a record without them does not close a strict
+`before_complete`. Under `Soft` (default) the record counts and is reported
+as `soft_assertion`. A project tightens its own scope with a regular
+`daruma_rule_create` carrying those `required_fields` (for example "checks
+only in CI" for one repository) — no separate setting exists.
 
 With flaps the record is fit only when the **last two runs passed**
 (`runs ≥ 2`). `signature` is the first line of the error, never a stack
@@ -103,7 +135,8 @@ the same keys ride whatever evidence the task's rules ask for. A rule
 that wants the trail lists them in `required_fields: ["runs", "passed"]`
 — the existing check ([LIFECYCLE_RULES_SPEC.md](../LIFECYCLE_RULES_SPEC.md))
 then refuses evidence without them. The server checks presence only, not
-values (`passed ≤ runs`, last two green).
+values (`passed ≤ runs`, last two green, `env_kind` from the list, `env_ref`
+without `latest` or a branch name).
 
 **A flap without a green finish.** When the task ends with a blocker rather
 than a passing check, record the flap as a comment with the body prefix
@@ -183,6 +216,7 @@ Rules:
 - Never skip dependency order — trust `plan_next_task`.
 - Prefer small diffs; update docs when behavior changes.
 - After the first red test, integration or e2e result, rerun only the failed target once on the unchanged tree before editing any file. Reproduced: fix it. Not reproduced: a flap — no edit for it; record `flap: <first error line>` and carry `runs`/`passed`/`flaps` in the check's evidence payload. Compile, parse, type and lint errors need no rerun.
+- Name where a passing check ran: `env_kind` (`ci` | `container` | `host` | `manual`) and `env_ref` in its evidence payload; never claim `ci` for a local run.
 - Record post-mortems as `lesson: …` in comment body (see docs/guides/comment-conventions.md).
 ```
 

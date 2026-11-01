@@ -3694,17 +3694,17 @@ fn schema_evidence_submit() -> Value {
                 "properties": {
                     "kind": {"type":"string","enum":["document_read_ack","impact_assessment","decision_record","completion_note","artifact_created","owner_assigned","acceptance_criteria_defined","risk_check_completed"]},
                     "scope": {"type":"object","description":"{kind: tenant|project|plan|task} plus `id` for non-tenant scopes."},
-                    "target": {"type":"string","description":"Requirement target; omit to match any."},
-                    "doc_version": {"type":"string","description":"Document version read by document_read_ack."},
+                    "target": {"type":"string","description":"Requirement target; omit = any."},
+                    "doc_version": {"type":"string","description":"Version for document_read_ack."},
                     "reason": {"type":"string"},
-                    "payload": {"description":"Any JSON payload."},
+                    "payload": {"description":"Check: runs, passed, env_kind ci|container|host|manual, env_ref."},
                     "project_id": {"type":"string"},
                     "plan_id": {"type":"string"},
                     "task_id": {"type":"string"},
                     "run_id": {"type":"string"},
                     "artifact_id": {"type":"string"},
                     "rule_id": {"type":"string"},
-                    "supersedes": {"type":"string","description":"Earlier record replaced by this one."}
+                    "supersedes": {"type":"string","description":"Record this one replaces."}
                 },
                 "required": ["kind","scope"]
             }
