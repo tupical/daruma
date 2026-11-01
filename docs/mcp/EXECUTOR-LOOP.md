@@ -92,6 +92,7 @@ decides whether to call it):
 | Tool | Added fields | `next_tool` |
 |------|--------------|-------------|
 | `daruma_plan_materialize` | `task_ids` (plan order) | `daruma_plan_drain_next {plan_id}` |
+| `daruma_plan_materialize` with `claim` | `task_ids`, `claim {outcome, …}`; `task {…}` when claimed | `daruma_comment {task_id, kind: outcome}` when claimed, else `daruma_plan_drain_next {plan_id}` |
 | `daruma_plan_drain_next`, `daruma_claim` | `task {id, status, claim_expires_at?}` | `daruma_comment {task_id, kind: outcome}` |
 | `daruma_comment kind=outcome` | `task {…}` | `daruma_complete {id}` while the task is open, else `null` |
 | `daruma_complete` | `task {…}` | `null` |
@@ -149,6 +150,7 @@ Rules:
 ## Related tools
 
 - **`daruma_plan_drain_next`** — atomic `plan_next_task` + `claim` in one call (default profile).
+- **`daruma_plan_materialize` with `claim: {ttl_secs?, run_id?}`** — create the plan, then drain its next ready task in the same call. Two steps, not one transaction: the plan always stays. `claim.outcome = claimed` carries `task_id`, `run_id`, `claim_id`, `agent_id` and `in_batch` (false when an appended plan handed out an older task first); `not_claimed` carries `reason` (`no_ready_task` or the drain error, e.g. a rule block or a missing `run:write`) and `plan_id` — retry with `daruma_plan_drain_next`, never re-materialize.
 - **`daruma_can_start`** — preflight blockers before `set_status(in_progress)` (default profile).
 
 ## See also
