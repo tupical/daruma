@@ -154,6 +154,53 @@ impl RuleRepo {
         .transpose()
     }
 
+    /// Tasks currently `in_progress` inside a rule scope, oldest start first:
+    /// the read model of the `wip_limit` requirement (ADR-0015). Tenant = every
+    /// task of the workspace database, project = its tasks, plan = its member
+    /// tasks. A task scope has no ceiling to count (rejected at rule
+    /// creation), so it reads as empty.
+    pub async fn in_progress_task_ids(&self, scope: &RuleScope) -> Result<Vec<TaskId>> {
+        let status = daruma_domain::Status::InProgress.as_str();
+        let rows: Vec<(String,)> = match scope {
+            RuleScope::Tenant => {
+                sqlx::query_as(
+                    "SELECT id FROM tasks WHERE status = ? ORDER BY started_at ASC, id ASC",
+                )
+                .bind(status)
+                .fetch_all(&self.pool)
+                .await
+            }
+            RuleScope::Project { id } => {
+                sqlx::query_as(
+                    "SELECT id FROM tasks WHERE status = ? AND project_id = ? \
+                     ORDER BY started_at ASC, id ASC",
+                )
+                .bind(status)
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await
+            }
+            RuleScope::Plan { id } => {
+                // `plan_tasks` is keyed by (plan_id, task_id): no duplicates.
+                sqlx::query_as(
+                    "SELECT t.id FROM tasks t \
+                     JOIN plan_tasks pt ON pt.task_id = t.id \
+                     WHERE t.status = ? AND pt.plan_id = ? \
+                     ORDER BY t.started_at ASC, t.id ASC",
+                )
+                .bind(status)
+                .bind(id.to_string())
+                .fetch_all(&self.pool)
+                .await
+            }
+            RuleScope::Task { .. } => return Ok(Vec::new()),
+        }
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        rows.into_iter()
+            .map(|(id,)| id.parse().map_err(|_| CoreError::storage("bad tasks.id")))
+            .collect()
+    }
+
     pub async fn effective_rules(
         &self,
         chain: &[RuleScope],

@@ -200,6 +200,13 @@ pub enum Requirement {
         #[serde(default)]
         required_fields: Vec<String>,
     },
+    /// WIP ceiling (ADR-0015): fewer than `max_in_progress` *other* tasks of the
+    /// rule's own scope may be `in_progress` when a task starts. Satisfied from
+    /// task state, not from an evidence row — a pure read-only predicate over
+    /// the core read model, so there is nothing to submit. Only valid on
+    /// `task.before_start` and on a scope that holds several tasks (tenant,
+    /// project, plan); see [`Requirement::placement_error`].
+    WipLimit { max_in_progress: u8 },
 }
 
 fn default_min_version() -> String {
@@ -220,7 +227,33 @@ impl Requirement {
             Requirement::RiskCheck { .. } => "risk_check",
             Requirement::DocumentLinked => "document_linked",
             Requirement::IndependentTestVerification { .. } => "independent_test_verification",
+            Requirement::WipLimit { .. } => "wip_limit",
         }
+    }
+
+    /// Why this requirement cannot be placed on `trigger` at `scope`, if it
+    /// cannot. Checked at the command boundary (`CreateRule`/`UpdateRule`) so a
+    /// rule that could never be evaluated meaningfully is rejected instead of
+    /// stored. Only `wip_limit` constrains its placement: it counts tasks
+    /// already started, which is a question only a start can ask, and a task
+    /// scope holds a single task, so a ceiling there means nothing.
+    pub fn placement_error(&self, scope: &RuleScope, trigger: RuleTrigger) -> Option<String> {
+        let Requirement::WipLimit { max_in_progress } = self else {
+            return None;
+        };
+        if trigger != RuleTrigger::TaskBeforeStart {
+            return Some("wip_limit is only valid on trigger task.before_start".into());
+        }
+        if matches!(scope, RuleScope::Task { .. }) {
+            return Some(
+                "wip_limit needs a tenant, project or plan scope; a task scope holds one task"
+                    .into(),
+            );
+        }
+        if *max_in_progress == 0 {
+            return Some("wip_limit max_in_progress must be at least 1".into());
+        }
+        None
     }
 }
 
@@ -384,6 +417,50 @@ mod tests {
         let r: Requirement = serde_json::from_str(r#"{"type":"document_linked"}"#).unwrap();
         assert_eq!(r, Requirement::DocumentLinked);
         assert_eq!(r.type_str(), "document_linked");
+    }
+
+    #[test]
+    fn wip_limit_wire_form() {
+        let r: Requirement =
+            serde_json::from_str(r#"{"type":"wip_limit","max_in_progress":2}"#).unwrap();
+        assert_eq!(r, Requirement::WipLimit { max_in_progress: 2 });
+        assert_eq!(r.type_str(), "wip_limit");
+    }
+
+    #[test]
+    fn wip_limit_placement_is_start_only_and_multi_task_scope() {
+        let wip = Requirement::WipLimit { max_in_progress: 1 };
+        let project = RuleScope::Project {
+            id: ProjectId::new(),
+        };
+        assert_eq!(
+            wip.placement_error(&project, RuleTrigger::TaskBeforeStart),
+            None
+        );
+        assert_eq!(
+            wip.placement_error(&RuleScope::Tenant, RuleTrigger::TaskBeforeStart),
+            None
+        );
+        assert!(wip
+            .placement_error(&project, RuleTrigger::TaskBeforeComplete)
+            .is_some());
+        assert!(wip
+            .placement_error(
+                &RuleScope::Task { id: TaskId::new() },
+                RuleTrigger::TaskBeforeStart
+            )
+            .is_some());
+        assert!(Requirement::WipLimit { max_in_progress: 0 }
+            .placement_error(&project, RuleTrigger::TaskBeforeStart)
+            .is_some());
+        // Every other requirement keeps its free placement.
+        assert_eq!(
+            Requirement::DocumentLinked.placement_error(
+                &RuleScope::Task { id: TaskId::new() },
+                RuleTrigger::TaskBeforeComplete
+            ),
+            None
+        );
     }
 
     #[test]

@@ -3654,7 +3654,7 @@ fn schema_rule_create() -> Value {
                     "scope": {"type":"object","description":"{\"kind\":\"tenant\"} | {\"kind\":\"project\",\"id\":...} | plan | task."},
                     "trigger": {"type":"string","enum":["project.created","plan.created","plan.before_approve","task.created","task.before_start","task.before_complete","run.before_execute","run.before_complete"]},
                     "condition": {"type":["object","null"],"description":"Optional targeting: status_from/status_to."},
-                    "requirement": {"type":"object","description":"Tagged by `type` (read_artifact, impact_check, completion_note, …)."},
+                    "requirement": {"type":"object","description":"Tagged by `type` (read_artifact, impact_check, completion_note, …; wip_limit {max_in_progress}: task.before_start on tenant/project/plan only)."},
                     "mode": {"type":"string","enum":["off","recommendation","required"]},
                     "message": {"type":"string"},
                     "override_allowed": {"type":"boolean"},

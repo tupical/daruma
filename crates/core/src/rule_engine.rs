@@ -20,7 +20,9 @@
 //! unsatisfied one blocks. With no evidence repo wired the gate degrades to the
 //! honest v1 behaviour (every requirement unsatisfied → `required` blocks).
 //! Override (`force` + `override_reason`) is honoured per spec §1.5 for rules
-//! with `override_allowed=true`.
+//! with `override_allowed=true`. `wip_limit` (ADR-0015) is the one requirement
+//! read from task state rather than evidence: the in-progress tasks of the
+//! rule's scope, adjusted for the current batch.
 //!
 //! Zero-cost when no rules exist: a check whose scope chains have no matching
 //! rows resolves to `Allowed` after one indexed query per chain element, plus
@@ -37,9 +39,9 @@ use async_trait::async_trait;
 use daruma_api_dto::MutationWarning;
 use daruma_domain::{
     Actor, Condition, EvidenceKind, EvidenceReach, Requirement, Rule, RuleMode, RuleScope,
-    RuleTrigger,
+    RuleTrigger, Status,
 };
-use daruma_shared::{CoreError, PlanId, Result};
+use daruma_shared::{CoreError, PlanId, Result, TaskId};
 use serde_json::json;
 
 use crate::lifecycle_gate::{
@@ -119,6 +121,48 @@ impl RuleEngineGate {
         evidence
             .has_live_evidence(chain, kind, target.as_deref(), required_fields, min_version)
             .await
+    }
+
+    /// `wip_limit` read model (ADR-0015): the tasks holding a WIP slot of the
+    /// rule's own `scope` once this batch lands — persisted `in_progress`
+    /// tasks the batch does not move elsewhere, plus other tasks the batch
+    /// starts inside the scope. The task being started never counts against
+    /// itself. Pure reads, no clock (spec invariant 8).
+    async fn wip_occupied(&self, scope: &RuleScope, check: &GateCheck) -> Result<Vec<TaskId>> {
+        let leaves_batch = |id: &TaskId| {
+            check
+                .pending_statuses
+                .iter()
+                .any(|(task, status)| task == id && *status != Status::InProgress)
+        };
+        let mut occupied: Vec<TaskId> = self
+            .rules
+            .in_progress_task_ids(scope)
+            .await?
+            .into_iter()
+            .filter(|id| Some(*id) != check.task_id && !leaves_batch(id))
+            .collect();
+        for (task, status) in &check.pending_statuses {
+            if *status != Status::InProgress
+                || Some(*task) == check.task_id
+                || occupied.contains(task)
+            {
+                continue;
+            }
+            let in_scope = match scope {
+                RuleScope::Tenant => true,
+                RuleScope::Project { id } => matches!(
+                    self.rules.task_context(*task).await?,
+                    Some((Some(project), _)) if project == *id
+                ),
+                RuleScope::Plan { id } => self.rules.task_plan_ids(*task).await?.contains(id),
+                RuleScope::Task { .. } => false,
+            };
+            if in_scope {
+                occupied.push(*task);
+            }
+        }
+        Ok(occupied)
     }
 
     /// Build the scope chains (outermost → innermost) for a check: tenant,
@@ -231,10 +275,10 @@ impl LifecycleGate for RuleEngineGate {
         let chains = self.scope_chains(check).await?;
 
         let mut warnings = Vec::new();
-        // (rule, rejection reason, index of the chain it blocked on). A rule
-        // effective on several chains acts once: it blocks if any branch
-        // leaves it unsatisfied.
-        let mut acting: Vec<(Rule, Option<String>, usize)> = Vec::new();
+        // (rule, rejection reason, index of the chain it blocked on, tasks
+        // holding the slots of a `wip_limit`). A rule effective on several
+        // chains acts once: it blocks if any branch leaves it unsatisfied.
+        let mut acting: Vec<(Rule, Option<String>, usize, Vec<TaskId>)> = Vec::new();
         // Any blocked rule that forbids override poisons the whole override.
         let mut override_forbidden = false;
 
@@ -257,7 +301,27 @@ impl LifecycleGate for RuleEngineGate {
                 }
                 // Spec §1.3: a requirement backed by recorded evidence in this
                 // chain is satisfied, so the rule neither blocks nor warns here.
-                let evidence_check = self.requirement_satisfied(&rule, chain).await?;
+                // `wip_limit` is satisfied from task state instead (ADR-0015):
+                // it counts the rule's own scope, whichever chain matched.
+                let mut occupied = Vec::new();
+                let evidence_check = if let Requirement::WipLimit { max_in_progress } =
+                    rule.requirement
+                {
+                    occupied = self.wip_occupied(&rule.scope, check).await?;
+                    let satisfied = occupied.len() < usize::from(max_in_progress);
+                    EvidenceCheck {
+                            satisfied,
+                            reason: (!satisfied).then(|| {
+                                format!(
+                                    "{} of {max_in_progress} in_progress slots in the {} scope are taken",
+                                    occupied.len(),
+                                    rule.scope.kind()
+                                )
+                            }),
+                        }
+                } else {
+                    self.requirement_satisfied(&rule, chain).await?
+                };
                 if evidence_check.satisfied {
                     continue;
                 }
@@ -270,24 +334,29 @@ impl LifecycleGate for RuleEngineGate {
                             .expect("advisory observation");
                         if !observation.triggered {
                             observation.triggered = true;
-                            warnings.push(rule_warning(&rule));
+                            let mut warning = rule_warning(&rule);
+                            if let Requirement::WipLimit { .. } = rule.requirement {
+                                warning.details["in_progress_task_ids"] = json!(occupied);
+                                warning.details["reason"] = json!(evidence_check.reason);
+                            }
+                            warnings.push(warning);
                         }
                     }
                     RuleMode::Required => {
-                        if acting.iter().any(|(r, _, _)| r.id == rule.id) {
+                        if acting.iter().any(|(r, _, _, _)| r.id == rule.id) {
                             continue;
                         }
                         if !rule.override_allowed {
                             override_forbidden = true;
                         }
-                        acting.push((rule, evidence_check.reason, chain_index));
+                        acting.push((rule, evidence_check.reason, chain_index, occupied));
                     }
                 }
             }
         }
         let blocked: Vec<(&Rule, Option<String>)> = acting
             .iter()
-            .map(|(rule, reason, _)| (rule, reason.clone()))
+            .map(|(rule, reason, _, _)| (rule, reason.clone()))
             .collect();
 
         if blocked.is_empty() {
@@ -347,12 +416,13 @@ impl LifecycleGate for RuleEngineGate {
         // `latest` ack must carry), since it is not derivable from the rule.
         let unblock: Vec<serde_json::Value> = acting
             .iter()
-            .map(|(rule, reason, chain_index)| {
+            .map(|(rule, reason, chain_index, occupied)| {
                 let mut hint = unblock_hint(
                     rule,
                     &chains[*chain_index],
                     check.trigger,
                     &check.pending_plans,
+                    occupied,
                 );
                 if let (Some(reason), Some(hint)) = (reason, hint.as_object_mut()) {
                     hint.insert("reason".into(), json!(reason));
@@ -442,6 +512,9 @@ fn requirement_evidence(
         // Never consulted: satisfied from document state (`requirement_satisfied`)
         // and hinted separately (`unblock_hint`).
         Requirement::DocumentLinked => (EvidenceKind::ArtifactCreated, None, None, None),
+        // Never consulted: satisfied from task state (`wip_occupied`) and
+        // hinted separately (`unblock_hint`).
+        Requirement::WipLimit { .. } => (EvidenceKind::ArtifactCreated, None, None, None),
         Requirement::AcceptanceCriteriaRequired => {
             (EvidenceKind::AcceptanceCriteriaDefined, None, None, None)
         }
@@ -574,6 +647,7 @@ fn unblock_hint(
     chain: &[RuleScope],
     trigger: TriggerEvent,
     staged_plans: &[(PlanId, Option<PlanId>)],
+    wip_occupied: &[TaskId],
 ) -> serde_json::Value {
     let (kind, target, _, _) = requirement_evidence(&rule.requirement);
     if let Requirement::IndependentTestVerification {
@@ -597,6 +671,25 @@ fn unblock_hint(
             "requirement_type": "document_linked",
             "reach": "self_only",
             "note": "no evidence to submit: create a document and link it to this task (LinkDocumentToTask / daruma_doc_link_task); archived documents do not count"
+        });
+    }
+    // ADR-0015 §4: a WIP ceiling has no evidence; the three ways out are a
+    // freed slot, a reconciled stuck task, or an explicit override.
+    if let Requirement::WipLimit { max_in_progress } = rule.requirement {
+        let override_way = if rule.override_allowed {
+            "or pass force + override_reason"
+        } else {
+            "this rule forbids override"
+        };
+        return json!({
+            "rule_key": rule.rule_key,
+            "requirement_type": "wip_limit",
+            "max_in_progress": max_in_progress,
+            "scope": rule.scope,
+            "in_progress_task_ids": wip_occupied,
+            "note": format!(
+                "no evidence to submit: complete one of in_progress_task_ids or return it to todo, reopen a stuck one without a live claim (daruma_stuck / reconciliation), {override_way}"
+            ),
         });
     }
     let reach = kind.reach();
