@@ -716,8 +716,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_artifact_deprecate",
             "Deprecate artifact",
-            "Soft-deprecate an artifact. Repeated deprecation is a successful no-op.",
-            schema_artifact_id(),
+            "Soft-deprecate an artifact. Needs `reason` unless a `supersedes` relation names the replacement. Repeated deprecation is a successful no-op.",
+            schema_artifact_deprecate(),
             Dom::WorkspaceGraph, F, X, Ann::WriteIdem,
         ),
         tool(
@@ -738,7 +738,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_artifact_list",
             "List artifacts",
             "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
-             owner, version. Use to answer \"who owns this\" before writing.",
+             owner, version. Use to answer \"who owns this\" before writing. Deprecated records \
+             are hidden unless `include_superseded` or `status=deprecated`.",
             schema_artifact_list(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
@@ -3428,8 +3429,12 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_artifact_deprecate" => {
             let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
+            let body = match args.get("reason").and_then(|v| v.as_str()) {
+                Some(reason) => json!({ "reason": reason }),
+                None => json!({}),
+            };
             client
-                .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), json!({}))
+                .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), body)
                 .await
         }
         name @ ("daruma_artifact_relation_add" | "daruma_artifact_relation_remove") => {
@@ -3455,6 +3460,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
                 params.push(("status", urlencode(s)));
+            }
+            if let Some(true) = args.get("include_superseded").and_then(|v| v.as_bool()) {
+                params.push(("include_superseded", "true".to_string()));
             }
             let qs = params
                 .iter()
@@ -4781,16 +4789,6 @@ fn schema_artifact_register() -> Value {
     })
 }
 
-fn schema_artifact_id() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "artifact_id": {"type":"string","description":"Artifact id."}
-        },
-        "required": ["artifact_id"]
-    })
-}
-
 fn schema_artifact_update() -> Value {
     json!({
         "type": "object",
@@ -4840,8 +4838,20 @@ fn schema_artifact_list() -> Value {
                 "type":"string",
                 "enum":["pending","active","committed","deprecated"],
                 "description":"Filter by lifecycle status."
-            }
+            },
+            "include_superseded": {"type":"boolean","default":false,"description":"Include deprecated records."}
         }
+    })
+}
+
+fn schema_artifact_deprecate() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Artifact id."},
+            "reason":      {"type":"string","description":"Why it is retired; optional when a supersedes relation exists."}
+        },
+        "required": ["artifact_id"]
     })
 }
 

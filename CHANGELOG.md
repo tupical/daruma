@@ -4,6 +4,21 @@ This file tracks public, user-visible changes for Daruma releases.
 
 For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
+## Unreleased
+
+### Superseded artifacts are hidden on read (ADR-0019)
+
+- **Breaking:** `GET /v1/artifacts` and `daruma_artifact_list` without `status`
+  return only live artifacts. Pass `include_superseded=true` for the full
+  registry; `status=deprecated` still lists deprecated ones.
+- Adding a `supersedes` relation (`from` replaces `to`) deprecates `to` in the
+  same command with reason `superseded by <from uri>`. A deprecated artifact
+  cannot supersede another.
+- `POST /v1/artifacts/{id}/deprecate` and `daruma_artifact_deprecate` accept
+  `reason`; it is required unless an incoming `supersedes` relation names the
+  replacement. `POST /v1/artifacts/{id}/status` to `deprecated` needs that
+  relation.
+
 ## 0.4.0 — 2026-08-28
 
 Plan-only intake (ADR-0007), lifecycle rules with evidence-gated escapes,

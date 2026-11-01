@@ -569,9 +569,13 @@ pub enum Command {
         version: Option<String>,
     },
 
-    /// Soft-deprecate an artifact. Repeated calls are no-ops.
+    /// Soft-deprecate an artifact. Repeated calls are no-ops. Needs a
+    /// non-empty `reason` unless an incoming `supersedes` relation already
+    /// names the replacement (ADR-0019 п.4).
     DeprecateArtifact {
         artifact_id: ArtifactId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 
     /// Add a typed directional relation between two artifacts.

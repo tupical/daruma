@@ -3944,7 +3944,10 @@ impl CommandHandler {
                 }])
             }
 
-            Command::DeprecateArtifact { artifact_id } => {
+            Command::DeprecateArtifact {
+                artifact_id,
+                reason,
+            } => {
                 let repo = require_artifacts(&self.artifacts)?;
                 let current = repo.get(artifact_id).await?.ok_or_else(|| {
                     CoreError::not_found(format!("artifact {artifact_id} not found"))
@@ -3952,9 +3955,15 @@ impl CommandHandler {
                 if current.status == daruma_domain::ArtifactStatus::Deprecated {
                     return Ok(vec![]);
                 }
+                let reason = reason
+                    .map(|reason| reason.trim().to_string())
+                    .filter(|reason| !reason.is_empty());
+                if reason.is_none() {
+                    require_artifact_replacement(repo, artifact_id).await?;
+                }
                 Ok(vec![Event::ArtifactDeprecated {
                     artifact_id,
-                    reason: None,
+                    reason,
                     at: time::now(),
                 }])
             }
@@ -3966,11 +3975,14 @@ impl CommandHandler {
                         "artifact relation endpoints must differ",
                     ));
                 }
-                for artifact_id in [from, to] {
-                    repo.get(artifact_id).await?.ok_or_else(|| {
-                        CoreError::not_found(format!("artifact {artifact_id} not found"))
-                    })?;
-                }
+                let from_artifact = repo
+                    .get(from)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("artifact {from} not found")))?;
+                let to_artifact = repo
+                    .get(to)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("artifact {to} not found")))?;
                 if repo
                     .relations_for(from)
                     .await?
@@ -3982,7 +3994,13 @@ impl CommandHandler {
                         kind.as_str()
                     )));
                 }
-                Ok(vec![Event::ArtifactRelationAdded {
+                let supersedes = kind == daruma_domain::ArtifactRelationKind::Supersedes;
+                if supersedes && from_artifact.status == daruma_domain::ArtifactStatus::Deprecated {
+                    return Err(CoreError::validation(format!(
+                        "deprecated artifact {from} cannot supersede {to}"
+                    )));
+                }
+                let mut events = vec![Event::ArtifactRelationAdded {
                     relation: ArtifactRelation {
                         id: daruma_shared::ArtifactRelationId::new(),
                         from_id: from,
@@ -3990,7 +4008,17 @@ impl CommandHandler {
                         kind,
                         created_at: time::now(),
                     },
-                }])
+                }];
+                // ADR-0019 п.3: declaring the replacement retires the old
+                // record in the same command, like `RecordEvidence{supersedes}`.
+                if supersedes && to_artifact.status != daruma_domain::ArtifactStatus::Deprecated {
+                    events.push(Event::ArtifactDeprecated {
+                        artifact_id: to,
+                        reason: Some(format!("superseded by {}", from_artifact.uri)),
+                        at: time::now(),
+                    });
+                }
+                Ok(events)
             }
 
             Command::RemoveArtifactRelation { from, to, kind } => {
@@ -4039,6 +4067,9 @@ impl CommandHandler {
                 if from == to {
                     // Already in the requested status — no-op.
                     return Ok(vec![]);
+                }
+                if to == daruma_domain::ArtifactStatus::Deprecated {
+                    require_artifact_replacement(repo, artifact_id).await?;
                 }
                 Ok(vec![Event::ArtifactStatusChanged {
                     artifact_id,
@@ -4505,6 +4536,28 @@ fn require_artifacts(artifacts: &Option<Arc<ArtifactRepo>>) -> Result<&Arc<Artif
     artifacts
         .as_ref()
         .ok_or_else(|| CoreError::storage("artifact repository not configured"))
+}
+
+/// ADR-0019 п.4: a deprecation without a reason must point at its replacement
+/// through an incoming `supersedes` relation.
+async fn require_artifact_replacement(
+    repo: &ArtifactRepo,
+    artifact_id: daruma_shared::ArtifactId,
+) -> Result<()> {
+    let replaced = repo
+        .relations_for(artifact_id)
+        .await?
+        .iter()
+        .any(|relation| {
+            relation.to_id == artifact_id
+                && relation.kind == daruma_domain::ArtifactRelationKind::Supersedes
+        });
+    if replaced {
+        return Ok(());
+    }
+    Err(CoreError::validation(format!(
+        "deprecating artifact {artifact_id} needs a reason or an incoming supersedes relation"
+    )))
 }
 
 /// Fetch the document or return `not_found`. Used by every Document-mutation

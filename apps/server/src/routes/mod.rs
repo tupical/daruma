@@ -2671,9 +2671,13 @@ struct ArtifactListQuery {
     status: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    /// Include deprecated artifacts when no `status` is given (ADR-0019).
+    #[serde(default)]
+    include_superseded: bool,
 }
 
 /// `GET /v1/artifacts` — list artifacts with derived `kind` and current lease holder.
+/// Deprecated artifacts are hidden unless `include_superseded=true` or `status=deprecated`.
 async fn list_artifacts(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -2701,7 +2705,7 @@ async fn list_artifacts(
 
     let artifacts = state
         .artifacts
-        .list(project_id, task_id, status)
+        .list(project_id, task_id, status, q.include_superseded)
         .await
         .map_err(ApiError::from)?;
 
@@ -3101,17 +3105,29 @@ async fn commit_artifact_write(
     .await
 }
 
-/// `POST /v1/artifacts/{id}/deprecate` — soft-deprecate an artifact.
+#[derive(Deserialize)]
+struct DeprecateArtifactBody {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// `POST /v1/artifacts/{id}/deprecate` — soft-deprecate an artifact. Body
+/// `{reason}` is required unless an incoming `supersedes` relation exists.
 async fn deprecate_artifact(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Path(id_str): Path<String>,
+    body: Option<Json<DeprecateArtifactBody>>,
 ) -> Result<impl IntoResponse, ApiError> {
     let artifact_id = parse_id(id_str, "artifact id")?;
+    let reason = body.and_then(|Json(body)| body.reason);
     dispatch_artifact_mutation(
         &auth,
         &state,
-        Command::DeprecateArtifact { artifact_id },
+        Command::DeprecateArtifact {
+            artifact_id,
+            reason,
+        },
         json!({ "artifact_id": artifact_id }),
     )
     .await
