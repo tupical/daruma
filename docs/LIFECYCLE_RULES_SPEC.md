@@ -39,7 +39,10 @@ side-effects, нет цепочек «if X then do Y». Единственные
 (2) у Rule нет полей actions/side_effects/webhooks;
 (3) requirement не порождает вложенных команд или мутаций;
 (4) проверка правила read-only — не меняет другие сущности;
-(5) RuleFired (включая `decision=overridden`) — только audit-событие, не точка запуска логики.
+(5) RuleFired (включая `decision=overridden`) — только audit-событие, не точка запуска логики;
+(6) требование, удовлетворяемое состоянием (а не Evidence), обязано быть
+чистым read-only предикатом над read-моделью ядра (`document_linked`,
+`wip_limit`).
 
 ## 1. Типы
 
@@ -158,6 +161,7 @@ rule engine достаёт из строки задачи `project_id` (project-
 | `acceptance_criteria_required`  | `acceptance_criteria_defined`  | —                                               |
 | `risk_check`                    | `risk_check_completed`         | `target`, `required_fields[]`                   |
 | `document_linked`               | — (состояние документов)       | —                                               |
+| `wip_limit`                     | — (состояние задач scope)      | `max_in_progress` (≥ 1)                         |
 
 `document_linked` — исключение из 1:1: доказательство — сама привязка, а не
 Evidence. Требование выполнено, если у проверяемой задачи есть ≥1 документ с
@@ -165,6 +169,29 @@ Evidence. Требование выполнено, если у проверяе�
 или `task_id` при `CreateDocument`) и статусом не `archived`. Отправлять
 нечего: `unblock[]` для него несёт `note` без объекта `evidence`. Имеет смысл
 на `task.before_complete`; на других триггерах без task scope не выполняется.
+
+`wip_limit` (ADR-0015, meisei.ru `adr/0015-wip-ceiling-on-task-before-start.md`)
+— WIP-потолок, второе исключение из 1:1: удовлетворённость — состояние scope,
+evidence не требуется. Требование выполнено, когда число задач `in_progress`
+в scope **самого правила** (tenant — все задачи воркспейса, project — задачи
+проекта, plan — задачи-члены плана), не считая стартующую, строго меньше
+`max_in_progress`. Считается состояние после текущего батча: задачи, которые
+тот же батч уводит из `in_progress`, слот не занимают, а другие задачи,
+которые он стартует в scope, — занимают (`BulkSetStatus` не проскакивает
+потолок). `in_review` слот не занимает. Застрявшая `in_progress` без claim
+слот занимает, пока её не переоткроют (реконсиляция, `daruma_stuck`).
+Валидация ядра (`CreateRule`/`UpdateRule`): только триггер
+`task.before_start`, scope не `task`, `max_in_progress ≥ 1`. Read-модель —
+та же, из которой гейт уже берёт проект и планы задачи (`RuleRepo`), поэтому
+третьей зависимости у `RuleEngineGate` нет и «неподключённого» режима, в
+котором требование молча неудовлетворено, не бывает. `unblock[]` для него
+несёт `max_in_progress`, `scope`, `in_progress_task_ids` (занятые слоты) и
+`note` с тремя выходами: завершить или вернуть в `todo` занятую задачу,
+переоткрыть застрявшую, либо `force` + `override_reason` при
+`override_allowed`; предупреждение `recommendation` несёт тот же
+`in_progress_task_ids`. Проектный scope работает, потому что гейт сам
+дополняет статусный `GateCheck` проектом и планами задачи из проекции
+(статусное событие несёт только `task_id`).
 
 ```rust
 struct Evidence {
