@@ -270,6 +270,103 @@ test("executor prompt carries the rerun-before-edit rule for failed checks (ADR-
   }
 });
 
+test("check environment prefers the concrete CI run, else host and toolchain (ADR-0016)", () => {
+  const host = (env) => _internal.checkEnvironment({ env, host: "av-wsl", toolchain: "rustc-1.89.0" });
+  assert.deepEqual(host({}), { env_kind: "host", env_ref: "av-wsl:rustc-1.89.0" });
+  assert.deepEqual(
+    host({ GITHUB_RUN_ID: "42", GITHUB_REPOSITORY: "tupical/daruma", GITHUB_RUN_ATTEMPT: "2" }),
+    { env_kind: "ci", env_ref: "https://github.com/tupical/daruma/actions/runs/42/attempts/2" },
+  );
+  assert.deepEqual(host({ GITHUB_RUN_ID: "42" }), { env_kind: "ci", env_ref: "github-run:42" });
+  assert.deepEqual(
+    host({ CI_JOB_URL: "https://gitlab.example/g/p/-/jobs/7", CI_PIPELINE_URL: "https://gitlab.example/g/p/-/pipelines/3" }),
+    { env_kind: "ci", env_ref: "https://gitlab.example/g/p/-/jobs/7" },
+  );
+  assert.deepEqual(
+    host({ CI_PIPELINE_URL: "https://ci.example/repos/1/pipeline/118" }),
+    { env_kind: "ci", env_ref: "https://ci.example/repos/1/pipeline/118" },
+  );
+  // A bare CI flag names no run: the check stays a host check.
+  assert.equal(host({ CI: "true" }).env_kind, "host");
+});
+
+test("executor prompt names the check environment only when one is known (ADR-0016)", () => {
+  const task = { id: "task", title: "Title", description: "Statement" };
+  const plain = _internal.executePromptFor(task);
+  assert(!plain.includes("env_kind"));
+  const prompt = _internal.executePromptFor(task, { env_kind: "host", env_ref: "av-wsl:rustc-1.89.0" });
+  assert(prompt.startsWith("Title\n\nStatement"));
+  assert(prompt.includes("env_kind `host`, env_ref `av-wsl:rustc-1.89.0`"));
+  assert(prompt.includes("never claim `ci` for a local run"));
+  assert(prompt.includes("rerun only the failed target once"), "ADR-0013 rule kept");
+});
+
+test("projectToolchain reads rustc for a Cargo project and falls back to node", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(await _internal.projectToolchain(dir), `node-${process.versions.node}`);
+    const bin = join(dir, "bin");
+    await mkdir(bin);
+    await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.89.0 (29483883e 2025-08-04)'\n");
+    await chmod(join(bin, "rustc"), 0o755);
+    await writeFile(join(dir, "Cargo.toml"), "[workspace]\n");
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      assert.equal(await _internal.projectToolchain(dir), "rustc-1.89.0");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+});
+
+test("executeOnce hands omc a prompt naming this host's check environment", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "bin");
+    const cwd = join(dir, "repo");
+    const promptFile = join(dir, "prompt.txt");
+    await mkdir(bin);
+    await mkdir(cwd);
+    await writeFile(join(cwd, "Cargo.toml"), "[workspace]\n");
+    await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.89.0 (29483883e 2025-08-04)'\n");
+    await writeFile(join(bin, "omc"), `#!/bin/sh
+if [ "$1 $2" = "team api" ]; then
+  case "$3" in
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"completed":1}}}}' ;;
+    *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "team shutdown" ]; then exit 0; fi
+printf '%s' "$3" > ${JSON.stringify(promptFile)}
+mkdir -p .omc/state/team/env-team
+`);
+    await chmod(join(bin, "rustc"), 0o755);
+    await chmod(join(bin, "omc"), 0o755);
+    const saved = {};
+    for (const key of ["PATH", "GITHUB_RUN_ID", "CI_JOB_URL", "CI_PIPELINE_URL"]) saved[key] = process.env[key];
+    process.env.PATH = `${bin}:${saved.PATH}`;
+    delete process.env.GITHUB_RUN_ID;
+    delete process.env.CI_JOB_URL;
+    delete process.env.CI_PIPELINE_URL;
+    let result;
+    try {
+      result = await _internal.executeOnce({
+        task: { id: "task", title: "Task" }, workers: 1, agentType: "claude", cwd, stderrLog: null,
+        stdout: { isTTY: false, write() {} }, write() {},
+      });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    assert.equal(result.ok, true);
+    const { hostname } = await import("node:os");
+    const prompt = await readFile(promptFile, "utf8");
+    assert(prompt.includes(`env_kind \`host\`, env_ref \`${hostname()}:rustc-1.89.0\``), prompt);
+  });
+});
+
 test("terminal task in server projection cannot be reopened by stale executor", async () => {
   const mcp = mockMcp({ tasks: { task: { id: "task", status: "done" } } });
   const outcome = await _internal.executeTaskWithRetries({
