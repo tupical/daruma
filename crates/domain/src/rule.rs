@@ -214,6 +214,25 @@ fn default_min_version() -> String {
 }
 
 impl Requirement {
+    /// Every `type` tag, in declaration order — the clause codes of this
+    /// policy pack (ADR-0018). A code here without a counterexample in the
+    /// rule-engine tests is a red test (`core/tests/it/rule_engine.rs`,
+    /// `every_requirement_type_has_a_counterexample`); a variant missing here
+    /// is a red test in this crate.
+    pub const ALL_TYPES: &'static [&'static str] = &[
+        "read_artifact",
+        "create_artifact",
+        "impact_check",
+        "decision_record",
+        "completion_note",
+        "owner_required",
+        "acceptance_criteria_required",
+        "independent_test_verification",
+        "document_linked",
+        "risk_check",
+        "wip_limit",
+    ];
+
     /// Stable discriminant (matches the spec `Requirement.type` tag).
     pub fn type_str(&self) -> &'static str {
         match self {
@@ -410,6 +429,23 @@ mod tests {
         let back: Requirement = serde_json::from_str(&json).unwrap();
         assert_eq!(back, r);
         assert_eq!(r.type_str(), "completion_note");
+    }
+
+    /// ADR-0018: `ALL_TYPES` is the variant list serde derives, not a copy
+    /// that may drift — serde names every variant when it rejects a tag.
+    #[test]
+    fn all_types_lists_every_variant_in_declaration_order() {
+        let err = serde_json::from_str::<Requirement>(r#"{"type":"__probe__"}"#)
+            .expect_err("unknown tag")
+            .to_string();
+        let (_, expected) = err
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("serde lists the variants, got: {err}"));
+        let variants: Vec<&str> = expected
+            .split(", ")
+            .map(|v| v.split('`').nth(1).expect("backticked variant"))
+            .collect();
+        assert_eq!(variants, Requirement::ALL_TYPES);
     }
 
     #[test]
