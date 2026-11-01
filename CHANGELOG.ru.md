@@ -7,6 +7,21 @@
 оставляем в `git log`. Английский релизный changelog —
 [CHANGELOG.md](CHANGELOG.md).
 
+## Не выпущено
+
+### Замещённые артефакты скрыты при чтении (ADR-0019)
+
+- **Несовместимо:** `GET /v1/artifacts` и `daruma_artifact_list` без `status`
+  возвращают только живые артефакты. Полный реестр —
+  `include_superseded=true`; `status=deprecated` по-прежнему отдаёт
+  депрекированные.
+- Связь `supersedes` (`from` заменяет `to`) в той же команде депрекирует `to`
+  с причиной `superseded by <uri from>`. Депрекированный артефакт не может
+  никого замещать.
+- `POST /v1/artifacts/{id}/deprecate` и `daruma_artifact_deprecate` принимают
+  `reason`; без входящей связи `supersedes` причина обязательна. Перевод в
+  `deprecated` через `POST /v1/artifacts/{id}/status` требует такой связи.
+
 ## 2026-08-28 — релиз 0.4.0
 
 Plan-only intake (ADR-0007), lifecycle-правила с evidence-гейтами и
