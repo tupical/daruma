@@ -47,7 +47,7 @@ repeat from plan_progress
 | 4 | `daruma_run_start_step` | `{ run_id, task_id }` — opens the attempt **before** the work and before any status transition of this pass (see below) |
 | 5 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
 | 6 | *(work)* | Agent edits codebase; no direct DB writes |
-| 7 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
+| 7 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment. `comment` (string or `{ body, kind? }`) is an alias of `result_summary` that is also posted as a task comment (`kind` defaults to `outcome`) once the completion is accepted; a different `result_summary` beside it is rejected |
 | 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
 | 9 | goto 2 | |
 | ∞ | `daruma_run_complete` | When plan drained |

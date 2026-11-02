@@ -2,8 +2,9 @@
 //! `daruma-next` prompt told it to, `daruma_complete … comment="<summary>"`,
 //! against a real inline server. The work summary must reach the durable
 //! `task_completed` event as `completion_note.result_summary` instead of
-//! being dropped; a conflicting `result_summary` must fail before any write;
-//! and the served prompt now names `result_summary`.
+//! being dropped, and read back as an `outcome` comment of the task; a
+//! conflicting `result_summary` must fail before any write; and the served
+//! prompt now names `result_summary`.
 
 use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolProfile};
 use serde_json::{json, Value};
@@ -11,11 +12,7 @@ use serde_json::{json, Value};
 mod common;
 use common::{spawn_server, test_app};
 
-async fn dispatch(
-    client: &ApiClient,
-    method: &str,
-    params: Value,
-) -> daruma_mcp::JsonRpcResponse {
+async fn dispatch(client: &ApiClient, method: &str, params: Value) -> daruma_mcp::JsonRpcResponse {
     let req = JsonRpcRequest {
         jsonrpc: "2.0".into(),
         id: Some(json!(1)),
@@ -137,7 +134,10 @@ async fn agent_closing_with_comment_keeps_its_work_summary() {
     )
     .await;
     let conflict = format!("{conflict:?}");
-    assert!(conflict.contains("conflicting completion summaries"), "{conflict}");
+    assert!(
+        conflict.contains("conflicting completion summaries"),
+        "{conflict}"
+    );
     assert!(completions_of(&client, &task_id).await.is_empty());
     let open = call_tool(&client, "daruma_get", json!({ "id": task_id })).await;
     assert_ne!(open["status"], "done", "{open}");
@@ -161,8 +161,22 @@ async fn agent_closing_with_comment_keeps_its_work_summary() {
         completions[0]["completion_note"]["result_summary"], summary,
         "{completions:?}"
     );
+    let read = call_tool(
+        &client,
+        "daruma_get",
+        json!({ "id": task_id, "comments": true }),
+    )
+    .await;
+    let comments = read["comments"]
+        .as_array()
+        .or_else(|| read["comments"]["items"].as_array())
+        .cloned()
+        .unwrap_or_else(|| panic!("comments: {read}"));
+    let summaries: Vec<&Value> = comments.iter().filter(|c| c["body"] == summary).collect();
+    assert_eq!(summaries.len(), 1, "{comments:?}");
+    assert_eq!(summaries[0]["kind"], "outcome", "{comments:?}");
     println!(
-        "TRACE run_id={run_id} task_id={task_id} task_completed={}",
-        completions[0]
+        "TRACE run_id={run_id} task_id={task_id} task_completed={} comment={}",
+        completions[0], summaries[0]
     );
 }

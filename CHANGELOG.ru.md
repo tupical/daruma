@@ -9,6 +9,16 @@
 
 ## Не выпущено
 
+### `daruma_complete` больше не теряет сводку из `comment`
+
+- `daruma_complete … comment="<сводка>"` — так советовали промпт
+  `daruma-next` и команды next для Claude/Codex/Cursor — теперь сохраняет
+  сводку: она записывается в `note.result_summary` и после принятого
+  завершения появляется комментарием задачи с видом `outcome`. `comment`
+  принимает и объект `{body, kind}`, как у `daruma_set_status`; другой
+  `result_summary` рядом с ним отклоняется до какой-либо записи. В промптах
+  теперь указан `result_summary`.
+
 ### Замещённые артефакты скрыты при чтении (ADR-0019)
 
 - **Несовместимо:** `GET /v1/artifacts` и `daruma_artifact_list` без `status`

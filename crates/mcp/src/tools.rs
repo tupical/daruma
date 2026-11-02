@@ -2192,8 +2192,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                     note.insert(key.to_string(), json!(v));
                 }
             }
-            if let Some(summary) = complete_comment_summary(&args, note.get("result_summary"))? {
-                note.insert("result_summary".to_string(), json!(summary));
+            let comment = completion_comment(&args)?;
+            if let Some(comment) = &comment {
+                match note.get("result_summary").and_then(Value::as_str).map(str::trim) {
+                    None | Some("") => {
+                        note.insert("result_summary".to_string(), json!(comment.body));
+                    }
+                    Some(summary) if summary == comment.body => {}
+                    Some(_) => anyhow::bail!(
+                        "conflicting completion summaries: `comment` is an alias of `result_summary`; pass one"
+                    ),
+                }
             }
             if let Some(arts) = args.get("related_artifacts").and_then(|v| v.as_array()) {
                 if !arts.is_empty() {
@@ -2204,7 +2213,27 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if !note.is_empty() {
                 cmd["note"] = Value::Object(note);
             }
-            client.post_command(cmd).await
+            let mut result = client.post_command(cmd).await?;
+            // Like the set_status comment fusion, the summary becomes a task
+            // comment only once the completion itself is accepted. A failed
+            // post is reported, not hidden: the note still carries the text.
+            if let Some(comment) = comment.filter(|_| result["success"] != false) {
+                let posted = client
+                    .post_json(
+                        &format!("/v1/tasks/{id}/comments"),
+                        json!({"body": comment.body, "kind": comment.kind}),
+                    )
+                    .await;
+                if let Some(object) = result.as_object_mut() {
+                    match posted {
+                        Ok(posted) => object.insert("comment".into(), posted),
+                        Err(error) => {
+                            object.insert("comment_error".into(), json!(error.to_string()))
+                        }
+                    };
+                }
+            }
+            Ok(result)
         }
         "daruma_delete" => {
             let id = resolve_task_id(&args, "id")?;
@@ -3625,36 +3654,41 @@ fn schema_bounded_read_ext(field: &str, id_desc: Option<&str>, with_dedup: bool)
     })
 }
 
-/// `comment` on `daruma_complete` is an alias of `result_summary`: the shipped
-/// next-prompts and client commands told agents to pass the work summary as
-/// `comment`, and dropping it silently lost that summary. Accepts a string or
-/// the `{body}` object `daruma_set_status` uses. Returns the summary to store
-/// when `result_summary` was not given; a different explicit `result_summary`
-/// is rejected before any request instead of losing either text.
-fn complete_comment_summary(
-    args: &Map<String, Value>,
-    result_summary: Option<&Value>,
-) -> anyhow::Result<Option<String>> {
-    let comment = match args.get("comment") {
+/// `comment` on `daruma_complete`: the work summary as the shipped
+/// next-prompts and client commands passed it. It is an alias of
+/// `result_summary` (dropping it silently lost that summary) and is also kept
+/// as a task comment, so the summary reads back in the task's comments.
+struct CompletionComment {
+    body: String,
+    kind: &'static str,
+}
+
+/// Accepts a string or the `{body, kind?}` object `daruma_set_status` uses;
+/// `kind` defaults to `outcome`. A blank comment is no comment.
+fn completion_comment(args: &Map<String, Value>) -> anyhow::Result<Option<CompletionComment>> {
+    let (body, kind) = match args.get("comment") {
         None | Some(Value::Null) => return Ok(None),
-        Some(Value::String(text)) => text.as_str(),
-        Some(Value::Object(obj)) => obj
-            .get("body")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("`comment.body` (string) is required"))?,
+        Some(Value::String(text)) => (text.as_str(), None),
+        Some(Value::Object(obj)) => (
+            obj.get("body")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("`comment.body` (string) is required"))?,
+            obj.get("kind").and_then(Value::as_str),
+        ),
         Some(_) => anyhow::bail!("`comment` must be a string or an object with `body`"),
     };
-    let comment = comment.trim();
-    if comment.is_empty() {
+    let body = body.trim();
+    if body.is_empty() {
         return Ok(None);
     }
-    match result_summary.and_then(Value::as_str).map(str::trim) {
-        None | Some("") => Ok(Some(comment.to_string())),
-        Some(summary) if summary == comment => Ok(None),
-        Some(_) => anyhow::bail!(
-            "conflicting completion summaries: `comment` is an alias of `result_summary`; pass one"
-        ),
-    }
+    let kind = match kind {
+        Some(raw) => normalise_comment_kind(raw)?,
+        None => "outcome",
+    };
+    Ok(Some(CompletionComment {
+        body: body.to_string(),
+        kind,
+    }))
 }
 
 /// Complete a task with an optional completion note. The note fields are all
