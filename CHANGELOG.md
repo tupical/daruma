@@ -6,6 +6,16 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### `daruma_complete` keeps the `comment` summary
+
+- `daruma_complete … comment="<summary>"`, as the `daruma-next` prompt and
+  the Claude/Codex/Cursor next commands used to suggest, no longer drops the
+  summary: it is stored as `note.result_summary` and posted as an `outcome`
+  task comment once the completion is accepted. `comment` also takes the
+  `{body, kind}` object of `daruma_set_status`; a different `result_summary`
+  beside it is rejected before anything is written. The prompts now name
+  `result_summary`.
+
 ### Superseded artifacts are hidden on read (ADR-0019)
 
 - **Breaking:** `GET /v1/artifacts` and `daruma_artifact_list` without `status`
