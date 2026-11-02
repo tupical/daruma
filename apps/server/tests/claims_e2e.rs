@@ -69,12 +69,13 @@ async fn get_json(app: &axum::Router, token: &str, uri: &str) -> (StatusCode, Va
 }
 
 /// Create a task and return its UUID string (raw UUID, no `tsk_` prefix).
+/// Todo, not the default inbox: drain only hands out triaged work.
 async fn create_task(app: &axum::Router, token: &str) -> String {
     let (s, ev) = post_json(
         app,
         token,
         "/v1/commands",
-        r#"{"command":{"type":"create_task","task":{"title":"Claim target"}}}"#,
+        r#"{"command":{"type":"create_task","task":{"title":"Claim target","status":"todo"}}}"#,
     )
     .await;
     assert_eq!(s, StatusCode::OK, "create_task failed: {ev}");
@@ -730,6 +731,92 @@ async fn owner_retry_after_lost_response_is_noop_and_foreign_retry_conflicts() {
     );
 }
 
+// docs/PLAN_RECONCILIATION.md: run ownership is not bypassed. Another
+// RunWrite token cannot complete an active owned run (403, run stays active,
+// plan stays open); the owner still can.
+#[tokio::test]
+async fn foreign_complete_of_active_run_is_forbidden_and_owner_completes() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps.clone(), ProjectFilter::All).await;
+    let (foreign_token, _) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let complete = format!("/v1/runs/{run_id}/complete");
+
+    let (status, response) = post_json(&h.router, &foreign_token, &complete, "{}").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "foreign complete: {response}"
+    );
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+
+    let (status, response) = post_json(&h.router, &owner_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::OK, "owner complete: {response}");
+    assert_eq!(response["data"]["already_completed"], false, "{response}");
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Completed
+    );
+}
+
+// A run without a recorded owner (in-process start, or rows before
+// migration 0054) proves nobody's ownership: `/v1/runs/{id}/complete` from a
+// non-admin `RunWrite` token is refused like fail/abort and changes nothing;
+// an admin token completes it.
+#[tokio::test]
+async fn ownerless_run_complete_is_forbidden_for_non_admin_and_allowed_for_admin() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (token, agent_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let run_id = h
+        .state
+        .commands
+        .dispatch(
+            Command::StartRun {
+                plan_id: plan_id.parse::<PlanId>().unwrap(),
+                agent_id,
+                parent_run_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.payload {
+            Event::RunStarted { run } => Some(run.id),
+            _ => None,
+        })
+        .unwrap();
+    let complete = format!("/v1/runs/{run_id}/complete");
+
+    let (status, response) = post_json(&h.router, &token, &complete, "{}").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "ownerless complete: {response}"
+    );
+    assert_eq!(response["error"]["code"], "forbidden", "{response}");
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active
+    );
+
+    let (status, response) = post_json(&h.router, &h.admin_token, &complete, "{}").await;
+    assert_eq!(status, StatusCode::OK, "admin complete: {response}");
+    assert_eq!(response["data"]["already_completed"], false, "{response}");
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Completed
+    );
+}
+
 #[tokio::test]
 async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutation() {
     let h = test_app().await;
@@ -756,7 +843,9 @@ async fn generic_http_rejects_claim_run_and_plan_terminal_commands_without_mutat
     let generation = drained["claim"]["claim_id"].clone();
 
     let bypasses = [
+        json!({"type": "complete_run", "run_id": run_id}),
         json!({"type": "fail_run", "run_id": run_id, "reason": "bypass"}),
+        json!({"type": "abort_run", "run_id": run_id, "reason": "bypass"}),
         json!({"type": "release_claim", "agent_id": owner_id, "task_id": task_id}),
         json!({"type": "archive_plan", "id": plan_id}),
         json!({"type": "delete_plan", "id": plan_id}),
@@ -1122,6 +1211,61 @@ async fn project_drain_rejects_invalid_supplied_runs_before_plan_iteration() {
     assert_no_claim(&h, &terminal_task).await;
 }
 
+// WS dispatch is a network entry too: raw run-terminal commands are refused
+// there like on `/v1/commands`, so the unauthenticated (trusted, in-process)
+// handler path is never reachable over the wire.
+#[tokio::test]
+async fn websocket_rejects_raw_run_terminal_commands_without_mutation() {
+    let h = test_app().await;
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let plan_id = create_active_plan(&h.router, &h.admin_token).await;
+    let run_id = start_run(&h.router, &owner_token, &plan_id, owner_id).await;
+    let addr = spawn_server(&h).await;
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/v1/ws?token={}", h.admin_token))
+        .await
+        .unwrap();
+    ws.next().await.unwrap().unwrap(); // hello
+    let commands = [
+        json!({"type": "complete_run", "run_id": run_id}),
+        json!({"type": "fail_run", "run_id": run_id, "reason": "bypass"}),
+        json!({"type": "abort_run", "run_id": run_id, "reason": "bypass"}),
+    ];
+    for command in commands {
+        ws.send(Message::Text(
+            json!({"type": "dispatch", "command": command})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("timed out waiting for run command rejection")
+                .unwrap()
+                .unwrap();
+            let Message::Text(text) = frame else { continue };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            match frame["type"].as_str() {
+                Some("ack") => panic!("raw {command} bypass was accepted: {frame}"),
+                Some("error") => {
+                    assert_eq!(frame["code"], "forbidden", "unexpected rejection: {frame}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    assert_eq!(
+        h.state.runs.get(run_id).await.unwrap().unwrap().status,
+        daruma_domain::RunStatus::Active,
+        "rejected WS commands must not terminate the run"
+    );
+}
+
 #[tokio::test]
 async fn websocket_rejects_raw_start_run_without_mutation() {
     let h = test_app().await;
@@ -1250,6 +1394,90 @@ async fn terminal_tasks_are_neither_ready_nor_claimable_via_any_drain() {
         assert_no_claim(&h, &ids[0]).await;
         assert_no_claim(&h, &ids[1]).await;
     }
+}
+
+/// An inbox task waits for the owner's triage: neither ready nor drained, and
+/// — first by position — it must not hide the ready todo task behind it.
+#[tokio::test]
+async fn inbox_tasks_are_neither_ready_nor_drained_and_do_not_block_the_plan() {
+    let h = test_app().await;
+    let project = create_project(&h.router, &h.admin_token).await;
+    let plan = create_active_plan_in_project(&h.router, &h.admin_token, &project).await;
+    let (code, ev) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/commands",
+        r#"{"command":{"type":"create_task","task":{"title":"Needs triage"}}}"#,
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{ev}");
+    let inbox = ev["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| {
+            let p = e.get("payload")?;
+            (p.get("type")?.as_str()? == "task_created")
+                .then(|| p["task"]["id"].as_str().unwrap().to_owned())
+        })
+        .unwrap();
+    let (_, task) = get_json(&h.router, &h.admin_token, &format!("/v1/tasks/{inbox}")).await;
+    assert_eq!(task["status"], "inbox", "{task}");
+    attach_task(&h.router, &h.admin_token, &plan, &inbox).await;
+    let todo = create_task(&h.router, &h.admin_token).await;
+    attach_task(&h.router, &h.admin_token, &plan, &todo).await;
+
+    for uri in [
+        format!("/v1/plans/{plan}/next-task"),
+        format!("/v1/ready?project_id={project}"),
+        format!("/v1/plans/{plan}/progress"),
+    ] {
+        let (code, response) = get_json(&h.router, &h.admin_token, &uri).await;
+        assert_eq!(code, StatusCode::OK, "{response}");
+        let encoded = response.to_string();
+        assert!(encoded.contains(&todo), "{uri}: {response}");
+        assert!(!encoded.contains(&inbox), "{uri}: {response}");
+    }
+    let (code, response) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan}/drain-next"),
+        "{}",
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{response}");
+    assert_eq!(response["task_id"], todo, "{response}");
+    assert_no_claim(&h, &inbox).await;
+
+    // Only the inbox task is left: nothing to hand out, and it stays inbox.
+    let (code, done) = post_json(
+        &h.router,
+        &h.admin_token,
+        "/v1/commands",
+        &json!({"command":{"type":"set_status", "id":todo, "status":"done", "force":true}})
+            .to_string(),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{done}");
+    let (_, next) = get_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/plans/{plan}/next-task"),
+    )
+    .await;
+    assert!(next.is_null(), "{next}");
+    let (code, drained) = post_json(
+        &h.router,
+        &h.admin_token,
+        &format!("/v1/ready/drain?project_id={project}"),
+        "{}",
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{drained}");
+    assert!(drained.is_null(), "{drained}");
+    assert_no_claim(&h, &inbox).await;
+    let (_, task) = get_json(&h.router, &h.admin_token, &format!("/v1/tasks/{inbox}")).await;
+    assert_eq!(task["status"], "inbox", "{task}");
 }
 
 #[tokio::test]

@@ -105,6 +105,28 @@ async fn triage_queue_lists_pending_tasks_and_accepts_them() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(task["triage_state"], "accepted");
 
+    // The triage decision is a versioned mutation (docs/VERSION_HISTORY.md),
+    // not a direct projection write: it gets its own history record.
+    let (status, history) = common::json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/history?entity_type=task&entity_id={task_id}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "history failed: {history}");
+    let versions = history.as_array().expect("history array");
+    assert_eq!(versions.len(), 2, "create + triage versions: {history}");
+    assert_eq!(versions[0]["version_number"], 2);
+    assert_eq!(versions[0]["event_type"], "task_updated");
+    assert_eq!(
+        versions[0]["diff"]["fields"]["triage_state"]["before"],
+        "pending"
+    );
+    assert_eq!(
+        versions[0]["diff"]["fields"]["triage_state"]["after"],
+        "accepted"
+    );
+
     let (status, queue) = common::json_get(
         app.router.clone(),
         &app.admin_token,
@@ -113,4 +135,17 @@ async fn triage_queue_lists_pending_tasks_and_accepts_them() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(queue.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn triage_patch_on_unknown_task_is_not_found() {
+    let app = common::test_app().await;
+    let (status, body) = json_patch(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/tasks/tsk_01a14418-2ceb-7d23-9278-000000000000/triage",
+        r#"{"triage_state":"accepted"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown task: {body}");
 }

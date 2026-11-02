@@ -20,7 +20,12 @@ import { createWriteStream } from "node:fs";
 const REQUEST_TIMEOUT_MS = 120_000;
 
 export class MCPClient {
-  constructor() {
+  // requestTimeoutMs bounds every JSON-RPC request; probes pass a short one so
+  // a hung server fails the check instead of stalling it for two minutes.
+  constructor({ requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+    this._requestTimeoutMs = requestTimeoutMs;
+    this._deadError = null;
+    this._stderrTail = "";
     this._proc = null;
     this._buf = "";
     this._nextId = 1;
@@ -37,14 +42,22 @@ export class MCPClient {
     if (stderrLog) {
       this._stderrStream = createWriteStream(stderrLog, { flags: "a" });
       this._proc.stderr.pipe(this._stderrStream);
-    } else {
-      this._proc.stderr.on("data", () => {}); // drain to avoid backpressure
     }
+    // Also drains stderr when no log is kept; the tail explains an early exit.
+    this._proc.stderr.setEncoding("utf8");
+    this._proc.stderr.on("data", (chunk) => {
+      this._stderrTail = (this._stderrTail + chunk).slice(-2048);
+    });
 
     this._proc.stdout.setEncoding("utf8");
     this._proc.stdout.on("data", (chunk) => this._onData(chunk));
-    this._proc.on("exit", (code, signal) => this._onExit(code, signal));
-    this._proc.on("error", (err) => this._failAll(err));
+    // "close" (not "exit") fires once stdio is drained, so the stderr tail is complete.
+    this._proc.on("close", (code, signal) => this._onExit(code, signal));
+    this._proc.on("error", (err) => this._markDead(err));
+    // A server that already exited makes stdin writes fail with EPIPE. Swallow
+    // it: the "close" event that follows rejects pending requests with the
+    // exit code and stderr, which say far more than EPIPE.
+    this._proc.stdin.on("error", () => {});
   }
 
   async initialize() {
@@ -79,8 +92,10 @@ export class MCPClient {
     try {
       proc.stdin.end();
     } catch { /* already closed */ }
-    // Give server up to 2s for graceful shutdown, then SIGTERM.
-    await new Promise((resolve) => {
+    // Give server up to 2s for graceful shutdown, then SIGTERM. A process that
+    // never spawned or already exited has nothing left to wait for.
+    const gone = proc.pid === undefined || proc.exitCode !== null || proc.signalCode !== null;
+    if (!gone) await new Promise((resolve) => {
       const timer = setTimeout(() => {
         try { proc.kill("SIGTERM"); } catch { /* gone */ }
         resolve();
@@ -94,12 +109,14 @@ export class MCPClient {
   // --- internals -----------------------------------------------------------
 
   _call(method, params) {
+    if (this._deadError) return Promise.reject(this._deadError);
     const id = this._nextId++;
+    const timeoutMs = this._requestTimeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(id);
-        reject(new Error(`MCP ${method} timeout after ${REQUEST_TIMEOUT_MS}ms`));
-      }, REQUEST_TIMEOUT_MS);
+        reject(new Error(`MCP ${method} timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
       this._pending.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
@@ -149,7 +166,15 @@ export class MCPClient {
   }
 
   _onExit(code, signal) {
-    this._failAll(new Error(`MCP server exited (code=${code}, signal=${signal})`));
+    const lastLine = this._stderrTail.trim().split(/\r?\n/).pop();
+    this._markDead(new Error(
+      `MCP server exited (code=${code}, signal=${signal})${lastLine ? `: ${lastLine}` : ""}`,
+    ));
+  }
+
+  _markDead(err) {
+    this._deadError ??= err;
+    this._failAll(err);
   }
 
   _failAll(err) {

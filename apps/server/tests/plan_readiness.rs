@@ -34,6 +34,8 @@ async fn seed_plan(bus: &CommandBus) -> (ProjectId, PlanId, TaskId, TaskId, Task
         let mut task = NewTask::new(title);
         task.id = Some(id);
         task.project_id = Some(project_id);
+        // Todo, not the default inbox: drain only hands out triaged work.
+        task.status = Some(daruma_domain::Status::Todo);
         if id == a {
             task.priority = Some(Priority::P1);
         }

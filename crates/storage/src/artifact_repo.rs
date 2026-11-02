@@ -44,6 +44,8 @@ impl ArtifactRepo {
 
     /// List artifacts, optionally scoped to a project, task, and/or status.
     ///
+    /// Without `status`, deprecated artifacts are hidden unless
+    /// `include_superseded` (ADR-0019 п.2); an explicit `status` wins.
     /// Filters compose with `AND`; binds are appended in the same order the
     /// conditions are pushed so the placeholders line up.
     pub async fn list(
@@ -51,6 +53,7 @@ impl ArtifactRepo {
         project_id: Option<ProjectId>,
         task_id: Option<TaskId>,
         status: Option<ArtifactStatus>,
+        include_superseded: bool,
     ) -> Result<Vec<Artifact>> {
         let mut conditions: Vec<&str> = Vec::new();
         if project_id.is_some() {
@@ -61,6 +64,8 @@ impl ArtifactRepo {
         }
         if status.is_some() {
             conditions.push("status = ?");
+        } else if !include_superseded {
+            conditions.push("status != 'deprecated'");
         }
         let filter = if conditions.is_empty() {
             "ORDER BY created_at".to_string()
@@ -637,18 +642,18 @@ mod tests {
         );
         r.apply_event(&env).await.unwrap();
 
-        let all = r.list(None, None, None).await.unwrap();
+        let all = r.list(None, None, None, false).await.unwrap();
         assert_eq!(all.len(), 2);
 
         let only_active = r
-            .list(None, None, Some(ArtifactStatus::Active))
+            .list(None, None, Some(ArtifactStatus::Active), false)
             .await
             .unwrap();
         assert_eq!(only_active.len(), 1);
         assert_eq!(only_active[0].id, active.id);
 
         let only_pending = r
-            .list(None, None, Some(ArtifactStatus::Pending))
+            .list(None, None, Some(ArtifactStatus::Pending), false)
             .await
             .unwrap();
         assert_eq!(only_pending.len(), 1);

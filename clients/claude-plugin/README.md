@@ -17,7 +17,7 @@
 <p align="center">
   <strong>Glue, not fork.</strong>
   <br/>
-  <sub>One shell command drives the <code>tupical/daruma</code> pipeline (parse → decompose → plan → execute) with <code>omc team</code> as the parallel-agent executor for each task.</sub>
+  <sub>One shell command drives the <code>tupical/daruma</code> pipeline (parse → plan → execute) with <code>omc team</code> as the parallel-agent executor for each task.</sub>
 </p>
 
 <p align="center">
@@ -32,7 +32,7 @@
   <a href="#why-daruma-claude">Why</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#commands">Commands</a> ·
-  <a href="#the-caveat">Caveat</a> ·
+  <a href="#plan-mode">Plan mode</a> ·
   <a href="#limitations">Limitations</a>
 </p>
 
@@ -42,11 +42,11 @@
 
 ---
 
-**One shell command drives the full `tupical/daruma` pipeline — parse a task, optionally AI-decompose it into a plan, then execute every eligible task with parallel oh-my-claudecode `/team` agents. No upstream forks, no glue prompts, no copy-paste between sessions.**
+**One shell command drives the full `tupical/daruma` pipeline — parse a task, record it as a daruma plan, then execute it with parallel oh-my-claudecode `/team` agents — or execute every task of an existing plan with `team-from-plan`. No upstream forks, no glue prompts, no copy-paste between sessions.**
 
 `daruma-claude` is a thin Claude Code plugin plus an npm CLI that composes two existing projects:
 
-- [**tupical/daruma**](https://github.com/tupical/daruma) — owns **projects / tasks / plans / AI decomposition** (the MCP-driven workflow store).
+- [**tupical/daruma**](https://github.com/tupical/daruma) — owns **projects / tasks / plans** (the MCP-driven workflow store). It accepts ready plan structure and does not split tasks into subtasks.
 - [**oh-my-claudecode**](https://github.com/Yeachan-Heo/oh-my-claudecode) — owns **task execution**, replaced with `omc team` so each task runs on parallel specialized agents instead of one sequential pass.
 
 `daruma-claude` adds **nothing of its own**. It detects both, points the user at the official install commands when they're missing, and orchestrates them.
@@ -105,7 +105,7 @@ Or, inside a Claude Code session: `/plugin marketplace add tupical/daruma`, then
 |                                          | Without `daruma-claude`                                  | With `daruma-claude`                                                            |
 | ---------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | **Driving daruma**                    | Hand-call MCP tools (`workspace_info`, `create`, `plan_*`)  | One `daruma-claude start "<task>"` walks the whole pipeline                     |
-| **Decomposition**                        | Optional, opt-in via `--plan` flag                          | `daruma_ai_decompose` + `plan_create` + `plan_add_task` in one go               |
+| **Plan intake**                          | Hand-call `daruma_plan_materialize` per task                | The root task becomes a plan in one `daruma_plan_materialize` call              |
 | **Execute step**                         | One sequential agent per task                               | Each task runs on **N parallel agents** via `omc team`                             |
 | **Setup**                                | Three installs + manual orchestration                       | One `daruma-claude start "<task>"`                                              |
 
@@ -178,21 +178,17 @@ Bundled skills:
 | `--workers N`              | Parallel agents per `omc team` invocation. Integer 1-20. Default `3`.                                                 |
 | `--max-retries M`          | Retries after the first attempt for each task (total attempts = `M + 1`). Default `2`.                                |
 | `--agent claude\|codex\|gemini` | Agent type used for `omc team` workers. Default `claude`.                                                        |
-| `--plan`                   | AI-decompose the root task into subtasks via `daruma_ai_decompose`, then execute each subtask. See [Caveat](#the-caveat). |
+| `--plan`                   | Execute the root task through the plan loop (claim, daruma run) instead of directly. Does not decompose. See [Plan mode](#plan-mode). |
 | `--project ID`             | Override default project resolution (workspace info / cwd basename).                                                  |
 | `--yes` / `-y`             | Skip y/n confirmations (implied when stdin is not a TTY).                                                             |
 
 ---
 
-## The caveat
+## Plan mode
 
-`--plan` depends on the `daruma_ai_decompose` tool actually being registered on the server you're connected to. It's part of SaaS/Meisei's tool catalog, but the **OSS daruma server does not register it** — `daruma-claude` checks `tools/list` before calling it, and if it's absent, prints a `[decompose]` notice and silently falls back to single-task execution on the root task, same as the API-key case below.
+`start` always records the root task as a one-task plan (`daruma_plan_materialize`). `--plan` changes only how that task is executed: without it the root task runs directly; with it the plan loop opens a daruma run, claims the task with `daruma_plan_drain_next` and closes the run with `daruma_run_complete` or `daruma_run_abort`.
 
-On servers that do carry the tool, AI decomposition additionally requires `OPENAI_API_KEY` set on the **daruma server**. Without it, `daruma_ai_decompose` returns `502 ai_unavailable` and `daruma-claude` falls back the same way. To use real decomposition, export the key before starting the server:
-
-```bash
-OPENAI_API_KEY=sk-... ./target/release/daruma-server
-```
+`daruma-claude` never splits a task into subtasks: it calls no AI-decomposition tool and needs no AI provider on the server, so `--plan` behaves the same on OSS and SaaS servers. To execute several tasks, put them into one plan first (a planning layer, or one `daruma_plan_materialize` call with a `tasks` list), then run `daruma-claude team-from-plan <plan_id>`.
 
 ---
 
@@ -200,9 +196,9 @@ OPENAI_API_KEY=sk-... ./target/release/daruma-server
 
 - Single fixed role: `--agent` selects one role for all workers; mixed roles (`1:planner + 2:executor + 1:verifier`) are TODO.
 - Artifact capture from `omc team` relies on text summaries written as daruma comments — not yet structured.
-- No `daruma-claude cancel`. Press Ctrl-C in the `start` / `team-from-plan` terminal: daruma-claude runs `omc team shutdown` for the running team, waits up to 60 s for it to stop, records the attempt as a `cancelled` blocker (plan runs release the claim and abort the run), then exits with code 130. A second Ctrl-C exits at once; if the team did not stop, the message names it — finish with `omc team shutdown <team>`.
+- No `daruma-claude cancel`. Press Ctrl-C in the `start` / `team-from-plan` terminal: daruma-claude runs `omc team shutdown` for the running team, waits up to 60 s for it to stop, records the attempt as a `cancelled` blocker (plan runs release the claim and abort the run), then exits with code 130. Cancellation wins over a late success: a team that finishes after Ctrl-C is not completed in Daruma. A second Ctrl-C exits at once; if the team did not stop — or `omc team shutdown` itself failed — the terminal and the blocker name it with the failure reason — finish with `omc team shutdown <team>`.
 - `daruma-claude doctor` only probes the shell it's run from. On a Windows host run it from inside WSL.
-- Plan-mode retries reset task status to `todo` and re-execute — they do **not** mutate the plan (no re-decomposition on repeated failure in v1).
+- Plan-mode retries reset task status to `todo` and re-execute — they do **not** mutate the plan (no re-planning on repeated failure in v1).
 
 ---
 
@@ -246,6 +242,25 @@ npm i -g oh-my-claude-sisyphus@latest                    # oh-my-claudecode (man
 ## Contributing
 
 Issues and PRs welcome. The whole point of this plugin is that it stays thin — patches that grow it into its own thing (extra reasoning steps, hardcoded heuristics, new agents) are likely to be declined. Patches that make the glue more robust (better detection, clearer error messages, cross-platform fixes) are very welcome.
+
+---
+
+## Releasing
+
+There is no CI publish workflow: `daruma-claude` is published to npm by hand, by a maintainer with publish rights on the package. From `clients/claude-plugin`:
+
+```bash
+npm run release:patch   # 0.3.1 → 0.3.2 (or release:minor / release:major)
+npm test
+```
+
+`release:*` only bumps the version — in `package.json` and, through the `version` hook, in `.claude-plugin/plugin.json`. It makes no git commit, tag or push: the plugin lives in a subdirectory of the daruma monorepo, so the bump lands through the normal change flow like any other edit. Once that change is on `main`:
+
+```bash
+npm publish             # from clients/claude-plugin, on the merged main
+```
+
+The Claude Code plugin itself needs no publish step — `/plugin install` reads `clients/claude-plugin` straight from this repository.
 
 ---
 

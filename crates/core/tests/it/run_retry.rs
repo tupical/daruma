@@ -3,7 +3,9 @@
 //! `run_complete` or `run_finish_step` may repeat the call. The owner's repeat
 //! of `CompleteRun` on a completed run is a no-op success without a second
 //! `RunCompleted`; another agent, an unauthenticated caller, or a
-//! failed/aborted run still get the `run is not active` conflict. A repeated
+//! failed/aborted run still get the `run is not active` conflict. A first
+//! completion of an active run is the owner's or an admin's only; a run
+//! without a recorded owner needs an admin. A repeated
 //! `RunFinishStep` with the outcome the latest attempt already holds records
 //! no synthetic attempt.
 //!
@@ -106,12 +108,21 @@ async fn complete_as(
     run_id: RunId,
     caller: AgentId,
 ) -> daruma_shared::Result<usize> {
+    complete_with(handler, run_id, caller, false).await
+}
+
+async fn complete_with(
+    handler: &CommandHandler,
+    run_id: RunId,
+    caller: AgentId,
+    is_admin: bool,
+) -> daruma_shared::Result<usize> {
     handler
         .handle_authenticated_with_warnings(
             Command::CompleteRun { run_id },
             Actor::user(),
             caller,
-            false,
+            is_admin,
         )
         .await
         .map(|out| out.events.len())
@@ -169,6 +180,152 @@ async fn foreign_retry_of_completed_run_stays_conflict() {
         .await
         .expect_err("unauthenticated retry must be refused");
     assert!(err.to_string().contains("run is not active"), "{err}");
+    assert_eq!(count(&s.store, run_completed).await, 1);
+}
+
+// docs/PLAN_RECONCILIATION.md: run ownership is not bypassed. Another
+// `RunWrite` holder cannot complete an active owned run — the open run keeps
+// its plan open — while an admin can, like fail/abort cleanup.
+#[tokio::test]
+async fn foreign_complete_of_active_owned_run_is_forbidden() {
+    let s = stack().await;
+    let owner = AgentId::new();
+    let run_id = owned_run(&s.handler, owner).await;
+
+    let err = complete_as(&s.handler, run_id, AgentId::new())
+        .await
+        .expect_err("foreign completion must be refused");
+    assert_eq!(err.code(), "forbidden", "{err}");
+    assert!(err.to_string().contains("owned by another agent"), "{err}");
+    let run = s.runs.get(run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Active);
+    assert_eq!(count(&s.store, run_completed).await, 0);
+
+    assert_eq!(complete_as(&s.handler, run_id, owner).await.unwrap(), 1);
+    assert_eq!(count(&s.store, run_completed).await, 1);
+}
+
+#[tokio::test]
+async fn admin_may_complete_foreign_owned_run() {
+    let s = stack().await;
+    let run_id = owned_run(&s.handler, AgentId::new()).await;
+
+    assert_eq!(
+        complete_with(&s.handler, run_id, AgentId::new(), true)
+            .await
+            .unwrap(),
+        1
+    );
+    let run = s.runs.get(run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+}
+
+/// Start a run on the unauthenticated in-process path: no owner row, the
+/// same shape as a run recorded before migration 0054.
+async fn ownerless_run(handler: &CommandHandler) -> RunId {
+    let plan_id = active_plan(handler).await;
+    let envs = handler
+        .handle(
+            Command::StartRun {
+                plan_id,
+                agent_id: AgentId::new(),
+                parent_run_id: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let Event::RunStarted { run } = &envs[0].payload else {
+        panic!("expected RunStarted")
+    };
+    run.id
+}
+
+// A run without a recorded owner proves nobody's ownership: like fail/abort
+// cleanup, an authenticated non-admin caller is refused and nothing changes;
+// an admin completes it.
+#[tokio::test]
+async fn ownerless_run_complete_requires_admin() {
+    let s = stack().await;
+    let run_id = ownerless_run(&s.handler).await;
+
+    let err = complete_as(&s.handler, run_id, AgentId::new())
+        .await
+        .expect_err("non-admin completion of an ownerless run must be refused");
+    assert_eq!(err.code(), "forbidden", "{err}");
+    assert!(err.to_string().contains("no authenticated owner"), "{err}");
+    let run = s.runs.get(run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Active);
+    assert_eq!(count(&s.store, run_completed).await, 0);
+
+    assert_eq!(
+        complete_with(&s.handler, run_id, AgentId::new(), true)
+            .await
+            .unwrap(),
+        1
+    );
+    let run = s.runs.get(run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+    assert_eq!(count(&s.store, run_completed).await, 1);
+}
+
+// The admin bypass covers fail/abort of an ownerless run too, and both stay
+// refused for a non-admin caller (`AgentClaimRepo` terminal cleanup).
+#[tokio::test]
+async fn ownerless_run_fail_and_abort_require_admin() {
+    let s = stack().await;
+    for abort in [true, false] {
+        let run_id = ownerless_run(&s.handler).await;
+        let cmd = || {
+            if abort {
+                Command::AbortRun {
+                    run_id,
+                    reason: "cleanup".into(),
+                }
+            } else {
+                Command::FailRun {
+                    run_id,
+                    reason: "cleanup".into(),
+                }
+            }
+        };
+        let err = s
+            .handler
+            .handle_authenticated_with_warnings(cmd(), Actor::user(), AgentId::new(), false)
+            .await
+            .expect_err("non-admin termination of an ownerless run must be refused");
+        assert_eq!(err.code(), "forbidden", "{err}");
+        assert_eq!(
+            s.runs.get(run_id).await.unwrap().unwrap().status,
+            RunStatus::Active
+        );
+        s.handler
+            .handle_authenticated_with_warnings(cmd(), Actor::user(), AgentId::new(), true)
+            .await
+            .unwrap();
+        let expected = if abort {
+            RunStatus::Aborted
+        } else {
+            RunStatus::Failed
+        };
+        assert_eq!(s.runs.get(run_id).await.unwrap().unwrap().status, expected);
+    }
+}
+
+// The unauthenticated entry is the trusted in-process path (sweepers, the
+// desktop executor); network entries never reach it for run commands, so it
+// carries no identity to check and still completes an ownerless run.
+#[tokio::test]
+async fn in_process_unauthenticated_complete_of_ownerless_run_is_trusted() {
+    let s = stack().await;
+    let run_id = ownerless_run(&s.handler).await;
+
+    let envs = s
+        .handler
+        .handle(Command::CompleteRun { run_id }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1);
     assert_eq!(count(&s.store, run_completed).await, 1);
 }
 

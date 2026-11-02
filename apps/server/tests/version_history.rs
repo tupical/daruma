@@ -6,7 +6,7 @@ use daruma_mcp::{dispatch_request_with_profile, ApiClient, JsonRpcRequest, ToolP
 use serde_json::{json, Value};
 
 mod common;
-use common::{json_get, json_post, mint_with_caps, spawn_server, test_app};
+use common::{json_get, json_post, mint_with_caps, spawn_server, test_app, TestAppBuilder};
 
 fn task_id_from_response(resp: &Value) -> String {
     resp["data"]
@@ -75,6 +75,65 @@ async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> Value {
         .unwrap()
         .to_owned();
     serde_json::from_str(&text).unwrap()
+}
+
+/// `compare from=1 to=3` must diff the two selected snapshots, not echo
+/// version 3's own adjacent `2 → 3` step (which would miss the v1 → v2 title
+/// change and report a `before` that is not version 1).
+#[tokio::test]
+async fn history_compare_diffs_the_selected_pair_not_the_last_adjacent_step() {
+    let h = test_app().await;
+    let task_id = create_and_update_task(&h.router, &h.admin_token).await;
+    let body = json!({
+        "command": {
+            "type": "update_task",
+            "id": task_id,
+            "patch": { "priority": "p0" }
+        }
+    });
+    let (status, update) = json_post(
+        h.router.clone(),
+        &h.admin_token,
+        "/v1/commands",
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update failed: {update}");
+
+    let (status, compared) = json_get(
+        h.router.clone(),
+        &h.admin_token,
+        &format!("/v1/history/compare?entity_type=task&entity_id={task_id}&from=1&to=3"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "compare failed: {compared}");
+    let diff = &compared["diff"];
+    assert_eq!(diff["from_version"], 1);
+    assert_eq!(diff["to_version"], 3);
+    let changed: Vec<&str> = diff["changed_fields"]
+        .as_array()
+        .expect("changed_fields array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(changed.contains(&"title"), "v1→v3 title change: {diff}");
+    assert!(
+        changed.contains(&"priority"),
+        "v1→v3 priority change: {diff}"
+    );
+    assert_eq!(diff["diff"]["fields"]["title"]["before"], "History v1");
+    assert_eq!(diff["diff"]["fields"]["title"]["after"], "History v2");
+    assert_eq!(diff["diff"]["fields"]["priority"]["after"], "p0");
+    assert_eq!(diff["diff"]["metadata"]["source"], "version_compare");
+
+    // Version 3's own record still only describes its adjacent step.
+    let to_changed: Vec<&str> = compared["to"]["changed_fields"]
+        .as_array()
+        .expect("to.changed_fields array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(!to_changed.contains(&"title"), "v3 own step: {compared}");
 }
 
 #[tokio::test]
@@ -230,6 +289,136 @@ async fn history_rollback_requires_write_capability() {
         StatusCode::FORBIDDEN,
         "rollback must require task write: {rollback}"
     );
+}
+
+/// Task 01a14ae6…8fa9: the production server runs plan-only intake, where
+/// `update_task` rejects plan-owned fields. Rolling a plan task back must
+/// still restore both its amended title (through the owning plan's amend
+/// path) and its execution fields, and the result is a `rollback` version.
+#[tokio::test]
+async fn history_rollback_restores_plan_task_under_plan_only_intake() {
+    let app = TestAppBuilder::default()
+        .plan_only_intake(true)
+        .build()
+        .await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token.clone());
+
+    let project = call_tool(
+        &client,
+        "daruma_project_create",
+        json!({ "title": "Rollback under plan-only" }),
+    )
+    .await;
+    let pid = project["project_id"].as_str().unwrap().to_owned();
+    let materialized = call_tool(
+        &client,
+        "daruma_plan_materialize",
+        json!({ "plan": { "title": "Rollback plan", "project_id": pid },
+                "tasks": [ { "title": "Draft v1", "priority": "p2" } ] }),
+    )
+    .await;
+    let created = |kind: &str, field: &str| -> String {
+        materialized["data"]
+            .as_array()
+            .and_then(|a| {
+                a.iter().find_map(|e| {
+                    let p = e.get("payload")?;
+                    (p.get("type")?.as_str()? == kind)
+                        .then(|| p.get(field)?.get("id")?.as_str().map(str::to_owned))?
+                })
+            })
+            .unwrap_or_else(|| panic!("{kind} in {materialized}"))
+    };
+    let plan_id = created("plan_created", "plan");
+    let task_id = created("task_created", "task");
+
+    call_tool(
+        &client,
+        "daruma_amend_plan_task",
+        json!({ "plan_id": plan_id, "task_id": task_id, "patch": { "title": "Draft v2" } }),
+    )
+    .await;
+    call_tool(
+        &client,
+        "daruma_set_priority",
+        json!({ "id": task_id, "priority": "p0" }),
+    )
+    .await;
+
+    let history = call_tool(
+        &client,
+        "daruma_history_list",
+        json!({ "entity_type": "task", "entity_id": task_id }),
+    )
+    .await;
+    let versions = history.as_array().expect("history array").clone();
+    let first = versions.last().expect("creation version");
+    assert_eq!(first["after"]["title"], "Draft v1", "{history}");
+    let first_id = first["id"].as_str().unwrap().to_owned();
+
+    // Changing a plan-owned field is a plan amend: TaskWrite alone is not enough.
+    let (task_only, _) = mint_with_caps(
+        &app.auth_store(),
+        TokenKind::Pat,
+        Capabilities::from([Capability::TaskRead, Capability::TaskWrite]),
+    )
+    .await;
+    let (status, denied) = json_post(
+        app.router.clone(),
+        &task_only,
+        &format!("/v1/history/{first_id}/rollback"),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+
+    let rollback = call_tool(
+        &client,
+        "daruma_history_rollback",
+        json!({ "version_id": first_id }),
+    )
+    .await;
+    assert_eq!(rollback["success"], true, "{rollback}");
+
+    let task = call_tool(&client, "daruma_get", json!({ "id": task_id })).await;
+    assert_eq!(task["title"], "Draft v1", "{task}");
+    assert_eq!(task["priority"], "p2", "{task}");
+
+    let after = call_tool(
+        &client,
+        "daruma_history_list",
+        json!({ "entity_type": "task", "entity_id": task_id }),
+    )
+    .await;
+    let latest = &after.as_array().unwrap()[0];
+    assert_eq!(latest["reason"], "rollback", "{after}");
+    assert_eq!(
+        latest["diff"]["metadata"]["rollback_of_version_id"], first_id,
+        "{after}"
+    );
+    assert_eq!(latest["after"]["title"], "Draft v1", "{after}");
+    println!(
+        "TRACE plan_id={plan_id} task_id={task_id} rollback_of={first_id} events={}",
+        rollback["data"]["events"]
+            .as_array()
+            .map(|e| e
+                .iter()
+                .filter_map(|e| e["payload"]["type"].as_str())
+                .collect::<Vec<_>>()
+                .join(","))
+            .unwrap_or_default()
+    );
+
+    // Rolling back to the state the task is already in changes nothing.
+    let noop = call_tool(
+        &client,
+        "daruma_history_rollback",
+        json!({ "version_id": first_id }),
+    )
+    .await;
+    assert_eq!(noop["success"], true, "{noop}");
+    assert_eq!(noop["data"]["events"], json!([]), "{noop}");
 }
 
 /// All protocol-level tests drive the complete catalogue explicitly; the

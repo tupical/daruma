@@ -22,7 +22,7 @@ files for the client live under a single directory:
 | `DARUMA_AGENT_DIR` | Override agent data root (default `~/.agents/daruma`). |
 | `DARUMA_WORKSPACES_FILE` | Override path of the legacy `workspaces.json` imported on startup (see [Migration](#migration)). |
 | `DARUMA_API_URL` / `DARUMA_TOKEN` | Remote server (see [ai-agent.md](ai-agent.md)). `daruma mcp --api-url … --token …` overrides both. Without a token, `daruma mcp` reads the active profile from `credentials.json`; an explicit URL still replaces the profile's `server_url`. |
-| `DARUMA_WORKSPACE_ID` | Optional workspace UUID sent as `X-Daruma-Workspace-Id`. If unset, uses `workspace_id` from the active profile in `credentials.json`, or a UUID-valued `DARUMA_WORKSPACE`. |
+| `DARUMA_WORKSPACE_ID` | Optional workspace UUID sent as `X-Daruma-Workspace-Id`. If unset, a UUID-valued `DARUMA_WORKSPACE` is used, then `workspace_id` from the active profile in `credentials.json` — but only when that profile also supplied the token. With an explicit `DARUMA_TOKEN` / `--token` the profile is not read at all, so set `DARUMA_WORKSPACE_ID` alongside it. |
 
 Server SQLite and bootstrap tokens live under **`~/.agents/daruma/data/`**
 (`DARUMA_DATA_DIR` when overridden). See [local-dev-data.md](local-dev-data.md).
@@ -49,7 +49,7 @@ tools unless the user explicitly asks for that wider context.
 |----------|--------|-----------|-------------------|
 | What is open? | `daruma_list` with `status="active"` and `project_id`, `project_scope`, or `scope_path`. Keep the first page small (`limit=10` where supported). | 1 | `status="all"`, completed/archive scans, workspacegraph discovery |
 | What is my active work? | `daruma_list` scoped to the project with `status="in_progress"`; filter by owner/client only when the tool/request supports it. | 1-2 | unscoped all-project inventory, session/history scans |
-| What is the active plan? | `daruma_plan_list` with active statuses scoped to the project; if one plan must be inspected, call `daruma_plan_get` for that id. | 2 | `plan_list status="completed"`, enumerating completed plans |
+| What is the active plan? | `daruma_plan_list` with active statuses scoped to the project; `sort="updated" limit=1` returns the most recently updated one (the default order is by creation); if one plan must be inspected, call `daruma_plan_get` for that id. | 2 | `plan_list status="completed"`, enumerating completed plans |
 | What tasks belong to this branch? | `daruma_search` for `branch:<name>` with `scope="comments"` and project scope. | 1 | using search as general inventory, workspacegraph search first |
 | Close completed work. | `daruma_list status="active"` scoped to the project, then mutate only tasks whose completed state is confirmed by local evidence. | 1+N | bulk-closing unverified tasks, `status="all"` cleanup sweeps |
 
@@ -154,9 +154,13 @@ Supported launch modes:
 - When `daruma_list` is called without a resolvable project, it does not
   fall back to listing tasks from every project. It returns a compact
   `needs_project_selection` response with project ids/titles/slugs. Ask the
-  user which project to use, call `daruma_project_use` with that
-  `project_id`, then retry `daruma_list`; the selected project is persisted
-  as a server-side repo scope binding for later calls.
+  user which project to use and bind it with the repository's absolute root
+  path, e.g.
+  `daruma_project_use {"project_id": "<id>", "scope_path": "/home/you/projects/daruma"}`
+  (its `next_tool` carries the same two arguments). Then retry `daruma_list`
+  with that `scope_path` or `project_id`. The binding is persisted
+  server-side, but a parent folder or a hosted session still has no default
+  project, so later calls keep passing `scope_path` or `project_id`.
 - `status` is optional on the list tools: `daruma_list` defaults to `active`,
   `daruma_plan_list` to `draft,active`. There is no `ready`/`blocked` task
   status — ready plan tasks come from `daruma_plan_progress` /
@@ -167,31 +171,41 @@ Supported launch modes:
   unit, artifact and relation tool takes its schema name, the kind's own name
   (`task_id`, `plan_id`, `run_id`, `doc_id` / `document_id`, `session_id`,
   `rule_id`, `work_unit_id`, `artifact_id`, `relation_id`) or the generic `id`:
-  `daruma_get {task_id}` and `daruma_comment {id}` both work, as do
-  `daruma_plan_progress {id}` and `daruma_run_complete {id}`. The schemas of
-  the key tools — `daruma_get`, `daruma_update`, `daruma_set_status`,
-  `daruma_complete`, `daruma_comment`, `daruma_relations`, `daruma_claim`,
-  `daruma_release`, `daruma_plan_get`, `daruma_plan_progress`,
-  `daruma_plan_drain_next`, `daruma_plan_next_task` — list both names and
-  require neither, so a client that validates arguments against the schema
-  accepts either one; a call with neither passes the schema and fails in the
-  tool with the accepted names. "At least one of" is not expressed as a
-  top-level `anyOf`: the Anthropic API rejects tool schemas with a top-level
-  `anyOf`/`oneOf`/`allOf`, and no tool schema has one
-  (`crates/mcp/tests/it/schema_id_alias_contract.rs`). Bulk tools take
+  `daruma_get {task_id}`, `daruma_comment {id}` and
+  `daruma_plan_progress {id}` all work. The schemas of the key tools —
+  `daruma_get`, `daruma_update`, `daruma_set_status`, `daruma_complete`,
+  `daruma_comment`, `daruma_relations`, `daruma_claim`, `daruma_release`,
+  `daruma_plan_get`, `daruma_plan_progress`, `daruma_plan_drain_next`,
+  `daruma_plan_next_task` — list both names and require neither, so a client
+  that validates arguments against the schema accepts either one; a call with
+  neither passes the schema and fails in the tool with the accepted names.
+  Every other tool's schema lists and requires only its own name
+  (`daruma_run_complete` requires `run_id`): the tool itself still accepts the
+  alias, so a client that sends arguments unchecked may pass `id` there, but
+  a client that validates against the schema rejects that call before it is
+  sent — use the schema name outside the key tools. "At least one of" is not
+  expressed as a top-level `anyOf`: the Anthropic API rejects tool schemas
+  with a top-level `anyOf`/`oneOf`/`allOf`, and no tool schema has one. The
+  call examples and the key-tool list above are checked against the published
+  schemas (`crates/mcp/tests/it/schema_id_alias_contract.rs`). Bulk tools take
   `ids` or `task_ids` (an array, or a single `task_id`). A tool with two ids of
   different kinds (`daruma_plan_add_task`, `daruma_run_start_step`, …) lets a
-  generic `id` fill the missing one; `from_work_unit_id` / `to_work_unit_id` of
-  `daruma_handoff_request` take no alias. `run_id` is optional on
-  `daruma_plan_next_task` — the server generates one. An id whose prefix names
+  generic `id` fill the missing one; `daruma_doc_link_task` too: beside
+  `document_id` an `id` names the task, while an explicit `task_id: null`
+  still unlinks and `id` alone names the document. `from_work_unit_id` /
+  `to_work_unit_id` of `daruma_handoff_request` take no alias. `run_id` is
+  optional on `daruma_plan_next_task` — the server generates one. An id whose prefix names
   another kind (`pln_…` where a task is expected) fails before any request, and
   a missing id lists the accepted names. Bare UUIDs carry no kind, so a plan
   UUID sent to a task tool still reaches the server and returns 404. Project,
   agent, workspace, handoff, finding, history and graph-node ids keep their
   single name.
 - The same server-side bindings serve both modes. To bind projects while
-  running from a parent folder, call `daruma_project_use` with `scope_path`
-  (relative paths are resolved from `DARUMA_WORKSPACE` / process CWD).
+  running from a parent folder, call `daruma_project_use` once per repository
+  with an absolute `scope_path`, e.g.
+  `{"project_id": "<id>", "scope_path": "/home/you/projects/daruma"}`. A
+  relative `scope_path` resolves from `DARUMA_WORKSPACE` / process CWD only in
+  a stdio session; a hosted session rejects it.
 
 ## Migration
 

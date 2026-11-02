@@ -39,7 +39,10 @@ side-effects, нет цепочек «if X then do Y». Единственные
 (2) у Rule нет полей actions/side_effects/webhooks;
 (3) requirement не порождает вложенных команд или мутаций;
 (4) проверка правила read-only — не меняет другие сущности;
-(5) RuleFired/RuleOverridden — только audit-события, не точки запуска логики.
+(5) RuleFired (включая `decision=overridden`) — только audit-событие, не точка запуска логики;
+(6) требование, удовлетворяемое состоянием (а не Evidence), обязано быть
+чистым read-only предикатом над read-моделью ядра (`document_linked`,
+`wip_limit`).
 
 ## 1. Типы
 
@@ -89,7 +92,7 @@ struct Rule {
 | `plan.before_approve`  | `SetPlanStatus` draft→active                           | ✓ |
 | `plan.before_start`    | reserved: в текущей модели совпадает с before_approve  | — |
 | `task.created`         | `CreateTask` (и capture-пути, проходящие через него)   | ✓ |
-| `task.before_start`    | переход status→`in_progress` ЛЮБЫМ путём: `SetStatus`, claim/drain — все пути диспатчат `Command::SetStatus`, гейт в CommandHandler покрывает их | ✓ |
+| `task.before_start`    | переход status→`in_progress` ЛЮБЫМ путём: `SetStatus`, claim/drain, неявные переходы (comment intent/progress, run step, evidence, git_context — [EXECUTOR-LOOP](mcp/EXECUTOR-LOOP.md#implicit-status-transitions)) — все пути диспатчат `Command::SetStatus`, гейт в CommandHandler покрывает их; блок неявного перехода — warning, сама запись проходит | ✓ |
 | `task.before_complete` | переход в терминальный статус: `SetStatus`(done) И `CompleteTask` — оба пути через один гейт | ✓ |
 | `run.created`          | reserved: синоним before_execute в текущей модели      | — |
 | `run.before_execute`   | `StartRun`                                             | ✓ |
@@ -158,6 +161,7 @@ rule engine достаёт из строки задачи `project_id` (project-
 | `acceptance_criteria_required`  | `acceptance_criteria_defined`  | —                                               |
 | `risk_check`                    | `risk_check_completed`         | `target`, `required_fields[]`                   |
 | `document_linked`               | — (состояние документов)       | —                                               |
+| `wip_limit`                     | — (состояние задач scope)      | `max_in_progress` (≥ 1)                         |
 
 `document_linked` — исключение из 1:1: доказательство — сама привязка, а не
 Evidence. Требование выполнено, если у проверяемой задачи есть ≥1 документ с
@@ -165,6 +169,51 @@ Evidence. Требование выполнено, если у проверяе�
 или `task_id` при `CreateDocument`) и статусом не `archived`. Отправлять
 нечего: `unblock[]` для него несёт `note` без объекта `evidence`. Имеет смысл
 на `task.before_complete`; на других триггерах без task scope не выполняется.
+
+`wip_limit` (ADR-0015, meisei.ru `adr/0015-wip-ceiling-on-task-before-start.md`)
+— WIP-потолок, второе исключение из 1:1: удовлетворённость — состояние scope,
+evidence не требуется. Требование выполнено, когда число задач `in_progress`
+в scope **самого правила** (tenant — все задачи воркспейса, project — задачи
+проекта, plan — задачи-члены плана), не считая стартующую, строго меньше
+`max_in_progress`. Считается состояние после текущего батча: задачи, которые
+тот же батч уводит из `in_progress`, слот не занимают, а другие задачи,
+которые он стартует в scope, — занимают (`BulkSetStatus` не проскакивает
+потолок). `in_review` слот не занимает. Застрявшая `in_progress` без claim
+слот занимает, пока её не переоткроют (реконсиляция, `daruma_stuck`).
+Валидация ядра (`CreateRule`/`UpdateRule`): только триггер
+`task.before_start`, scope не `task`, `max_in_progress ≥ 1`. Read-модель —
+та же, из которой гейт уже берёт проект и планы задачи (`RuleRepo`), поэтому
+третьей зависимости у `RuleEngineGate` нет и «неподключённого» режима, в
+котором требование молча неудовлетворено, не бывает. `unblock[]` для него
+несёт `max_in_progress`, `scope`, `in_progress_task_ids` (занятые слоты) и
+`note` с тремя выходами: завершить или вернуть в `todo` занятую задачу,
+переоткрыть застрявшую, либо `force` + `override_reason` при
+`override_allowed`; предупреждение `recommendation` несёт тот же
+`in_progress_task_ids`. Проектный scope работает, потому что гейт сам
+дополняет статусный `GateCheck` проектом и планами задачи из проекции
+(статусное событие несёт только `task_id`).
+
+Evidence прохождения проверки — пара `check_passed` (meisei.ru ADR-0010; в
+перечислении `EvidenceKind` её пока нет, до реализации те же ключи едут в
+evidence, которого требуют правила задачи). Её `payload`, кроме
+`exit_status`, `head_sha`, `duration_ms`, `artifact_ref` и ADR-0013
+`runs`/`passed`/`flaps`, называет среду прогона (ADR-0016) двумя плоскими
+ключами:
+
+| Ключ | Значение |
+|------|----------|
+| `env_kind` | закрытый словарь `ci` \| `container` \| `host` \| `manual` |
+| `env_ref` | неизменяемый id среды: `ci` — конкретный прогон (не workflow, не ветка); `container` — digest `sha256:…`, не тег; `host` — `<hostname>:<toolchain-id>`; `manual` — протокол проверки `doc_ref@version` |
+
+Обязательность — только составом `required_fields`, отдельного требования
+и нового `EvidenceKind` нет. Правило проверки, которое handoff выставляет
+задаче, при `policy_snapshot.fujin_strictness = strict` включает
+`env_kind`, `env_ref` (вместе с `runs`, `passed`); при `soft` (default) — не
+включает, и evidence без среды засчитывается как `soft_assertion` (отчётный
+признак, не статус). `rule_key` один в обоих режимах. Проект ужесточает свой
+scope обычным правилом с теми же `required_fields`. Сервер проверяет только
+присутствие ключей; значения (словарь, `env_ref` без `latest`/имени ветки)
+— вторая фаза в policy pack, по триггеру ADR-0016.
 
 ```rust
 struct Evidence {
@@ -274,9 +323,12 @@ Override едет на команде, а не на триггере: для о�
 записывается в одной транзакции с переходом и только если переход принят —
 `blocked` от гейта, активный `blocks`-блокер или no-op переход комментарий не
 создают (прецедент `completion_note` §1.4).
-Обойдённый `blocked` возвращается исполнителю как warning и сейчас попадает в
-аудит как `RuleFired(warning)`; отдельное `RuleOverridden` с сохранением причины
-остаётся целевым контрактом §1.6. Для прохода required-правила `force` без
+Обойдённый `blocked` возвращается исполнителю как warning, а в аудит попадает
+как `RuleFired(overridden)` с `override_reason` (§1.6) — отдельно от
+`RuleFired(warning)` рекомендаций того же перехода. Причину тримит ядро (гейт)
+один раз, до проверки на пустоту, и персистит уже обрезанной — клиенты шлют её
+как есть. Гейт сообщает обход хендлеру отдельным решением
+`GateDecision::Overridden`. Для прохода required-правила `force` без
 `override_reason` НЕ работает — молчаливый force пропускает только
 can_start-предупреждение задачи, но не правило.
 
@@ -296,9 +348,16 @@ escape-hatch, если продукт разрешает аварийный об
 Каждая проверка с решением warning/blocked/overridden пишет в event log:
 
 ```text
-RuleFired { rule_id, rule_key, trigger_event, decision, actor, entity_ref, occurred_at }
-RuleOverridden { rule_id, actor, reason, entity_ref, occurred_at }
+RuleFired { rule_id, rule_key, trigger_event, decision, actor, entity_ref, override_reason?, occurred_at }
 ```
+
+`decision` ∈ `warning | blocked | overridden`. `overridden` — required-правило,
+которое мутация прошла через `force` + `override_reason`; только у него
+заполнен `override_reason` (обрезанная причина). Отдельного события
+`RuleOverridden` нет: обход — это решение того же срабатывания, поэтому он едет
+тем же `rule_fired` по каналу правил, и подписчики/вебхуки различают его по
+`decision`. Поле `override_reason` опционально, поэтому ранее записанные
+события читаются без изменений.
 
 `allowed` НЕ логируется (шум). Violation — производное понятие (не отдельная
 сущность): проекция `rule_firings` строится из этих событий; «проигнорированная
@@ -399,7 +458,7 @@ Effective rules для сущности E:
 ## 3. Инварианты
 
 1. **Никаких действий у правил.** Выход проверки — только
-   EnforcementResult + RuleFired/RuleOverridden + проекция. (анти-Zapier)
+   EnforcementResult + RuleFired + проекция. (анти-Zapier)
 2. **off не вычисляется**; правило `enabled=false` не загружается в проверку.
 3. **Zero-cost без правил:** effective-rules per scope кэшируются; при пустом
    наборе гейт — один lookup в кэш, ноль SQL на горячем пути. Инвалидация
@@ -409,7 +468,7 @@ Effective rules для сущности E:
    workspace), распределённых копий кэша нет.
 4. **Evidence иммутабелен:** правка запрещена, supersede разрешён; satisfaction
    учитывает только не-superseded записи.
-5. **Каждый warn/block/override оставляет след** (RuleFired/RuleOverridden) с
+5. **Каждый warn/block/override оставляет след** (RuleFired с `decision`) с
    actor из EventEnvelope.
 6. **Мутации правил и evidence — только event-sourced** через Command
    (RuleCreated/RuleUpdated/RuleDisabled/RuleDeleted, EvidenceRecorded,
@@ -430,9 +489,9 @@ Effective rules для сущности E:
 - Таблицы (per-workspace OSS SQLite, миграции `crates/storage/migrations/`):
   `lifecycle_rules` (колоночная, по образцу artifact registry; уникальный
   индекс `(scope_kind, scope_id, rule_key)`), `evidence`,
-  `rule_firings` (проекция RuleFired/RuleOverridden).
+  `rule_firings` (проекция RuleFired).
 - События: `RuleCreated/RuleUpdated/RuleDisabled/RuleDeleted`, `EvidenceRecorded/
-  EvidenceSuperseded`, `RuleFired/RuleOverridden` — в общий event log.
+  EvidenceSuperseded`, `RuleFired` — в общий event log.
 - HTTP: `GET/POST/PATCH /v1/rules` и `DELETE /v1/rules/{id}` (безвозвратное
   удаление из активной проекции с сохранением event log; tenant-scope),
   `GET/POST/PATCH /v1/projects/{id}/rules` (+ plan/task scope через query

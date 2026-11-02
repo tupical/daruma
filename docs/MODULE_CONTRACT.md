@@ -149,15 +149,18 @@ directly, only via `CommandBus::dispatch`.
 no knowledge of task operations. It lives in the OSS core and is consumed by
 upper layers through `vendor/oss/crates/ai-infra`.
 
-`daruma-ai` has been collapsed: consumers use `daruma-ai-infra` directly, and
-the one remaining core AI operation (`analyze_complexity`) lives in
-`apps/server/src/ai.rs` as a deprecated delegation-shim.
+`daruma-ai` has been collapsed: consumers use `daruma-ai-infra` directly.
+The one core AI operation, batch complexity scoring (`analyze_complexity`),
+is owned by Daruma: it lives in `apps/server/src/ai.rs`, calls the AI
+provider through `daruma-ai-infra`, and writes the `task_complexity_hints`
+projection (`POST /v1/ai/analyze-complexity/{plan_id}`, MCP
+`daruma_ai_analyze_complexity`). It delegates to no upper layer.
 
 AI operations that are **product** concerns — parse, decompose, scope,
 research — live in the upper-layer MeiSei repos (intake, sensemaking,
 planning). They depend on `ai-infra` through `vendor/oss`; the
 dependency arrow never reverses. Do not add parse/decompose/scope/research back
-to `daruma-ai-infra` or the server shim.
+to `daruma-ai-infra` or `apps/server/src/ai.rs`.
 
 ## Pipeline position (MeiSei)
 

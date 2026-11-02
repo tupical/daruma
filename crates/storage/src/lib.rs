@@ -63,7 +63,7 @@ pub use comment_repo::CommentRepo;
 pub use db::Db;
 pub use device_repo::{Device, DeviceRepo};
 pub use document_repo::DocumentRepo;
-pub use entity_version::{EntityVersion, EntityVersionRepo};
+pub use entity_version::{diff_snapshots, EntityVersion, EntityVersionRepo};
 pub use event_store::SqliteEventStore;
 pub use evidence_repo::EvidenceRepo;
 pub use external_ref_repo::ExternalRefRepo;
@@ -85,7 +85,7 @@ pub use tenant_quota_repo::TenantQuotaRepo;
 pub use token_repo::TokenRepo;
 pub use webhook_enrichment::WebhookEnrichment;
 pub use webhook_repo::WebhookRepo;
-pub use work_lease_repo::{ReserveOutcome, WorkLeaseRepo};
+pub use work_lease_repo::{ReserveOutcome, SweptLeases, WorkLeaseRepo};
 pub use work_unit_repo::WorkUnitRepo;
 pub use workspace_graph_repo::{
     DuplicateTaskPair, GraphContextItem, GraphDirection, GraphEdge, GraphNeighborhood, GraphNode,

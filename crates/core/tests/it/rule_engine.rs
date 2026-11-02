@@ -467,6 +467,19 @@ async fn plan_approve_override_passes_and_returns_the_bypassed_rule_as_a_warning
         outcome.warnings[0].code,
         "rule_warning:read-architecture-md"
     );
+    // The plan path audits the bypass the same way as the task path.
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        Event::RuleFired {
+            rule_key,
+            decision: daruma_events::event::RuleDecision::Overridden,
+            override_reason: Some(reason),
+            plan_id: Some(fired_on),
+            ..
+        } if rule_key == "read-architecture-md"
+            && reason == "urgent production repair"
+            && *fired_on == plan
+    )));
 }
 
 #[tokio::test]
@@ -636,6 +649,108 @@ async fn force_with_a_reason_overrides_a_rule_that_allows_it() {
         )
         .await
         .expect("force + reason must pass an override_allowed rule");
+    assert_eq!(
+        stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+        Status::Done
+    );
+}
+
+/// A bypass of a mandatory rule is audited as `overridden` with the trimmed
+/// reason, apart from a recommendation that merely warned on the same
+/// transition: before, both landed as `RuleFired(warning)` and the reason was
+/// dropped, so the log could not tell a bypass from an ignored advisory.
+#[tokio::test]
+async fn an_override_is_audited_as_overridden_with_its_trimmed_reason() {
+    use daruma_events::event::RuleDecision;
+
+    let stack = stack().await;
+    let required = install(
+        &stack,
+        new_rule(
+            "completion-note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    let advisory = install(
+        &stack,
+        new_rule(
+            "auth-impact-check",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::ImpactCheck {
+                target: "auth-module".into(),
+                required_fields: vec!["risk_level".into()],
+            },
+            RuleMode::Recommendation,
+            true,
+        ),
+    )
+    .await;
+
+    let task = create_task(&stack, "Ship it").await;
+    let before_seq = stack.handler.store.latest_seq().await.unwrap();
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: task,
+                status: Status::Done,
+                force: true,
+                override_reason: Some("  hotfix: production is down \n".into()),
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("force + reason must pass an override_allowed rule");
+
+    // The executor still sees both rules, recommendation first.
+    let codes: Vec<_> = outcome.warnings.iter().map(|w| w.code.as_str()).collect();
+    assert_eq!(
+        codes,
+        [
+            "rule_warning:auth-impact-check",
+            "rule_warning:completion-note"
+        ]
+    );
+
+    let fired: Vec<_> = stack
+        .handler
+        .store
+        .load_since(before_seq, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|env| match env.payload {
+            Event::RuleFired {
+                rule_id,
+                decision,
+                override_reason,
+                task_id,
+                ..
+            } => Some((rule_id, decision, override_reason, task_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fired,
+        [
+            (advisory.id, RuleDecision::Warning, None, Some(task)),
+            (
+                required.id,
+                RuleDecision::Overridden,
+                Some("hotfix: production is down".to_string()),
+                Some(task),
+            ),
+        ]
+    );
     assert_eq!(
         stack.handler.tasks.get(task).await.unwrap().unwrap().status,
         Status::Done
@@ -990,6 +1105,7 @@ async fn required_fields_reject_incomplete_evidence_and_explain_why() {
         task_title: None,
         pending_plan_ids: vec![],
         pending_plans: vec![],
+        pending_statuses: vec![],
     };
     let GateDecision::Blocked { details, .. } = stack
         .gate
@@ -1060,6 +1176,7 @@ async fn read_artifact_min_version_is_enforced_numerically() {
             task_title: None,
             pending_plan_ids: vec![],
             pending_plans: vec![],
+            pending_statuses: vec![],
         };
         let decision = stack
             .gate
@@ -2049,6 +2166,7 @@ async fn blocked_details_keep_outcomes_beside_unblock_hints() {
         task_title: None,
         pending_plan_ids: vec![],
         pending_plans: vec![],
+        pending_statuses: vec![],
     };
 
     let GateDecision::Blocked { details, .. } = stack
@@ -2398,6 +2516,7 @@ async fn independent_test_attestation_binds_task_revision_and_authenticated_veri
                 Actor::Agent {
                     id: verifier,
                     name: "forged envelope".into(),
+                    client: None,
                 },
                 authenticated,
                 false,
@@ -2431,6 +2550,7 @@ async fn independent_test_attestation_binds_task_revision_and_authenticated_veri
             Actor::Agent {
                 id: verifier,
                 name: "unverified".into(),
+                client: None,
             },
         )
         .await
@@ -2514,6 +2634,7 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
             Actor::User {
                 id: Some(forged),
                 name: Some("owner@example.com".into()),
+                client: None,
             },
             principal,
             false,
@@ -2545,6 +2666,7 @@ async fn evidence_actor_keeps_token_kind_and_pins_authenticated_principal() {
             Actor::Agent {
                 id: forged,
                 name: "bot".into(),
+                client: None,
             },
             principal,
             false,
@@ -3400,6 +3522,7 @@ async fn cyclic_plan_ancestry_fails_closed() {
         task_title: None,
         pending_plan_ids: vec![],
         pending_plans: vec![],
+        pending_statuses: vec![],
     };
     check.pending_plans = vec![(a, Some(b)), (b, Some(a))];
     let err = stack
@@ -3411,4 +3534,412 @@ async fn cyclic_plan_ancestry_fails_closed() {
         err.to_string().contains("cyclic plan scope ancestry"),
         "got: {err}"
     );
+}
+
+// ── ADR-0015: wip_limit on task.before_start ──────────────────────────────
+
+fn wip_rule(scope: RuleScope, max_in_progress: u8, mode: RuleMode) -> NewRule {
+    new_rule(
+        "wip-ceiling",
+        scope,
+        RuleTrigger::TaskBeforeStart,
+        Requirement::WipLimit { max_in_progress },
+        mode,
+        true,
+    )
+}
+
+/// The ceiling counts the rule's project, never the starting task itself and
+/// never another project; the block names the occupant, carries no evidence
+/// to submit, and a freed slot or an explicit override lets the start through.
+#[tokio::test]
+async fn wip_limit_blocks_a_second_start_in_the_project_and_names_the_occupant() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let other_project = create_project(&stack).await;
+    install(
+        &stack,
+        wip_rule(RuleScope::Project { id: project }, 1, RuleMode::Required),
+    )
+    .await;
+    let first = create_project_task(&stack, project, "first").await;
+    let second = create_project_task(&stack, project, "second").await;
+    let elsewhere = create_project_task(&stack, other_project, "elsewhere").await;
+
+    set_in_progress(&stack, first, false)
+        .await
+        .expect("an empty project has a free slot");
+    set_in_progress(&stack, elsewhere, false)
+        .await
+        .expect("another project's tasks do not count");
+
+    let err = set_in_progress(&stack, second, false)
+        .await
+        .expect_err("second start in the project exceeds the ceiling");
+    assert!(is_blocked(&err, "wip-ceiling"), "got: {err}");
+    let hints = unblock_hints(&err);
+    assert_eq!(hints[0]["requirement_type"], "wip_limit", "{hints:?}");
+    assert_eq!(hints[0]["max_in_progress"], 1);
+    assert_eq!(
+        hints[0]["in_progress_task_ids"],
+        serde_json::json!([first]),
+        "the occupant is named, the other project's task is not: {hints:?}"
+    );
+    assert!(hints[0].get("evidence").is_none(), "{hints:?}");
+    assert!(
+        hints[0]["reason"].as_str().unwrap().contains("1 of 1"),
+        "{hints:?}"
+    );
+    assert!(
+        !stack.can_start(second).await.ready,
+        "can_start agrees with the gate"
+    );
+
+    // An explicit override passes an overridable ceiling.
+    set_in_progress(&stack, second, true)
+        .await
+        .expect("force + override_reason passes an overridable wip_limit");
+
+    // Freeing the slots lets a fresh task start without override.
+    for task in [first, second] {
+        stack
+            .handler
+            .handle(
+                Command::SetStatus {
+                    id: task,
+                    status: Status::Done,
+                    force: false,
+                    override_reason: None,
+                    comment: None,
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+    }
+    let third = create_project_task(&stack, project, "third").await;
+    set_in_progress(&stack, third, false)
+        .await
+        .expect("finished tasks free their slots");
+}
+
+/// Phase A of the ADR pilot: `recommendation` warns with the occupants and the
+/// start proceeds.
+#[tokio::test]
+async fn wip_limit_recommendation_warns_with_the_occupants_and_proceeds() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    install(
+        &stack,
+        wip_rule(
+            RuleScope::Project { id: project },
+            1,
+            RuleMode::Recommendation,
+        ),
+    )
+    .await;
+    let first = create_project_task(&stack, project, "first").await;
+    let second = create_project_task(&stack, project, "second").await;
+    set_in_progress(&stack, first, false).await.unwrap();
+
+    let outcome = stack
+        .handler
+        .handle_with_warnings(
+            Command::SetStatus {
+                id: second,
+                status: Status::InProgress,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .expect("recommendation must not block");
+    assert_eq!(outcome.warnings.len(), 1);
+    assert_eq!(outcome.warnings[0].code, "rule_warning:wip-ceiling");
+    assert_eq!(
+        outcome.warnings[0].details["in_progress_task_ids"],
+        serde_json::json!([first])
+    );
+    assert_eq!(
+        stack
+            .handler
+            .tasks
+            .get(second)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        Status::InProgress
+    );
+}
+
+/// The batch counts, not only the projection: one `BulkSetStatus` starting two
+/// tasks under a ceiling of one is blocked even though nothing is persisted
+/// `in_progress` yet; a ceiling of two lets the same batch through.
+#[tokio::test]
+async fn wip_limit_counts_tasks_started_by_the_same_batch() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let rule = install(
+        &stack,
+        wip_rule(RuleScope::Project { id: project }, 1, RuleMode::Required),
+    )
+    .await;
+    let a = create_project_task(&stack, project, "a").await;
+    let b = create_project_task(&stack, project, "b").await;
+    let bulk = || Command::BulkSetStatus {
+        ids: vec![a, b],
+        status: Status::InProgress,
+    };
+    let err = stack
+        .handler
+        .handle(bulk(), Actor::user())
+        .await
+        .expect_err("two starts in one batch exceed a ceiling of one");
+    assert!(is_blocked(&err, "wip-ceiling"), "got: {err}");
+    for task in [a, b] {
+        assert_ne!(
+            stack.handler.tasks.get(task).await.unwrap().unwrap().status,
+            Status::InProgress,
+            "a blocked batch persists nothing"
+        );
+    }
+
+    stack
+        .handler
+        .handle(
+            Command::UpdateRule {
+                id: rule.id,
+                patch: daruma_domain::RulePatch {
+                    requirement: Some(Requirement::WipLimit { max_in_progress: 2 }),
+                    ..Default::default()
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    stack
+        .handler
+        .handle(bulk(), Actor::user())
+        .await
+        .expect("two starts fit a ceiling of two");
+}
+
+/// Plan scope counts plan members only (a direct start resolves the task's
+/// plan memberships); project tasks outside the plan neither count nor are
+/// limited.
+#[tokio::test]
+async fn wip_limit_on_a_plan_counts_its_members_only() {
+    let stack = stack().await;
+    let project = create_project(&stack).await;
+    let plan = create_plan(&stack, project).await;
+    install(
+        &stack,
+        wip_rule(RuleScope::Plan { id: plan }, 1, RuleMode::Required),
+    )
+    .await;
+    let member_a = create_project_task(&stack, project, "member a").await;
+    let member_b = create_project_task(&stack, project, "member b").await;
+    let outsider = create_project_task(&stack, project, "outsider").await;
+    attach(&stack, plan, member_a).await;
+    attach(&stack, plan, member_b).await;
+
+    set_in_progress(&stack, outsider, false)
+        .await
+        .expect("a non-member is outside the plan rule");
+    set_in_progress(&stack, member_a, false)
+        .await
+        .expect("the outsider does not take a plan slot");
+    let err = set_in_progress(&stack, member_b, false)
+        .await
+        .expect_err("second member start exceeds the plan ceiling");
+    assert_eq!(
+        unblock_hints(&err)[0]["in_progress_task_ids"],
+        serde_json::json!([member_a])
+    );
+}
+
+/// A ceiling only means something on a start and on a multi-task scope; the
+/// core rejects every other placement on create and on update.
+#[tokio::test]
+async fn wip_limit_placement_is_validated_on_create_and_update() {
+    let stack = stack().await;
+    let task = create_task(&stack, "t").await;
+    let cases = [
+        wip_rule(RuleScope::Task { id: task }, 1, RuleMode::Required),
+        wip_rule(RuleScope::Tenant, 0, RuleMode::Required),
+        new_rule(
+            "wip-ceiling",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::WipLimit { max_in_progress: 1 },
+            RuleMode::Required,
+            true,
+        ),
+    ];
+    for rule in cases {
+        let err = stack
+            .handler
+            .handle(Command::CreateRule { rule }, Actor::user())
+            .await
+            .expect_err("invalid wip_limit placement");
+        assert!(
+            matches!(err, CoreError::Validation(_)) && err.to_string().contains("wip_limit"),
+            "got: {err}"
+        );
+    }
+
+    let complete_rule = install(
+        &stack,
+        new_rule(
+            "note",
+            RuleScope::Tenant,
+            RuleTrigger::TaskBeforeComplete,
+            Requirement::CompletionNote {
+                required_fields: vec![],
+            },
+            RuleMode::Required,
+            true,
+        ),
+    )
+    .await;
+    let err = stack
+        .handler
+        .handle(
+            Command::UpdateRule {
+                id: complete_rule.id,
+                patch: daruma_domain::RulePatch {
+                    requirement: Some(Requirement::WipLimit { max_in_progress: 1 }),
+                    ..Default::default()
+                },
+            },
+            Actor::user(),
+        )
+        .await
+        .expect_err("a before_complete rule cannot become a wip_limit");
+    assert!(matches!(err, CoreError::Validation(_)), "got: {err}");
+}
+
+// ── ADR-0018: every clause code has a counterexample ────────────────────────
+
+/// The counterexample corpus of the rule-engine policy pack (ADR-0018), one
+/// row per `Requirement` type. Base input: a task about to start with nothing
+/// recorded for it and one other task already in progress — it starts. The
+/// single mutation is one `required` tenant rule of the row's type; the
+/// verdict must then be `blocked` on exactly that type. The comment on each
+/// row says why the violation is realistic.
+fn counterexamples() -> Vec<Requirement> {
+    vec![
+        // Spec §5 example 1: work begins without reading the architecture doc.
+        Requirement::ReadArtifact {
+            doc_ref: "docs/ARCHITECTURE.md".into(),
+            min_version: "latest".into(),
+        },
+        // A promised artifact (e.g. a migration) that nobody recorded.
+        Requirement::CreateArtifact {
+            artifact_kind: "migration".into(),
+        },
+        // Spec §5 example 2: an auth change started without an impact check.
+        Requirement::ImpactCheck {
+            target: "auth-module".into(),
+            required_fields: vec![],
+        },
+        // An architectural choice made in chat, never recorded.
+        Requirement::DecisionRecord {
+            required_fields: vec![],
+        },
+        // Spec §5 example 3: a transition with no who/when/why note.
+        Requirement::CompletionNote {
+            required_fields: vec![],
+        },
+        // An orphan task nobody owns.
+        Requirement::OwnerRequired,
+        // `task.no_acceptance_criteria` audit finding: no done criterion.
+        Requirement::AcceptanceCriteriaRequired,
+        // An executor vouching for its own tests (no independent attestation).
+        Requirement::IndependentTestVerification {
+            executor_id: AgentId::new(),
+            source_revision: "a".repeat(40),
+        },
+        // Work on a task with no spec document bound to it.
+        Requirement::DocumentLinked,
+        // A risky change started without a risk assessment.
+        Requirement::RiskCheck {
+            target: "billing".into(),
+            required_fields: vec![],
+        },
+        // ADR-0015: a second start while the only WIP slot is taken.
+        Requirement::WipLimit { max_in_progress: 1 },
+    ]
+}
+
+fn start_check(task: TaskId) -> GateCheck {
+    GateCheck {
+        trigger: TriggerEvent::TaskBeforeStart,
+        project_id: None,
+        task_id: Some(task),
+        plan_id: None,
+        run_id: None,
+        document_id: None,
+        handoff_id: None,
+        status_from: Some(Status::Inbox),
+        status_to: Some(Status::InProgress),
+        plan_status_from: None,
+        plan_status_to: None,
+        task_title: None,
+        pending_plan_ids: vec![],
+        pending_plans: vec![],
+        pending_statuses: vec![],
+    }
+}
+
+/// ADR-0018 completeness: the corpus covers `Requirement::ALL_TYPES` exactly
+/// once each, and every row blocks on its own type while the base input
+/// passes. A clause code without a counterexample is not a clause.
+#[tokio::test]
+async fn every_requirement_type_has_a_counterexample() {
+    let rows = counterexamples();
+    let mut covered: Vec<&str> = rows.iter().map(Requirement::type_str).collect();
+    covered.sort_unstable();
+    let mut declared = Requirement::ALL_TYPES.to_vec();
+    declared.sort_unstable();
+    assert_eq!(covered, declared, "one counterexample per clause code");
+
+    for requirement in rows {
+        let code = requirement.type_str();
+        let stack = stack().await;
+        let occupant = create_task(&stack, "Occupant").await;
+        start(&stack, occupant).await.expect("no rules yet");
+        let task = create_task(&stack, "Counterexample").await;
+        let (check, actor, no_override) =
+            (start_check(task), Actor::user(), GateOverride::default());
+        let decide = || stack.gate.check(&actor, &check, &no_override);
+
+        let base = decide().await.expect("gate");
+        assert!(
+            matches!(base, GateDecision::Allowed),
+            "{code}: base input must pass, got {base:?}"
+        );
+        install(
+            &stack,
+            new_rule(
+                code,
+                RuleScope::Tenant,
+                RuleTrigger::TaskBeforeStart,
+                requirement,
+                RuleMode::Required,
+                true,
+            ),
+        )
+        .await;
+        match decide().await.expect("gate") {
+            GateDecision::Blocked { details, .. } => {
+                assert_eq!(details["requirement"]["type"], code, "{code}: {details}")
+            }
+            other => panic!("{code}: counterexample must block, got {other:?}"),
+        }
+    }
 }

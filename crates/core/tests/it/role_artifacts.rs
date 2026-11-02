@@ -328,7 +328,13 @@ async fn plain_registry_artifacts_are_untouched() {
         .unwrap_err();
     assert!(err.to_string().contains("not a role artifact"), "{err}");
     let _ = propose_ok(&handler, task, "draft", "patch", None).await;
-    assert_eq!(repo.list(None, Some(task), None).await.unwrap().len(), 2);
+    assert_eq!(
+        repo.list(None, Some(task), None, false)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]

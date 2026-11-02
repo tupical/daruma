@@ -8,8 +8,10 @@ tasks or write to `.omc/plans/`.
 ## Steps
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
-2. `daruma_plan_list` with `status = "active"`.
-   Pick the most recently updated. If none, say
+2. `daruma_plan_list` with `status = "active"`, `sort = "updated"`,
+   `limit = 1` — the server orders by `updated_at`, newest first, so the
+   single row is the most recently updated plan (the default order is by
+   creation, and its first page can miss it). If none, say
    "no active plan — `daruma_plan_materialize` first" and stop.
 3. `daruma_plan_get` with the chosen `plan_id` and `view = "tasks"` —
    the only view that lists every plan task (done included) with

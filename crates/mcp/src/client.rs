@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use daruma_shared::AgentId;
+
+use crate::open_tasks::OpenTask;
 use serde_json::{json, Value};
 
 /// HTTP-hop client used by every tool handler.
@@ -25,15 +27,30 @@ pub struct ApiClient {
     /// MCP clients are pinned at construction; stdio clients resolve it through
     /// the hosted MCP surface when workspace info is requested.
     agent_id_is_authenticated: bool,
-    /// Session-scoped dedup cache (task D): object id → the `updated_at` this
-    /// session was last handed the object *in full*. Shared across `.clone()`s
+    /// MCP client this session serves (`clientInfo.name`), forwarded as
+    /// `X-Daruma-Client` so the server attributes emitted events to it.
+    client_name: Option<String>,
+    /// Session-scoped dedup cache (task D): object id → the version this
+    /// session was last handed the object *in full*, paired with the
+    /// `updated_at` reported back as `since`. Shared across `.clone()`s
     /// via `Arc<Mutex<_>>` so every clone of this client sees the same session
     /// memory. The session boundary is exactly one `ApiClient`: on stdio that
     /// is the whole MCP process (one client for the process lifetime); on the
     /// HTTP transport a fresh client is built per request, so the cache starts
     /// empty and dedup simply degrades to always-full responses — safe because
     /// dedup is opt-in (see `crate::tools`).
-    dedup_cache: Arc<Mutex<HashMap<String, String>>>,
+    dedup_cache: Arc<Mutex<HashMap<String, DedupEntry>>>,
+    /// Open tasks the hosting server already read in-process for this
+    /// `initialize` (see [`Self::with_open_tasks`]); `None` → HTTP lookup.
+    open_tasks: Option<Vec<OpenTask>>,
+}
+
+/// One dedup cache entry: the version the session holds in full and the
+/// `updated_at` it was emitted at.
+#[derive(Clone)]
+struct DedupEntry {
+    version: String,
+    since: String,
 }
 
 impl ApiClient {
@@ -51,7 +68,9 @@ impl ApiClient {
             http: reqwest::Client::new(),
             agent_id: fresh_agent_id(),
             agent_id_is_authenticated: false,
+            client_name: None,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
+            open_tasks: None,
         }
     }
 
@@ -60,6 +79,15 @@ impl ApiClient {
         let id = workspace_id.into();
         if !id.trim().is_empty() {
             self.workspace_id = Some(id);
+        }
+        self
+    }
+
+    /// Name the MCP client this session serves; blank names are ignored.
+    pub fn with_client_name(mut self, client: impl Into<String>) -> Self {
+        let client = client.into();
+        if !client.trim().is_empty() {
+            self.client_name = Some(client.trim().to_string());
         }
         self
     }
@@ -87,8 +115,23 @@ impl ApiClient {
             http,
             agent_id: fresh_agent_id(),
             agent_id_is_authenticated: false,
+            client_name: None,
             dedup_cache: Arc::new(Mutex::new(HashMap::new())),
+            open_tasks: None,
         }
+    }
+
+    /// Hand `initialize` the agent's open tasks read by the hosting server
+    /// itself. The HTTP lookup would come back through the server's rate
+    /// limiter and spend the caller's tool-call budget on every handshake.
+    pub fn with_open_tasks(mut self, open: Vec<OpenTask>) -> Self {
+        self.open_tasks = Some(open);
+        self
+    }
+
+    /// Open tasks pinned by [`Self::with_open_tasks`], if any.
+    pub fn preloaded_open_tasks(&self) -> Option<&[OpenTask]> {
+        self.open_tasks.as_deref()
     }
 
     /// Stable MCP process agent id (UUID string).
@@ -138,24 +181,23 @@ impl ApiClient {
     }
 
     /// Session dedup lookup (task D). Given an object `id` and its current
-    /// version stamp, decide whether this session was already handed the same
-    /// object in full at the same stamp:
+    /// version, decide whether this session was already handed the same
+    /// object in full at the same version:
     ///
-    /// * `Some(since)` — HIT: unchanged since `since` (the stamp recorded at the
-    ///   earlier full emission, identical to the current one). The caller
-    ///   should return the compact `unchanged` marker instead of the payload.
-    /// * `None` — MISS: the object is new to this session, its stamp changed,
-    ///   or the earlier emission was only a `max_tokens` excerpt.
+    /// * `Some(since)` — HIT: unchanged since `since` (the `updated_at`
+    ///   recorded at the earlier full emission). The caller should return the
+    ///   compact `unchanged` marker instead of the payload.
+    /// * `None` — MISS: the object is new to this session, its version
+    ///   changed, or the earlier emission was only a `max_tokens` excerpt.
     ///
     /// A lookup never records anything: the caller calls [`Self::dedup_record`]
     /// only after it knows the response it emits is the complete object, so a
     /// truncated excerpt can never be answered with `unchanged` later.
     ///
-    /// `updated_at` is the single source of truth for "changed vs unchanged":
-    /// every task/plan mutation bumps it through the event pipeline, so a stamp
-    /// match is a correct-by-construction "nothing changed" signal without any
-    /// payload hashing or event subscription.
-    pub fn dedup_lookup(&self, id: &str, updated_at: &str) -> Option<String> {
+    /// `version` must cover the whole returned payload, not just the object's
+    /// own `updated_at`: a plan's detail carries progress and membership that
+    /// change without bumping `plan.updated_at` (see `crate::tools`).
+    pub fn dedup_lookup(&self, id: &str, version: &str) -> Option<String> {
         let cache = match self.dedup_cache.lock() {
             Ok(guard) => guard,
             // A poisoned lock only means a prior panic while holding it; dedup is
@@ -163,20 +205,26 @@ impl ApiClient {
             Err(poisoned) => poisoned.into_inner(),
         };
         match cache.get(id) {
-            Some(stamp) if stamp == updated_at => Some(stamp.clone()),
+            Some(entry) if entry.version == version => Some(entry.since.clone()),
             _ => None,
         }
     }
 
-    /// Record that this session was just handed `id` **in full** at
-    /// `updated_at` (task D). Call it only for complete payloads — never for a
-    /// `max_tokens` excerpt — so a later `dedup` read can trust the stamp.
-    pub fn dedup_record(&self, id: &str, updated_at: &str) {
+    /// Record that this session was just handed `id` **in full** at `version`,
+    /// last changed at `since` (task D). Call it only for complete payloads —
+    /// never for a `max_tokens` excerpt — so a later `dedup` read can trust it.
+    pub fn dedup_record(&self, id: &str, version: &str, since: &str) {
         let mut cache = match self.dedup_cache.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        cache.insert(id.to_string(), updated_at.to_string());
+        cache.insert(
+            id.to_string(),
+            DedupEntry {
+                version: version.to_string(),
+                since: since.to_string(),
+            },
+        );
     }
 
     /// Wire-format Actor for every command this process dispatches.
@@ -218,9 +266,12 @@ impl ApiClient {
     }
 
     fn auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let builder = builder
+        let mut builder = builder
             .bearer_auth(&self.token)
             .header("X-Daruma-Plugin-Contract", "1");
+        if let Some(client) = &self.client_name {
+            builder = builder.header("X-Daruma-Client", client.as_str());
+        }
         match &self.workspace_id {
             Some(id) => builder.header("X-Daruma-Workspace-Id", id.as_str()),
             None => builder,

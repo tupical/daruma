@@ -15,6 +15,7 @@
 
 pub mod downloads;
 pub mod pairing;
+mod project_scope;
 pub mod relations;
 pub mod shell;
 pub mod workspacegraph;
@@ -42,7 +43,7 @@ use daruma_core::{
     plan_readiness, plan_ready_to_close,
     repos::{ExternalRefRepository, PlanRepository},
     search::{FtsSearchProvider, SearchProvider, SearchQuery as CoreSearchQuery, SearchScope},
-    Command, CommandEnvelope,
+    Command,
 };
 use daruma_domain::{
     slugify_title, Actor, AgentSessionPlanStep, AnchorMismatch, ArtifactRelationKind,
@@ -384,6 +385,10 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/workspacegraph/search", get(workspacegraph::search))
         .route("/workspacegraph/impact", get(workspacegraph::impact))
         .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            project_scope::guard,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
             state.rate_limiter.clone(),
             enforce_rate_limit,
         ))
@@ -454,6 +459,60 @@ async fn revoke_device(
     Ok(Json(json!({ "ok": true, "device_id": device_id })))
 }
 
+// ── Token project scope (`ProjectFilter`) ─────────────────────────────────────
+
+/// Gate a project-bound resource by the token's `ProjectFilter`. A `None`
+/// project (inbox task) is workspace-wide and requires an unrestricted token.
+fn project_visible(auth: &AuthContext, project_id: Option<ProjectId>) -> bool {
+    matches!(auth.scope.projects, ProjectFilter::All)
+        || project_id.is_some_and(|id| auth.scope.projects.allows(Some(id)))
+}
+
+fn require_project_scope(
+    auth: &AuthContext,
+    project_id: Option<ProjectId>,
+) -> Result<(), ApiError> {
+    if project_visible(auth, project_id) {
+        Ok(())
+    } else {
+        Err(ApiError::from(CoreError::forbidden(
+            "project access denied",
+        )))
+    }
+}
+
+/// [`require_project_scope`] by plan id. An unknown plan passes: the handler
+/// answers its own 404.
+async fn require_plan_scope(
+    state: &AppState,
+    auth: &AuthContext,
+    plan_id: PlanId,
+) -> Result<(), ApiError> {
+    if matches!(auth.scope.projects, ProjectFilter::All) {
+        return Ok(());
+    }
+    match state.plans.get(plan_id).await.map_err(ApiError::from)? {
+        Some(plan) => require_project_scope(auth, Some(plan.project_id)),
+        None => Ok(()),
+    }
+}
+
+/// [`require_project_scope`] by task id. An unknown task passes: the handler
+/// answers its own 404.
+async fn require_task_scope(
+    state: &AppState,
+    auth: &AuthContext,
+    task_id: TaskId,
+) -> Result<(), ApiError> {
+    if matches!(auth.scope.projects, ProjectFilter::All) {
+        return Ok(());
+    }
+    match state.tasks.get(task_id).await.map_err(ApiError::from)? {
+        Some(task) => require_project_scope(auth, task.project_id),
+        None => Ok(()),
+    }
+}
+
 // ── Task / project / event handlers ───────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
@@ -488,6 +547,7 @@ async fn list_tasks(
         Some("inbox") => state.tasks.list_by_project_filtered(None, filter).await,
         Some(raw) => {
             let pid = parse_id(raw, "project id")?;
+            require_project_scope(&auth, Some(pid))?;
             state
                 .tasks
                 .list_by_project_filtered(Some(pid), filter)
@@ -495,6 +555,7 @@ async fn list_tasks(
         }
     }
     .map_err(ApiError::from)?;
+    tasks.retain(|task| project_visible(&auth, task.project_id));
     tasks.sort_by(|a, b| {
         a.created_at
             .cmp(&b.created_at)
@@ -558,7 +619,12 @@ async fn search(
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
     let requested_limit = collection_limit(q.limit);
-    let fetch_limit = if page {
+    // A project-scoped token drops foreign hits after the search: fetch them
+    // all so the page is not short of the hits it may see.
+    let scoped = !matches!(auth.scope.projects, ProjectFilter::All);
+    let fetch_limit = if scoped {
+        usize::MAX
+    } else if page {
         requested_limit
             .map(|limit| offset.saturating_add(limit).saturating_add(1))
             .unwrap_or(usize::MAX)
@@ -566,6 +632,9 @@ async fn search(
         requested_limit.unwrap_or(usize::MAX)
     };
     let project_id = parse_search_project(q.project_id.as_deref())?;
+    if project_id.is_some() {
+        require_project_scope(&auth, project_id)?;
+    }
     let provider = FtsSearchProvider::new(
         state.tasks.clone(),
         state.comments.clone(),
@@ -580,11 +649,16 @@ async fn search(
         })
         .await
         .map_err(ApiError::from)?;
+    let mut hits = hits;
+    hits.retain(|hit| project_visible(&auth, hit.project_id));
 
     if page {
         let limit = requested_limit.unwrap_or_else(|| hits.len().saturating_sub(offset).max(1));
         Ok(Json(page_by_offset(hits, offset, limit)))
     } else {
+        if let Some(limit) = requested_limit {
+            hits.truncate(limit);
+        }
         Ok(Json(json!(hits)))
     }
 }
@@ -769,6 +843,7 @@ async fn get_task(
     let task_id = parse_id(&id, "task id")?;
     let task = state.tasks.get(task_id).await.map_err(ApiError::from)?;
     let t = task.ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
+    require_project_scope(&auth, t.project_id)?;
     let current_claim = state
         .claims
         .get_active_for_task(task_id)
@@ -907,14 +982,18 @@ async fn compare_history_versions(
                 q.entity_type, q.entity_id, q.to
             )))
         })?;
+    // The stored `to.diff` only covers `to`'s own adjacent step; a compare of
+    // an arbitrary pair diffs the two selected snapshots directly.
+    let (changed_fields, pair_diff) =
+        daruma_storage::diff_snapshots(from.after.as_ref(), to.after.as_ref());
     let diff = json!({
         "kind": "version_compare",
         "from_version": from.version_number,
         "to_version": to.version_number,
         "before": from.after,
         "after": to.after,
-        "changed_fields": to.changed_fields,
-        "diff": to.diff,
+        "changed_fields": changed_fields,
+        "diff": pair_diff,
     });
     Ok(Json(json!({ "from": from, "to": to, "diff": diff })))
 }
@@ -1000,7 +1079,7 @@ async fn rollback_history_version(
         "task" => {
             auth.require(Capability::TaskWrite)
                 .map_err(ApiError::from_missing_cap)?;
-            vec![rollback_task_command(after)?]
+            rollback_task_commands(&state, &auth, after).await?
         }
         "document" => {
             auth.require(Capability::DocumentWrite)
@@ -1045,23 +1124,76 @@ async fn rollback_history_version(
     }))
 }
 
-fn rollback_task_command(after: Value) -> Result<Command, ApiError> {
-    let task: Task = serde_json::from_value(after)
+/// Task rollback restores only the fields that differ from the current task,
+/// so an execution-only rollback (status/priority/...) never touches the
+/// plan-owned fields. Changed plan-owned fields (title/description/project_id)
+/// of a plan member go through the owning plan's `AmendPlanTask`, the path
+/// ADR-0007 Q1 leaves open under plan-only intake (needs `PlanWrite` too);
+/// a plan-less task keeps the legacy `UpdateTask`, which plan-only intake
+/// rejects with `plan_owned_immutable`.
+async fn rollback_task_commands(
+    state: &AppState,
+    auth: &AuthContext,
+    after: Value,
+) -> Result<Vec<Command>, ApiError> {
+    let target: Task = serde_json::from_value(after)
         .map_err(|e| ApiError::from(CoreError::serde(e.to_string())))?;
-    Ok(Command::UpdateTask {
-        id: task.id,
-        patch: TaskPatch {
-            title: Some(task.title),
-            description: Some(task.description),
-            status: Some(task.status),
-            priority: Some(task.priority),
-            triage_state: Some(task.triage_state),
-            due_at: Some(task.due_at),
-            project_id: Some(task.project_id),
-            git_context: Some(task.git_context),
-            pipeline_position: None,
-        },
-    })
+    let current = state
+        .tasks
+        .get(target.id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {}", target.id))))?;
+
+    let plan_owned = TaskPatch {
+        title: (current.title != target.title).then(|| target.title.clone()),
+        description: (current.description != target.description)
+            .then(|| target.description.clone()),
+        project_id: (current.project_id != target.project_id).then_some(target.project_id),
+        ..TaskPatch::default()
+    };
+    let execution = TaskPatch {
+        status: (current.status != target.status).then_some(target.status),
+        priority: (current.priority != target.priority).then_some(target.priority),
+        triage_state: (current.triage_state != target.triage_state).then_some(target.triage_state),
+        due_at: (current.due_at != target.due_at).then_some(target.due_at),
+        git_context: (current.git_context != target.git_context)
+            .then(|| target.git_context.clone()),
+        ..TaskPatch::default()
+    };
+
+    let mut commands = Vec::new();
+    if !plan_owned.is_empty() {
+        let owning_plan = state
+            .plans
+            .list_plans_for_task(target.id)
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .next();
+        match owning_plan {
+            Some(plan) => {
+                auth.require(Capability::PlanWrite)
+                    .map_err(ApiError::from_missing_cap)?;
+                commands.push(Command::AmendPlanTask {
+                    plan_id: plan.id,
+                    task_id: target.id,
+                    patch: plan_owned,
+                });
+            }
+            None => commands.push(Command::UpdateTask {
+                id: target.id,
+                patch: plan_owned,
+            }),
+        }
+    }
+    if !execution.is_empty() {
+        commands.push(Command::UpdateTask {
+            id: target.id,
+            patch: execution,
+        });
+    }
+    Ok(commands)
 }
 
 async fn rollback_document_commands(
@@ -1099,7 +1231,8 @@ async fn list_projects(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectRead)
         .map_err(ApiError::from_missing_cap)?;
-    let projects = state.projects.list_all().await.map_err(ApiError::from)?;
+    let mut projects = state.projects.list_all().await.map_err(ApiError::from)?;
+    projects.retain(|project| auth.scope.projects.allows(Some(project.id)));
     Ok(Json(projects))
 }
 
@@ -2103,6 +2236,7 @@ async fn list_repo_scopes(
     let scopes = state.repo_scopes.list().await.map_err(ApiError::from)?;
     let items = scopes
         .into_iter()
+        .filter(|(_, project_id)| project_id.parse().is_ok_and(|id| auth.scope.projects.allows(Some(id))))
         .map(|(scope_path, project_id)| {
             json!({ "scope_path": scope_path, "project_id": project_id })
         })
@@ -2537,9 +2671,13 @@ struct ArtifactListQuery {
     status: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    /// Include deprecated artifacts when no `status` is given (ADR-0019).
+    #[serde(default)]
+    include_superseded: bool,
 }
 
 /// `GET /v1/artifacts` — list artifacts with derived `kind` and current lease holder.
+/// Deprecated artifacts are hidden unless `include_superseded=true` or `status=deprecated`.
 async fn list_artifacts(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -2567,7 +2705,7 @@ async fn list_artifacts(
 
     let artifacts = state
         .artifacts
-        .list(project_id, task_id, status)
+        .list(project_id, task_id, status, q.include_superseded)
         .await
         .map_err(ApiError::from)?;
 
@@ -2967,17 +3105,29 @@ async fn commit_artifact_write(
     .await
 }
 
-/// `POST /v1/artifacts/{id}/deprecate` — soft-deprecate an artifact.
+#[derive(Deserialize)]
+struct DeprecateArtifactBody {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// `POST /v1/artifacts/{id}/deprecate` — soft-deprecate an artifact. Body
+/// `{reason}` is required unless an incoming `supersedes` relation exists.
 async fn deprecate_artifact(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Path(id_str): Path<String>,
+    body: Option<Json<DeprecateArtifactBody>>,
 ) -> Result<impl IntoResponse, ApiError> {
     let artifact_id = parse_id(id_str, "artifact id")?;
+    let reason = body.and_then(|Json(body)| body.reason);
     dispatch_artifact_mutation(
         &auth,
         &state,
-        Command::DeprecateArtifact { artifact_id },
+        Command::DeprecateArtifact {
+            artifact_id,
+            reason,
+        },
         json!({ "artifact_id": artifact_id }),
     )
     .await
@@ -3126,6 +3276,10 @@ async fn record_evidence(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::ProjectWrite)
         .map_err(ApiError::from_missing_cap)?;
+    let evidence_task = body.evidence.task_id.or(match body.evidence.scope {
+        daruma_domain::RuleScope::Task { id } => Some(id),
+        _ => None,
+    });
     let envs = state
         .commands
         .dispatch_authenticated(
@@ -3142,13 +3296,17 @@ async fn record_evidence(
         Event::EvidenceRecorded { evidence } => Some(evidence.clone()),
         _ => None,
     });
+    let warnings = match evidence_task {
+        Some(task_id) => start_task_implicitly(&state, &auth, task_id).await,
+        None => Vec::new(),
+    };
     let last = envs.last();
     Ok(Json(MutationResponse {
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
         data: json!({ "evidence": evidence }),
-        warnings: vec![],
+        warnings,
         client_command_id: None,
     }))
 }
@@ -3652,9 +3810,34 @@ async fn patch_task_triage(
     auth.require(Capability::TaskWrite)
         .map_err(ApiError::from_missing_cap)?;
     let id = parse_id(id_str, "task id")?;
+    // A triage decision is an ordinary execution-owned `UpdateTask`, so it
+    // lands in the event log and `entity_versions` like any other task edit
+    // (docs/VERSION_HISTORY.md) instead of a direct projection write.
+    state
+        .tasks
+        .get(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
+    state
+        .commands
+        .dispatch_authenticated(
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    triage_state: Some(body.triage_state),
+                    ..TaskPatch::default()
+                },
+            },
+            actor_from(&auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
+        .await
+        .map_err(ApiError::from)?;
     let task = state
         .tasks
-        .set_triage_state(id, body.triage_state)
+        .get(id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("task {id}"))))?;
@@ -3728,10 +3911,23 @@ async fn delete_project(
     }))
 }
 
+/// Body of `POST /v1/commands`: the wire shape of `CommandEnvelope`, except
+/// that `actor` stays optional. `CommandEnvelope` defaults a missing actor to
+/// an anonymous `Actor::User`, which would hide the omission from
+/// [`actor_from`]; here an omitted or `null` actor falls back to the token.
+#[derive(Debug, Deserialize)]
+struct CommandRequest {
+    command: Command,
+    #[serde(default)]
+    actor: Option<Actor>,
+    #[serde(default)]
+    client_command_id: Option<uuid::Uuid>,
+}
+
 async fn dispatch_command(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
-    Json(envelope): Json<CommandEnvelope>,
+    Json(envelope): Json<CommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if let Some(reason) = guarded_command_reason(&envelope.command) {
         return Err(ApiError::from(CoreError::forbidden(reason)));
@@ -3762,6 +3958,13 @@ async fn dispatch_command(
         }));
     }
 
+    // Attaching where the work lives is a work-start signal.
+    let git_context_task = match &envelope.command {
+        Command::UpdateTask { id, patch } if matches!(patch.git_context, Some(Some(_))) => {
+            Some(*id)
+        }
+        _ => None,
+    };
     let result = async {
         let mut warnings = mutation_warnings(&state, &envelope.command)
             .await
@@ -3775,14 +3978,19 @@ async fn dispatch_command(
             .dispatch_authenticated_with_warnings(
                 envelope.command,
                 // Same rule as the typed routes: under `actor_strict` the
-                // envelope actor is ignored and the token decides.
-                actor_from(&auth, Some(envelope.actor)),
+                // envelope actor is ignored and the token decides; without it
+                // an explicit envelope actor wins and a missing one falls
+                // back to the token.
+                actor_from(&auth, envelope.actor),
                 auth.agent_id,
                 auth.scope.capabilities.has(Capability::Admin),
             )
             .await
             .map_err(ApiError::from)?;
         warnings.extend(outcome.warnings);
+        if let Some(task_id) = git_context_task {
+            warnings.extend(start_task_implicitly(&state, &auth, task_id).await);
+        }
         Ok::<_, ApiError>((warnings, outcome.events))
     }
     .await;
@@ -3836,6 +4044,7 @@ struct McpHttpQuery {
 
 async fn mcp_http(
     auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<McpHttpQuery>,
     Json(request): Json<JsonRpcRequest>,
@@ -3861,6 +4070,18 @@ async fn mcp_http(
     if let Some(workspace_id) = header_string(&headers, "x-daruma-workspace-id") {
         client = client.with_workspace_id(workspace_id);
     }
+    // Attribution: the hosting gateway names the MCP client (clientInfo.name
+    // or the User-Agent product); every command this call dispatches carries it.
+    if let Some(name) = header_string(&headers, daruma_auth::CLIENT_HEADER)
+        .as_deref()
+        .and_then(daruma_auth::sanitize_client)
+    {
+        client = client.with_client_name(name);
+    }
+    if request.method == "initialize" {
+        let open = daruma_mcp::bounded_open_tasks(open_tasks_in_process(&state, &auth)).await;
+        client = client.with_open_tasks(open);
+    }
 
     match dispatch_mcp_request(&client, profile, request).await {
         Some(response) => {
@@ -3878,6 +4099,53 @@ async fn mcp_http(
             Ok(StatusCode::ACCEPTED.into_response())
         }
     }
+}
+
+/// The caller's open tasks for `initialize.instructions`, read in-process.
+/// Same selection as the stdio HTTP lookup (`daruma_mcp::open_tasks`): the
+/// agent's visible live claims in claim order, at most
+/// [`daruma_mcp::MAX_CLAIMS_READ`], whose task is `in_progress`/`in_review`,
+/// at most [`daruma_mcp::MAX_OPEN_TASKS`]. Over HTTP each read would pass this
+/// server's rate limiter again and spend the caller's tool-call budget on a
+/// handshake. Any failure or missing read capability yields no tasks; the
+/// caller bounds the read with [`daruma_mcp::bounded_open_tasks`].
+async fn open_tasks_in_process(state: &AppState, auth: &AuthContext) -> Vec<daruma_mcp::OpenTask> {
+    let caps = &auth.scope.capabilities;
+    if !caps.has(Capability::RunRead) || !caps.has(Capability::TaskRead) {
+        return Vec::new();
+    }
+    let Ok(claims) = state.claims.list_active(None).await else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut read = 0;
+    let mut open = Vec::new();
+    for claim in claims {
+        if claim.agent_id != auth.agent_id || !seen.insert(claim.task_id) {
+            continue;
+        }
+        let Ok(Some(task)) = state.tasks.get(claim.task_id).await else {
+            continue;
+        };
+        if !project_visible(auth, task.project_id) {
+            continue;
+        }
+        read += 1;
+        if matches!(
+            task.status,
+            daruma_domain::Status::InProgress | daruma_domain::Status::InReview
+        ) {
+            open.push(daruma_mcp::OpenTask {
+                id: claim.task_id.as_uuid().to_string(),
+                title: task.title,
+                status: task.status.as_str().to_string(),
+            });
+        }
+        if open.len() == daruma_mcp::MAX_OPEN_TASKS || read == daruma_mcp::MAX_CLAIMS_READ {
+            break;
+        }
+    }
+    open
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4675,23 +4943,6 @@ async fn apply_persisted_event(state: &AppState, env: &EventEnvelope) -> Result<
     Ok(())
 }
 
-/// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.
-///
-/// Loads the plan's task list, builds a `TaskBrief` per task, hands them to
-/// [`crate::ai::analyze_complexity_batch`] as **one** LLM call, and upserts
-/// the resulting hints into the `task_complexity_hints` projection. The
-/// response surfaces `batch_id` + the freshly written hints so callers (e.g.
-/// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
-///
-/// **Deprecated delegation-shim.** The complexity *analysis* (raw tasks →
-/// scores/hints) is planning-layer logic whose canonical home is
-/// `yatagarasu::analyze_complexity_batch` (`planning_oss`). This route is
-/// retained unchanged until the cloud cutover wires the call to the
-/// planning layer (separate plan); only the **write-back** half — building
-/// `TaskBrief`s and upserting `task_complexity_hints` — is structural
-/// execution work that stays in core regardless. The standalone write-back
-/// contract already exists as `POST /v1/complexity-hints`
-/// ([`upsert_complexity_hints`]): planning analyses, core persists.
 /// Optional body for `POST /v1/ai/analyze-complexity/{plan_id}`.
 ///
 /// Pre-§3.8.13 callers send no body (or `{}`); the new
@@ -4704,6 +4955,19 @@ struct AiAnalyzeComplexityBody {
     use_research_provider: Option<bool>,
 }
 
+/// `POST /v1/ai/analyze-complexity/{plan_id}` — §3.8.3.
+///
+/// Loads the plan's task list, builds a `TaskBrief` per task, hands them to
+/// [`crate::ai::analyze_complexity_batch`] as **one** LLM call, and upserts
+/// the resulting hints into the `task_complexity_hints` projection. The
+/// response surfaces `batch_id` + the freshly written hints so callers (e.g.
+/// the §3.8.4 hint-aware `daruma_ai_decompose`) can chain immediately.
+///
+/// Daruma owns both halves: the scoring call goes through `daruma-ai-infra`
+/// in [`crate::ai`], and the write-back assigns `batch_id` + `generated_at`
+/// here. Nothing is delegated to an upper layer; Yatagarasu decompose/scope
+/// are separate draft operations. Externally computed hints use
+/// `POST /v1/complexity-hints` ([`upsert_complexity_hints`]).
 async fn ai_analyze_complexity(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -4824,9 +5088,9 @@ async fn ai_analyze_complexity(
     })))
 }
 
-/// One complexity hint draft as posted by the planning layer. Mirrors
-/// `yatagarasu::ComplexityHintDraft`: deliberately free of `batch_id` /
-/// `generated_at` — persistence identity is assigned here, by core.
+/// One externally computed complexity hint draft: deliberately free of
+/// `batch_id` / `generated_at` — persistence identity is assigned here, by
+/// core.
 #[derive(Deserialize)]
 struct ComplexityHintDraftBody {
     task_id: TaskId,
@@ -4844,16 +5108,13 @@ struct UpsertComplexityHintsBody {
     hints: Vec<ComplexityHintDraftBody>,
 }
 
-/// `POST /v1/complexity-hints` — the projection write-back contract of the
-/// execution/planning layer boundary.
+/// `POST /v1/complexity-hints` — write-back of externally computed
+/// complexity hints into the `task_complexity_hints` projection.
 ///
-/// The planning layer (`yatagarasu::analyze_complexity_batch`) returns pure
-/// [`ComplexityHintDraftBody`]-shaped drafts and **never writes to storage**;
-/// its caller posts them here, and core assigns `batch_id` + `generated_at`
-/// and upserts the `task_complexity_hints` projection. This is the same
-/// write-back half the deprecated `/ai/analyze-complexity/{plan_id}` shim
-/// performs internally today; at the cloud cutover callers switch to
-/// planning-layer analysis + this endpoint and the shim is removed.
+/// The caller posts [`ComplexityHintDraftBody`]-shaped drafts; core assigns
+/// `batch_id` + `generated_at` and upserts the projection — the same
+/// write-back [`ai_analyze_complexity`] performs after Daruma's own batch
+/// scoring.
 async fn upsert_complexity_hints(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -4977,7 +5238,7 @@ async fn list_task_activity(
     };
 
     // Project-scope gate.
-    if !auth.scope.projects.allows(project_id) {
+    if !project_visible(&auth, project_id) {
         return Err(ApiError::from(CoreError::forbidden(
             "project access denied",
         )));
@@ -5073,7 +5334,31 @@ async fn add_comment(
             }
         })
         .ok_or_else(|| ApiError::from(CoreError::storage("expected CommentAdded event")))?;
-    Ok((StatusCode::CREATED, Json(comment)))
+    let warnings = match kind {
+        Some(CommentKind::Intent | CommentKind::Progress) => {
+            start_task_implicitly(&state, &auth, task_id).await
+        }
+        Some(CommentKind::Outcome) => {
+            advance_task_implicitly(
+                &state,
+                &auth,
+                task_id,
+                &[
+                    daruma_domain::Status::Todo,
+                    daruma_domain::Status::InProgress,
+                ],
+                daruma_domain::Status::InReview,
+            )
+            .await
+        }
+        Some(CommentKind::Blocker | CommentKind::Research) | None => Vec::new(),
+    };
+    let mut response = serde_json::to_value(&comment)
+        .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    if !warnings.is_empty() {
+        response["warnings"] = json!(warnings);
+    }
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 async fn list_task_comments(
@@ -5481,6 +5766,13 @@ async fn delete_webhook(
 /// - `actor_strict` feature **disabled** (default): prefer `client_actor` when
 ///   `Some`, fall back to the token-derived actor.  Preserves legacy behaviour
 ///   for callers that do not yet supply an explicit actor.
+///
+/// The MCP client of the request (`auth.client`, from the `X-Daruma-Client`
+/// header) is attributed in both modes: the token-derived actor carries it,
+/// and without `actor_strict` a client-supplied actor that names no `client`
+/// gets it filled in (a supplied `client` is kept). Attribution only — it
+/// does not authenticate the user or agent. See
+/// `docs/architecture-policy.ru.md` §2.1, §2.3.
 fn actor_from(auth: &AuthContext, client_actor: Option<Actor>) -> Actor {
     #[cfg(feature = "actor_strict")]
     {
@@ -5489,7 +5781,9 @@ fn actor_from(auth: &AuthContext, client_actor: Option<Actor>) -> Actor {
     }
     #[cfg(not(feature = "actor_strict"))]
     {
-        client_actor.unwrap_or_else(|| auth.actor())
+        client_actor
+            .map(|actor| actor.or_client(auth.client.as_deref()))
+            .unwrap_or_else(|| auth.actor())
     }
 }
 
@@ -5687,6 +5981,7 @@ async fn get_plan(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(CoreError::not_found(format!("plan {id_str}"))))?;
+    require_project_scope(&auth, Some(plan.project_id))?;
     let progress = state
         .plans
         .get_progress(plan_id)
@@ -5854,6 +6149,7 @@ async fn get_plan_progress(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
 
     let mut summary = state
         .plans
@@ -5886,6 +6182,7 @@ async fn get_plan_graph(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let graph = plan_readiness::plan_graph(&state.plans, &state.tasks, &state.relations, plan_id)
         .await
         .map_err(ApiError::from)?;
@@ -5900,6 +6197,7 @@ async fn get_plan_fanout(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let waves = plan_readiness::plan_fanout(&state.plans, &state.tasks, &state.relations, plan_id)
         .await
         .map_err(ApiError::from)?;
@@ -5914,6 +6212,7 @@ async fn get_can_start(
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
     let task_id = parse_id(id_str, "task id")?;
+    require_task_scope(&state, &auth, task_id).await?;
     // The question this endpoint answers is "would `set_status in_progress`
     // succeed", so it has to consult the same rule gate that transition does.
     let handler = state.commands.handler();
@@ -5956,12 +6255,18 @@ async fn list_task_plans(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let task_id = parse_id(id_str, "task id")?;
+    require_task_scope(&state, &auth, task_id).await?;
     let plans = state
         .plans
         .list_plans_for_task(task_id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(plans))
+    Ok(Json(
+        plans
+            .into_iter()
+            .filter(|p| auth.scope.projects.allows(Some(p.project_id)))
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Deserialize, Default)]
@@ -6050,6 +6355,9 @@ async fn list_plans(
             let source = daruma_domain::normalize_source_ref(source)
                 .map_err(|e| ApiError::from(CoreError::validation(e)))?;
             let project_id = pid.map(|pid| parse_id(pid, "project id")).transpose()?;
+            if project_id.is_some() {
+                require_project_scope(&auth, project_id)?;
+            }
             let mut found = state
                 .plans
                 .list_by_source(project_id, &source)
@@ -6062,6 +6370,7 @@ async fn list_plans(
         }
         (Some(pid), None) => {
             let project_id = parse_id(pid, "project id")?;
+            require_project_scope(&auth, Some(project_id))?;
             state
                 .plans
                 .list_by_project(project_id, status_filter.as_deref())
@@ -6074,6 +6383,7 @@ async fn list_plans(
             )))
         }
     };
+    plans.retain(|plan| auth.scope.projects.allows(Some(plan.project_id)));
     if let Some(channel) = q.channel.as_deref().map(str::trim) {
         plans.retain(|p| {
             p.source_ref.as_deref().is_some_and(|r| {
@@ -6113,6 +6423,11 @@ async fn list_plans(
         .flatten()
         .filter_map(|row| row["source_ref"].as_str().map(str::to_string))
         .collect();
+    if !matches!(auth.scope.projects, ProjectFilter::All) {
+        for source in &starts {
+            project_scope::source_scope(&state, &auth, source).await?;
+        }
+    }
     let chains = state
         .plans
         .source_chains(&starts)
@@ -6407,6 +6722,7 @@ async fn get_next_task(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let run_id = q
         .run_id
         .as_deref()
@@ -6442,6 +6758,75 @@ async fn get_next_task(
 /// claim with an `in_progress` transition. Returns the task JSON on success, or
 /// `None` when the plan has no unclaimed ready task. Shared by single-plan
 /// `drain_next` and the project-wide ready drain.
+/// Implicit lifecycle transition: the agent's own write moves the task, so
+/// status follows what the agent did instead of what it remembered to set.
+/// Work-start writes (claim, `intent`/`progress` comment, run step start,
+/// evidence, git_context) take `todo → in_progress`; an `outcome` comment takes
+/// `todo | in_progress → in_review`. Same `SetStatus … force` as drain:
+/// relation blockers are acked, lifecycle rules stay hard. A blocked rule (or
+/// any other refusal) leaves the status as it is and comes back as a warning —
+/// the write that triggered it already persisted and stands. Callers without
+/// `TaskWrite` never move status this way.
+async fn advance_task_implicitly(
+    state: &AppState,
+    auth: &AuthContext,
+    task_id: TaskId,
+    from: &[daruma_domain::Status],
+    to: daruma_domain::Status,
+) -> Vec<MutationWarning> {
+    if !auth.scope.capabilities.has(Capability::TaskWrite) {
+        return Vec::new();
+    }
+    let current = match state.tasks.get(task_id).await {
+        Ok(Some(task)) => task.status,
+        _ => return Vec::new(),
+    };
+    if !from.contains(&current) {
+        return Vec::new();
+    }
+    match state
+        .commands
+        .dispatch_with_warnings(
+            Command::SetStatus {
+                id: task_id,
+                status: to,
+                force: true,
+                override_reason: None,
+                comment: None,
+            },
+            actor_from(auth, None),
+        )
+        .await
+    {
+        Ok(outcome) => outcome.warnings,
+        Err(err) => vec![MutationWarning {
+            code: "implicit_status_blocked".into(),
+            message: format!(
+                "task stays {}: implicit move to {} refused: {err}",
+                current.as_str(),
+                to.as_str()
+            ),
+            details: json!({ "task_id": task_id, "status": current, "target": to }),
+        }],
+    }
+}
+
+/// `todo → in_progress` on a work-start write; see [`advance_task_implicitly`].
+async fn start_task_implicitly(
+    state: &AppState,
+    auth: &AuthContext,
+    task_id: TaskId,
+) -> Vec<MutationWarning> {
+    advance_task_implicitly(
+        state,
+        auth,
+        task_id,
+        &[daruma_domain::Status::Todo],
+        daruma_domain::Status::InProgress,
+    )
+    .await
+}
+
 async fn drain_one_plan(
     state: &AppState,
     auth: &AuthContext,
@@ -6596,6 +6981,34 @@ async fn start_drain_run(
         .ok_or_else(|| ApiError::from(CoreError::storage("expected RunStarted event")))
 }
 
+/// Abort a run that this very drain call opened (`start_drain_run`) when the
+/// call hands out no task — nothing ready, or an error. Otherwise the run stays
+/// `Active` with no caller holding its id, and plan auto-close skips any plan
+/// with an active run. Best-effort: the drain's own result is returned either
+/// way; a caller-supplied run is never touched.
+async fn abort_implicit_drain_run(
+    state: &AppState,
+    auth: &AuthContext,
+    run_id: RunId,
+    reason: &str,
+) {
+    if let Err(err) = state
+        .commands
+        .dispatch_authenticated(
+            Command::AbortRun {
+                run_id,
+                reason: reason.to_string(),
+            },
+            actor_from(auth, None),
+            auth.agent_id,
+            auth.scope.capabilities.has(Capability::Admin),
+        )
+        .await
+    {
+        tracing::warn!(error = %err, run_id = %run_id, "implicit drain run abort failed");
+    }
+}
+
 async fn drain_next_task(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
@@ -6607,21 +7020,34 @@ async fn drain_next_task(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
-    let run_id = match body.run_id {
+    require_plan_scope(&state, &auth, plan_id).await?;
+    let (run_id, implicit_run) = match body.run_id {
         Some(run_id) => {
             state
                 .claims
                 .validate_run_assignment(auth.agent_id, run_id, plan_id)
                 .await
                 .map_err(ApiError::from)?;
-            run_id
+            (run_id, false)
         }
-        None => start_drain_run(&state, &auth, plan_id).await?,
+        None => (start_drain_run(&state, &auth, plan_id).await?, true),
     };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
-    let Some(task) = drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await? else {
-        return Ok(Json(serde_json::Value::Null));
+    let task = match drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await {
+        Ok(Some(task)) => task,
+        Ok(None) => {
+            if implicit_run {
+                abort_implicit_drain_run(&state, &auth, run_id, "drain_next: no ready task").await;
+            }
+            return Ok(Json(serde_json::Value::Null));
+        }
+        Err(err) => {
+            if implicit_run {
+                abort_implicit_drain_run(&state, &auth, run_id, "drain_next: error").await;
+            }
+            return Err(err);
+        }
     };
     let project_id = state
         .plans
@@ -6648,6 +7074,7 @@ async fn project_ready(
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_id(q.project_id, "project id")?;
+    require_project_scope(&auth, Some(project_id))?;
 
     let plans = state
         .plans
@@ -6664,7 +7091,17 @@ async fn project_ready(
                 .map_err(ApiError::from)?;
         if let Some(wave0) = waves.first() {
             for task_id in &wave0.tasks {
-                if seen.insert(*task_id)
+                // Wave 0 is graph readiness only; like the drain resolver,
+                // an inbox task still waits for the owner's triage, so it is
+                // not ready for an agent.
+                let inbox = state
+                    .tasks
+                    .get(*task_id)
+                    .await
+                    .map_err(ApiError::from)?
+                    .is_some_and(|task| task.status == daruma_domain::Status::Inbox);
+                if !inbox
+                    && seen.insert(*task_id)
                     && state
                         .claims
                         .is_claimed_by_other(*task_id, auth.agent_id)
@@ -6695,6 +7132,7 @@ async fn project_ready_drain(
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
     let project_id = parse_id(q.project_id, "project id")?;
+    require_project_scope(&auth, Some(project_id))?;
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
     let supplied_run = match body.run_id {
@@ -6724,14 +7162,31 @@ async fn project_ready_drain(
     }
 
     for plan in &plans {
-        let run_id = match supplied_run {
-            Some((run_id, run_plan_id)) if run_plan_id == plan.id => run_id,
+        let (run_id, implicit_run) = match supplied_run {
+            Some((run_id, run_plan_id)) if run_plan_id == plan.id => (run_id, false),
             Some(_) => continue,
-            None => start_drain_run(&state, &auth, plan.id).await?,
+            None => (start_drain_run(&state, &auth, plan.id).await?, true),
         };
-        if let Some(task) = drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await? {
-            let warning = drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;
-            return Ok(Json(with_warnings(task, warning)));
+        match drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await {
+            Ok(Some(task)) => {
+                let warning =
+                    drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;
+                return Ok(Json(with_warnings(task, warning)));
+            }
+            // This plan had nothing for us: drop the run opened for it before
+            // trying the next plan.
+            Ok(None) => {
+                if implicit_run {
+                    abort_implicit_drain_run(&state, &auth, run_id, "ready_drain: no ready task")
+                        .await;
+                }
+            }
+            Err(err) => {
+                if implicit_run {
+                    abort_implicit_drain_run(&state, &auth, run_id, "ready_drain: error").await;
+                }
+                return Err(err);
+            }
         }
     }
     Ok(Json(serde_json::Value::Null))
@@ -6837,7 +7292,9 @@ fn suggest_paths_from_text(text: &str) -> Vec<String> {
 #[derive(Deserialize)]
 struct StartRunBody {
     plan_id: PlanId,
-    agent_id: AgentId,
+    /// Defaults to the authenticated agent.
+    #[serde(default)]
+    agent_id: Option<AgentId>,
     #[serde(default)]
     parent_run_id: Option<RunId>,
 }
@@ -6854,7 +7311,7 @@ async fn start_run(
         .dispatch_authenticated(
             Command::StartRun {
                 plan_id: body.plan_id,
-                agent_id: body.agent_id,
+                agent_id: body.agent_id.unwrap_or(auth.agent_id),
                 parent_run_id: body.parent_run_id,
             },
             actor_from(&auth, None),
@@ -6909,13 +7366,14 @@ async fn run_start_step(
         )
         .await
         .map_err(ApiError::from)?;
+    let warnings = start_task_implicitly(&state, &auth, body.task_id).await;
     let last = envs.last();
     Ok(Json(MutationResponse {
         success: true,
         event_id: last.map(|e| e.id),
         event_seq: last.map(|e| e.seq),
         data: serde_json::json!({ "run_id": run_id, "task_id": body.task_id }),
-        warnings: vec![],
+        warnings,
         client_command_id: None,
     }))
 }
@@ -7224,11 +7682,17 @@ async fn list_plan_runs(
     auth.require(Capability::RunRead)
         .map_err(ApiError::from_missing_cap)?;
     let plan_id = parse_id(id_str, "plan id")?;
+    require_plan_scope(&state, &auth, plan_id).await?;
     let runs = state
         .runs
         .list_by_plan(plan_id)
         .await
         .map_err(ApiError::from)?;
+    if !matches!(auth.scope.projects, ProjectFilter::All) {
+        for run in &runs {
+            project_scope::run(&state, &auth, run.id).await?;
+        }
+    }
     Ok(Json(json!({ "runs": runs })))
 }
 
@@ -7582,7 +8046,18 @@ async fn list_active_claims(
         .list_active(project_id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(json!({ "claims": claims })))
+    let mut visible = Vec::new();
+    for claim in claims {
+        let task = state
+            .tasks
+            .get(claim.task_id)
+            .await
+            .map_err(ApiError::from)?;
+        if task.is_some_and(|task| project_visible(&auth, task.project_id)) {
+            visible.push(claim);
+        }
+    }
+    Ok(Json(json!({ "claims": visible })))
 }
 
 async fn acquire_claim(
@@ -7636,6 +8111,8 @@ async fn acquire_claim(
             event,
         } => {
             let last = Some(&event);
+            let mut warnings: Vec<_> = warning.into_iter().collect();
+            warnings.extend(start_task_implicitly(&state, &auth, body.task_id).await);
             Ok(Json(MutationResponse {
                 success: true,
                 event_id: last.map(|e| e.id),
@@ -7647,7 +8124,7 @@ async fn acquire_claim(
                     "claim_id": claim_id,
                     "claim_expires_at": expires_at,
                 }),
-                warnings: warning.into_iter().collect(),
+                warnings,
                 client_command_id: None,
             }))
         }
@@ -7661,7 +8138,12 @@ async fn release_claim(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
-    let agent_id = parse_id(agent_id_str, "agent id")?;
+    // `me` = the authenticated holder, so callers need not know their own id.
+    let agent_id = if agent_id_str == "me" {
+        auth.agent_id
+    } else {
+        parse_id(agent_id_str, "agent id")?
+    };
     let task_id = parse_id(&task_id_str, "task id")?;
     if agent_id != auth.agent_id {
         return Err(ApiError::from(CoreError::forbidden(
@@ -7807,7 +8289,11 @@ async fn release_files(
     let envs = state
         .commands
         .dispatch(
-            Command::ReleaseFiles { agent_id, task_id },
+            Command::ReleaseFiles {
+                agent_id,
+                task_id,
+                lease_ids: None,
+            },
             actor_from(&auth, None),
         )
         .await

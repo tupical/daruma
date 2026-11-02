@@ -21,12 +21,10 @@ image  = { workspace = true }
 # Async / error handling
 tokio     = { workspace = true }
 anyhow    = { workspace = true }
-thiserror = { workspace = true }
 tracing   = { workspace = true }
 
 # Serde for pairing payloads
 serde      = { workspace = true }
-serde_json = { workspace = true }
 
 # Crypto (constant-time token comparison, SHA-256 fingerprint)
 sha2      = { workspace = true }

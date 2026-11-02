@@ -45,5 +45,5 @@ a markdown table.
 5. Do **not** invent IDs, statuses, or counts. If `daruma_list` fails,
    surface the error verbatim and stop.
 
-6. Do not write anything to `.omc/plans/` or markdown task files — this
+6. Do not write anything to local plan or markdown task files — this
    command is read-only.

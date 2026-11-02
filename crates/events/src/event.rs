@@ -8,7 +8,7 @@ use daruma_domain::{
 use daruma_shared::{
     AgentId, AgentSessionId, AiOpId, ArtifactId, ArtifactRelationId, ClaimId, CommentId, DeviceId,
     DocumentId, EventId, EvidenceId, HandoffId, PlanId, ProjectId, RelationId, RuleId, RunId,
-    RunNoteId, TaskId, Timestamp, WorkUnitId,
+    RunNoteId, TaskId, Timestamp, WorkLeaseId, WorkUnitId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -437,11 +437,17 @@ pub enum Event {
         leases: Vec<WorkLease>,
     },
 
-    /// All of an agent's file/path leases for a task were released
-    /// (task completed, explicit release, or TTL expiry).
+    /// An agent's file/path leases for a task were released (explicit
+    /// release or TTL expiry). `lease_ids: None` (explicit release and every
+    /// event persisted before the field existed) releases all of the
+    /// agent's leases on the task; `Some` releases only the listed leases —
+    /// the TTL sweeper uses it so one expired lease does not drop the
+    /// agent's still-live leases on the same task.
     FilesReleased {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_ids: Option<Vec<WorkLeaseId>>,
     },
 
     // ── Semantic plan/run events (Wave 1 / W1.3) ──────────────────────────────
@@ -877,7 +883,8 @@ pub enum Event {
     },
 
     /// A lifecycle rule acted on a pre-transition gate check: it warned
-    /// (`recommendation`) or blocked (`required`) the mutation. The audit
+    /// (`recommendation`), blocked (`required`) the mutation, or was bypassed
+    /// by an explicit `force` + `override_reason` (`overridden`). The audit
     /// trail of rule-engine *decisions* — distinct from `RuleCreated` /
     /// `RuleUpdated`, which record rule *definition* changes.
     ///
@@ -888,7 +895,7 @@ pub enum Event {
         rule_id: RuleId,
         /// Stable rule key (e.g. `task.completion_note_required`).
         rule_key: String,
-        /// `warning` | `blocked`.
+        /// `warning` | `blocked` | `overridden`.
         decision: RuleDecision,
         /// The lifecycle trigger that was checked (e.g.
         /// `task.before_complete`).
@@ -904,6 +911,10 @@ pub enum Event {
         task_id: Option<TaskId>,
         /// Human-readable reason shown to the executor.
         message: String,
+        /// The caller's trimmed `override_reason`; set only when `decision`
+        /// is `overridden`, so a bypass carries its justification.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_reason: Option<String>,
         at: Timestamp,
     },
     DeviceConnected {
@@ -917,13 +928,16 @@ pub enum Event {
 }
 
 /// The decision a lifecycle rule reached for a gate check. `allowed` is never
-/// recorded (no rule acted), so the audit log only carries the two that change
-/// behaviour.
+/// recorded (no rule acted), so the audit log only carries the ones that change
+/// behaviour. `Overridden` is a `required` rule the mutation passed through
+/// `force` + `override_reason` — kept apart from `Warning` so a bypass of a
+/// mandatory rule never reads as an ignored recommendation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleDecision {
     Warning,
     Blocked,
+    Overridden,
 }
 
 impl RuleDecision {
@@ -931,6 +945,7 @@ impl RuleDecision {
         match self {
             RuleDecision::Warning => "warning",
             RuleDecision::Blocked => "blocked",
+            RuleDecision::Overridden => "overridden",
         }
     }
 }

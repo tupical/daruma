@@ -13,9 +13,9 @@
 //! - [`AiProvider::generate_object`] — structured tool-call completion;
 //!   returns the raw JSON arguments of the first matching call.
 //!
-//! The operations themselves (suggest, summarize, parse, decompose,
-//! analyze_complexity) live in the upper-layer repos and, for the
-//! deprecated core shim, in `apps/server/src/ai.rs`.
+//! The operations themselves (suggest, summarize, parse, decompose) live
+//! in the upper-layer repos; Daruma's own batch complexity scoring
+//! (`analyze_complexity`) lives in `apps/server/src/ai.rs`.
 //!
 //! [`use_research_provider`]: crate::PromptRegistry
 

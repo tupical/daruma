@@ -76,9 +76,10 @@ async fn setup_plan_with_blocks() -> (common::TestApp, String, String, String) {
     .await;
     let pid = extract_id(&ev, "project_created", "project");
 
+    // Todo, not the default inbox: drain only hands out triaged work.
     let mk = |title: &str| {
         format!(
-            r#"{{"command":{{"type":"create_task","task":{{"title":"{title}","project_id":"{pid}"}}}}}}"#
+            r#"{{"command":{{"type":"create_task","task":{{"title":"{title}","project_id":"{pid}","status":"todo"}}}}}}"#
         )
     };
     let (_s, ev) = post_json(&h.router, &admin, "/v1/commands", &mk("blocked-by-a")).await;

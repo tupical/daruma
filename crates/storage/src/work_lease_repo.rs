@@ -30,6 +30,15 @@ pub enum ReserveOutcome {
     },
 }
 
+/// Expired leases of one agent on one task, removed by
+/// [`WorkLeaseRepo::sweep_expired`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweptLeases {
+    pub agent_id: AgentId,
+    pub task_id: TaskId,
+    pub lease_ids: Vec<WorkLeaseId>,
+}
+
 /// Read/write access to the `work_leases` table.
 pub struct WorkLeaseRepo {
     pub(crate) pool: SqlitePool,
@@ -357,6 +366,26 @@ impl WorkLeaseRepo {
         Ok(())
     }
 
+    /// Release only the listed leases of `agent_id` on `task_id`; the
+    /// agent's other leases on the task are untouched.
+    pub async fn release_leases(
+        &self,
+        agent_id: AgentId,
+        task_id: TaskId,
+        lease_ids: &[WorkLeaseId],
+    ) -> Result<()> {
+        for id in lease_ids {
+            sqlx::query("DELETE FROM work_leases WHERE id = ? AND agent_id = ? AND task_id = ?")
+                .bind(id.to_string())
+                .bind(agent_id.to_string())
+                .bind(task_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Apply a persisted lease event to the projection (idempotent).
     pub async fn apply_event(&self, env: &EventEnvelope) -> Result<()> {
         match &env.payload {
@@ -366,52 +395,75 @@ impl WorkLeaseRepo {
                 }
                 Ok(())
             }
-            Event::FilesReleased { agent_id, task_id } => {
-                self.release_for_task(*agent_id, *task_id).await
-            }
+            Event::FilesReleased {
+                agent_id,
+                task_id,
+                lease_ids: None,
+            } => self.release_for_task(*agent_id, *task_id).await,
+            Event::FilesReleased {
+                agent_id,
+                task_id,
+                lease_ids: Some(ids),
+            } => self.release_leases(*agent_id, *task_id, ids).await,
             // Auto-release every file lease when the task closes.
             Event::TaskClosed { task_id, .. } => self.release_all_for_task(*task_id).await,
             _ => Ok(()),
         }
     }
 
-    /// Delete all expired leases, returning the distinct `(agent_id, task_id)`
-    /// pairs that lost leases so callers can emit `FilesReleased` events.
-    pub async fn sweep_expired(&self) -> Result<Vec<(AgentId, TaskId)>> {
+    /// Delete all expired leases, returning them grouped by
+    /// `(agent_id, task_id)` so callers can emit `FilesReleased` events
+    /// scoped to exactly those lease ids — an agent's leases on the same task
+    /// that have not expired yet must survive the sweep.
+    pub async fn sweep_expired(&self) -> Result<Vec<SweptLeases>> {
         let now = Utc::now().to_rfc3339();
-        let rows =
-            sqlx::query("SELECT DISTINCT agent_id, task_id FROM work_leases WHERE expires_at < ?")
-                .bind(&now)
-                .fetch_all(&self.pool)
-                .await
+        let rows = sqlx::query(
+            "SELECT id, agent_id, task_id FROM work_leases WHERE expires_at < ? \
+             ORDER BY agent_id, task_id, id",
+        )
+        .bind(&now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+
+        let mut swept: Vec<SweptLeases> = Vec::new();
+        for r in &rows {
+            let id: String = r
+                .try_get("id")
                 .map_err(|e| CoreError::storage(e.to_string()))?;
+            let a: String = r
+                .try_get("agent_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            let t: String = r
+                .try_get("task_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            let id = id
+                .parse::<WorkLeaseId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            let agent_id = a
+                .parse::<AgentId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            let task_id = t
+                .parse::<TaskId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            match swept.last_mut() {
+                Some(g) if g.agent_id == agent_id && g.task_id == task_id => g.lease_ids.push(id),
+                _ => swept.push(SweptLeases {
+                    agent_id,
+                    task_id,
+                    lease_ids: vec![id],
+                }),
+            }
+        }
 
-        let pairs = rows
-            .iter()
-            .map(|r| {
-                let a: String = r
-                    .try_get("agent_id")
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
-                let t: String = r
-                    .try_get("task_id")
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
-                Ok((
-                    a.parse::<AgentId>()
-                        .map_err(|e| CoreError::serde(e.to_string()))?,
-                    t.parse::<TaskId>()
-                        .map_err(|e| CoreError::serde(e.to_string()))?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        if !pairs.is_empty() {
+        if !swept.is_empty() {
             sqlx::query("DELETE FROM work_leases WHERE expires_at < ?")
                 .bind(&now)
                 .execute(&self.pool)
                 .await
                 .map_err(|e| CoreError::storage(e.to_string()))?;
         }
-        Ok(pairs)
+        Ok(swept)
     }
 
     /// List active (non-expired) leases, optionally scoped to a project — the
@@ -659,8 +711,133 @@ mod tests {
         .unwrap();
 
         let released = repo.sweep_expired().await.unwrap();
-        assert_eq!(released, vec![(agent, task)]);
+        assert_eq!(released.len(), 1);
+        assert_eq!((released[0].agent_id, released[0].task_id), (agent, task));
+        assert_eq!(released[0].lease_ids.len(), 1);
         assert_eq!(repo.list_active(None).await.unwrap().len(), 0);
+    }
+
+    /// Insert an already-expired lease row for `agent`/`task` on `path`.
+    async fn insert_expired(db: &Db, agent: AgentId, task: TaskId, path: &str) -> WorkLeaseId {
+        let id = WorkLeaseId::new();
+        sqlx::query(
+            "INSERT INTO work_leases \
+             (id, agent_id, task_id, project_id, path_glob, target_uri, acquired_at, expires_at) \
+             VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(agent.to_string())
+        .bind(task.to_string())
+        .bind(path)
+        .bind(format!("file://{path}"))
+        .bind(Utc::now().to_rfc3339())
+        .bind("2000-01-01T00:00:00+00:00")
+        .execute(db.pool())
+        .await
+        .unwrap();
+        id
+    }
+
+    // Regression: one expired lease used to release every lease the agent
+    // held on the task, because the sweep's `FilesReleased` was replayed
+    // through `release_for_task`. The sweep must name only the expired ids
+    // and the scoped event must leave the live lease in place.
+    #[tokio::test]
+    async fn sweep_and_scoped_release_keep_unexpired_leases_of_same_task() {
+        let (db, repo) = make_repo().await;
+        let agent = AgentId::new();
+        let task = TaskId::new();
+        repo.try_reserve(
+            agent,
+            task,
+            None,
+            vec!["src/live.rs".into()],
+            Duration::seconds(600),
+        )
+        .await
+        .unwrap();
+        let expired = insert_expired(&db, agent, task, "src/stale.rs").await;
+
+        let swept = repo.sweep_expired().await.unwrap();
+        assert_eq!(
+            swept,
+            vec![SweptLeases {
+                agent_id: agent,
+                task_id: task,
+                lease_ids: vec![expired],
+            }]
+        );
+
+        let env = EventEnvelope::new(
+            daruma_domain::Actor::user(),
+            Event::FilesReleased {
+                agent_id: agent,
+                task_id: task,
+                lease_ids: Some(swept[0].lease_ids.clone()),
+            },
+        );
+        repo.apply_event(&env).await.unwrap();
+        let active = repo.list_active(None).await.unwrap();
+        assert_eq!(active.len(), 1, "live lease must survive: {active:?}");
+        assert_eq!(active[0].target_uri.as_deref(), Some("file://src/live.rs"));
+    }
+
+    #[tokio::test]
+    async fn sweep_groups_expired_ids_per_agent_task() {
+        let (db, repo) = make_repo().await;
+        let (a1, a2) = (AgentId::new(), AgentId::new());
+        let task = TaskId::new();
+        let mut a1_ids = vec![
+            insert_expired(&db, a1, task, "a").await,
+            insert_expired(&db, a1, task, "b").await,
+        ];
+        let a2_id = insert_expired(&db, a2, task, "c").await;
+
+        let mut swept = repo.sweep_expired().await.unwrap();
+        assert_eq!(swept.len(), 2);
+        swept.sort_by_key(|g| g.lease_ids.len());
+        assert_eq!(
+            (swept[0].agent_id, swept[0].lease_ids.clone()),
+            (a2, vec![a2_id])
+        );
+        a1_ids.sort_by_key(|id| id.to_string());
+        let mut got = swept[1].lease_ids.clone();
+        got.sort_by_key(|id| id.to_string());
+        assert_eq!((swept[1].agent_id, got), (a1, a1_ids));
+    }
+
+    // Explicit release (`DELETE /v1/leases/...`) and events persisted before
+    // `lease_ids` existed carry no ids and still release the whole task.
+    #[tokio::test]
+    async fn unscoped_files_released_still_releases_all_task_leases() {
+        let (_db, repo) = make_repo().await;
+        let agent = AgentId::new();
+        let task = TaskId::new();
+        repo.try_reserve(
+            agent,
+            task,
+            None,
+            vec!["a".into(), "b".into()],
+            Duration::seconds(600),
+        )
+        .await
+        .unwrap();
+        let legacy: Event = serde_json::from_value(serde_json::json!({
+            "type": "files_released",
+            "agent_id": agent,
+            "task_id": task,
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            Event::FilesReleased {
+                lease_ids: None,
+                ..
+            }
+        ));
+        let env = EventEnvelope::new(daruma_domain::Actor::user(), legacy);
+        repo.apply_event(&env).await.unwrap();
+        assert!(repo.list_active(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]

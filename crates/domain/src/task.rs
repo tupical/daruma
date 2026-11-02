@@ -318,7 +318,14 @@ pub struct TaskPatch {
     pub status: Option<Status>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Three-way: absent = no change, `null` = clear, value = set. Without
+    /// the double-option deserializer a stored `null` reads back as "absent"
+    /// and an event-log replay would keep the cleared triage value.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::plan::deserialize_double_option"
+    )]
     pub triage_state: Option<Option<TriageState>>,
     /// Three-way: absent = no change, `null` = clear, value = set.
     #[serde(
@@ -327,7 +334,12 @@ pub struct TaskPatch {
         deserialize_with = "crate::plan::deserialize_double_option"
     )]
     pub due_at: Option<Option<Timestamp>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Three-way like `triage_state`: `null` = move to the inbox (no project).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::plan::deserialize_double_option"
+    )]
     pub project_id: Option<Option<ProjectId>>,
     /// Replaced whole (`Some(Some(ctx))`) or cleared (`Some(None)`); on the
     /// wire absent = no change, `null` = clear.
@@ -458,5 +470,39 @@ mod tests {
         for (status, expected) in pairs {
             assert_eq!(serde_json::to_string(&status).unwrap(), expected);
         }
+    }
+
+    /// Event-log contract: a patch that clears a nullable field serialises as
+    /// `null` and must read back as a clear (`Some(None)`), never as "field
+    /// unchanged" (`None`) — otherwise a replay resurrects the cleared value.
+    #[test]
+    fn patch_clears_survive_serde_roundtrip() {
+        let clear = TaskPatch {
+            triage_state: Some(None),
+            due_at: Some(None),
+            project_id: Some(None),
+            git_context: Some(None),
+            ..TaskPatch::default()
+        };
+        let json = serde_json::to_value(&clear).unwrap();
+        for field in ["triage_state", "due_at", "project_id", "git_context"] {
+            assert_eq!(json[field], serde_json::Value::Null, "{field} on the wire");
+        }
+        let back: TaskPatch = serde_json::from_value(json).unwrap();
+        assert_eq!(back, clear);
+        assert!(!back.is_empty());
+
+        // Absent stays "no change"; a value stays a set.
+        let empty: TaskPatch = serde_json::from_str("{}").unwrap();
+        assert!(empty.is_empty());
+        let set: TaskPatch = serde_json::from_str(r#"{"triage_state":"accepted"}"#).unwrap();
+        assert_eq!(set.triage_state, Some(Some(TriageState::Accepted)));
+
+        let mut task = Task::from_new(NewTask::new("t"));
+        task.triage_state = Some(TriageState::Accepted);
+        task.project_id = Some(ProjectId::new());
+        back.apply(&mut task);
+        assert!(task.triage_state.is_none());
+        assert!(task.project_id.is_none());
     }
 }

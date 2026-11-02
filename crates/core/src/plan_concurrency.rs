@@ -35,7 +35,10 @@ pub struct NextTask {
 /// Algorithm:
 /// 1. Load plan → status must be `Active`, else return `None`.
 /// 2. List `plan_tasks` ordered by `position`.
-/// 3. Skip terminal tasks (`Done` or `Cancelled`).
+/// 3. Skip terminal tasks (`Done` or `Cancelled`) and `Inbox` tasks: inbox
+///    means "awaiting the owner's triage/decision", not "ready for an agent".
+///    Without this the first inbox task by position is handed out on every
+///    drain and hides every ready `todo` task after it.
 /// 4. Skip tasks whose `depends_on` contains any non-Done task.
 /// 5. Skip tasks with an active cross-task `Blocks` blocker (same
 ///    semantics as `can_start`) — without this, two agents can grab
@@ -82,8 +85,9 @@ impl NextTaskResolver<'_> {
                 None => continue,
             };
 
-            // Terminal tasks must never be offered for execution.
-            if task.status.is_terminal() {
+            // Terminal tasks must never be offered for execution, and inbox
+            // tasks still wait for the owner's triage — skip both.
+            if task.status.is_terminal() || task.status == Status::Inbox {
                 continue;
             }
 
@@ -369,5 +373,97 @@ mod tests {
         // detect_parent_cycle(repo, c, a): from a → parent=b → parent=c == plan_id → error
         let err = detect_parent_cycle(&repo, c, a).await.unwrap_err();
         assert!(matches!(err, CoreError::Validation(_)));
+    }
+
+    // ── NextTaskResolver ──────────────────────────────────────────────────────
+
+    struct ResolverFixture {
+        plans: MemPlanRepo,
+        tasks: TaskRepo,
+        claims: AgentClaimRepo,
+        plan_id: PlanId,
+    }
+
+    impl ResolverFixture {
+        /// Active plan whose members carry `statuses` in position order.
+        async fn new(statuses: &[Status]) -> (Self, Vec<TaskId>) {
+            let db = daruma_storage::Db::memory().await.unwrap();
+            db.migrate().await.unwrap();
+            let pool = db.pool().clone();
+            let tasks = TaskRepo::new(pool.clone());
+            let claims = AgentClaimRepo::new(pool);
+            let plans = MemPlanRepo::default();
+            let plan_id = PlanId::new();
+            plans.insert(plan(plan_id, None, PS::Active));
+
+            let mut ids = Vec::new();
+            let mut members = Vec::new();
+            for (position, status) in statuses.iter().enumerate() {
+                let task_id = TaskId::new();
+                let mut new_task = daruma_domain::NewTask::new(format!("task {position}"));
+                new_task.id = Some(task_id);
+                new_task.status = Some(*status);
+                tasks
+                    .apply_event(&EventEnvelope::new(
+                        daruma_domain::Actor::user(),
+                        daruma_events::Event::TaskCreated { task: new_task },
+                    ))
+                    .await
+                    .unwrap();
+                members.push(PlanTask {
+                    plan_id,
+                    task_id,
+                    position: position as u32,
+                    depends_on: vec![],
+                });
+                ids.push(task_id);
+            }
+            plans.tasks.lock().unwrap().insert(plan_id, members);
+
+            (
+                Self {
+                    plans,
+                    tasks,
+                    claims,
+                    plan_id,
+                },
+                ids,
+            )
+        }
+
+        async fn next(&self) -> Option<TaskId> {
+            NextTaskResolver {
+                plans: &self.plans,
+                tasks: &self.tasks,
+                claims: &self.claims,
+                relations: None,
+            }
+            .next(self.plan_id, RunId::new(), AgentId::new(), None)
+            .await
+            .unwrap()
+            .map(|next| next.task_id)
+        }
+    }
+
+    #[tokio::test]
+    async fn resolver_skips_inbox_and_returns_next_todo() {
+        // An inbox task first by position waits for the owner's triage; it
+        // must not hide the ready todo task behind it.
+        let (fx, ids) = ResolverFixture::new(&[Status::Inbox, Status::Todo]).await;
+        assert_eq!(fx.next().await, Some(ids[1]));
+    }
+
+    #[tokio::test]
+    async fn resolver_returns_none_for_inbox_only_plan() {
+        let (fx, _) = ResolverFixture::new(&[Status::Inbox]).await;
+        assert_eq!(fx.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn resolver_skips_terminal_and_inbox_together() {
+        let (fx, ids) =
+            ResolverFixture::new(&[Status::Done, Status::Inbox, Status::Cancelled, Status::Todo])
+                .await;
+        assert_eq!(fx.next().await, Some(ids[3]));
     }
 }

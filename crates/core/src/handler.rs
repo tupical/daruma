@@ -451,8 +451,12 @@ impl CommandHandler {
         // id is pinned here; the kind is not rewritten.
         let actor = match (&cmd, authenticated_agent_id) {
             (Command::RecordEvidence { .. }, Some(id)) => match actor {
-                Actor::Agent { name, .. } => Actor::Agent { id, name },
-                Actor::User { name, .. } => Actor::User { id: Some(id), name },
+                Actor::Agent { name, client, .. } => Actor::Agent { id, name, client },
+                Actor::User { name, client, .. } => Actor::User {
+                    id: Some(id),
+                    name,
+                    client,
+                },
             },
             _ => actor,
         };
@@ -499,6 +503,8 @@ impl CommandHandler {
                 warnings: vec![],
             });
         }
+        self.ensure_run_completion_owner(&cmd, authenticated_agent_id, is_admin)
+            .await?;
         let owned_start =
             authenticated_agent_id.is_some() && matches!(&cmd, Command::StartRun { .. });
         let owned_terminal = authenticated_agent_id.is_some()
@@ -627,9 +633,36 @@ impl CommandHandler {
                             &check,
                             &actor,
                             EventRuleDecision::Warning,
+                            None,
                             batch.iter().map(|w| (&w.details, w.message.as_str())),
                         ));
                         warnings.append(&mut batch);
+                    }
+                    GateDecision::Overridden {
+                        mut overridden,
+                        warnings: mut batch,
+                        reason,
+                    } => {
+                        // A bypassed `required` rule is audited as
+                        // `overridden` with its reason, never as a warning:
+                        // otherwise the log cannot tell a bypass of a mandatory
+                        // rule from an ignored recommendation (spec §1.6).
+                        rule_audit.extend(rule_fired_events(
+                            &check,
+                            &actor,
+                            EventRuleDecision::Warning,
+                            None,
+                            batch.iter().map(|w| (&w.details, w.message.as_str())),
+                        ));
+                        rule_audit.extend(rule_fired_events(
+                            &check,
+                            &actor,
+                            EventRuleDecision::Overridden,
+                            Some(&reason),
+                            overridden.iter().map(|w| (&w.details, w.message.as_str())),
+                        ));
+                        warnings.append(&mut batch);
+                        warnings.append(&mut overridden);
                     }
                     GateDecision::Blocked { message, details } => {
                         // Persist the block's audit trail before aborting, so a
@@ -640,6 +673,7 @@ impl CommandHandler {
                             &check,
                             &actor,
                             EventRuleDecision::Blocked,
+                            None,
                             blocked.iter().map(|(d, m)| (d, m.as_str())),
                         );
                         audit.splice(0..0, rule_metrics.drain(..));
@@ -996,6 +1030,49 @@ impl CommandHandler {
             .await?
             .is_some_and(|run| run.status == RunStatus::Completed);
         Ok(completed && claims.run_owner(*run_id).await? == Some(caller))
+    }
+
+    /// docs/PLAN_RECONCILIATION.md: an open run holds its plan open until its
+    /// own completion, so an authenticated `CompleteRun` is gated on the run's
+    /// owner like `FailRun` / `AbortRun`: another agent gets `forbidden`
+    /// unless it is an admin. A run without a recorded owner (started on an
+    /// unauthenticated path, or before migration 0054) proves no caller's
+    /// ownership, so — as fail/abort cleanup in `AgentClaimRepo` — only an
+    /// admin may complete it.
+    /// The owner row is written once with `RunStarted` and read under the
+    /// plan/run lifecycle lock, so the check cannot race a concurrent start.
+    ///
+    /// Trust boundary: the unauthenticated entry (`handle`, no token
+    /// identity) is in-process only — sweepers, the desktop executor, tests.
+    /// Network entries reach run commands solely through the typed
+    /// authenticated endpoints; `/v1/commands` and WS dispatch refuse them
+    /// (`guarded_command_reason`), so that entry skips this check.
+    async fn ensure_run_completion_owner(
+        &self,
+        cmd: &Command,
+        authenticated_agent_id: Option<AgentId>,
+        is_admin: bool,
+    ) -> Result<()> {
+        let (Command::CompleteRun { run_id }, Some(caller), Some(runs), Some(claims)) =
+            (cmd, authenticated_agent_id, &self.runs, &self.claims)
+        else {
+            return Ok(());
+        };
+        // A missing or terminal run keeps its `not_found` / `run is not
+        // active` answer from build_events; the owner row outlives the run.
+        let active = runs
+            .get(*run_id)
+            .await?
+            .is_some_and(|run| run.status == RunStatus::Active);
+        if !active {
+            return Ok(());
+        }
+        match claims.run_owner(*run_id).await? {
+            _ if is_admin => Ok(()),
+            Some(owner) if owner == caller => Ok(()),
+            Some(_) => Err(CoreError::forbidden("run is owned by another agent")),
+            None => Err(CoreError::forbidden("run has no authenticated owner")),
+        }
     }
 
     /// Whether the task's history holds a handoff transition at or after
@@ -3397,9 +3474,15 @@ impl CommandHandler {
             // project it into the event log for audit + WS sync (idempotent).
             Command::ReserveFiles { leases } => Ok(vec![Event::FilesReserved { leases }]),
 
-            Command::ReleaseFiles { agent_id, task_id } => {
-                Ok(vec![Event::FilesReleased { agent_id, task_id }])
-            }
+            Command::ReleaseFiles {
+                agent_id,
+                task_id,
+                lease_ids,
+            } => Ok(vec![Event::FilesReleased {
+                agent_id,
+                task_id,
+                lease_ids,
+            }]),
 
             // ── Handoff contracts (P5) ─────────────────────────────────────────
             Command::RequestHandoff { handoff } => {
@@ -3650,6 +3733,9 @@ impl CommandHandler {
                 if rule.rule_key.trim().is_empty() {
                     return Err(CoreError::validation("rule_key must not be empty"));
                 }
+                if let Some(err) = rule.requirement.placement_error(&rule.scope, rule.trigger) {
+                    return Err(CoreError::validation(err));
+                }
                 // Keep this invariant at the command boundary so HTTP, MCP and
                 // future ingress paths cannot create rules with dangling scopes.
                 let scope_exists = match &rule.scope {
@@ -3704,6 +3790,12 @@ impl CommandHandler {
                     .await?
                     .ok_or_else(|| CoreError::not_found(format!("rule {id}")))?;
                 let updated = patch.apply(current, time::now());
+                if let Some(err) = updated
+                    .requirement
+                    .placement_error(&updated.scope, updated.trigger)
+                {
+                    return Err(CoreError::validation(err));
+                }
                 Ok(vec![Event::RuleUpdated { rule: updated }])
             }
 
@@ -3852,7 +3944,10 @@ impl CommandHandler {
                 }])
             }
 
-            Command::DeprecateArtifact { artifact_id } => {
+            Command::DeprecateArtifact {
+                artifact_id,
+                reason,
+            } => {
                 let repo = require_artifacts(&self.artifacts)?;
                 let current = repo.get(artifact_id).await?.ok_or_else(|| {
                     CoreError::not_found(format!("artifact {artifact_id} not found"))
@@ -3860,9 +3955,15 @@ impl CommandHandler {
                 if current.status == daruma_domain::ArtifactStatus::Deprecated {
                     return Ok(vec![]);
                 }
+                let reason = reason
+                    .map(|reason| reason.trim().to_string())
+                    .filter(|reason| !reason.is_empty());
+                if reason.is_none() {
+                    require_artifact_replacement(repo, artifact_id).await?;
+                }
                 Ok(vec![Event::ArtifactDeprecated {
                     artifact_id,
-                    reason: None,
+                    reason,
                     at: time::now(),
                 }])
             }
@@ -3874,11 +3975,14 @@ impl CommandHandler {
                         "artifact relation endpoints must differ",
                     ));
                 }
-                for artifact_id in [from, to] {
-                    repo.get(artifact_id).await?.ok_or_else(|| {
-                        CoreError::not_found(format!("artifact {artifact_id} not found"))
-                    })?;
-                }
+                let from_artifact = repo
+                    .get(from)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("artifact {from} not found")))?;
+                let to_artifact = repo
+                    .get(to)
+                    .await?
+                    .ok_or_else(|| CoreError::not_found(format!("artifact {to} not found")))?;
                 if repo
                     .relations_for(from)
                     .await?
@@ -3890,7 +3994,13 @@ impl CommandHandler {
                         kind.as_str()
                     )));
                 }
-                Ok(vec![Event::ArtifactRelationAdded {
+                let supersedes = kind == daruma_domain::ArtifactRelationKind::Supersedes;
+                if supersedes && from_artifact.status == daruma_domain::ArtifactStatus::Deprecated {
+                    return Err(CoreError::validation(format!(
+                        "deprecated artifact {from} cannot supersede {to}"
+                    )));
+                }
+                let mut events = vec![Event::ArtifactRelationAdded {
                     relation: ArtifactRelation {
                         id: daruma_shared::ArtifactRelationId::new(),
                         from_id: from,
@@ -3898,7 +4008,17 @@ impl CommandHandler {
                         kind,
                         created_at: time::now(),
                     },
-                }])
+                }];
+                // ADR-0019 п.3: declaring the replacement retires the old
+                // record in the same command, like `RecordEvidence{supersedes}`.
+                if supersedes && to_artifact.status != daruma_domain::ArtifactStatus::Deprecated {
+                    events.push(Event::ArtifactDeprecated {
+                        artifact_id: to,
+                        reason: Some(format!("superseded by {}", from_artifact.uri)),
+                        at: time::now(),
+                    });
+                }
+                Ok(events)
             }
 
             Command::RemoveArtifactRelation { from, to, kind } => {
@@ -3947,6 +4067,9 @@ impl CommandHandler {
                 if from == to {
                     // Already in the requested status — no-op.
                     return Ok(vec![]);
+                }
+                if to == daruma_domain::ArtifactStatus::Deprecated {
+                    require_artifact_replacement(repo, artifact_id).await?;
                 }
                 Ok(vec![Event::ArtifactStatusChanged {
                     artifact_id,
@@ -4329,14 +4452,16 @@ fn relink_materialised_provenance(envelopes: &mut [EventEnvelope]) {
 
 /// Build one `RuleFired` audit event per acting rule from a gate decision.
 ///
-/// `outcomes` yields `(details, message)` for each rule that warned or blocked;
-/// `details` is the per-rule JSON the gate already assembled (`rule_id`,
-/// `rule_key`). A rule whose `details` carries no parseable `rule_id` is
-/// skipped — the audit log records identified rules, never guesses.
+/// `outcomes` yields `(details, message)` for each rule that warned, blocked or
+/// was overridden; `details` is the per-rule JSON the gate already assembled
+/// (`rule_id`, `rule_key`). A rule whose `details` carries no parseable
+/// `rule_id` is skipped — the audit log records identified rules, never
+/// guesses. `override_reason` rides every event of an `overridden` batch.
 fn rule_fired_events<'a>(
     check: &GateCheck,
     actor: &Actor,
     decision: EventRuleDecision,
+    override_reason: Option<&str>,
     outcomes: impl Iterator<Item = (&'a serde_json::Value, &'a str)>,
 ) -> Vec<Event> {
     let now = time::now();
@@ -4363,6 +4488,7 @@ fn rule_fired_events<'a>(
                 plan_id: check.plan_id,
                 task_id: check.task_id,
                 message: message.to_string(),
+                override_reason: override_reason.map(str::to_string),
                 at: now,
             })
         })
@@ -4410,6 +4536,28 @@ fn require_artifacts(artifacts: &Option<Arc<ArtifactRepo>>) -> Result<&Arc<Artif
     artifacts
         .as_ref()
         .ok_or_else(|| CoreError::storage("artifact repository not configured"))
+}
+
+/// ADR-0019 п.4: a deprecation without a reason must point at its replacement
+/// through an incoming `supersedes` relation.
+async fn require_artifact_replacement(
+    repo: &ArtifactRepo,
+    artifact_id: daruma_shared::ArtifactId,
+) -> Result<()> {
+    let replaced = repo
+        .relations_for(artifact_id)
+        .await?
+        .iter()
+        .any(|relation| {
+            relation.to_id == artifact_id
+                && relation.kind == daruma_domain::ArtifactRelationKind::Supersedes
+        });
+    if replaced {
+        return Ok(());
+    }
+    Err(CoreError::validation(format!(
+        "deprecating artifact {artifact_id} needs a reason or an incoming supersedes relation"
+    )))
 }
 
 /// Fetch the document or return `not_found`. Used by every Document-mutation

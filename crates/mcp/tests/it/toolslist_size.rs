@@ -11,6 +11,12 @@ use serde_json::{json, Value};
 // without the REST bypass.
 // Id aliases on 11 key tool schemas (task 04eacc9f) are paid for by dropping
 // the repeated, often wrong "Task identifier" prose: 26,947 → 26,857 bytes.
+// Later prose growth reached 27,275; trimmed back (task 01a15bf0) by dropping the
+// evidence kind list duplicated from the enum and redundant `Default false` /
+// get/list/materialize wording: 27,275 → 26,840 bytes. Limit unchanged.
+// ADR-0016 names the check environment keys in the evidence `payload`
+// description (task 01a07af1-…-23e760cf0f5b), paid for by shorter sibling
+// prose in the same schema: 26,998 bytes. Limit unchanged.
 const MAX_DEFAULT_TOOLS_LIST_BYTES: usize = 27_000;
 
 struct ToolSize {

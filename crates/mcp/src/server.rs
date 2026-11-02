@@ -4,6 +4,10 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::client::ApiClient;
+use crate::open_tasks::{
+    fetch_open_tasks, open_tasks_line, open_tasks_to_meta, MAX_INSTRUCTIONS_CHARS,
+    OPEN_TASKS_META_KEY,
+};
 use crate::prompts::{prompt_body, prompt_definitions};
 use crate::protocol::{
     JsonRpcRequest, JsonRpcResponse, ERR_INTERNAL, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
@@ -11,7 +15,7 @@ use crate::protocol::{
 };
 use crate::tools::{call_tool_in_profile, tool_definitions_for, ToolProfile};
 
-const INSTRUCTIONS: &str = "daruma is the single source of truth for this workspace's tasks and plans. Intake is plan-only (no direct task creation): decided work → daruma_plan_materialize (plan with its tasks, one atomic call); raw ideas → the idea pipeline, see Routing. Then claim with daruma_plan_drain_next {plan_id} → daruma_complete. Never persist tasks or plans in markdown, TODO or local plan files. Use daruma_list status=active to see open work. Id arguments: `id` and the kind's own name (`task_id`, `plan_id`, `run_id`, …) are interchangeable. Scope: pass `scope_path` (absolute repo path) on the first call; bind a repo once via daruma_project_use {project_id, scope_path} (daruma_workspace_info shows bindings).";
+const INSTRUCTIONS: &str = "daruma is the single source of truth for this workspace's tasks and plans. Intake is plan-only (no direct task creation): decided work → daruma_plan_materialize; raw ideas → the idea pipeline, see Routing. Status follows writes: claim or intent/progress comment → in_progress; outcome comment → in_review; daruma_complete → done. Never persist tasks or plans in markdown, TODO or local plan files. Use daruma_list status=active to see open work. Id arguments: `id` and the kind's own name (`task_id`, `plan_id`, `run_id`, …) are interchangeable. Scope: pass `scope_path` (absolute repo path) on the first call; bind a repo once via daruma_project_use {project_id, scope_path}.";
 
 /// Dispatch a single JSON-RPC request using the profile resolved from
 /// `DARUMA_MCP_PROFILE` (unset → `default`). Returns `Ok(None)` for
@@ -34,7 +38,7 @@ pub async fn dispatch_request_with_profile(
     let id_value = id?;
 
     let result = match req.method.as_str() {
-        "initialize" => Ok(handle_initialize()),
+        "initialize" => Ok(handle_initialize(client).await),
         "prompts/list" => Ok(handle_prompts_list()),
         "prompts/get" => handle_prompts_get(req.params.unwrap_or(Value::Null)),
         "tools/list" => Ok(handle_tools_list(profile)),
@@ -55,7 +59,24 @@ pub async fn dispatch_request_with_profile(
     }
 }
 
-fn handle_initialize() -> Value {
+/// Static rules plus, when this agent holds open tasks, one line naming them
+/// (`crate::open_tasks`) within [`MAX_INSTRUCTIONS_CHARS`]; the same tasks
+/// ride `_meta` for a gateway that appends its own text.
+async fn handle_initialize(client: &ApiClient) -> Value {
+    let open = fetch_open_tasks(client).await;
+    let budget = MAX_INSTRUCTIONS_CHARS.saturating_sub(INSTRUCTIONS.chars().count() + 2);
+    let instructions = match open_tasks_line(&open, budget) {
+        Some(line) => format!("{INSTRUCTIONS}\n\n{line}"),
+        None => INSTRUCTIONS.to_string(),
+    };
+    let mut result = initialize_result(&instructions);
+    if !open.is_empty() {
+        result["_meta"] = json!({ OPEN_TASKS_META_KEY: open_tasks_to_meta(&open) });
+    }
+    result
+}
+
+fn initialize_result(instructions: &str) -> Value {
     json!({
         "protocolVersion": "2025-06-18",
         "capabilities": {
@@ -64,7 +85,7 @@ fn handle_initialize() -> Value {
         },
         // Cursor and Claude Desktop currently ignore `instructions`; keep it
         // for spec correctness and forward-compatible clients.
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions,
         "serverInfo": { "name": "daruma-mcp", "version": env!("CARGO_PKG_VERSION") }
     })
 }

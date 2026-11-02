@@ -136,3 +136,88 @@ async fn dedup_never_answers_unchanged_for_an_excerpt_only_read() {
     trace("plan.4 after full", &p4);
     assert_eq!(p4["unchanged"], true, "plan full delivery remembered: {p4}");
 }
+
+fn materialize(materialized: &Value, kind: &str, field: &str) -> String {
+    materialized["data"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|e| {
+                let p = e.get("payload")?;
+                (p.get("type")?.as_str()? == kind)
+                    .then(|| p.get(field)?.get("id")?.as_str().map(str::to_owned))?
+            })
+        })
+        .unwrap_or_else(|| panic!("{kind} in {materialized}"))
+}
+
+/// Task ea7e8701 — adding a task to a plan changes the plan detail
+/// (`progress`, `latest_activity_at`) without bumping `plan.updated_at`. The
+/// next `dedup: true` read must deliver the new summary, not `unchanged`.
+#[tokio::test]
+async fn dedup_plan_detail_is_not_unchanged_after_a_task_is_added() {
+    let app = test_app().await;
+    let addr = spawn_server(&app).await;
+    let client = ApiClient::new(format!("http://{addr}"), app.admin_token);
+
+    let project = call_tool(
+        &client,
+        "daruma_project_create",
+        json!({ "title": "Dedup membership" }),
+    )
+    .await;
+    let pid = project["project_id"].as_str().unwrap().to_owned();
+    let main = call_tool(
+        &client,
+        "daruma_plan_materialize",
+        json!({
+            "plan": { "title": "Release", "project_id": pid, "goal": "Ship" },
+            "tasks": [ { "title": "Write notes" } ]
+        }),
+    )
+    .await;
+    let plan_id = materialize(&main, "plan_created", "plan");
+    let other = call_tool(
+        &client,
+        "daruma_plan_materialize",
+        json!({
+            "plan": { "title": "Backlog", "project_id": pid, "goal": "Later" },
+            "tasks": [ { "title": "Tag the release" } ]
+        }),
+    )
+    .await;
+    let added_task = materialize(&other, "task_created", "task");
+    println!("TRACE plan={plan_id} added_task={added_task}");
+
+    let detail = json!({ "id": plan_id, "view": "detail", "dedup": true });
+    let d1 = call_tool(&client, "daruma_plan_get", detail.clone()).await;
+    trace("membership.1 full", &d1);
+    assert!(d1.get("unchanged").is_none());
+    assert_eq!(d1["progress"]["tasks_total"], 1, "{d1}");
+    let d2 = call_tool(&client, "daruma_plan_get", detail.clone()).await;
+    trace("membership.2 repeat", &d2);
+    assert_eq!(d2["unchanged"], true, "unchanged plan dedups: {d2}");
+
+    call_tool(
+        &client,
+        "daruma_plan_add_task",
+        json!({ "plan_id": plan_id, "task_id": added_task }),
+    )
+    .await;
+
+    let d3 = call_tool(&client, "daruma_plan_get", detail.clone()).await;
+    trace("membership.3 after add", &d3);
+    println!(
+        "TRACE plan.updated_at before={} after={}",
+        d1["plan"]["updated_at"], d3["plan"]["updated_at"]
+    );
+    assert!(
+        d3.get("unchanged").is_none(),
+        "task added: the summary changed, so no false unchanged: {d3}"
+    );
+    assert_eq!(d3["progress"]["tasks_total"], 2, "{d3}");
+
+    let d4 = call_tool(&client, "daruma_plan_get", detail).await;
+    trace("membership.4 repeat", &d4);
+    assert_eq!(d4["unchanged"], true, "new summary is remembered: {d4}");
+    assert_eq!(d4["since"], d3["plan"]["updated_at"], "{d4}");
+}

@@ -16,7 +16,9 @@ pub mod token;
 pub mod verify;
 
 pub use capability::{Capabilities, Capability};
-pub use context::{AuthContext, HostPrincipal, MissingCapability};
+pub use context::{
+    sanitize_client, AuthContext, HostPrincipal, MissingCapability, CLIENT_HEADER, CLIENT_MAX_CHARS,
+};
 pub use scope::{ProjectFilter, TokenScope};
 pub use store::TokenStore;
 pub use token::{generate, verify_plaintext, ApiToken, NewTokenSpec, TokenKind, TokenSecret};

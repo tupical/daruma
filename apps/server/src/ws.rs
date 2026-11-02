@@ -103,7 +103,7 @@ async fn handle_socket(
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     // 1. Authenticate.
-    let auth_ctx = match authenticate(&state.auth_store, token.as_deref()).await {
+    let mut auth_ctx = match authenticate(&state.auth_store, token.as_deref()).await {
         Ok(ctx) => ctx,
         Err(err) => {
             let _ = ws_sink
@@ -115,7 +115,17 @@ async fn handle_socket(
             return;
         }
     };
-    let mine = mine.then(|| host.or(auth_ctx.principal_id).unwrap_or(auth_ctx.agent_id));
+    // Same trusted normalisation as the HTTP auth middleware: the embedding
+    // host's principal authors dispatched commands; claims and leases stay
+    // keyed by the token's `agent_id`.
+    if let Some(id) = host {
+        auth_ctx.principal_id = Some(id);
+    }
+    // Global event projections do not yet resolve every event's project.
+    if !matches!(auth_ctx.scope.projects, ProjectFilter::All) {
+        return;
+    }
+    let mine = mine.then(|| auth_ctx.principal_id.unwrap_or(auth_ctx.agent_id));
     let device_id = auth_ctx.device_id;
     if let Some(device_id) = device_id {
         state.hub.device_connected(device_id);
@@ -656,18 +666,9 @@ async fn handle_dispatch(
         return;
     }
 
-    // Resolve actor: with `actor_strict` always derive from the bearer token;
-    // without it (default) prefer the client-supplied actor for legacy compat.
-    let resolved_actor = {
-        #[cfg(feature = "actor_strict")]
-        {
-            auth.actor()
-        }
-        #[cfg(not(feature = "actor_strict"))]
-        {
-            auth.actor()
-        }
-    };
+    // WS frames carry no client actor: with or without `actor_strict` the
+    // bearer token decides.
+    let resolved_actor = auth.actor();
     let mut reserved_client_event_id = None;
     if let Some(client_event_id) = client_event_id {
         match reserve_or_ack_cached(state, out_tx, client_event_id).await {

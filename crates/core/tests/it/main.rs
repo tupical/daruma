@@ -28,3 +28,4 @@ mod set_status_comment;
 mod source_chain;
 mod task_git_context;
 mod task_pipeline_position;
+mod task_triage_clear;

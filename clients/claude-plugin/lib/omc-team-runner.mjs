@@ -251,11 +251,24 @@ async function pollUntilDone({ teamName, cwd, pollIntervalMs, maxWaitMs, abortSi
   }
 }
 
+// Never throws, never silent: returns null once `omc team shutdown` succeeds,
+// otherwise a one-line reason. The caller reports it — after Ctrl-C a failed
+// shutdown means the workers may still be running.
 async function shutdownTeam(teamName, cwd) {
-  // Idempotent — if the team is already gone, swallow.
   try {
     await exec("omc", ["team", "shutdown", teamName], { cwd, timeout: 15_000 });
-  } catch { /* already gone or never started */ }
+    return null;
+  } catch (err) {
+    const detail = String(err?.stderr || err?.message || err).trim().split("\n")[0];
+    return `omc team shutdown ${teamName} failed: ${detail.slice(0, 300)}`;
+  }
+}
+
+// Attach a failed shutdown to the error being thrown so the orchestrator can
+// name the team that may still be running.
+function withShutdownError(err, teamName, shutdownError) {
+  if (shutdownError && err && typeof err === "object") Object.assign(err, { teamName, shutdownError });
+  return err;
 }
 
 function renderArtifact({ teamName, counts, tasks, prompt }) {
@@ -297,6 +310,7 @@ function renderArtifact({ teamName, counts, tasks, prompt }) {
 //     counts: {total, ..., completed, failed},
 //     tasks: array,             // raw `list-tasks` response data (best effort)
 //     artifact: string,         // markdown summary for ouroboros_evaluate
+//     shutdownError: string|null, // why `omc team shutdown` failed, if it did
 //     raw: { startResult, summary, listResult },
 //   }
 export async function runOmcTeam({
@@ -323,7 +337,7 @@ export async function runOmcTeam({
     // team that start left behind, otherwise its workers keep running.
     if (abortSignal?.aborted) {
       const orphan = await resolveTeamNameFromStateDir({ cwd, prompt, spawnStartMs });
-      if (orphan) await shutdownTeam(orphan, cwd);
+      if (orphan) throw withShutdownError(err, orphan, await shutdownTeam(orphan, cwd));
     }
     throw err;
   }
@@ -336,9 +350,11 @@ export async function runOmcTeam({
       teamName, cwd, pollIntervalMs, maxWaitMs, abortSignal, onProgress,
     }));
     listResult = await omcApi("list-tasks", { team_name: teamName }, { cwd });
-  } finally {
-    await shutdownTeam(teamName, cwd);
+  } catch (err) {
+    throw withShutdownError(err, teamName, await shutdownTeam(teamName, cwd));
   }
+  const shutdownError = await shutdownTeam(teamName, cwd);
+  if (shutdownError) onProgress?.({ kind: "shutdown_failed", teamName, message: shutdownError });
 
   const tasks = listResult?.data?.tasks ?? listResult?.data ?? [];
   const artifact = renderArtifact({ teamName, counts, tasks, prompt });
@@ -349,6 +365,7 @@ export async function runOmcTeam({
     counts,
     tasks,
     artifact,
+    shutdownError,
     raw: { startResult, summary, listResult },
   };
 }

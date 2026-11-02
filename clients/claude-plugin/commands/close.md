@@ -49,11 +49,16 @@ shorter:
 
 1. `daruma_list status="in_progress,in_review" project_id=<id> limit=100`
    (project from `daruma_workspace_info`).
-2. Keep the rows whose `id` ends with the given suffix (case-insensitive).
-3. Exactly one match → use its full `id`. No match → print
-   `No in-progress task ends with <suffix> — pass the full task id.` and skip
-   it. Several matches → list them as `<full id> — <title>`, ask which one, and
-   close nothing for that suffix until the user answers.
+2. While the response has `has_more: true`, call the same list again with
+   `cursor=<next_cursor>` and collect every page. One page is not the whole
+   project: deciding "no match" or "exactly one match" from the first page
+   misses tasks past the first 100. If a page fails to load, decide nothing
+   and print `Could not read every in-progress task — pass the full task id.`
+3. Keep the rows whose `id` ends with the given suffix (case-insensitive).
+4. Only after the last page: exactly one match → use its full `id`. No
+   match → print `No in-progress task ends with <suffix> — pass the full task
+   id.` and skip it. Several matches → list them as `<full id> — <title>`, ask
+   which one, and close nothing for that suffix until the user answers.
 
 ## Guard rails
 

@@ -17,10 +17,22 @@ pub enum Actor {
         id: Option<AgentId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// MCP client the call came through (see [`Actor::Agent::client`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
     },
     /// An AI agent. The `name` is a free-form identifier (e.g.
-    /// "responses-gpt-4.1" or "local-parser").
-    Agent { id: AgentId, name: String },
+    /// "responses-gpt-4.1" or "local-parser"). `client` is the MCP client the
+    /// agent called through (`clientInfo.name` of `initialize`, else the
+    /// User-Agent product, e.g. `codex-mcp-client`) — attribution for
+    /// per-client compliance measurement; absent for non-MCP and legacy
+    /// records, so old `actor_json` keeps round-tripping unchanged.
+    Agent {
+        id: AgentId,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<String>,
+    },
 }
 
 impl Default for Actor {
@@ -28,6 +40,7 @@ impl Default for Actor {
         Self::User {
             id: None,
             name: None,
+            client: None,
         }
     }
 }
@@ -43,6 +56,7 @@ impl Actor {
         Self::User {
             id: Some(id),
             name: None,
+            client: None,
         }
     }
 
@@ -58,7 +72,24 @@ impl Actor {
         Self::Agent {
             id: AgentId::new(),
             name: name.into(),
+            client: None,
         }
+    }
+
+    /// MCP client attributed to this actor, if any.
+    pub fn client(&self) -> Option<&str> {
+        match self {
+            Self::User { client, .. } | Self::Agent { client, .. } => client.as_deref(),
+        }
+    }
+
+    /// Attribute `client` unless the actor already names one.
+    pub fn or_client(mut self, fallback: Option<&str>) -> Self {
+        let (Self::User { client, .. } | Self::Agent { client, .. }) = &mut self;
+        if client.is_none() {
+            *client = fallback.map(str::to_string);
+        }
+        self
     }
 
     pub fn is_agent(&self) -> bool {
@@ -130,6 +161,7 @@ mod actor_tests {
         let actor = Actor::User {
             id: Some(id),
             name: Some("owner@example.com".into()),
+            client: None,
         };
         let json = serde_json::to_value(&actor).unwrap();
         assert_eq!(json["kind"], "user");
@@ -145,5 +177,38 @@ mod actor_tests {
         )
         .unwrap();
         assert_eq!(only_id, Actor::user_with_id(id));
+    }
+
+    #[test]
+    fn agent_client_is_optional_and_round_trips() {
+        let id = AgentId::new();
+        let legacy =
+            serde_json::json!({"kind": "agent", "id": id.as_uuid().to_string(), "name": "mcp"});
+        let parsed: Actor = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(parsed.client(), None);
+        // No client → serialized shape is unchanged (no `client` key).
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), legacy);
+
+        let actor = Actor::Agent {
+            id,
+            name: "mcp".into(),
+            client: Some("codex-mcp-client".into()),
+        };
+        let json = serde_json::to_value(&actor).unwrap();
+        assert_eq!(json["client"], "codex-mcp-client");
+        let back: Actor = serde_json::from_value(json).unwrap();
+        assert_eq!(back.client(), Some("codex-mcp-client"));
+        assert_eq!(back, actor);
+
+        // `or_client` fills only a missing client.
+        assert_eq!(
+            Actor::user().or_client(Some("cursor")).client(),
+            Some("cursor")
+        );
+        assert_eq!(
+            back.or_client(Some("cursor")).client(),
+            Some("codex-mcp-client")
+        );
+        assert_eq!(Actor::user().or_client(None), Actor::user());
     }
 }

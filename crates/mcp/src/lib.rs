@@ -20,6 +20,7 @@
 
 pub mod client;
 pub mod credentials;
+pub mod open_tasks;
 pub mod paths;
 pub mod prompts;
 pub mod protocol;
@@ -29,6 +30,11 @@ pub mod tools;
 pub mod workspace;
 
 pub use client::ApiClient;
+pub use open_tasks::{
+    bounded_open_tasks, open_tasks_from_meta, open_tasks_line, OpenTask, MAX_CLAIMS_READ,
+    MAX_INSTRUCTIONS_CHARS, MAX_OPEN_TASKS, OPEN_TASKS_LOOKUP_TIMEOUT, OPEN_TASKS_MARKER,
+    OPEN_TASKS_META_KEY,
+};
 pub use protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 pub use server::{
     dispatch_request, dispatch_request_with_profile, run_stdio, run_stdio_with_profile,

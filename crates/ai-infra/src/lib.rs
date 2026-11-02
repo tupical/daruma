@@ -11,15 +11,15 @@
 //! that lives in the OSS core and is consumed by upper layers via
 //! `vendor/oss`. It has no knowledge of task operations.
 //!
-//! AI operations (parse, decompose, scope, research, complexity) are
+//! AI operations (parse, decompose, scope, research) are
 //! **product** concerns that live in the upper layers:
 //! `intake_oss`, `sensemaking_oss`, `planning_oss`. They depend on this
 //! crate through `vendor/oss/crates/ai-infra`, never the reverse.
 //!
 //! `daruma-ai` has been collapsed: this crate is consumed directly by
-//! `apps/server` / `apps/desktop`, and the one remaining core operation
-//! (`analyze_complexity`) lives in `apps/server/src/ai.rs` as a
-//! deprecated delegation-shim until the cloud cutover to `yatagarasu`.
+//! `apps/server` / `apps/desktop`. The one core AI operation, batch
+//! complexity scoring (`analyze_complexity`), is owned by Daruma and lives
+//! in `apps/server/src/ai.rs`; it calls the provider through this crate.
 //! Upper layers that once imported parse/decompose/scope/research from
 //! here should source those from their own layer crates instead.
 //!

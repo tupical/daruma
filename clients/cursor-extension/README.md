@@ -11,9 +11,11 @@ npm test
 ```
 
 The extension reads the `daruma.apiUrl` / `daruma.token` settings when you
-set them explicitly (user, workspace or folder scope); otherwise it uses the
+set them explicitly (user or workspace scope); otherwise it uses the
 `DARUMA_API_URL` / `DARUMA_TOKEN` environment variables, and only then the
-built-in default `http://localhost:8080` with no token.
+built-in default `http://localhost:8080` with no token. Both settings use the
+default `window` scope, so a multi-root workspace has one Daruma server for all
+of its folders.
 
 On WSL with Windows `npm`, run compile directly if `npm test` falls back to
 `C:\Windows` because of UNC paths:

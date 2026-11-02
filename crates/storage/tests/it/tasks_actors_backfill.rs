@@ -91,6 +91,7 @@ async fn new_task_gets_created_by_from_event_actor() {
     let actor = Actor::Agent {
         id: AgentId::new(),
         name: "bot.test-agent".into(),
+        client: None,
     };
 
     let mut new_task = NewTask::new("New task after migration");
@@ -127,6 +128,7 @@ async fn completing_task_populates_completed_by() {
     let completer = Actor::Agent {
         id: AgentId::new(),
         name: "bot.completer".into(),
+        client: None,
     };
 
     // Create the task.
@@ -190,6 +192,7 @@ async fn no_backfill_of_historical_rows_when_new_tasks_created() {
     let actor = Actor::Agent {
         id: AgentId::new(),
         name: "bot.new".into(),
+        client: None,
     };
     let mut new_task = NewTask::new("Post-migration task");
     new_task.id = Some(new_id);

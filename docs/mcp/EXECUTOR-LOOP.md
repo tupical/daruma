@@ -6,12 +6,13 @@ Canonical agent loop for draining a plan without a human in the loop. Stateless 
 
 - Plan status **`active`** (use `daruma_plan_set_status` if still `draft`).
 - A **`run_id`** returned by `daruma_run_start`, or omit it when calling `daruma_plan_drain_next` so the server starts an authenticated run. Never invent a run UUID.
+  An omitted-`run_id` drain that hands out no task (null or error) aborts the run it opened itself; one that hands out a task returns that `run_id` — keep it, and after the task's handoff close it with `daruma_run_complete` (or `daruma_run_abort`), otherwise it holds the plan open (`plan_close_blocked_by_run` names it).
 - Workspace default project set (`daruma_project_use`) when tasks are project-scoped.
 
 ## Loop
 
 ```text
-run_start(plan_id, agent_id)
+run_start(plan_id)                     ← agent_id defaults to the token's agent
   ↓
 ┌──────────────────────────────────────┐
 │  progress = plan_progress(plan_id)   │  ← cheap snapshot
@@ -23,8 +24,10 @@ next = plan_drain_next(plan_id, run_id, claim_ttl_secs=300)
   ↓
 <server claims task and sets in_progress>
   ↓
-<execute work in repo / run tests / edit files>
-  ↓
+run_start_step(run_id, task_id)        ← opens the attempt; before the work
+  ↓                                       and before any status transition
+<execute work in repo / run tests / edit files>   ← a red check is rerun
+  ↓                                                   before the first edit
 comment(task_id, body=<artifact summary>, kind=outcome)
   ↓
 complete(task_id)
@@ -38,15 +41,162 @@ repeat from plan_progress
 
 | Step | Tool | Notes |
 |------|------|-------|
-| 1 | `daruma_run_start` | `{ plan_id, agent_id }` |
+| 1 | `daruma_run_start` | `{ plan_id }` — `agent_id` is optional and defaults to the authenticated agent |
 | 2 | `daruma_plan_progress` | Stop when `next_ready` is null and `todo + in_progress == 0` |
 | 3 | `daruma_plan_next_task` | `{ id: plan_id, run_id, claim_ttl_secs: 300 }` — `plan_id` is accepted for `id`; `run_id` is optional (server-generated) |
-| 4 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
-| 5 | *(work)* | Agent edits codebase; no direct DB writes |
-| 6 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
-| 7 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
-| 8 | goto 2 | |
+| 4 | `daruma_run_start_step` | `{ run_id, task_id }` — opens the attempt **before** the work and before any status transition of this pass (see below) |
+| 5 | `daruma_set_status` | `{ id, status: "in_progress", comment: { body, kind: "intent" } }` — the comment lands in the same transaction; no separate `daruma_comment` |
+| 6 | *(work)* | Agent edits codebase; no direct DB writes |
+| 7 | `daruma_complete` | `{ id: task_id, reason, result_summary, … }` — the completion note replaces a preliminary outcome comment |
+| 8 | `daruma_run_finish_step` | `{ run_id, task_id, outcome: { kind: "done" } }` |
+| 9 | goto 2 | |
 | ∞ | `daruma_run_complete` | When plan drained |
+
+Step 4 is not optional. `run_finish_step` without an open step for that task
+records an attempt that starts at the finish timestamp, so the `complete` of
+step 7 lies before the attempt and `run_complete` rejects the run with 409
+`run_postcondition_unmet` ([Pass completion contract](#pass-completion-contract)).
+`run_start_step` and `run_finish_step` are in the `full` profile
+([PROFILES.md](PROFILES.md)).
+
+## Failed checks: rerun before the first edit
+
+A red executable check is not yet a defect ([ADR-0013](https://github.com/tupical/meisei.ru/blob/main/adr/0013-flap-is-not-a-defect.md)).
+The server sees no edits inside `in_progress`, so this rule is the
+executor's, and it is a MUST:
+
+1. After the **first** red result of an executable check (test runner,
+   integration check, e2e) the executor reruns the failed target **once, on
+   the unchanged tree, before editing any file** — narrowed to the failed
+   test where possible (`cargo test -p <crate> <test_name>`).
+2. **Reproduced** — a defect: edits are allowed.
+3. **Not reproduced** — a flap: no edit in response to that failure. Record
+   it (below) and continue the task.
+4. Compile, parse, type and lint errors are deterministic: no rerun.
+
+Restarting the executor or retrying the whole attempt (as
+`clients/claude-plugin/lib/orchestrator.mjs` does on a failed attempt) does
+not replace the rerun; it comes after it.
+
+**Evidence payload of a passing check.** Evidence the executor submits for
+an executable check (`daruma_evidence_submit`, `payload` is free JSON)
+carries the check's stability, not a single green result:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `runs` | integer ≥ 1 | How many times the check ran within the task |
+| `passed` | integer, `passed ≤ runs` | How many of those runs passed |
+| `flaps` | array, optional | Failures that did not reproduce: `{ "observed_at": "<RFC 3339>", "signature": "<first error line or exit code>", "rerun_passed": true }` |
+| `env_kind` | string | Where the check ran: `ci`, `container`, `host` or `manual` |
+| `env_ref` | string | Immutable id of that environment (table below) |
+
+```json
+{ "runs": 3, "passed": 2,
+  "flaps": [{ "observed_at": "2026-11-01T07:10:00Z",
+              "signature": "test result: FAILED. 41 passed; 1 failed",
+              "rerun_passed": true }],
+  "env_kind": "host", "env_ref": "av-wsl:rustc-1.89.0" }
+```
+
+**Where the check ran** (meisei.ru ADR-0016). `head_sha` names the code,
+not the environment; the same SHA can pass on one toolchain and fail on
+another. The executor **MUST** name the real environment of the run:
+
+| `env_kind` | `env_ref` |
+|------------|-----------|
+| `ci` | Id or URL of that exact CI run — not the workflow, not the branch |
+| `container` | Image digest `sha256:…`, not a tag |
+| `host` | `<hostname>:<toolchain-id>`, e.g. `av-wsl:rustc-1.89.0` |
+| `manual` | Check protocol as `doc_ref@version` (as in `read_artifact`) |
+
+Claiming `ci` for a local run is forbidden. `manual` is submitted by a
+human, never by an agent. Seed, environment variables or data slice are
+free payload keys, never required. Reference consumers fill the pair
+automatically: `daruma-claude start` (`orchestrator.mjs`) puts it into the
+executor prompt — `ci` with the run URL when `GITHUB_RUN_ID`, GitLab
+`CI_JOB_URL` or Woodpecker `CI_PIPELINE_URL` is set, otherwise `host` with
+the hostname and the project toolchain (`rustc -V` for a Cargo project,
+the Node version otherwise).
+
+Evidence without the pair is a claim, not proof. Under the `Strict`
+policy (`policy_snapshot.fujin_strictness`) a rule that handoff lowers for
+a check lists `env_kind` and `env_ref` in `required_fields` next to
+`runs` and `passed`, so a record without them does not close a strict
+`before_complete`. Under `Soft` (default) the record counts and is reported
+as `soft_assertion`. A project tightens its own scope with a regular
+`daruma_rule_create` carrying those `required_fields` (for example "checks
+only in CI" for one repository) — no separate setting exists.
+
+With flaps the record is fit only when the **last two runs passed**
+(`runs ≥ 2`). `signature` is the first line of the error, never a stack
+trace (paths and secrets stay out of evidence). The `check_passed`
+evidence kind of ADR-0010 carries these keys once it exists; until then
+the same keys ride whatever evidence the task's rules ask for. A rule
+that wants the trail lists them in `required_fields: ["runs", "passed"]`
+— the existing check ([LIFECYCLE_RULES_SPEC.md](../LIFECYCLE_RULES_SPEC.md))
+then refuses evidence without them. The server checks presence only, not
+values (`passed ≤ runs`, last two green, `env_kind` from the list, `env_ref`
+without `latest` or a branch name).
+
+**A flap without a green finish.** When the task ends with a blocker rather
+than a passing check, record the flap as a comment with the body prefix
+`flap: <signature>` ([comment-conventions.md](../guides/comment-conventions.md)).
+
+## Implicit status transitions
+
+Status follows what the agent did, so a forgotten `set_status` does not leave
+work invisible:
+
+| Write | From | To |
+|-------|------|----|
+| `daruma_claim`, `daruma_comment kind=intent\|progress`, `daruma_run_start_step`, task-scoped evidence, `git_context` attached via `daruma_update` | `todo` | `in_progress` |
+| `daruma_comment kind=outcome` | `todo`, `in_progress` | `in_review` |
+
+`kind=blocker`, `kind=research` and plain comments move nothing; neither does
+any write on another status (`inbox`, `in_review`, terminal). The move is the
+same `SetStatus … force` as drain: relation blockers are acknowledged,
+lifecycle rules (`task.before_start`, …) still apply. When a rule blocks it,
+the write itself succeeds, the status stays and the response carries a
+warning `implicit_status_blocked` with the rule message. Callers without
+`TaskWrite` never move status this way. `todo → done` stays allowed. An
+expired claim never changes status: the claim TTL sweep only removes the
+claim, and the stall is reported as a claim-expired signal.
+
+`daruma_claim`, `daruma_release` and `daruma_run_start` take `agent_id` as
+optional — the server uses the authenticated agent (`DELETE
+/v1/claims/me/{task_id}` releases the caller's own claim).
+
+## Lifecycle hints in results
+
+Task mutations answer with where the task is now and which lifecycle step
+follows, as data (`next_tool: {name, arguments}` or `null`; the client
+decides whether to call it):
+
+| Tool | Added fields | `next_tool` |
+|------|--------------|-------------|
+| `daruma_plan_materialize` | `task_ids` (plan order) | `daruma_plan_drain_next {plan_id}` |
+| `daruma_plan_materialize` with `claim` | `task_ids`, `claim {outcome, …}`; `task {…}` when claimed | `daruma_comment {task_id, kind: outcome}` when claimed, else `daruma_plan_drain_next {plan_id}` |
+| `daruma_plan_drain_next`, `daruma_claim` | `task {id, status, claim_expires_at?}` | `daruma_comment {task_id, kind: outcome}` |
+| `daruma_comment kind=outcome` | `task {…}` | `daruma_complete {id}` while the task is open, else `null` |
+| `daruma_complete` | `task {…}` | `null` |
+
+`task` is read back after the mutation (`claim_expires_at` only for the
+caller's own claim); when the read fails, `task` is absent and the
+comment's `next_tool` is `null` — the mutation result itself is never lost.
+Other comment kinds carry no hint. `verbose: true` returns the raw body
+without hints.
+
+`initialize.instructions` ends with `Open tasks of this agent: <id> —
+"<title>" — <status>; …` when the token's agent holds live claims on
+`in_progress`/`in_review` tasks (at most 5, titles cut to 40 chars, quoted).
+The whole text stays within 2048 chars: entries that do not fit become
+`+N more` (full list: `daruma_list status=active`). The same tasks ride
+`initialize._meta["daruma/open_tasks"]`, so a hosting gateway that appends
+its own rules re-renders the line after them within the same ceiling. The
+lookup is bounded (2 s, `OPEN_TASKS_LOOKUP_TIMEOUT`) on both paths — the
+stdio process reading over HTTP and a hosting server reading in-process; past
+it or on any failure the line is simply absent and `initialize` still
+succeeds.
 
 ## Prompt template (drop into agent system context)
 
@@ -57,13 +207,16 @@ Loop until `daruma_plan_progress` returns no `next_ready` and all tasks are done
 
 1. Call `daruma_plan_progress` — if `next_ready` is absent and counts show completion, call `daruma_run_complete` and stop.
 2. Call `daruma_plan_next_task` with `claim_ttl_secs=300`.
-3. Set the task `in_progress`, do the work, leave an `outcome` comment summarizing changes.
-4. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "done" }`.
-5. On blocker: comment with `kind=blocker`, do not complete; move to the next ready task or stop and report.
+3. Call `daruma_run_start_step` with `{ run_id, task_id }` before any work or status change.
+4. Set the task `in_progress`, do the work, leave an `outcome` comment summarizing changes.
+5. Call `daruma_complete` and `daruma_run_finish_step` with `{ "kind": "done" }`.
+6. On blocker: comment with `kind=blocker`, do not complete; move to the next ready task or stop and report.
 
 Rules:
 - Never skip dependency order — trust `plan_next_task`.
 - Prefer small diffs; update docs when behavior changes.
+- After the first red test, integration or e2e result, rerun only the failed target once on the unchanged tree before editing any file. Reproduced: fix it. Not reproduced: a flap — no edit for it; record `flap: <first error line>` and carry `runs`/`passed`/`flaps` in the check's evidence payload. Compile, parse, type and lint errors need no rerun.
+- Name where a passing check ran: `env_kind` (`ci` | `container` | `host` | `manual`) and `env_ref` in its evidence payload; never claim `ci` for a local run.
 - Record post-mortems as `lesson: …` in comment body (see docs/guides/comment-conventions.md).
 ```
 
@@ -73,19 +226,22 @@ Rules:
 |-----------|--------|
 | `plan_next_task` returns null but tasks remain | Check plan status; verify blockers via `daruma_relations` (`blocks` edges). |
 | Claim expired | Re-call `plan_next_task` with fresh TTL or `daruma_claim`. |
+| Executable check red for the first time | Rerun the failed target once on the unchanged tree before any edit — see [Failed checks](#failed-checks-rerun-before-the-first-edit). |
 | Step failed | `run_finish_step` with `{ "kind": "failed", "reason": "…" }`; optionally `daruma_reopen` after fix. |
 | Human interrupt | `daruma_run_abort` + release claims. |
-| `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). |
+| `run_complete` → 409 `run_postcondition_unmet` | A step is still open, or a step finished `done` without a handoff transition since it started. Record the transition (or finish the step `failed`) — see [Pass completion contract](#pass-completion-contract). A `run_finish_step` without a preceding `run_start_step` starts the attempt at the finish time, so a handoff made earlier is not counted; start the step before the work. |
+| `run_complete` → 403 `run is owned by another agent` | The run's owner (`run_claim_owners`) is another agent. Only the owner or an admin completes an active owned run; finish through the token that opened it. |
 | Response of `run_complete` / `run_finish_step` lost | Repeat the same call with the same token. Success with `data.already_completed` / `data.already_finished = true` and `event_id: null` means the first call landed — see [Idempotent retry](#idempotent-retry-s4). |
 
 ## Related tools
 
 - **`daruma_plan_drain_next`** — atomic `plan_next_task` + `claim` in one call (default profile).
+- **`daruma_plan_materialize` with `claim: {ttl_secs?, run_id?}`** — create the plan, then drain its next ready task in the same call. Two steps, not one transaction: the plan always stays. `claim.outcome = claimed` carries `task_id`, `run_id`, `claim_id`, `agent_id` and `in_batch` (false when an appended plan handed out an older task first); `not_claimed` carries `reason` (`no_ready_task` or the drain error, e.g. a rule block or a missing `run:write`) and `plan_id` — retry with `daruma_plan_drain_next`, never re-materialize.
 - **`daruma_can_start`** — preflight blockers before `set_status(in_progress)` (default profile).
 
 ## See also
 
-- [../guides/comment-conventions.md](../guides/comment-conventions.md) — `lesson:` prefix
+- [../guides/comment-conventions.md](../guides/comment-conventions.md) — `lesson:` and `flap:` prefixes
 - [../guides/ai-agent.md](../guides/ai-agent.md) — AI layer rules
 - `clients/claude-plugin/lib/orchestrator.mjs` — reference implementation using `plan_next_task`
 
@@ -124,6 +280,13 @@ not guess associations to other AgentSessions sharing an agent id.
 tasks. Explicit dependency success still requires `done`: cancelling a prerequisite
 does not assert that its deliverable exists. `can_start` returns `terminal_task`
 for a terminal target; reopen deliberately before attempting a new claim.
+
+`next-task`, drain (plan and project), `plan_progress.next_ready` and the
+project ready list also skip `inbox` tasks: inbox means "awaiting the owner's
+triage", not "ready for an agent". An inbox task first by position therefore
+no longer hides the `todo` tasks after it; a plan holding only inbox (or
+terminal) tasks drains to `null`. Plan fanout still lists inbox tasks — it is
+the dependency graph, not the agent queue. Move a task to `todo` once triaged.
 
 HTTP `/claims` and run-bound drain use the same recorded claim transaction.
 A missing task returns 404, a terminal task 409. A failed audit append rolls back
@@ -219,6 +382,13 @@ repeats the call instead of guessing:
 - Any other agent (admin included), an unauthenticated caller, and a
   `Failed`/`Aborted` run still get `409 run is not active`; failed/aborted
   never turn into completed.
+- A first completion of an *active* owned run by another non-admin agent is
+  refused with `403 run is owned by another agent` and changes nothing
+  (docs/PLAN_RECONCILIATION.md). A run without a recorded owner (in-process
+  start, or rows before migration 0054) proves nobody's ownership: like
+  fail/abort, a non-admin gets `403 run has no authenticated owner` and only
+  an admin completes it. Raw run commands over `/v1/commands` or WS dispatch
+  are refused (`403`), so every network completion is token-checked.
 - `POST /v1/runs/{id}/step/finish` (`daruma_run_finish_step`) is a no-op when
   the task's latest attempt in the run is already closed with exactly the
   requested outcome: `data.already_finished: true`, `event_id: null`, no

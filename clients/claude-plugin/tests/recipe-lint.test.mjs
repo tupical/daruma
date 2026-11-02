@@ -121,6 +121,10 @@ test("close/status recipes pass id to id-keyed tools and resolve short ids from 
     assert.match(body, /`daruma_list status="[a-z_,]+" project_id=<id> limit=\d+`/, file);
     assert.match(body, /ends with/, file);
     assert.match(body, /Several matches → list them/, file);
+    assert.match(body, /`has_more: true`/, file);
+    assert.match(body, /`cursor=<next_cursor>`/, file);
+    assert.match(body, /Only after the last page/, file);
+    assert.match(body, /If a page fails to load, decide nothing/, file);
   }
   const close = await readFile(ID_RECIPES[0], "utf8");
   assert.match(close, /`daruma_complete id=<id>`/);

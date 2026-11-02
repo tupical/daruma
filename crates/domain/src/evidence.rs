@@ -196,12 +196,12 @@ impl ActorRef {
     /// Project a domain [`Actor`](crate::Actor) into the stored triple.
     pub fn from_actor(actor: &crate::Actor) -> Self {
         match actor {
-            crate::Actor::User { id, name } => ActorRef {
+            crate::Actor::User { id, name, .. } => ActorRef {
                 kind: "user".into(),
                 id: *id,
                 name: name.clone(),
             },
-            crate::Actor::Agent { id, name } => ActorRef {
+            crate::Actor::Agent { id, name, .. } => ActorRef {
                 kind: "agent".into(),
                 id: Some(*id),
                 name: Some(name.clone()),

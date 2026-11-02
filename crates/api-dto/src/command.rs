@@ -12,7 +12,7 @@ use daruma_domain::{
 };
 use daruma_shared::{
     AgentId, AgentSessionId, ArtifactId, ClaimId, CommentId, DocumentId, HandoffId, PlanId,
-    ProjectId, RelationId, RuleId, RunId, TaskId, Timestamp, WorkUnitId,
+    ProjectId, RelationId, RuleId, RunId, TaskId, Timestamp, WorkLeaseId, WorkUnitId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -430,10 +430,14 @@ pub enum Command {
         leases: Vec<WorkLease>,
     },
 
-    /// Release all file/path leases held by an agent for a task.
+    /// Release file/path leases held by an agent for a task: all of them
+    /// when `lease_ids` is `None`, only the listed ones otherwise (TTL
+    /// sweep of individually expired leases).
     ReleaseFiles {
         agent_id: AgentId,
         task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_ids: Option<Vec<WorkLeaseId>>,
     },
 
     // ── Handoff contracts (P5) ────────────────────────────────────────────────
@@ -565,9 +569,13 @@ pub enum Command {
         version: Option<String>,
     },
 
-    /// Soft-deprecate an artifact. Repeated calls are no-ops.
+    /// Soft-deprecate an artifact. Repeated calls are no-ops. Needs a
+    /// non-empty `reason` unless an incoming `supersedes` relation already
+    /// names the replacement (ADR-0019 п.4).
     DeprecateArtifact {
         artifact_id: ArtifactId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 
     /// Add a typed directional relation between two artifacts.

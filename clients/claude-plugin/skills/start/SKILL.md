@@ -1,11 +1,11 @@
 ---
 name: start
-description: Run daruma-claude's full pipeline: parse the task, optionally decompose via AI, execute each subtask through omc team, write artifacts as daruma comments. Triggered by /daruma-claude:start "<task>" or daruma-claude start "<task>" from the shell.
+description: Run daruma-claude's full pipeline: parse the task, record it as a daruma plan, execute it through omc team, write artifacts as daruma comments. Triggered by /daruma-claude:start "<task>" or daruma-claude start "<task>" from the shell.
 ---
 
 # daruma-claude: start
 
-Drive the end-to-end pipeline: parse → (optionally) decompose → execute via `omc team` → comment artifacts back onto the daruma task. This skill orchestrates; it does not implement the steps inline.
+Drive the end-to-end pipeline: parse → materialize the root plan → execute via `omc team` → comment artifacts back onto the daruma task. This skill orchestrates; it does not implement the steps inline.
 
 ## Step 1 — Preflight
 
@@ -23,9 +23,9 @@ daruma-claude start "<task>" [--plan] [--workers N] [--max-retries M] [--agent c
 
 Flag summary:
 
-- `--plan` — enable AI decomposition of the task into subtasks before execution. Requires `daruma_ai_decompose` to be registered on the connected server (SaaS/Meisei); the OSS server doesn't carry it, so `--plan` silently falls back to single-task execution there.
-- `--workers N` — concurrent `omc team` workers per subtask.
-- `--max-retries M` — per-subtask retry budget.
+- `--plan` — execute the root task through the plan loop (daruma run + claim) instead of directly. It does not decompose and needs no AI provider; for several tasks author a plan first and use `/daruma-claude:team-from-plan`.
+- `--workers N` — concurrent `omc team` workers per task.
+- `--max-retries M` — per-task retry budget.
 - `--agent T` — executor backend (`claude`, `codex`, or `gemini`).
 - `--project ID` — daruma project to attach to.
 - `--yes` — auto-confirm prompts (use for non-interactive runs).

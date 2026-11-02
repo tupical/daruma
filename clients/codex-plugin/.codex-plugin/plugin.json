@@ -1,7 +1,7 @@
 {
   "name": "daruma",
   "version": "0.1.0+codex.20260723103624",
-  "description": "Daruma workflows for Codex: task/task-plan orchestration plus reusable setup, research, branch-task, and lesson skills.",
+  "description": "Daruma workflows for Codex: task/task-plan orchestration plus init, branch-task, and lesson skills.",
   "author": {
     "name": "tupical"
   },
@@ -12,7 +12,7 @@
   "interface": {
     "displayName": "Daruma",
     "shortDescription": "Daruma workflows for Codex",
-    "longDescription": "Use Daruma in Codex for task and task-plan workflows, evidence-backed MeiSei/MCPBox research, setup checks, branch task lookup, and lesson capture.",
+    "longDescription": "Use Daruma in Codex for task and task-plan workflows, per-repo AGENTS.md policy init, branch task lookup, and lesson capture and recall.",
     "developerName": "tupical",
     "category": "Productivity",
     "capabilities": [

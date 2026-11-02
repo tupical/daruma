@@ -520,7 +520,6 @@ dependencies = [
 name = "daruma-api-dto"
 version = "0.4.0"
 dependencies = [
- "chrono",
  "daruma-domain",
  "daruma-events",
  "daruma-shared",
@@ -535,7 +534,6 @@ version = "0.4.0"
 dependencies = [
  "argon2",
  "async-trait",
- "axum",
  "base64",
  "chrono",
  "daruma-domain",
@@ -543,7 +541,6 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
 ]
 
@@ -629,10 +626,8 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde",
- "serde_json",
  "sha2",
  "tempfile",
- "thiserror",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -654,7 +649,6 @@ name = "daruma-events"
 version = "0.4.0"
 dependencies = [
  "async-trait",
- "chrono",
  "daruma-domain",
  "daruma-shared",
  "serde",
@@ -667,7 +661,6 @@ name = "daruma-mcp"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "axum",
  "daruma-shared",
  "reqwest",
@@ -749,7 +742,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "thiserror",
  "tokio",
  "tracing",
  "uuid",
@@ -759,15 +751,12 @@ dependencies = [
 name = "daruma-sync"
 version = "0.4.0"
 dependencies = [
- "async-trait",
  "daruma-api-dto",
  "daruma-core",
  "daruma-domain",
  "daruma-events",
  "daruma-shared",
  "dashmap",
- "futures",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -780,12 +769,10 @@ version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
- "chrono",
  "daruma-auth",
  "daruma-domain",
  "daruma-events",
  "daruma-shared",
- "futures",
  "hex",
  "hmac",
  "reqwest",

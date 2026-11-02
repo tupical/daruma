@@ -312,7 +312,7 @@ async fn update_and_deprecate_via_http_are_projected() {
             app.router.clone(),
             &token,
             &format!("/v1/artifacts/{}/deprecate", artifact.id),
-            "{}",
+            r#"{"reason":"catalog retired"}"#,
         )
         .await;
         assert_eq!(
@@ -331,6 +331,264 @@ async fn update_and_deprecate_via_http_are_projected() {
             .status,
         ArtifactStatus::Deprecated
     );
+    assert_eq!(
+        deprecation_reasons(&app, artifact.id).await,
+        vec![Some("catalog retired".to_string())],
+        "repeated deprecation stays a no-op"
+    );
+}
+
+/// `reason` of every `artifact_deprecated` event for `id`, oldest first.
+async fn deprecation_reasons(app: &common::TestApp, id: ArtifactId) -> Vec<Option<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT payload_json FROM events WHERE kind = 'artifact_deprecated' ORDER BY seq",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .unwrap();
+    rows.iter()
+        .map(|raw| serde_json::from_str::<Value>(raw).unwrap())
+        .filter(|payload| payload["artifact_id"] == json!(id))
+        .map(|payload| payload["reason"].as_str().map(str::to_string))
+        .collect()
+}
+
+async fn add_relation(
+    app: &common::TestApp,
+    from: ArtifactId,
+    to: ArtifactId,
+    kind: &str,
+) -> (StatusCode, Value) {
+    json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/artifact-relations",
+        &json!({ "from": from, "to": to, "kind": kind }).to_string(),
+    )
+    .await
+}
+
+async fn stored_status(app: &common::TestApp, id: ArtifactId) -> ArtifactStatus {
+    app.state.artifacts.get(id).await.unwrap().unwrap().status
+}
+
+// ADR-0019 G3 #1: declaring `supersedes` retires the old artifact in the same
+// command, with a reason naming the replacement.
+#[tokio::test]
+async fn supersedes_relation_deprecates_old_artifact_naming_new() {
+    let app = test_app().await;
+    let old = artifact("artifact://svc/catalog", None);
+    let new = artifact("artifact://svc/catalog-v2", None);
+    seed_artifact(&app, &old).await;
+    seed_artifact(&app, &new).await;
+
+    let (status, body) = add_relation(&app, new.id, old.id, "supersedes").await;
+    assert_eq!(status, StatusCode::OK, "supersedes add failed: {body}");
+
+    assert_eq!(
+        stored_status(&app, old.id).await,
+        ArtifactStatus::Deprecated
+    );
+    assert_eq!(stored_status(&app, new.id).await, ArtifactStatus::Pending);
+    assert_eq!(
+        deprecation_reasons(&app, old.id).await,
+        vec![Some("superseded by artifact://svc/catalog-v2".to_string())]
+    );
+    let relations = app.state.artifacts.relations_for(old.id).await.unwrap();
+    assert_eq!(relations.len(), 1);
+    assert_eq!(relations[0].kind, ArtifactRelationKind::Supersedes);
+
+    // Other relation kinds leave the status alone.
+    let peer = artifact("artifact://svc/search", None);
+    seed_artifact(&app, &peer).await;
+    let (status, body) = add_relation(&app, new.id, peer.id, "depends_on").await;
+    assert_eq!(status, StatusCode::OK, "depends_on add failed: {body}");
+    assert_eq!(stored_status(&app, peer.id).await, ArtifactStatus::Pending);
+}
+
+// ADR-0019 G3 #2: the unfiltered list returns live records only; history needs
+// `include_superseded=true`, an explicit `status=deprecated` still works, and
+// the MCP tool forwards the flag.
+#[tokio::test]
+async fn unfiltered_list_hides_deprecated_unless_include_superseded() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
+    let project = ProjectId::new();
+    let old = artifact("artifact://svc/billing", Some(project));
+    let new = artifact("artifact://svc/billing-v2", Some(project));
+    seed_artifact(&app, &old).await;
+    seed_artifact(&app, &new).await;
+    let (status, body) = add_relation(&app, new.id, old.id, "supersedes").await;
+    assert_eq!(status, StatusCode::OK, "supersedes add failed: {body}");
+
+    // JSON carries bare uuids; `Display` adds the `art_` prefix.
+    let bare = |id: ArtifactId| json!(id).as_str().unwrap().to_string();
+    let ids = |body: &Value| -> Vec<String> {
+        body["artifacts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("artifacts array: {body}"))
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let list = |query: String| {
+        let router = app.router.clone();
+        let token = token.clone();
+        async move { json_get(router, &token, &format!("/v1/artifacts?{query}")).await }
+    };
+
+    let (status, body) = list(format!("project_id={project}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&body), vec![bare(new.id)], "live only: {body}");
+
+    let (status, body) = list(format!("project_id={project}&include_superseded=true")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&body), vec![bare(old.id), bare(new.id)]);
+
+    let (status, body) = list(format!("project_id={project}&status=deprecated")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&body), vec![bare(old.id)]);
+
+    let live = mcp_tool(
+        &addr,
+        &token,
+        "daruma_artifact_list",
+        json!({ "project_id": project }),
+    )
+    .await;
+    assert_eq!(ids(&live), vec![bare(new.id)], "MCP live only: {live}");
+    let history = mcp_tool(
+        &addr,
+        &token,
+        "daruma_artifact_list",
+        json!({ "project_id": project, "include_superseded": true }),
+    )
+    .await;
+    assert_eq!(ids(&history).len(), 2, "MCP history: {history}");
+}
+
+// ADR-0019 G3 #3: deprecation without a reason and without a replacement is a
+// validation error — through `/deprecate` and through `/status` alike.
+#[tokio::test]
+async fn deprecate_without_reason_or_replacement_is_rejected() {
+    let app = test_app().await;
+    let token = app.admin_token.clone();
+    let addr = spawn_server(&app).await;
+    let lone = artifact("artifact://svc/lone", None);
+    seed_artifact(&app, &lone).await;
+
+    for body in ["{}", r#"{"reason":"   "}"#] {
+        let (status, response) = json_post(
+            app.router.clone(),
+            &token,
+            &format!("/v1/artifacts/{}/deprecate", lone.id),
+            body,
+        )
+        .await;
+        assert!(
+            status.is_client_error(),
+            "{body:?} accepted: {status} {response}"
+        );
+        assert!(
+            response.to_string().contains("needs a reason"),
+            "{response}"
+        );
+    }
+    let (status, response) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/status", lone.id),
+        r#"{"status":"deprecated"}"#,
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "status route accepted: {status} {response}"
+    );
+    assert_eq!(stored_status(&app, lone.id).await, ArtifactStatus::Pending);
+    assert!(deprecation_reasons(&app, lone.id).await.is_empty());
+
+    // The MCP tool forwards `reason`.
+    let deprecated = mcp_tool(
+        &addr,
+        &token,
+        "daruma_artifact_deprecate",
+        json!({ "artifact_id": lone.id, "reason": "service shut down" }),
+    )
+    .await;
+    assert_eq!(deprecated["success"], json!(true), "{deprecated}");
+    assert_eq!(
+        deprecation_reasons(&app, lone.id).await,
+        vec![Some("service shut down".to_string())]
+    );
+
+    // An incoming `supersedes` edge stands in for the reason: an artifact
+    // revived after being superseded may be retired again without one.
+    let old = artifact("artifact://svc/legacy", None);
+    let new = artifact("artifact://svc/legacy-v2", None);
+    seed_artifact(&app, &old).await;
+    seed_artifact(&app, &new).await;
+    let (status, body) = add_relation(&app, new.id, old.id, "supersedes").await;
+    assert_eq!(status, StatusCode::OK, "supersedes add failed: {body}");
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/status", old.id),
+        r#"{"status":"active"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revive failed: {body}");
+    let (status, body) = json_post(
+        app.router.clone(),
+        &token,
+        &format!("/v1/artifacts/{}/status", old.id),
+        r#"{"status":"deprecated"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "edge-backed status deprecate failed: {body}"
+    );
+    assert_eq!(
+        stored_status(&app, old.id).await,
+        ArtifactStatus::Deprecated
+    );
+}
+
+// ADR-0019 G3 #4: a deprecated artifact cannot supersede a live one.
+#[tokio::test]
+async fn deprecated_artifact_cannot_supersede() {
+    let app = test_app().await;
+    let dead = artifact("artifact://svc/dead", None);
+    let live = artifact("artifact://svc/live", None);
+    seed_artifact(&app, &dead).await;
+    seed_artifact(&app, &live).await;
+    let (status, body) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/artifacts/{}/deprecate", dead.id),
+        r#"{"reason":"retired"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "deprecate failed: {body}");
+
+    let (status, body) = add_relation(&app, dead.id, live.id, "supersedes").await;
+    assert!(
+        status.is_client_error(),
+        "dead supersedes accepted: {status} {body}"
+    );
+    assert!(body.to_string().contains("cannot supersede"), "{body}");
+    assert_eq!(stored_status(&app, live.id).await, ArtifactStatus::Pending);
+    assert!(app
+        .state
+        .artifacts
+        .relations_for(live.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(deprecation_reasons(&app, live.id).await.is_empty());
 }
 
 #[tokio::test]

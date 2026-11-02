@@ -103,6 +103,11 @@ pub struct GateCheck {
     /// gate can walk a staged plan's ancestry before its row exists.
     #[serde(skip)]
     pub pending_plans: Vec<(PlanId, Option<PlanId>)>,
+    /// Final status the same batch gives each task it transitions, so a
+    /// state-based requirement (`wip_limit`) counts the batch, not only the
+    /// projection: `BulkSetStatus` starting two tasks must see both.
+    #[serde(skip)]
+    pub pending_statuses: Vec<(TaskId, Status)>,
 }
 
 impl GateCheck {
@@ -122,6 +127,7 @@ impl GateCheck {
             task_title: None,
             pending_plan_ids: Vec::new(),
             pending_plans: Vec::new(),
+            pending_statuses: Vec::new(),
         }
     }
 }
@@ -129,9 +135,9 @@ impl GateCheck {
 /// Command-level override signal (spec §1.5). `force` alone only soft-acks
 /// `can_start` blockers; passing a *blocked rule* additionally requires a
 /// non-empty `override_reason` and per-rule `override_allowed` — both enforced
-/// by the gate implementation. NOTE: no `RuleOverridden` audit event exists yet,
-/// so an override currently lands in the log as a plain `RuleFired` warning and
-/// the reason is not persisted.
+/// by the gate implementation. A granted override comes back as
+/// [`GateDecision::Overridden`], and the core records every bypassed rule as
+/// `RuleFired { decision: overridden, override_reason }`.
 ///
 /// Both fields come straight off task or plan status commands.
 /// `override_reason` is an escape hatch, not the normal way past a rule: the
@@ -168,6 +174,16 @@ pub enum GateDecision {
     Allowed,
     /// Mutation proceeds; warnings ride `MutationResponse.warnings`.
     Warning(Vec<MutationWarning>),
+    /// Mutation proceeds past `required` rules on an explicit override (spec
+    /// §1.5). `overridden` are the bypassed blocks, `warnings` the plain
+    /// recommendations; both ride `MutationResponse.warnings` (recommendations
+    /// first). `reason` is the trimmed, non-empty `override_reason` the core
+    /// persists on each bypassed rule's audit event.
+    Overridden {
+        overridden: Vec<MutationWarning>,
+        warnings: Vec<MutationWarning>,
+        reason: String,
+    },
     /// Mutation is rejected before persist. `message` is shown to the
     /// executor ("what to do to pass"); `details` may carry the structured
     /// outcome list (all blocked rules) for richer clients.
@@ -226,12 +242,18 @@ pub fn derive_gate_checks(events: &[Event]) -> Vec<GateCheck> {
     // PlanCreated + TaskCreated + PlanTaskAdded together).
     let mut staged_plans: Vec<(PlanId, Option<PlanId>)> = Vec::new();
     let mut staged_memberships: Vec<(TaskId, PlanId)> = Vec::new();
+    let mut staged_statuses: Vec<(TaskId, Status)> = Vec::new();
     for event in events {
         match event {
             Event::PlanCreated { plan } => staged_plans.push((plan.id, plan.parent_plan_id)),
             Event::PlanTaskAdded {
                 plan_id, task_id, ..
             } => staged_memberships.push((*task_id, *plan_id)),
+            Event::TaskStatusChanged { task_id, to, .. } => {
+                // Last transition wins: it is the status the batch persists.
+                staged_statuses.retain(|(task, _)| task != task_id);
+                staged_statuses.push((*task_id, *to));
+            }
             _ => {}
         }
     }
@@ -245,6 +267,7 @@ pub fn derive_gate_checks(events: &[Event]) -> Vec<GateCheck> {
                 .collect();
         }
         check.pending_plans = staged_plans.clone();
+        check.pending_statuses = staged_statuses.clone();
     }
     checks
 }

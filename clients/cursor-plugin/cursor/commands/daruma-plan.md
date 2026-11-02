@@ -12,9 +12,11 @@ bar. Use the daruma MCP server.
 
 1. Resolve project (`daruma_workspace_info` → `default_project`).
 2. `daruma_plan_list` with `project_id = <resolved>`,
-   `status = "active"`. Pick the most recently updated.
-   If none, say "no active plan — create one with `daruma_plan_create`"
-   and stop.
+   `status = "active"`, `sort = "updated"`, `limit = 1` — the server orders
+   by `updated_at`, newest first, so the single row is the most recently
+   updated plan (the default order is by creation, and its first page can
+   miss it). If none, say "no active plan — `daruma_plan_materialize`
+   first" and stop.
 3. `daruma_plan_get` with the chosen `plan_id` and `view = "tasks"` —
    the only view that lists every plan task (done included) with
    `status`, `priority`, `depends_on` and `blocked_by`. The default
@@ -51,5 +53,5 @@ bar. Use the daruma MCP server.
    - Else if any `todo` task is ready → `→ next: run /daruma-next`.
    - Else if all done → `→ plan complete — run daruma_plan_set_status status=completed`.
 
-7. Read-only — never modify tasks here. Don't touch `.omc/plans/` or
+7. Read-only — never modify tasks here. Don't touch local or
    markdown plan files.

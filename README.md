@@ -63,7 +63,7 @@ cargo run -p daruma-server          # API on :8080, data in ~/.agents/daruma/dat
 
 # 2. Drive the API.
 export DARUMA_TOKEN=ta_svc_…
-curl -H "Authorization: Bearer $DARUMA_TOKEN" http://localhost:8080/v1/tasks
+curl -H "Authorization: Bearer $DARUMA_TOKEN" "http://localhost:8080/v1/tasks?status=active"
 
 # 3. Build the unified launcher and let it walk you through connecting.
 cargo build -p daruma-cli           # produces the `daruma` binary
@@ -78,7 +78,9 @@ realtime, webhooks, and remote MCP.
 ## MCP
 
 `daruma` **is** the MCP server. The same tool surface — tasks, plans,
-documents, sessions, runs, webhooks — is served over stdio and over HTTP.
+documents, sessions, runs — is served over stdio and over HTTP. Webhooks are
+not part of it: they are managed only through the REST API
+(`/v1/webhooks`, `webhook:read` / `webhook:write`).
 
 ```sh
 # Claude Code / Claude Desktop (stdio)

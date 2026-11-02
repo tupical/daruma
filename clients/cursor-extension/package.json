@@ -137,7 +137,7 @@
   },
   "scripts": {
     "compile": "tsc -p .",
-    "test": "npm run compile && node --test tests/**/*.test.mjs",
+    "test": "npm run compile && node --test tests/*.test.mjs",
     "package": "npx --yes @vscode/vsce package"
   },
   "devDependencies": {

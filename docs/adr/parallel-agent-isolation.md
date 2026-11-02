@@ -39,7 +39,11 @@ Concretely:
 - `work_leases` (migration `0031`) + `daruma_reserve_files` /
   `daruma_release_files` / `daruma_active_work` are the canonical
   coordination surface. Reservation is atomic (`BEGIN IMMEDIATE` + glob-overlap
-  check); leases auto-release on `TaskClosed` and via the TTL sweeper.
+  check); leases auto-release on `TaskClosed` and via the TTL sweeper. TTL is
+  per lease: the sweeper releases only the leases whose own TTL has run out
+  (`FilesReleased` carries their `lease_ids`), so an agent's other, still-live
+  leases on the same task stay held. An explicit `daruma_release_files`
+  releases all of the agent's leases on the task.
 - Daruma does **not** create, switch, or merge git worktrees. It is a tracker
   and coordination server, not a VCS driver. Orchestrators (OMC, Conductor-style
   runners) remain free to put each agent in its own worktree; when they do, the

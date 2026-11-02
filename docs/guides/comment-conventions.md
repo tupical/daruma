@@ -50,6 +50,28 @@ Fix: PRAGMA journal_mode=WAL in pool init.
 
 **Recall:** `daruma_lesson_recall` (full profile) / `daruma_search` filter `comments.body LIKE 'lesson:%'`. No schema migration — prefix is the contract.
 
+## Body prefix: `flap:`
+
+**Purpose:** a failed executable check that did not reproduce on a rerun of
+the unchanged tree — a flap, not a defect ([EXECUTOR-LOOP.md — Failed
+checks](../mcp/EXECUTOR-LOOP.md#failed-checks-rerun-before-the-first-edit)).
+
+**When to use:** the task ends with a blocker instead of a passing check, so
+the flap has no evidence `flaps[]` entry to live in. With a passing check,
+record it in the evidence payload instead.
+
+**Format:** `flap: <signature>` — the first line of the error or the exit
+code, no stack trace — optionally followed by free text.
+
+```text
+flap: test result: FAILED. 41 passed; 1 failed
+
+Rerun of `cargo test -p daruma-storage claim_ttl` on the unchanged tree passed.
+```
+
+**Recall:** `daruma_search` filter `comments.body LIKE 'flap:%'`. No schema
+migration — prefix is the contract; no `CommentKind` for it.
+
 ## Body prefix: `branch:` (planned)
 
 **Purpose:** tie a task or comment to a git branch for branch-scoped work.

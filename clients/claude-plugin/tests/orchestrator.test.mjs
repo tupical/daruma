@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -256,6 +256,117 @@ test("each retry reads fresh Daruma state and run journal into executor prompt",
 });
 
 
+test("executor prompt carries the rerun-before-edit rule for failed checks (ADR-0013)", () => {
+  for (const task of [
+    { id: "task", title: "Only title" },
+    { id: "task", title: "Title", description: "Statement", execution_context: { task_id: "task", notes: [] } },
+  ]) {
+    const prompt = _internal.executePromptFor(task);
+    assert(prompt.startsWith(task.title));
+    assert(prompt.includes("rerun only the failed target once on the unchanged tree before editing any file"));
+    assert(prompt.includes("`flap: <first error line>`"));
+    assert(prompt.includes("Compile, parse, type and lint errors are deterministic: no rerun."));
+    assert(prompt.includes("`runs`, `passed`"));
+  }
+});
+
+test("check environment prefers the concrete CI run, else host and toolchain (ADR-0016)", () => {
+  const host = (env) => _internal.checkEnvironment({ env, host: "av-wsl", toolchain: "rustc-1.89.0" });
+  assert.deepEqual(host({}), { env_kind: "host", env_ref: "av-wsl:rustc-1.89.0" });
+  assert.deepEqual(
+    host({ GITHUB_RUN_ID: "42", GITHUB_REPOSITORY: "tupical/daruma", GITHUB_RUN_ATTEMPT: "2" }),
+    { env_kind: "ci", env_ref: "https://github.com/tupical/daruma/actions/runs/42/attempts/2" },
+  );
+  assert.deepEqual(host({ GITHUB_RUN_ID: "42" }), { env_kind: "ci", env_ref: "github-run:42" });
+  assert.deepEqual(
+    host({ CI_JOB_URL: "https://gitlab.example/g/p/-/jobs/7", CI_PIPELINE_URL: "https://gitlab.example/g/p/-/pipelines/3" }),
+    { env_kind: "ci", env_ref: "https://gitlab.example/g/p/-/jobs/7" },
+  );
+  assert.deepEqual(
+    host({ CI_PIPELINE_URL: "https://ci.example/repos/1/pipeline/118" }),
+    { env_kind: "ci", env_ref: "https://ci.example/repos/1/pipeline/118" },
+  );
+  // A bare CI flag names no run: the check stays a host check.
+  assert.equal(host({ CI: "true" }).env_kind, "host");
+});
+
+test("executor prompt names the check environment only when one is known (ADR-0016)", () => {
+  const task = { id: "task", title: "Title", description: "Statement" };
+  const plain = _internal.executePromptFor(task);
+  assert(!plain.includes("env_kind"));
+  const prompt = _internal.executePromptFor(task, { env_kind: "host", env_ref: "av-wsl:rustc-1.89.0" });
+  assert(prompt.startsWith("Title\n\nStatement"));
+  assert(prompt.includes("env_kind `host`, env_ref `av-wsl:rustc-1.89.0`"));
+  assert(prompt.includes("never claim `ci` for a local run"));
+  assert(prompt.includes("rerun only the failed target once"), "ADR-0013 rule kept");
+});
+
+test("projectToolchain reads rustc for a Cargo project and falls back to node", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(await _internal.projectToolchain(dir), `node-${process.versions.node}`);
+    const bin = join(dir, "bin");
+    await mkdir(bin);
+    await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.89.0 (29483883e 2025-08-04)'\n");
+    await chmod(join(bin, "rustc"), 0o755);
+    await writeFile(join(dir, "Cargo.toml"), "[workspace]\n");
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      assert.equal(await _internal.projectToolchain(dir), "rustc-1.89.0");
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+});
+
+test("executeOnce hands omc a prompt naming this host's check environment", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "bin");
+    const cwd = join(dir, "repo");
+    const promptFile = join(dir, "prompt.txt");
+    await mkdir(bin);
+    await mkdir(cwd);
+    await writeFile(join(cwd, "Cargo.toml"), "[workspace]\n");
+    await writeFile(join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.89.0 (29483883e 2025-08-04)'\n");
+    await writeFile(join(bin, "omc"), `#!/bin/sh
+if [ "$1 $2" = "team api" ]; then
+  case "$3" in
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"completed":1}}}}' ;;
+    *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "team shutdown" ]; then exit 0; fi
+printf '%s' "$3" > ${JSON.stringify(promptFile)}
+mkdir -p .omc/state/team/env-team
+`);
+    await chmod(join(bin, "rustc"), 0o755);
+    await chmod(join(bin, "omc"), 0o755);
+    const saved = {};
+    for (const key of ["PATH", "GITHUB_RUN_ID", "CI_JOB_URL", "CI_PIPELINE_URL"]) saved[key] = process.env[key];
+    process.env.PATH = `${bin}:${saved.PATH}`;
+    delete process.env.GITHUB_RUN_ID;
+    delete process.env.CI_JOB_URL;
+    delete process.env.CI_PIPELINE_URL;
+    let result;
+    try {
+      result = await _internal.executeOnce({
+        task: { id: "task", title: "Task" }, workers: 1, agentType: "claude", cwd, stderrLog: null,
+        stdout: { isTTY: false, write() {} }, write() {},
+      });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    assert.equal(result.ok, true);
+    const { hostname } = await import("node:os");
+    const prompt = await readFile(promptFile, "utf8");
+    assert(prompt.includes(`env_kind \`host\`, env_ref \`${hostname()}:rustc-1.89.0\``), prompt);
+  });
+});
+
 test("terminal task in server projection cannot be reopened by stale executor", async () => {
   const mcp = mockMcp({ tasks: { task: { id: "task", status: "done" } } });
   const outcome = await _internal.executeTaskWithRetries({
@@ -325,6 +436,104 @@ test("start spawns the same `daruma mcp` launcher doctor probes", { skip: proces
     }
     assert.equal(await readFile(argvOut, "utf8"), "mcp\n");
     assert.match(lines.join(""), new RegExp(`starting ${bin} mcp`));
+  });
+});
+
+// `--plan` executes the materialized one-task plan; nothing decomposes it, so
+// a server without any AI tool or provider runs it to completion (README "Plan mode").
+test("start --plan runs the root task as a one-task plan and never asks for AI decomposition", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "bin");
+    const repo = join(dir, "repo");
+    const log = join(dir, "requests.log");
+    await mkdir(bin);
+    await mkdir(repo);
+    // Fake `daruma mcp`: logs every JSON-RPC request, answers the plan-mode calls.
+    await writeFile(join(bin, "daruma"), `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const readline = require("node:readline");
+let drains = 0;
+const answers = {
+  daruma_plan_materialize: () => ({ data: [
+    { payload: { type: "plan_created", plan: { id: "pln", status: "active" } } },
+    { payload: { type: "task_created", task: { id: "tsk", title: "root" } } },
+  ] }),
+  daruma_workspace_info: () => ({ mcp_agent_id: "agent" }),
+  daruma_run_start: () => ({ data: { run_id: "00000000-0000-4000-8000-000000000002" } }),
+  daruma_plan_drain_next: () => (drains++ === 0 ? { task_id: "tsk" } : null),
+  daruma_get: () => ({ id: "tsk", title: "root", status: "todo" }),
+  daruma_run_notes_list: () => ({ notes: [] }),
+  daruma_plan_get: () => ({ id: "pln", status: "completed" }),
+};
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method: msg.method, params: msg.params }) + "\\n");
+  if (msg.id === undefined) return;
+  let result;
+  if (msg.method === "initialize") {
+    result = { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake", version: "0" } };
+  } else if (msg.method === "tools/call") {
+    const body = (answers[msg.params.name] ?? (() => ({ ok: true })))();
+    result = { content: [{ type: "text", text: JSON.stringify(body) }] };
+  } else {
+    result = { tools: [] };
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
+});
+`);
+    await writeFile(join(bin, "omc"), `#!/bin/sh
+if [ "$1 $2" = "team api" ]; then
+  case "$3" in
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"completed":1}}}}' ;;
+    *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "team shutdown" ]; then exit 0; fi
+mkdir -p .omc/state/team/plan-mode-team
+`);
+    await chmod(join(bin, "daruma"), 0o755);
+    await chmod(join(bin, "omc"), 0o755);
+    const saved = { bin: process.env.DARUMA_MCP_BIN, agentDir: process.env.DARUMA_AGENT_DIR, path: process.env.PATH };
+    process.env.DARUMA_MCP_BIN = join(bin, "daruma");
+    process.env.DARUMA_AGENT_DIR = join(dir, "agent");
+    process.env.PATH = `${bin}:${saved.path}`;
+    const lines = [];
+    const stdout = { isTTY: false, write: (s) => { lines.push(s); return true; } };
+    let result;
+    try {
+      result = await runDarumaStart({
+        task: "plan mode root", cwd: repo, stdout, autoYes: true, planMode: true, projectId: "prj", maxRetries: 0,
+      });
+    } finally {
+      for (const [key, value] of [["DARUMA_MCP_BIN", saved.bin], ["DARUMA_AGENT_DIR", saved.agentDir], ["PATH", saved.path]]) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const requests = (await readFile(log, "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    const tools = requests.filter((r) => r.method === "tools/call").map((r) => r.params.name);
+    assert.equal(result.ok, true);
+    assert.equal(result.planId, "pln");
+    assert.deepEqual(result.summaries.map((s) => s.taskId), ["tsk"]);
+    const materialize = requests.find((r) => r.params?.name === "daruma_plan_materialize");
+    assert.equal(materialize.params.arguments.tasks.length, 1);
+    assert(!tools.some((name) => /decompose/.test(name)), `unexpected decomposition call in ${tools}`);
+    assert(!requests.some((r) => r.method === "tools/list"));
+    assert(tools.includes("daruma_run_complete"));
+    assert.doesNotMatch(lines.join(""), /\[decompose\]/);
+    // The server rejects a non-UUID run_id: the client never invents one (no
+    // `daruma-claude-<timestamp>`); every run-scoped call reuses the id
+    // `daruma_run_start` returned.
+    const runStart = requests.find((r) => r.params?.name === "daruma_run_start");
+    assert.equal(runStart.params.arguments.run_id, undefined);
+    const runScoped = requests.filter((r) => r.method === "tools/call" && r.params.arguments?.run_id !== undefined);
+    assert(runScoped.some((r) => r.params.name === "daruma_plan_drain_next"));
+    assert(runScoped.some((r) => r.params.name === "daruma_run_complete"));
+    for (const r of runScoped) {
+      assert.equal(r.params.arguments.run_id, "00000000-0000-4000-8000-000000000002", `${r.params.name} run_id`);
+    }
+    assert.doesNotMatch(JSON.stringify(requests), /daruma-claude-\d/);
   });
 });
 
@@ -420,6 +629,121 @@ test("cancelled plan run releases the claim and aborts the run as cancelled", as
   assert(mcp.calls.some((call) => call.name === "daruma_release" && call.args.task_id === "a"));
   assert(mcp.calls.some((call) => call.name === "daruma_run_abort" && call.args.reason === "cancelled"));
   assert(!mcp.calls.some((call) => call.name === "daruma_get" && call.args.id === "b"));
+});
+
+test("Ctrl-C while the final answer is pending wins over a late success", async () => {
+  const mcp = mockMcp();
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", title: "Task" }, maxRetries: 2,
+    stdout: { write() {}, isTTY: false }, write() {}, cancel,
+    async execute() {
+      // The team already finished; Ctrl-C lands during list-tasks/shutdown.
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      return { ok: true, teamName: "team-a", counts: { total: 1, completed: 1, failed: 0 }, artifact: "done", shutdownError: null };
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, "cancelled");
+  assert(!mcp.calls.some((call) => call.name === "daruma_complete"));
+  const blocker = mcp.calls.find((call) => call.name === "daruma_comment" && call.args.kind === "blocker");
+  assert.match(blocker.args.body, /cancelled by the operator \(Ctrl-C\); attempts=1\. omc team was shut down\./);
+});
+
+test("plan task whose success arrives after Ctrl-C is released, not completed", async () => {
+  const mcp = mockMcp({ drains: [{ task_id: "a" }, { task_id: "b" }] });
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.runPlanLoop({
+    mcp, plan: { id: "plan", status: "active" }, cwd: "/tmp", write() {}, stdout: {}, maxRetries: 2, cancel,
+    async executeTask() {
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      return { ok: true, attempts: 1, result: { teamName: "team-a", counts: { total: 1, completed: 1, failed: 0 } } };
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.reason, "cancelled");
+  assert(!mcp.calls.some((call) => call.name === "daruma_complete"));
+  assert(mcp.calls.some((call) => call.name === "daruma_release" && call.args.task_id === "a"));
+  assert(mcp.calls.some((call) => call.name === "daruma_run_abort" && call.args.reason === "cancelled"));
+  assert.equal(mcp.calls.filter((call) => call.name === "daruma_plan_drain_next").length, 1);
+});
+
+test("failed omc team shutdown after Ctrl-C is named in the blocker", async () => {
+  const mcp = mockMcp();
+  const { cancel } = cancellationHarness();
+  const outcome = await _internal.executeTaskWithRetries({
+    mcp, task: { id: "task", title: "Task" }, maxRetries: 2,
+    stdout: { write() {}, isTTY: false }, write() {}, cancel,
+    async execute() {
+      cancel.track(new Promise(() => {}));
+      cancel.onSignal();
+      throw Object.assign(new Error("omc team poll aborted"), {
+        teamName: "team-x", shutdownError: "omc team shutdown team-x failed: timeout",
+      });
+    },
+  });
+  cancel.dispose();
+  assert.equal(outcome.reason, "cancelled");
+  assert.equal(outcome.result.shutdownError, "omc team shutdown team-x failed: timeout");
+  const blocker = mcp.calls.find((call) => call.name === "daruma_comment" && call.args.kind === "blocker");
+  assert.match(blocker.args.body, /omc team shutdown team-x failed: timeout — omc team may still be running; stop it with: omc team shutdown team-x\./);
+  assert.doesNotMatch(blocker.args.body, /was shut down/);
+});
+
+test("executeOnce keeps a team whose shutdown failed registered for the exit message", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (dir) => {
+    const bin = join(dir, "bin");
+    const cwd = join(dir, "repo");
+    await mkdir(bin);
+    await mkdir(cwd);
+    await writeFile(join(bin, "omc"), `#!/bin/sh
+if [ "$1 $2" = "team api" ]; then
+  case "$3" in
+    get-summary) echo '{"ok":true,"data":{"summary":{"tasks":{"total":1,"completed":1}}}}' ;;
+    *) echo '{"ok":true,"data":{"tasks":[]}}' ;;
+  esac
+  exit 0
+fi
+if [ "$1 $2" = "team shutdown" ]; then echo "tmux: no server" >&2; exit 1; fi
+mkdir -p .omc/state/team/stuck-team
+`);
+    await chmod(join(bin, "omc"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    const { cancel, lines: cancelLines } = cancellationHarness();
+    const lines = [];
+    let result;
+    try {
+      result = await _internal.executeOnce({
+        task: { id: "task", title: "Task" }, workers: 1, agentType: "claude", cwd, stderrLog: null,
+        stdout: { isTTY: false, write() {} }, write: (s) => lines.push(s), cancel,
+      });
+    } finally {
+      process.env.PATH = savedPath;
+    }
+    assert.equal(result.ok, true);
+    assert.match(result.shutdownError, /^omc team shutdown stuck-team failed: tmux: no server/);
+    assert.match(lines.join("\n"), /\[omc team\] omc team shutdown stuck-team failed/);
+    assert.deepEqual([...cancel.teams], ["stuck-team"]);
+    await cancel.onSignal();
+    assert.match(cancelLines.join(""), /SIGINT — shutting down; stop it with: omc team shutdown stuck-team/);
+  });
+});
+
+test("a failing MCP stop on Ctrl-C is reported, and the process still exits 130", async () => {
+  const lines = [];
+  const events = [];
+  const cancel = _internal.createCancellation({
+    write: (s) => lines.push(s),
+    stop: async () => { throw new Error("server pipe closed"); },
+    exit: (code) => { events.push(`exit:${code}`); },
+  });
+  await cancel.onSignal();
+  assert.deepEqual(events, ["exit:130"]);
+  assert.match(lines.join(""), /failed to stop the daruma MCP server: server pipe closed/);
 });
 
 test("Ctrl-C typed into the TTY prompt reaches the process SIGINT handler", async () => {

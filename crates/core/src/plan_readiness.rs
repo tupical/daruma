@@ -287,6 +287,20 @@ async fn rule_readiness(
                     message: w.message.clone(),
                 }));
             }
+            // Only a gate that ignores the empty override lands here; what it
+            // bypassed would still stop a normal start.
+            GateDecision::Overridden {
+                overridden,
+                warnings,
+                ..
+            } => {
+                let rule = |w: &daruma_api_dto::MutationWarning| CanStartRule {
+                    rule_key: warning_rule_key(w),
+                    message: w.message.clone(),
+                };
+                rule_blockers.extend(overridden.iter().map(rule));
+                rule_warnings.extend(warnings.iter().map(rule));
+            }
             GateDecision::Blocked { message, details } => {
                 rule_blockers.extend(blocked_outcomes(&details, &message).into_iter().map(
                     |(outcome, message)| CanStartRule {

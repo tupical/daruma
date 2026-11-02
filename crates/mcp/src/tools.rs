@@ -249,14 +249,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_materialize",
             "Materialize plan with tasks",
-            "The ONLY intake path for new tasks: atomically create a plan with its tasks. Pass `plan` (title required; project inferred from the repo scope) and `tasks` (title required); tasks inherit the plan's project and provenance. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`; tasks inherit git_context. Project policy may warn or reject; the error lists the allowed channels. To add follow-up tasks to an existing plan pass `plan.id` (no title); it keeps its project and source. Plans on the same branch/source chain give `plan_choice_required`: same subject → `plan.id`, else `plan.separate`. Raw ideas go through the idea pipeline, not here.",
+            "The ONLY intake path for new tasks: atomically create a plan with its tasks; tasks inherit the plan's project, provenance and git_context. Always pass `plan.source` (nearest source: {ref: URI} for an issue/e-mail/message, or {label} for a chat request) and, in a git repo, `plan.git_context.branch`. Project policy may warn or reject; the error lists the allowed channels. Follow-up tasks for an existing plan: pass `plan.id` (no title); it keeps its project and source. Plans on the same branch/source chain give `plan_choice_required`: same subject → `plan.id`, else `plan.separate`. Raw ideas go through the idea pipeline, not here.",
             schema_plan_materialize(),
             Dom::Plans, D, C, Ann::Write,
         ),
         tool(
             "daruma_get",
             "Get task",
-            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` gives a bounded excerpt of a large body; `dedup: true` returns a compact `unchanged` marker if this session already holds the current version. `comments: true` also attaches the task's full comment list as `comments` (never trimmed by `max_tokens`, never replaced by the `unchanged` marker).",
+            "Fetch one task by id — only when a recent list/search row (title, status, priority) is not enough. `max_tokens` bounds a large body; `dedup: true` returns a compact `unchanged` marker if this session holds the current version. `comments: true` attaches the full comment list as `comments` (never trimmed by `max_tokens` or replaced by `unchanged`).",
             with_id_alias(schema_get_task(), "id", "task_id"),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -277,7 +277,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_list",
             "List tasks",
-            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error already means the server is down). `view=summary` rows carry id/title/status/priority/project — no follow-up `daruma_get`/`view=detail` unless you need description or comments. `status` (default `active`): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
+            "List tasks — the default for \"what's open / inventory\"; call it first, no `daruma_healthz` preflight (a transport error means the server is down). `view=summary` rows carry id/title/status/priority/project — `daruma_get`/`view=detail` only for description or comments. `status` (default `active`): `inbox`/`todo`/`in_progress`/`in_review`/`done`/`cancelled`, a comma list, `active` (non-terminal), or `all` (the archive, very large — only if asked). `project_id`: `inbox` = no project, `all` = every project; omitted → the repo project if unambiguous, else a compact project-selection response.",
             schema_list(),
             Dom::Tasks, D, C, Ann::Read,
         ),
@@ -354,7 +354,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_comment",
             "Comment on task",
-            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected).",
+            "Add a comment to a task. Optional semantic `kind`, exactly one of intent/progress/outcome/blocker/research (handoff/summary → outcome, note/update → progress; other values are rejected). intent/progress: todo→in_progress; outcome: →in_review.",
             with_id_alias(schema_comment(), "task_id", "id"),
             Dom::Tasks, D, E, Ann::Write,
         ),
@@ -483,7 +483,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_evidence_submit",
             "Record lifecycle evidence",
-            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Kinds: document_read_ack, impact_assessment, decision_record, completion_note, artifact_created, owner_assigned, acceptance_criteria_defined, risk_check_completed. Scope ceilings: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records satisfy nothing — use the described entity's scope. Evidence is immutable; `supersedes` replaces a prior record.",
+            "Submit lifecycle evidence to satisfy a `required` rule and unblock the transition. Scope ceilings per kind: acceptance_criteria_defined/completion_note/owner_assigned → task; impact_assessment/risk_check_completed → plan; decision_record/artifact_created → project; document_read_ack → tenant. Wider records satisfy nothing — use the described entity's scope. Evidence is immutable; `supersedes` replaces a prior record.",
             schema_evidence_submit(),
             // Default profile, not full: defining a rule is an admin act, but
             // attesting that a requirement is met is the executor's — and it is
@@ -664,7 +664,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
-            "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
+            "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start; the server then opens a run, returns its run_id with the task (close it with daruma_run_complete after the handoff, or daruma_run_abort), and aborts it itself when no task is handed out. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
             with_id_alias(schema_plan_drain_next(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Write,
         ),
@@ -716,8 +716,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_artifact_deprecate",
             "Deprecate artifact",
-            "Soft-deprecate an artifact. Repeated deprecation is a successful no-op.",
-            schema_artifact_id(),
+            "Soft-deprecate an artifact. Needs `reason` unless a `supersedes` relation names the replacement. Repeated deprecation is a successful no-op.",
+            schema_artifact_deprecate(),
             Dom::WorkspaceGraph, F, X, Ann::WriteIdem,
         ),
         tool(
@@ -738,7 +738,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_artifact_list",
             "List artifacts",
             "List artifacts scoped to a project, task, or both. Returns id, uri, title, status, \
-             owner, version. Use to answer \"who owns this\" before writing.",
+             owner, version. Use to answer \"who owns this\" before writing. Deprecated records \
+             are hidden unless `include_superseded` or `status=deprecated`.",
             schema_artifact_list(),
             Dom::WorkspaceGraph, F, X, Ann::Read,
         ),
@@ -840,7 +841,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_run_start_step",
             "Start run step",
-            "Mark the beginning of a task step within a run.",
+            "Mark the beginning of a task step within a run; a todo task moves to in_progress.",
             schema_run_step(),
             Dom::Runs, F, E, Ann::Write,
         ),
@@ -890,7 +891,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_claim",
             "Claim task",
-            "Claim a task optimistically for a TTL in seconds; agent UUID from daruma_workspace_info.mcp_agent_id.",
+            "Claim a task for a TTL in seconds; agent_id defaults to daruma_workspace_info.mcp_agent_id. Moves todo to in_progress.",
             with_id_alias(schema_claim(), "task_id", "id"),
             Dom::Coordination, D, E, Ann::Write,
         ),
@@ -1010,7 +1011,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_session_start",
             "Start agent session",
-            "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to this MCP process id.",
+            "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to `daruma_workspace_info.mcp_agent_id`.",
             schema_session_start(),
             Dom::Sessions, F, X, Ann::Write,
         ),
@@ -1024,7 +1025,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_session_list",
             "List agent sessions",
-            "List agent sessions for an agent id (defaults to this MCP process).",
+            "List agent sessions for an agent id (defaults to daruma_workspace_info.mcp_agent_id).",
             schema_session_list(),
             Dom::Sessions, F, X, Ann::Read,
         ),
@@ -1407,7 +1408,243 @@ pub async fn call_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
     if verbose || !is_mutation_tool(name) {
         return Ok(result);
     }
-    Ok(strip_request_echo(result, &args))
+    let result = strip_request_echo(result, &args);
+    Ok(attach_lifecycle_hint(client, name, &args, result).await)
+}
+
+/// Declarative lifecycle hint on task mutations: `task` — the task's state
+/// after the call (`{id, status, claim_expires_at?}`), `next_tool` — the
+/// lifecycle step that follows (`{name, arguments}`, or `null` when the
+/// lifecycle is over), and `task_ids` for a materialize. Data, not a command
+/// (docs/mcp-tool-poisoning-policy.md §3.1): the client decides. Added after
+/// the echo projection, so nothing here can be stripped as echo. Reading the
+/// task back is best effort — a failed read drops `task`, never the mutation
+/// result.
+async fn attach_lifecycle_hint(
+    client: &ApiClient,
+    name: &str,
+    args: &Map<String, Value>,
+    mut result: Value,
+) -> Value {
+    if !result.is_object() || result.get("success").and_then(Value::as_bool) == Some(false) {
+        return result;
+    }
+    let (task_id, next_tool) = match name {
+        "daruma_plan_materialize" => {
+            let (plan_id, task_ids) = materialized_ids(&result, args);
+            result["task_ids"] = json!(task_ids);
+            // A `claim` that granted a task continues like a drain; any other
+            // outcome (or no `claim`) leaves draining as the next step.
+            let claimed = result
+                .pointer("/claim/task_id")
+                .filter(|_| result["claim"]["outcome"] == "claimed")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(task_id) = claimed {
+                (
+                    task_id.clone(),
+                    Some(json!({
+                        "name": "daruma_comment",
+                        "arguments": {"task_id": task_id, "kind": "outcome"},
+                    })),
+                )
+            } else {
+                let next_tool = plan_id.map(|plan_id| {
+                    json!({"name": "daruma_plan_drain_next", "arguments": {"plan_id": plan_id}})
+                });
+                result["next_tool"] = next_tool.unwrap_or(Value::Null);
+                return result;
+            }
+        }
+        "daruma_plan_drain_next" | "daruma_claim" => {
+            let task_id = result_task_id(&result).or_else(|| {
+                (name == "daruma_claim")
+                    .then(|| resolve_task_id(args, "task_id").ok())
+                    .flatten()
+            });
+            let Some(task_id) = task_id else {
+                return result;
+            };
+            let next = json!({
+                "name": "daruma_comment",
+                "arguments": {"task_id": task_id, "kind": "outcome"},
+            });
+            (task_id, Some(next))
+        }
+        "daruma_comment" => {
+            let outcome = args
+                .get("kind")
+                .and_then(Value::as_str)
+                .and_then(|kind| normalise_comment_kind(kind).ok())
+                == Some("outcome");
+            let Ok(task_id) = resolve_task_id(args, "task_id") else {
+                return result;
+            };
+            if !outcome {
+                return result;
+            }
+            (task_id, None)
+        }
+        "daruma_complete" => {
+            let Ok(task_id) = resolve_task_id(args, "id") else {
+                return result;
+            };
+            (task_id, None)
+        }
+        _ => return result,
+    };
+    let task = match client.get_json(&format!("/v1/tasks/{task_id}")).await {
+        Ok(task) => task_state(&task_id, &task),
+        Err(_) => None,
+    };
+    let next_tool = match name {
+        // The outcome is recorded; completion is the next step while the task
+        // is still open. An unread task state proposes nothing.
+        "daruma_comment" => task
+            .as_ref()
+            .and_then(|task| task["status"].as_str())
+            .filter(|status| !matches!(*status, "done" | "cancelled"))
+            .map(|_| json!({"name": "daruma_complete", "arguments": {"id": task_id}})),
+        _ => next_tool,
+    };
+    if let Some(task) = task {
+        if result.get("task").is_none() {
+            result["task"] = task;
+        }
+    }
+    result["next_tool"] = next_tool.unwrap_or(Value::Null);
+    result
+}
+
+/// `{id, status, claim_expires_at?}` of a `GET /v1/tasks/{id}` body;
+/// `claim_expires_at` only for the caller's own live claim.
+fn task_state(task_id: &str, task: &Value) -> Option<Value> {
+    let status = task.get("status").and_then(Value::as_str)?;
+    let mut state = json!({"id": task_id, "status": status});
+    let claim = task
+        .get("current_claim")
+        .filter(|claim| claim["is_mine"] == true);
+    if let Some(expires_at) = claim.and_then(|claim| claim.get("expires_at")) {
+        state["claim_expires_at"] = expires_at.clone();
+    }
+    Some(state)
+}
+
+/// Task id a drain/claim response was issued for: top-level `task_id`, the
+/// `MutationResponse.data` envelope, or an embedded `task` object.
+fn result_task_id(result: &Value) -> Option<String> {
+    ["/task_id", "/data/task_id", "/task/id", "/data/task/id"]
+        .iter()
+        .find_map(|pointer| result.pointer(pointer).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+/// `daruma_plan_materialize` with `claim`: the plan is created first, then the
+/// same call drains the plan's next ready task (`POST /v1/plans/{id}/drain-next`)
+/// under the caller's TTL/run. Two steps, not one transaction: a failed or
+/// empty drain leaves the plan in place and is reported as an explicit
+/// partial outcome in `claim` — `{outcome: "not_claimed", reason, plan_id}` —
+/// so the caller retries `daruma_plan_drain_next` instead of re-materializing.
+/// A claimed task comes back as `{outcome: "claimed", task_id, run_id,
+/// claim_id, agent_id, in_batch}`; `in_batch` is false when an appended plan
+/// handed out an older task first.
+async fn claim_after_materialize(
+    client: &ApiClient,
+    args: &Map<String, Value>,
+    claim: &Value,
+    mut result: Value,
+) -> Value {
+    if result.get("success").and_then(Value::as_bool) == Some(false) {
+        return result;
+    }
+    let (plan_id, task_ids) = materialized_ids(&result, args);
+    let Some(plan_id) = plan_id else {
+        result["claim"] = json!({"outcome": "not_claimed", "reason": "no_plan_id"});
+        return result;
+    };
+    let mut body = json!({});
+    if let Some(ttl) = claim.get("ttl_secs").and_then(Value::as_u64) {
+        body["claim_ttl_secs"] = json!(ttl);
+    }
+    if let Some(run_id) = claim.get("run_id").and_then(Value::as_str) {
+        body["run_id"] = json!(run_id);
+    }
+    let not_claimed =
+        |reason: String| json!({"outcome": "not_claimed", "reason": reason, "plan_id": plan_id});
+    result["claim"] = match client
+        .post_json(&format!("/v1/plans/{plan_id}/drain-next"), body)
+        .await
+    {
+        Ok(drained) if drained.is_null() => not_claimed("no_ready_task".to_string()),
+        Ok(drained) => match result_task_id(&drained) {
+            Some(task_id) => {
+                let mut granted = json!({
+                    "outcome": "claimed",
+                    "task_id": task_id,
+                    "in_batch": task_ids.contains(&task_id),
+                });
+                if let Some(run_id) = drained.get("run_id") {
+                    granted["run_id"] = run_id.clone();
+                }
+                for key in ["claim_id", "agent_id"] {
+                    if let Some(v) = drained.pointer(&format!("/claim/{key}")) {
+                        granted[key] = v.clone();
+                    }
+                }
+                granted
+            }
+            None => not_claimed(format!("unexpected drain response: {drained}")),
+        },
+        Err(err) => not_claimed(err.to_string()),
+    };
+    result
+}
+
+/// Plan id and the plan's task ids, in creation order, from the event
+/// envelopes of a materialize (`plan_task_added`, or `task_created` /
+/// `plan_created` when no membership event is present). Falls back to the
+/// `plan.id` the caller appended to.
+fn materialized_ids(result: &Value, args: &Map<String, Value>) -> (Option<String>, Vec<String>) {
+    let events = result
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut plan_id = None;
+    let mut added = Vec::new();
+    let mut created = Vec::new();
+    for event in &events {
+        let payload = &event["payload"];
+        match payload["type"].as_str() {
+            Some("plan_task_added") => {
+                plan_id = plan_id.or_else(|| payload["plan_id"].as_str().map(str::to_string));
+                if let Some(id) = payload["task_id"].as_str() {
+                    added.push(id.to_string());
+                }
+            }
+            Some("plan_created") => {
+                plan_id = plan_id.or_else(|| payload["plan"]["id"].as_str().map(str::to_string));
+            }
+            Some("task_created") => {
+                if let Some(id) = payload["task"]["id"].as_str() {
+                    created.push(id.to_string());
+                }
+                plan_id =
+                    plan_id.or_else(|| payload["task"]["plan_id"].as_str().map(str::to_string));
+            }
+            _ => {}
+        }
+    }
+    let plan_id = plan_id.or_else(|| {
+        args.get("plan")
+            .and_then(|plan| plan.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let mut task_ids = if added.is_empty() { created } else { added };
+    let mut seen = HashSet::new();
+    task_ids.retain(|id| seen.insert(id.clone()));
+    (plan_id, task_ids)
 }
 
 /// ADR-0009 plan source arguments shared by plan_materialize and
@@ -1530,7 +1767,12 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some((id, _)) = existing_plan {
                 command["plan_id"] = json!(id);
             }
-            client.post_command(command).await
+            let claim = args.get("claim").filter(|claim| !claim.is_null()).cloned();
+            let result = client.post_command(command).await?;
+            match claim {
+                Some(claim) => Ok(claim_after_materialize(client, &args, &claim, result).await),
+                None => Ok(result),
+            }
         }
         "daruma_get" => {
             let id = resolve_task_id(&args, "id")?;
@@ -1544,14 +1786,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 out["comments"] = comments;
                 return Ok(out);
             }
-            let version_stamp = task_dedup_version(&resp);
+            let updated_at = resp
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             Ok(maybe_dedup(
                 client,
                 resp,
                 &args,
                 &id,
                 "task description",
-                version_stamp.as_deref(),
+                updated_at.as_deref(),
             ))
         }
         "daruma_update" => {
@@ -2129,6 +2374,14 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         "daruma_plan_list" => {
             let status = string_or_default(&args, "status", "draft,active");
             let view = view_arg(&args, "summary", &["summary", "detail"])?;
+            let sort = string_or_default(&args, "sort", "created");
+            let recently_updated_first = match sort.trim() {
+                "created" => false,
+                "updated" => true,
+                other => {
+                    anyhow::bail!("unknown sort: {other:?} (expected one of: created, updated)")
+                }
+            };
             let cursor = args.get("cursor").and_then(|v| v.as_str());
             let limit = mcp_collection_limit(&args);
             let mut params: Vec<(&str, String)> = vec![("status", urlencode(status.trim()))];
@@ -2151,11 +2404,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join("&");
-            let resp = mcp_page_by_id(
-                client.get_json(&format!("/v1/plans?{qs}")).await?,
-                cursor,
-                limit,
-            );
+            let mut rows = client.get_json(&format!("/v1/plans?{qs}")).await?;
+            if recently_updated_first {
+                sort_rows_recently_updated(&mut rows);
+            }
+            let resp = mcp_page_by_id(rows, cursor, limit);
             Ok(if view == "detail" {
                 resp
             } else {
@@ -2360,8 +2613,11 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Run tools (W3.2) ──────────────────────────────────────────────
         "daruma_run_start" => {
             let plan_id = resolve_plan_id(&args, "plan_id")?;
-            let agent_id = required_string(&args, "agent_id")?;
-            let mut body = json!({"plan_id": plan_id, "agent_id": agent_id});
+            // agent_id is optional: the server defaults it to the token's agent.
+            let mut body = json!({"plan_id": plan_id});
+            if let Some(agent_id) = optional_agent_id(&args) {
+                body["agent_id"] = json!(agent_id);
+            }
             if let Some(parent) = args.get("parent_run_id").and_then(|v| v.as_str()) {
                 body["parent_run_id"] = json!(parent);
             }
@@ -2450,18 +2706,18 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Claim tools (W3.2) ────────────────────────────────────────────
         "daruma_claim" => {
-            let agent_id = required_string(&args, "agent_id")?;
+            // The server claims for the authenticated agent; agent_id is optional.
             let task_id = resolve_task_id(&args, "task_id")?;
             let ttl_secs = args.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(300);
-            client
-                .post_json(
-                    "/v1/claims",
-                    json!({"agent_id": agent_id, "task_id": task_id, "ttl_secs": ttl_secs}),
-                )
-                .await
+            let mut body = json!({"task_id": task_id, "ttl_secs": ttl_secs});
+            if let Some(agent_id) = optional_agent_id(&args) {
+                body["agent_id"] = json!(agent_id);
+            }
+            client.post_json("/v1/claims", body).await
         }
         "daruma_release" => {
-            let agent_id = required_string(&args, "agent_id")?;
+            // `me` = the authenticated holder when agent_id is omitted.
+            let agent_id = optional_agent_id(&args).unwrap_or_else(|| "me".to_string());
             let task_id = resolve_task_id(&args, "task_id")?;
             client
                 .delete_json(&format!("/v1/claims/{agent_id}/{task_id}"))
@@ -2867,11 +3123,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
 
         // ── Session tools (W3.2 / Linear B.1) ────────────────────────────
         "daruma_session_start" => {
-            let agent_id = args
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| client.agent_id());
+            let agent_id = session_agent_id(client, &args).await;
             let mut body = json!({"agent_id": agent_id});
             if let Some(parent) = args.get("parent_agent_id").and_then(|v| v.as_str()) {
                 body["parent_agent_id"] = json!(parent);
@@ -2885,11 +3137,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             client.get_json(&format!("/v1/sessions/{id}")).await
         }
         "daruma_session_list" => {
-            let agent_id = args
-                .get("agent_id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| client.agent_id());
+            let agent_id = session_agent_id(client, &args).await;
             client
                 .get_json(&format!("/v1/sessions?agent_id={agent_id}"))
                 .await
@@ -3047,9 +3295,10 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_doc_link_task" => {
             let id = resolve_doc_id(&args, "document_id")?;
-            // Explicit `task_id: null` (or absent) unlinks — the PATCH body
-            // distinguishes present-null from absent, so always send the key.
-            let task_id = match id_value(&args, "task_id")? {
+            // Explicit `task_id: null` (or absent with no task-side `id`)
+            // unlinks — the PATCH body distinguishes present-null from
+            // absent, so always send the key.
+            let task_id = match doc_link_task_id(&args, &id)? {
                 Some(task_id) => {
                     check_id_kind("task_id", task_id, IdKind::Task)?;
                     json!(task_id)
@@ -3183,8 +3432,12 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_artifact_deprecate" => {
             let artifact_id = resolve_artifact_id(&args, "artifact_id")?;
+            let body = match args.get("reason").and_then(|v| v.as_str()) {
+                Some(reason) => json!({ "reason": reason }),
+                None => json!({}),
+            };
             client
-                .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), json!({}))
+                .post_json(&format!("/v1/artifacts/{artifact_id}/deprecate"), body)
                 .await
         }
         name @ ("daruma_artifact_relation_add" | "daruma_artifact_relation_remove") => {
@@ -3210,6 +3463,9 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(s) = args.get("status").and_then(|v| v.as_str()) {
                 params.push(("status", urlencode(s)));
+            }
+            if let Some(true) = args.get("include_superseded").and_then(|v| v.as_bool()) {
+                params.push(("include_superseded", "true".to_string()));
             }
             let qs = params
                 .iter()
@@ -3335,7 +3591,7 @@ fn schema_get_task() -> Value {
     schema["properties"]["comments"] = json!({
         "type":"boolean",
         "default": false,
-        "description":"Default false; true adds `comments` (GET /v1/tasks/{id}/comments) to the result."
+        "description":"Attach the full comment list."
     });
     schema
 }
@@ -3358,7 +3614,7 @@ fn schema_bounded_read_ext(field: &str, id_desc: Option<&str>, with_dedup: bool)
             json!({
                 "type":"boolean",
                 "default": false,
-                "description":"Default false; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
+                "description":"A hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }),
         );
     }
@@ -3441,7 +3697,7 @@ fn schema_rule_create() -> Value {
                     "scope": {"type":"object","description":"{\"kind\":\"tenant\"} | {\"kind\":\"project\",\"id\":...} | plan | task."},
                     "trigger": {"type":"string","enum":["project.created","plan.created","plan.before_approve","task.created","task.before_start","task.before_complete","run.before_execute","run.before_complete"]},
                     "condition": {"type":["object","null"],"description":"Optional targeting: status_from/status_to."},
-                    "requirement": {"type":"object","description":"Tagged by `type` (read_artifact, impact_check, completion_note, …)."},
+                    "requirement": {"type":"object","description":"Tagged by `type` (read_artifact, impact_check, completion_note, …; wip_limit {max_in_progress}: task.before_start on tenant/project/plan only)."},
                     "mode": {"type":"string","enum":["off","recommendation","required"]},
                     "message": {"type":"string"},
                     "override_allowed": {"type":"boolean"},
@@ -3481,17 +3737,17 @@ fn schema_evidence_submit() -> Value {
                 "properties": {
                     "kind": {"type":"string","enum":["document_read_ack","impact_assessment","decision_record","completion_note","artifact_created","owner_assigned","acceptance_criteria_defined","risk_check_completed"]},
                     "scope": {"type":"object","description":"{kind: tenant|project|plan|task} plus `id` for non-tenant scopes."},
-                    "target": {"type":"string","description":"Requirement target; omit to match any."},
-                    "doc_version": {"type":"string","description":"Document version read by document_read_ack."},
+                    "target": {"type":"string","description":"Requirement target; omit = any."},
+                    "doc_version": {"type":"string","description":"Version for document_read_ack."},
                     "reason": {"type":"string"},
-                    "payload": {"description":"Any JSON payload."},
+                    "payload": {"description":"Check: runs, passed, env_kind ci|container|host|manual, env_ref."},
                     "project_id": {"type":"string"},
                     "plan_id": {"type":"string"},
                     "task_id": {"type":"string"},
                     "run_id": {"type":"string"},
                     "artifact_id": {"type":"string"},
                     "rule_id": {"type":"string"},
-                    "supersedes": {"type":"string","description":"Earlier record replaced by this one."}
+                    "supersedes": {"type":"string","description":"Record this one replaces."}
                 },
                 "required": ["kind","scope"]
             }
@@ -3614,17 +3870,21 @@ fn schema_plan_materialize() -> Value {
                     "required":["title"]
                 }
             },
+            "claim": {
+                "type":"object",
+                "description":"{ttl_secs, run_id}: also claim the next ready task. Not atomic; see result `claim.outcome`."
+            },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             }
         },
         "required":["plan","tasks"]
@@ -3845,15 +4105,15 @@ fn schema_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "status": {
                 "type":"string",
@@ -3867,7 +4127,7 @@ fn schema_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"next_cursor; don't auto-fetch."
+                "description":"next_cursor; no auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3898,7 +4158,7 @@ fn schema_search() -> Value {
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "limit": {
                 "type":"integer",
@@ -3908,7 +4168,7 @@ fn schema_search() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"next_cursor; don't auto-fetch."
+                "description":"next_cursor; no auto-fetch."
             },
             "view": {
                 "type":"string",
@@ -3935,11 +4195,11 @@ fn schema_lesson_recall() -> Value {
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "limit": {
                 "type":"integer",
@@ -4120,7 +4380,7 @@ fn schema_plan_get() -> Value {
             "dedup": {
                 "type":"boolean",
                 "default": false,
-                "description":"Session dedup for detail, default false; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
+                "description":"Session dedup for detail; a hit returns `unchanged` with `ref`; re-read without `dedup` for the full object."
             }
         },
         "required":["id"]
@@ -4137,15 +4397,15 @@ fn schema_plan_list() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "status": {
                 "type":"string",
@@ -4159,13 +4419,18 @@ fn schema_plan_list() -> Value {
             },
             "cursor": {
                 "type":"string",
-                "description":"next_cursor; don't auto-fetch."
+                "description":"next_cursor; no auto-fetch."
             },
             "view": {
                 "type":"string",
                 "enum":["summary","detail"],
                 "default":"summary",
                 "description":"summary: id/title/status/project; detail: full plan rows."
+            },
+            "sort": {
+                "type":"string",
+                "enum":["created","updated"],
+                "description":"updated: newest first."
             },
             "source": {"type":"string","description":"Source URI anywhere in the chain."},
             "channel": {"type":"string","description":"Scheme of the nearest source."}
@@ -4276,15 +4541,15 @@ fn schema_workspacegraph_search() -> Value {
             },
             "scope": {
                 "type":"string",
-                "description":"Repo scope name."
+                "description":"Repo scope"
             },
             "project_scope": {
                 "type":"string",
-                "description":"Repo scope name (alias-safe)."
+                "description":"Repo scope (alias-safe)"
             },
             "scope_path": {
                 "type":"string",
-                "description":"Path; the nearest configured scope applies."
+                "description":"Path; nearest configured scope applies."
             },
             "limit": {"type":"integer","minimum":1,"maximum":100,"default":20}
         },
@@ -4305,6 +4570,15 @@ fn schema_workspacegraph_impact() -> Value {
 
 // ── Run schemas (W3.2) ───────────────────────────────────────────────────────
 
+/// Non-empty `agent_id` argument, if the caller passed one.
+fn optional_agent_id(args: &Map<String, Value>) -> Option<String> {
+    args.get("agent_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn schema_run_start() -> Value {
     json!({
         "type":"object",
@@ -4313,7 +4587,7 @@ fn schema_run_start() -> Value {
             "agent_id":      {"type":"string"},
             "parent_run_id": {"type":"string"}
         },
-        "required":["plan_id","agent_id"]
+        "required":["plan_id"]
     })
 }
 
@@ -4411,11 +4685,11 @@ fn schema_claim() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from workspace_info."},
+            "agent_id": {"type":"string","format":"uuid","description":"Default: token's agent."},
             "task_id":  {"type":"string"},
             "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
         },
-        "required":["agent_id","task_id"]
+        "required":["task_id"]
     })
 }
 
@@ -4423,10 +4697,10 @@ fn schema_release() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "agent_id": {"type":"string","format":"uuid","description":"Agent UUID from workspace_info."},
+            "agent_id": {"type":"string","format":"uuid","description":"Default: token's agent."},
             "task_id":  {"type":"string"}
         },
-        "required":["agent_id","task_id"]
+        "required":["task_id"]
     })
 }
 
@@ -4550,16 +4824,6 @@ fn schema_artifact_register() -> Value {
     })
 }
 
-fn schema_artifact_id() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "artifact_id": {"type":"string","description":"Artifact id."}
-        },
-        "required": ["artifact_id"]
-    })
-}
-
 fn schema_artifact_update() -> Value {
     json!({
         "type": "object",
@@ -4609,8 +4873,20 @@ fn schema_artifact_list() -> Value {
                 "type":"string",
                 "enum":["pending","active","committed","deprecated"],
                 "description":"Filter by lifecycle status."
-            }
+            },
+            "include_superseded": {"type":"boolean","default":false,"description":"Include deprecated records."}
         }
+    })
+}
+
+fn schema_artifact_deprecate() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type":"string","description":"Artifact id."},
+            "reason":      {"type":"string","description":"Why it is retired; optional when a supersedes relation exists."}
+        },
+        "required": ["artifact_id"]
     })
 }
 
@@ -4797,7 +5073,7 @@ fn schema_session_start() -> Value {
         "properties": {
             "agent_id":        {
                 "type":"string",
-                "description":"Defaults to this MCP process agent id (see daruma_workspace_info.mcp_agent_id)."
+                "description":"Defaults to daruma_workspace_info.mcp_agent_id (the token-bound identity), so session_list finds the session without passing it."
             },
             "parent_agent_id": {"type":"string"},
             "metadata":        {
@@ -4834,7 +5110,7 @@ fn schema_session_list() -> Value {
         "properties": {
             "agent_id": {
                 "type":"string",
-                "description":"Defaults to this MCP process agent id."
+                "description":"Defaults to daruma_workspace_info.mcp_agent_id, the same default as daruma_session_start."
             }
         },
         "required":[]
@@ -4984,7 +5260,7 @@ fn schema_doc_link_task() -> Value {
         "type":"object",
         "properties": {
             "document_id": {"type":"string"},
-            "task_id":     {"type":["string","null"],"description":"Task to bind the document to; omit or pass null to unlink."}
+            "task_id":     {"type":["string","null"],"description":"Task to bind the document to; pass null to unlink. When omitted, a generic `id` beside `document_id` names the task; omit both to unlink."}
         },
         "required":["document_id"]
     })
@@ -5031,9 +5307,9 @@ fn schema_doc_list() -> Value {
                 "type":"string",
                 "description":"Project id. When omitted, the resolved repo project is used only if unambiguous."
             },
-            "scope": {"type":"string", "description":"Repo scope name."},
-            "project_scope": {"type":"string", "description":"Repo scope name (alias-safe)."},
-            "scope_path": {"type":"string", "description":"Path; the nearest configured scope applies."},
+            "scope": {"type":"string", "description":"Repo scope"},
+            "project_scope": {"type":"string", "description":"Repo scope (alias-safe)"},
+            "scope_path": {"type":"string", "description":"Path; nearest configured scope applies."},
             "kind":             {"type":"string","enum":["interview","human_log"]},
             "include_archived": {"type":"boolean","default":false}
         }
@@ -5161,11 +5437,16 @@ async fn project_selection_response(
         "reason": "No default Daruma project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
         "requested_status": requested_status,
         "projects": projects,
-        "next_step": "Ask the user which project to use, then call daruma_project_use with that project_id. After that, retry daruma_list with the same status; the saved default project will be reused by later calls.",
+        // `scope_path` is always absolute: a hosted session has no workspace
+        // key to resolve a relative one against, and a parent folder with
+        // several bound repos cannot pick the scope by itself — exactly the
+        // situations that land here.
+        "next_step": "Suggested flow: the user picks a project; daruma_project_use binds it with that project_id and the absolute path of the repository root as scope_path. daruma_list is then retried with the same status and the same absolute scope_path (or that project_id); later calls pass one of them too, since a hosted or parent-folder session has no default project to fall back on.",
         "next_tool": {
             "name": "daruma_project_use",
             "arguments": {
-                "project_id": "<selected_project_id>"
+                "project_id": "<selected_project_id>",
+                "scope_path": "<absolute_repo_root_path>"
             }
         }
     }))
@@ -5273,6 +5554,41 @@ fn mcp_page_by_id(value: Value, cursor: Option<&str>, limit: usize) -> Value {
         },
         total,
     )
+}
+
+/// `daruma_plan_list sort=updated`: the server lists plans oldest-created
+/// first, so the latest-updated plan can sit past the first page. Ordering
+/// before paging lets `limit=1` answer "the most recently updated plan".
+fn sort_rows_recently_updated(value: &mut Value) {
+    let Value::Array(rows) = value else {
+        return;
+    };
+    let key = |row: &Value| {
+        (
+            row.get("updated_at")
+                .and_then(Value::as_str)
+                .map(rfc3339_utc_sort_key)
+                .unwrap_or_default(),
+            row.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    };
+    rows.sort_by_cached_key(|row| std::cmp::Reverse(key(row)));
+}
+
+/// chrono writes 0, 3, 6 or 9 fractional digits (`…:07Z`, `…:07.5Z`), which
+/// do not compare as strings: pad the fraction to nanoseconds for UTC values.
+fn rfc3339_utc_sort_key(raw: &str) -> String {
+    let Some(body) = raw.strip_suffix('Z') else {
+        return raw.to_owned();
+    };
+    let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+    if whole.len() != 19 || fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return raw.to_owned();
+    }
+    format!("{whole}.{fraction:0<9}")
 }
 
 fn mcp_page_by_offset(value: Value, cursor: Option<&str>, limit: usize) -> Value {
@@ -5474,25 +5790,17 @@ fn dedup_requested(args: &Map<String, Value>) -> bool {
     args.get("dedup").and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// A task's read version includes its mutable claim generation. Claim CAS does
-/// not edit `tasks.updated_at`, so using that timestamp alone can incorrectly
-/// collapse acquire, refresh, and release reads into an `unchanged` marker.
-fn task_dedup_version(task: &Value) -> Option<String> {
-    let updated_at = task.get("updated_at")?.as_str()?;
-    let claim = task.get("current_claim");
-    let claim_id = claim
-        .and_then(|claim| claim.get("claim_id"))
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let relation = match claim
-        .and_then(|claim| claim.get("is_mine"))
-        .and_then(Value::as_bool)
-    {
-        Some(true) => "mine",
-        Some(false) => "other",
-        None => "none",
-    };
-    Some(format!("{updated_at}|claim:{claim_id}|{relation}"))
+/// Dedup version of one read: the object's `updated_at` plus a fingerprint of
+/// the whole returned payload. `updated_at` alone is not enough — claim CAS
+/// does not bump a task's `updated_at`, and a plan's detail carries progress,
+/// `latest_activity_at` and `source_chain` that change when a task is added to
+/// or moves inside the plan while `plan.updated_at` stays put. Hashing what the
+/// caller actually receives makes `unchanged` mean "byte-identical".
+fn dedup_version(value: &Value, updated_at: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.to_string().hash(&mut hasher);
+    format!("{updated_at}|{:016x}", hasher.finish())
 }
 
 /// The object body carrying the protected fields: tasks/documents hold `id`
@@ -5527,8 +5835,8 @@ fn unchanged_marker(value: &Value, id: &str, since: &str) -> Value {
 /// Session dedup entry point (task D). Only engages when the caller opted in
 /// with `dedup: true` and the object carries an `updated_at`:
 ///
-/// * cache HIT (same stamp already emitted *in full* this session) → return
-///   the compact `unchanged` marker;
+/// * cache HIT (same [`dedup_version`] already emitted *in full* this
+///   session) → return the compact `unchanged` marker;
 /// * cache MISS (new, changed, or previously only excerpted) → emit the normal
 ///   full/bounded response, and record the stamp only when that response is
 ///   the complete object. A `max_tokens` excerpt is never recorded: the caller
@@ -5543,15 +5851,17 @@ fn maybe_dedup(
     what: &str,
     updated_at: Option<&str>,
 ) -> Value {
-    let stamp = updated_at.filter(|_| dedup_requested(args));
-    if let Some(stamp) = stamp {
-        if let Some(since) = client.dedup_lookup(id, stamp) {
+    let stamp = updated_at
+        .filter(|_| dedup_requested(args))
+        .map(|since| (dedup_version(&value, since), since));
+    if let Some((version, _)) = &stamp {
+        if let Some(since) = client.dedup_lookup(id, version) {
             return unchanged_marker(&value, id, &since);
         }
     }
     let (out, truncated) = maybe_bounded_flagged(value, args, id, what);
-    if let (Some(stamp), false) = (stamp, truncated) {
-        client.dedup_record(id, stamp);
+    if let (Some((version, since)), false) = (stamp, truncated) {
+        client.dedup_record(id, &version, since);
     }
     out
 }
@@ -6157,6 +6467,26 @@ fn resolve_run_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String
     resolve_id(args, IdKind::Run, key)
 }
 
+/// Agent id for `daruma_session_start` / `daruma_session_list`: the caller's
+/// `agent_id`, else the same identity `daruma_workspace_info` reports as
+/// `mcp_agent_id`. A stdio client's process id differs from that token-bound
+/// id, so defaulting to it made a session unfindable by the advertised id.
+/// When the identity lookup is unavailable `workspace_info` fails too and no
+/// `mcp_agent_id` exists to disagree with, so the process id stays the fallback.
+async fn session_agent_id(client: &ApiClient, args: &Map<String, Value>) -> String {
+    if let Some(agent_id) = args
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return agent_id.to_string();
+    }
+    client
+        .authenticated_agent_id()
+        .await
+        .unwrap_or_else(|_| client.agent_id().to_string())
+}
+
 fn resolve_session_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Session, key)
 }
@@ -6230,6 +6560,30 @@ fn resolve_task_ids(args: &Map<String, Value>, key: &str) -> anyhow::Result<Vec<
         "`{key}` (array of task ids) is required (aliases: {}, `task_id`)",
         aliases.join(", ")
     ))
+}
+
+/// Task side of `daruma_doc_link_task`. `task_id` wins when its key is
+/// present (`null` = unlink). Without the key, a generic `id` beside an
+/// explicit `doc_id` / `document_id` names the task, as on the other two-id
+/// tools; dropping it would unlink silently. An `id` that is the document
+/// itself (the only id sent, or equal to it) leaves the task side empty.
+fn doc_link_task_id<'a>(
+    args: &'a Map<String, Value>,
+    doc_id: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    if args.contains_key("task_id") {
+        return id_value(args, "task_id");
+    }
+    let explicit_doc = ["doc_id", "document_id"]
+        .into_iter()
+        .any(|name| matches!(id_value(args, name), Ok(Some(_))));
+    match id_value(args, "id")? {
+        Some(id) if explicit_doc && id != doc_id => {
+            check_id_kind("id", id, IdKind::Task)?;
+            Ok(Some(id))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// `(plan_id, task_id)` of a plan-membership tool; see [`resolve_id_pair`].
@@ -6973,6 +7327,58 @@ mod tests {
         assert_eq!(marker["id"], "pln_1", "id pulled from nested plan body");
         assert_eq!(marker["status"], "active");
         assert!(marker.get("progress").is_none(), "full payload withheld");
+    }
+
+    #[test]
+    fn maybe_dedup_plan_membership_change_without_updated_at_bump_is_full() {
+        // Regression: adding a task to a plan changes its detail (progress,
+        // latest_activity_at) but not `plan.updated_at`; the stamp-only check
+        // answered `unchanged` for a payload the session had never seen.
+        let client = dedup_client();
+        let args = json!({"id":"pln_1","view":"detail","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let stamp = Some("2026-03-03T00:00:00Z");
+        let before = json!({
+            "plan": {"id":"pln_1","status":"active","updated_at":"2026-03-03T00:00:00Z"},
+            "progress": {"tasks_total": 1, "tasks_done": 0},
+            "latest_activity_at": "2026-03-03T00:00:00Z"
+        });
+        let after = json!({
+            "plan": {"id":"pln_1","status":"active","updated_at":"2026-03-03T00:00:00Z"},
+            "progress": {"tasks_total": 2, "tasks_done": 0},
+            "latest_activity_at": "2026-03-04T00:00:00Z"
+        });
+        let _ = maybe_dedup(&client, before, &args, "pln_1", "plan detail", stamp);
+        let out = maybe_dedup(&client, after.clone(), &args, "pln_1", "plan detail", stamp);
+        assert_eq!(out, after, "changed summary is delivered in full");
+        let again = maybe_dedup(&client, after, &args, "pln_1", "plan detail", stamp);
+        assert_eq!(again["unchanged"], json!(true));
+        assert_eq!(again["since"], "2026-03-03T00:00:00Z");
+    }
+
+    #[test]
+    fn maybe_dedup_task_claim_change_without_updated_at_bump_is_full() {
+        // Claim CAS does not bump `updated_at`; the payload fingerprint still
+        // sees the new `current_claim`, and `since` stays the plain timestamp.
+        let client = dedup_client();
+        let args = json!({"id":"tsk_1","dedup":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let stamp = Some("2026-01-01T00:00:00Z");
+        let free = json!({"id":"tsk_1","status":"todo","updated_at":"2026-01-01T00:00:00Z"});
+        let claimed = json!({
+            "id":"tsk_1","status":"todo","updated_at":"2026-01-01T00:00:00Z",
+            "current_claim": {"claim_id":"clm_1","is_mine":true}
+        });
+        let _ = maybe_dedup(&client, free, &args, "tsk_1", "task", stamp);
+        let out = maybe_dedup(&client, claimed.clone(), &args, "tsk_1", "task", stamp);
+        assert_eq!(out, claimed);
+        let again = maybe_dedup(&client, claimed, &args, "tsk_1", "task", stamp);
+        assert_eq!(again["unchanged"], json!(true));
+        assert_eq!(again["since"], "2026-01-01T00:00:00Z");
     }
 
     #[test]

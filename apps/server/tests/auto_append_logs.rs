@@ -128,6 +128,7 @@ async fn user_task_lands_in_human_log_and_agent_task_in_interview() {
             Actor::Agent {
                 id: AgentId::new(),
                 name: "executor-1".into(),
+                client: None,
             },
         )
         .await

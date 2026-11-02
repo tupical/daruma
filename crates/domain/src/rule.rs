@@ -200,6 +200,13 @@ pub enum Requirement {
         #[serde(default)]
         required_fields: Vec<String>,
     },
+    /// WIP ceiling (ADR-0015): fewer than `max_in_progress` *other* tasks of the
+    /// rule's own scope may be `in_progress` when a task starts. Satisfied from
+    /// task state, not from an evidence row — a pure read-only predicate over
+    /// the core read model, so there is nothing to submit. Only valid on
+    /// `task.before_start` and on a scope that holds several tasks (tenant,
+    /// project, plan); see [`Requirement::placement_error`].
+    WipLimit { max_in_progress: u8 },
 }
 
 fn default_min_version() -> String {
@@ -207,6 +214,25 @@ fn default_min_version() -> String {
 }
 
 impl Requirement {
+    /// Every `type` tag, in declaration order — the clause codes of this
+    /// policy pack (ADR-0018). A code here without a counterexample in the
+    /// rule-engine tests is a red test (`core/tests/it/rule_engine.rs`,
+    /// `every_requirement_type_has_a_counterexample`); a variant missing here
+    /// is a red test in this crate.
+    pub const ALL_TYPES: &'static [&'static str] = &[
+        "read_artifact",
+        "create_artifact",
+        "impact_check",
+        "decision_record",
+        "completion_note",
+        "owner_required",
+        "acceptance_criteria_required",
+        "independent_test_verification",
+        "document_linked",
+        "risk_check",
+        "wip_limit",
+    ];
+
     /// Stable discriminant (matches the spec `Requirement.type` tag).
     pub fn type_str(&self) -> &'static str {
         match self {
@@ -220,7 +246,33 @@ impl Requirement {
             Requirement::RiskCheck { .. } => "risk_check",
             Requirement::DocumentLinked => "document_linked",
             Requirement::IndependentTestVerification { .. } => "independent_test_verification",
+            Requirement::WipLimit { .. } => "wip_limit",
         }
+    }
+
+    /// Why this requirement cannot be placed on `trigger` at `scope`, if it
+    /// cannot. Checked at the command boundary (`CreateRule`/`UpdateRule`) so a
+    /// rule that could never be evaluated meaningfully is rejected instead of
+    /// stored. Only `wip_limit` constrains its placement: it counts tasks
+    /// already started, which is a question only a start can ask, and a task
+    /// scope holds a single task, so a ceiling there means nothing.
+    pub fn placement_error(&self, scope: &RuleScope, trigger: RuleTrigger) -> Option<String> {
+        let Requirement::WipLimit { max_in_progress } = self else {
+            return None;
+        };
+        if trigger != RuleTrigger::TaskBeforeStart {
+            return Some("wip_limit is only valid on trigger task.before_start".into());
+        }
+        if matches!(scope, RuleScope::Task { .. }) {
+            return Some(
+                "wip_limit needs a tenant, project or plan scope; a task scope holds one task"
+                    .into(),
+            );
+        }
+        if *max_in_progress == 0 {
+            return Some("wip_limit max_in_progress must be at least 1".into());
+        }
+        None
     }
 }
 
@@ -379,11 +431,72 @@ mod tests {
         assert_eq!(r.type_str(), "completion_note");
     }
 
+    /// ADR-0018: `ALL_TYPES` is the variant list serde derives, not a copy
+    /// that may drift — serde names every variant when it rejects a tag.
+    #[test]
+    fn all_types_lists_every_variant_in_declaration_order() {
+        let err = serde_json::from_str::<Requirement>(r#"{"type":"__probe__"}"#)
+            .expect_err("unknown tag")
+            .to_string();
+        let (_, expected) = err
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("serde lists the variants, got: {err}"));
+        let variants: Vec<&str> = expected
+            .split(", ")
+            .map(|v| v.split('`').nth(1).expect("backticked variant"))
+            .collect();
+        assert_eq!(variants, Requirement::ALL_TYPES);
+    }
+
     #[test]
     fn document_linked_is_a_unit_type_tag() {
         let r: Requirement = serde_json::from_str(r#"{"type":"document_linked"}"#).unwrap();
         assert_eq!(r, Requirement::DocumentLinked);
         assert_eq!(r.type_str(), "document_linked");
+    }
+
+    #[test]
+    fn wip_limit_wire_form() {
+        let r: Requirement =
+            serde_json::from_str(r#"{"type":"wip_limit","max_in_progress":2}"#).unwrap();
+        assert_eq!(r, Requirement::WipLimit { max_in_progress: 2 });
+        assert_eq!(r.type_str(), "wip_limit");
+    }
+
+    #[test]
+    fn wip_limit_placement_is_start_only_and_multi_task_scope() {
+        let wip = Requirement::WipLimit { max_in_progress: 1 };
+        let project = RuleScope::Project {
+            id: ProjectId::new(),
+        };
+        assert_eq!(
+            wip.placement_error(&project, RuleTrigger::TaskBeforeStart),
+            None
+        );
+        assert_eq!(
+            wip.placement_error(&RuleScope::Tenant, RuleTrigger::TaskBeforeStart),
+            None
+        );
+        assert!(wip
+            .placement_error(&project, RuleTrigger::TaskBeforeComplete)
+            .is_some());
+        assert!(wip
+            .placement_error(
+                &RuleScope::Task { id: TaskId::new() },
+                RuleTrigger::TaskBeforeStart
+            )
+            .is_some());
+        assert!(Requirement::WipLimit { max_in_progress: 0 }
+            .placement_error(&project, RuleTrigger::TaskBeforeStart)
+            .is_some());
+        // Every other requirement keeps its free placement.
+        assert_eq!(
+            Requirement::DocumentLinked.placement_error(
+                &RuleScope::Task { id: TaskId::new() },
+                RuleTrigger::TaskBeforeComplete
+            ),
+            None
+        );
     }
 
     #[test]

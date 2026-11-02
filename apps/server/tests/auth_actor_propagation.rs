@@ -4,7 +4,9 @@
 //! * AC-1 — bot token → `Actor::Agent` is attributed to resulting events.
 //! * AC-2 — PAT token  → `Actor::User`  is attributed to resulting events.
 //! * AC-3 — Without `actor_strict` (default): explicit actor in command envelope
-//!   passes through unchanged. With `actor_strict`: both the generic
+//!   passes through unchanged (only a missing `client` is filled from
+//!   `X-Daruma-Client`); an omitted or `null` envelope actor falls back to the
+//!   token-derived actor. With `actor_strict`: both the generic
 //!   `/v1/commands` route and individual route handlers (actor_from) always
 //!   derive the actor from the token.
 
@@ -126,6 +128,96 @@ async fn ac3_no_strict_bot_envelope_actor_user_passes_through() {
         daruma_domain::Actor::user(),
         "without actor_strict, envelope Actor::User from bot token must pass through"
     );
+}
+
+/// Without `actor_strict` (default): an envelope that omits `actor` (or sends
+/// `null`) is attributed to the token, not to an anonymous `Actor::User` —
+/// docs/architecture-policy.ru.md §2.3.
+#[tokio::test]
+#[cfg(not(feature = "actor_strict"))]
+async fn ac3_no_strict_missing_envelope_actor_falls_back_to_token() {
+    for actor_field in [None, Some(serde_json::Value::Null)] {
+        let h = test_app().await;
+        let caps: Capabilities = [Capability::TaskWrite, Capability::TaskRead].into();
+        let (token, agent_id) = mint_with_caps(&h.auth_store(), TokenKind::Bot, caps).await;
+
+        let mut body = serde_json::json!({
+            "command": { "type": "create_task", "task": { "title": "AC-3 no-actor task" } }
+        });
+        if let Some(value) = actor_field.clone() {
+            body["actor"] = value;
+        }
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/commands")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let res = h.router.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "actor field {actor_field:?}");
+
+        let events = h.state.store.load_since(0, 100).await.unwrap();
+        let last = events.last().expect("event should be stored");
+        match &last.actor {
+            daruma_domain::Actor::Agent { id, .. } => assert_eq!(*id, agent_id),
+            other => panic!(
+                "actor field {actor_field:?}: missing envelope actor must fall back to the \
+                 bot token's Actor::Agent; got {other:?}"
+            ),
+        }
+    }
+}
+
+/// Without `actor_strict` (default): the envelope actor is kept, but a
+/// missing `client` is filled from the request's `X-Daruma-Client`; a
+/// `client` the envelope names itself is kept — docs/architecture-policy.ru.md
+/// §2.1, §2.3 (`actor_from` → `actor.or_client(auth.client)`).
+#[tokio::test]
+#[cfg(not(feature = "actor_strict"))]
+async fn ac3_no_strict_envelope_actor_gets_client_from_request() {
+    for (envelope_actor, expected_client) in [
+        (serde_json::json!({ "kind": "user" }), "codex-mcp-client"),
+        (
+            serde_json::json!({ "kind": "user", "client": "cursor" }),
+            "cursor",
+        ),
+    ] {
+        let h = test_app().await;
+        let caps: Capabilities = [Capability::TaskWrite, Capability::TaskRead].into();
+        let (token, _) = mint_with_caps(&h.auth_store(), TokenKind::Bot, caps).await;
+
+        let body = serde_json::json!({
+            "command": { "type": "create_task", "task": { "title": "AC-3 client task" } },
+            "actor": envelope_actor.clone()
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/commands")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header(daruma_auth::CLIENT_HEADER, "codex-mcp-client")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let res = h.router.oneshot(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "envelope actor {envelope_actor}"
+        );
+
+        let events = h.state.store.load_since(0, 100).await.unwrap();
+        let last = events.last().expect("event should be stored");
+        match &last.actor {
+            daruma_domain::Actor::User { id: None, .. } => {}
+            other => panic!("envelope Actor::User must pass through; got {other:?}"),
+        }
+        assert_eq!(
+            last.actor.client(),
+            Some(expected_client),
+            "envelope actor {envelope_actor}"
+        );
+    }
 }
 
 /// With `actor_strict` enabled: individual route handlers (those using

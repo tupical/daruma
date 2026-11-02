@@ -11,6 +11,7 @@ All local server state lives under **`~/.agents/daruma/data/`** (override with
     daruma.sqlite
     workspacegraph.sqlite
     bootstrap.token
+    tls/             # self-signed TLS cert.pem + private key.pem
 ```
 
 `daruma-web` does not choose the database — only the `daruma-server`
@@ -90,6 +91,9 @@ mode** (`journal_mode=WAL`, `synchronous=NORMAL`, see
   daruma.sqlite-shm    # WAL shared-memory index (transient)
   workspacegraph.sqlite   # sidecar index — REBUILDABLE, optional
   bootstrap.token         # local admin token — back up if you rely on it
+  tls/cert.pem            # self-signed TLS certificate (port 8443)
+  tls/key.pem             # its PRIVATE key — keep secret; back up to keep the
+                          # fingerprint paired devices already trust
 ```
 
 ### Safe backup with the server running
@@ -117,17 +121,49 @@ sqlite3 ~/.agents/daruma/data/daruma.sqlite \
 
 ### Cold backup (server stopped)
 
-Stop `daruma-server`, then copy `daruma.sqlite` **together with**
-`daruma.sqlite-wal` if it exists (or checkpoint first as above).
-Never ship a main file with a stale `-wal` from a different point in time.
+Stop `daruma-server` (and every other process that has the database open),
+then copy `daruma.sqlite` **together with** `daruma.sqlite-wal` if it exists
+— the pair is one backup. After a crash or kill the WAL may still hold
+committed transactions that are not in the main file yet; a main file
+without its WAL is an incomplete backup. Alternatively, checkpoint first as
+above: after `wal_checkpoint(TRUNCATE)` the main file alone is complete.
+Never ship a main file with a `-wal` from a different point in time.
+`daruma.sqlite-shm` is transient and does not need to be copied.
 
 ### Restore
 
-1. Stop the server.
-2. Replace `daruma.sqlite` with the backup file.
-3. Delete any leftover `daruma.sqlite-wal` / `daruma.sqlite-shm`
-   (they belong to the old database generation).
+How you restore depends on what the backup is.
+
+**Self-contained copy** (`.backup`, `VACUUM INTO`, or a main file copied
+after `wal_checkpoint(TRUNCATE)`) — a single file:
+
+1. Stop `daruma-server` and every other process using the database.
+2. Delete the old `daruma.sqlite`, `daruma.sqlite-wal` and
+   `daruma.sqlite-shm` in the data directory — the leftover `-wal`/`-shm`
+   belong to the old database generation and must not be applied to the
+   restored file.
+3. Copy the backup file in as `daruma.sqlite`.
 4. Start the server.
+
+**Cold pair** (main file + `-wal` copied with the server stopped):
+
+1. Stop `daruma-server` and every other process using the database.
+2. Delete the old `daruma.sqlite`, `daruma.sqlite-wal` and
+   `daruma.sqlite-shm` in the data directory.
+3. Copy **both** backup files in, keeping the names paired:
+   `daruma.sqlite` and `daruma.sqlite-wal`. Do this before anything opens
+   the database — opening the main file without its WAL loses the
+   transactions that live only in the WAL.
+4. Do **not** delete the restored `daruma.sqlite-wal`: SQLite replays it on
+   the first open. Do not copy a `-shm`; SQLite rebuilds it.
+5. Start the server.
+
+```bash
+# cold pair restore, server stopped
+cd ~/.agents/daruma/data
+rm -f daruma.sqlite daruma.sqlite-wal daruma.sqlite-shm
+cp /backups/cold/daruma.sqlite /backups/cold/daruma.sqlite-wal .
+```
 
 You do not need to touch `workspacegraph.sqlite`. The sidecar index
 remembers the sequence number and event id it last applied; on start the
@@ -136,19 +172,39 @@ the log, or the event at that sequence is a different one (the restored log
 was written further after the backup), the server logs
 `workspace graph is ahead of or diverged from the event log; rebuilding`,
 clears the index and replays it from the start. Deleting the file before
-step 4 forces the same full rebuild and stays a safe manual fallback.
+starting the server forces the same full rebuild and stays a safe manual fallback.
 
 ### Self-host in a repo
 
 If you point `DARUMA_DATA_DIR` inside a working copy, gitignore the
-data files:
+**whole directory**, not individual file names. Besides the SQLite files and
+`bootstrap.token`, the server writes `tls/cert.pem` and the private key
+`tls/key.pem` there on first start (`CertBundle::load_or_generate` in
+`crates/discovery/src/tls.rs`), and a list of file patterns silently misses
+anything it adds later. For a data directory named `runtime-data` at the repo
+root:
 
 ```gitignore
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-bootstrap.token
+/runtime-data/
 ```
+
+Use the directory you actually chose; an anchored directory rule covers
+`daruma.sqlite*`, `workspacegraph.sqlite*`, `bootstrap.token` and `tls/`
+alike. Check it before the first commit:
+
+```bash
+git check-ignore -v runtime-data/tls/key.pem runtime-data/bootstrap.token
+git status --short --untracked-files=all runtime-data/   # must print nothing
+```
+
+`.gitignore` does not untrack files that are already committed and does not
+rewrite history. If `tls/key.pem` or `bootstrap.token` was ever committed or
+pushed, `git rm --cached` them, then treat them as leaked: stop the server,
+delete `tls/` so a new key and certificate are generated on the next start
+(paired devices must pair again — the fingerprint changes). Deleting
+`bootstrap.token` does **not** reissue it — the server only bootstraps when no
+active token exists — so issue a new admin token (`POST /v1/tokens`) and revoke
+the leaked one (`DELETE /v1/tokens/{id}`).
 
 ### Future work
 
