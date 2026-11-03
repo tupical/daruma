@@ -119,12 +119,13 @@ impl OpenAiClient {
             .request_timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(REQUEST_TIMEOUT);
+        let builder = Self::http_client_builder().timeout(timeout);
+        // tcp_user_timeout is Android/Fuchsia/Linux-only in reqwest 0.13 (not on
+        // macOS/Windows) — gate it instead of assuming every build target has it.
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        let builder = builder.tcp_user_timeout(timeout);
         Self {
-            http: Self::http_client_builder()
-                .timeout(timeout)
-                .tcp_user_timeout(timeout)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            http: builder.build().unwrap_or_else(|_| reqwest::Client::new()),
             config,
         }
     }
@@ -139,7 +140,7 @@ impl OpenAiClient {
         // Не удалять: публичный builder вызывают в обход new; reqwest с
         // `rustls-no-provider` читает только CryptoProvider::get_default().
         let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
-        reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .tcp_keepalive(TCP_KEEPALIVE)
@@ -156,8 +157,13 @@ impl OpenAiClient {
             // aligned with `REQUEST_TIMEOUT`. Keepalive still runs, so a peer
             // that is genuinely gone is still detected — just not mistaken for
             // one that is merely thinking.
-            .tcp_user_timeout(REQUEST_TIMEOUT)
-            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+            //
+            // Android/Fuchsia/Linux-only in reqwest 0.13 (not macOS/Windows);
+            // gated rather than assumed universal.
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT);
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        let builder = builder.tcp_user_timeout(REQUEST_TIMEOUT);
+        builder
     }
 
     /// Build a client with caller-owned transport settings (timeouts, DNS pinning).
