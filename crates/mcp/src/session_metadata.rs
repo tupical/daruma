@@ -189,8 +189,12 @@ mod tests {
         assert_eq!(unborn["branch_ref"], "refs/heads/main");
         git(&["commit", "--allow-empty", "-m", "initial"]);
         let main = git_work_context(&root, Some(" 42 ")).unwrap();
-        assert_eq!(main["repo_root"], root.to_str().unwrap());
-        assert_eq!(main["worktree_path"], root.to_str().unwrap());
+        // canonicalize(): on macOS /var and /tmp are symlinks into /private, and
+        // git (shelled out to by git_work_context) reports the resolved path —
+        // a no-op on Linux, where TMPDIR has no such symlink to resolve.
+        let root_canon = root.canonicalize().unwrap();
+        assert_eq!(main["repo_root"], root_canon.to_str().unwrap());
+        assert_eq!(main["worktree_path"], root_canon.to_str().unwrap());
         assert_eq!(main["merge_request_id"], "42");
         assert!(main["head_sha"].as_str().unwrap().len() >= 40);
         git(&[
@@ -202,7 +206,10 @@ mod tests {
         ]);
         let detached = git_work_context(&linked, None).unwrap();
         assert_eq!(detached["repo_root"], main["repo_root"]);
-        assert_eq!(detached["worktree_path"], linked.to_str().unwrap());
+        assert_eq!(
+            detached["worktree_path"],
+            linked.canonicalize().unwrap().to_str().unwrap()
+        );
         assert_eq!(detached["head_sha"], main["head_sha"]);
         assert!(detached["branch_ref"].is_null());
         assert!(detached["merge_request_id"].is_null());
