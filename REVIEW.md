@@ -33,6 +33,10 @@ or an acceptance criterion with no line in the diff.
    `guarded_command_reason` (`apps/server/src/routes/mod.rs`) that should be
    there, is a blocker. Example: acquire held the claim under the token agent
    while stdio MCP released it under its own random `mcp_agent_id` → 403.
+   The same holds for the project: a token restricted to projects must not
+   read or change another project through any route, including global
+   projections queried with a `project_id` (`apps/server/src/routes/project_scope.rs`
+   fails closed; pin a new scoped route in `apps/server/tests/project_scope_isolation.rs`).
 3. **Silent data loss or a half write.** `INSERT OR REPLACE` in
    `crates/storage/src/*_repo.rs` on a table with a unique index deletes the
    other row (an `external_key` duplicate inside one `MaterializePlan` batch
@@ -51,7 +55,11 @@ or an acceptance criterion with no line in the diff.
    (`crates/core/src/handler.rs`) — for every status path: `SetStatus`,
    `CompleteTask`, bulk, drain. A new command that changes status, claim or run
    state outside that path, or new events written straight to storage, is a
-   blocker.
+   blocker. Readers must agree with that path: what `/v1/ready` or a
+   `daruma_plan_next_task` peek offers (`project_ready` in `apps/server/src/routes/mod.rs`)
+   is what drain hands out (`NextTaskResolver`, `crates/core/src/plan_concurrency.rs`).
+   Example: ready listed `inbox` tasks that drain skips, so agents chased tasks
+   they could never claim.
 6. **The agent-facing text lies.** `INSTRUCTIONS` in `crates/mcp/src/server.rs`,
    tool descriptions and schemas in `crates/mcp/src/tools.rs`, `docs/mcp/`,
    `AGENTS.md` and the client `skills/`, `commands/` and `lib/policy.mjs`. Check
@@ -60,7 +68,10 @@ or an acceptance criterion with no line in the diff.
    enum values. The cloud test `oss_instructions_mention_pipeline_early_and_keep_headroom`
    (mcpbox.ru `crates/cloud-api/src/v1_gateway.rs`) reads this literal: OSS plus
    platform instructions must stay ≤ 2048 characters with 100 to spare, and the
-   word "pipeline" must appear in the first 300 characters.
+   word "pipeline" must appear in the first 300 characters. The default
+   `tools/list` must stay within 27,000 bytes
+   (`crates/mcp/tests/it/toolslist_size.rs`); trim prose the schema already
+   states, never the limit.
 7. **A migration that breaks old data.** `crates/storage/migrations/` is embedded
    by `sqlx::migrate!` and runs on every existing database. Editing an applied
    file, reusing a number, or a non-null column without a default — blocker.
