@@ -19,11 +19,26 @@ process on `:8080` does.
 
 ## Defaults in code
 
-| Component | `DARUMA_DATA_DIR` unset |
-|-----------|----------------------------|
-| `daruma-server` | `~/.agents/daruma/data` |
-| `just server` | same (via `Justfile`) |
-| `daruma` CLI bootstrap | same (`daruma_mcp::paths::data_dir`) |
+`daruma-server`, `just server` and the `daruma` CLI bootstrap all resolve the
+data directory through one function, `daruma_mcp::paths::data_dir`.
+`just server` sets nothing itself: it passes the environment through to
+`daruma-server`, which creates the directory on start.
+
+| `DARUMA_DATA_DIR` | `DARUMA_AGENT_DIR` | Data directory (server, `just server`, CLI) |
+|-------------------|--------------------|---------------------------------------------|
+| unset | unset | `$HOME/.agents/daruma/data` (`./.agents/daruma/data` without `HOME`) |
+| unset | `/a` | `/a/data` |
+| `/d` | unset | `/d` |
+| `/d` | `/a` | `/d` |
+
+`DARUMA_AGENT_DIR` also moves `workspaces.json` and `credentials.json`, so
+set it to keep a whole isolated agent root; set `DARUMA_DATA_DIR` to move only
+the server SQLite and `bootstrap.token`.
+
+`just` loads a `.env` file from the repo root (`set dotenv-load`); the server
+and CLI started directly do not. Keep `DARUMA_DATA_DIR` / `DARUMA_AGENT_DIR`
+out of `.env`, or export the same values in the shell that runs the CLI —
+otherwise `just server` and the CLI read different databases and tokens.
 
 Override only when you need an isolated copy (e.g. tests):
 

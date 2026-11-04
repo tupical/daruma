@@ -147,4 +147,53 @@ mod tests {
         assert_eq!(data_dir(), PathBuf::from("/var/daruma-data"));
         std::env::remove_var(ENV_DATA_DIR);
     }
+
+    #[test]
+    fn data_dir_follows_agent_dir_when_data_dir_unset() {
+        let _guard = env_lock();
+        std::env::remove_var(ENV_DATA_DIR);
+        std::env::set_var(ENV_AGENT_DIR, "/var/daruma-agent");
+        std::env::set_var("HOME", "/tmp/daruma-test-home");
+        assert_eq!(data_dir(), PathBuf::from("/var/daruma-agent/data"));
+        std::env::remove_var(ENV_AGENT_DIR);
+        std::env::remove_var("HOME");
+    }
+
+    #[test]
+    fn data_dir_env_wins_over_agent_dir() {
+        let _guard = env_lock();
+        std::env::set_var(ENV_DATA_DIR, "/var/daruma-data");
+        std::env::set_var(ENV_AGENT_DIR, "/var/daruma-agent");
+        assert_eq!(data_dir(), PathBuf::from("/var/daruma-data"));
+        std::env::remove_var(ENV_DATA_DIR);
+        std::env::remove_var(ENV_AGENT_DIR);
+    }
+
+    /// `just server` must not compute its own data directory: a Justfile
+    /// fallback ignored `DARUMA_AGENT_DIR` and sent the server to a different
+    /// database than the CLI. The server resolves it through [`data_dir`].
+    #[test]
+    fn justfile_server_recipe_leaves_data_dir_to_the_server() {
+        let justfile = include_str!("../../../Justfile");
+        let recipe: String = justfile
+            .lines()
+            .skip_while(|line| !line.starts_with("server:"))
+            .skip(1)
+            .take_while(|line| line.starts_with(' ') || line.starts_with('\t'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            recipe.contains("cargo run -p daruma-server"),
+            "server recipe not found in Justfile"
+        );
+        let offending: Vec<&str> = justfile
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| line.contains(ENV_DATA_DIR))
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "Justfile must not set or default {ENV_DATA_DIR}: {offending:?}"
+        );
+    }
 }
