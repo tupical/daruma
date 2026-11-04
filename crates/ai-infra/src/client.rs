@@ -192,7 +192,7 @@ impl OpenAiClient {
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             let message = resp.text().await.unwrap_or_default();
-            return Err(AiError::Api { status, message });
+            return Err(api_error(&self.config, status, message));
         }
 
         let json: Value = resp.json().await?;
@@ -301,7 +301,7 @@ impl OpenAiClient {
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             let message = resp.text().await.unwrap_or_default();
-            return Err(AiError::Api { status, message });
+            return Err(api_error(&self.config, status, message));
         }
         let jsonl = resp.text().await?;
         let results = parse_anthropic_batch_results(&jsonl, reqs.len())?;
@@ -337,7 +337,7 @@ impl OpenAiClient {
         let status = resp.status().as_u16();
         if !(200..300).contains(&status) {
             let message = resp.text().await.unwrap_or_default();
-            return Err(AiError::Api { status, message });
+            return Err(api_error(&self.config, status, message));
         }
         Ok(resp.json().await?)
     }
@@ -839,6 +839,19 @@ fn parse_anthropic_outputs(json: &Value) -> Result<Vec<ResponseOutput>, AiError>
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// A non-2xx answer as an error. Some providers echo the rejected key back
+/// in the body; it is cut out here, before the text reaches a log, an event
+/// or the caller.
+fn api_error(config: &AiConfig, status: u16, body: String) -> AiError {
+    let key = config.api_key.trim();
+    let message = if key.is_empty() {
+        body
+    } else {
+        body.replace(key, "[redacted]")
+    };
+    AiError::Api { status, message }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1802,6 +1815,30 @@ mod tests {
             created["requests"][1]["params"]["messages"],
             json!([{"role": "user", "content": "second"}])
         );
+    }
+
+    #[tokio::test]
+    async fn api_error_does_not_carry_the_key_the_provider_echoes() {
+        let (addr, server) = scripted_anthropic_stub(|_| {
+            vec![(
+                401,
+                json!({"error": {"type": "authentication_error",
+                                 "message": "invalid x-api-key: sk-test"}})
+                .to_string(),
+            )]
+        });
+        let error = anthropic_stub_client(addr)
+            .respond(make_req("x", vec![], None))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        let AiError::Api { status, message } = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(*status, 401);
+        assert!(!error.to_string().contains("sk-test"), "{error}");
+        assert!(message.contains("authentication_error"), "{message}");
+        assert!(message.contains("[redacted]"), "{message}");
     }
 
     #[tokio::test]
