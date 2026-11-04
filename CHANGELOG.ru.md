@@ -9,6 +9,16 @@
 
 ## Не выпущено
 
+### `just server` берёт тот же каталог данных, что сервер и CLI
+
+- При заданном `DARUMA_AGENT_DIR` и незаданном `DARUMA_DATA_DIR`
+  `just server` раньше принудительно открывал `~/.agents/daruma/data`, а
+  запущенный напрямую `daruma-server` и CLI — `$DARUMA_AGENT_DIR/data`: две
+  базы и два bootstrap-токена. Теперь `just server` оставляет выбор серверу,
+  и все трое сходятся: `DARUMA_DATA_DIR`, иначе `$DARUMA_AGENT_DIR/data`,
+  иначе `~/.agents/daruma/data`. Все сочетания перечислены в руководстве
+  local-dev-data.
+
 ### `daruma_complete` больше не теряет сводку из `comment`
 
 - `daruma_complete … comment="<сводка>"` — так советовали промпт

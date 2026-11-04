@@ -1,9 +1,6 @@
 set dotenv-load := true
 set shell := ["bash", "-uc"]
 
-home := env_var_or_default("HOME", ".")
-data_dir := env_var_or_default("DARUMA_DATA_DIR", home + "/.agents/daruma/data")
-
 default:
     @just --list
 
@@ -27,9 +24,12 @@ hooks:
     git config core.hooksPath .githooks
     @echo "git hooks enabled — commits now auto-add a Signed-off-by trailer"
 
+# The data directory is resolved by daruma-server itself
+# (`daruma_mcp::paths::data_dir`), the same way the CLI resolves it:
+# DARUMA_DATA_DIR, else $DARUMA_AGENT_DIR/data, else ~/.agents/daruma/data.
+# Do not compute a fallback here — it would drift from the server and CLI.
 server:
-    mkdir -p "{{data_dir}}"
-    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" DARUMA_DATA_DIR="{{data_dir}}" cargo run -p daruma-server
+    CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p daruma-server
 
 mcp:
     CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo run -p daruma-cli -- mcp

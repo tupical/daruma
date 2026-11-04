@@ -91,7 +91,9 @@ daruma install --mode self-host -y
 
 For local mode, `DARUMA_TOKEN` may be omitted when
 `$DARUMA_DATA_DIR/bootstrap.token` exists. If `DARUMA_DATA_DIR` is unset,
-the CLI checks `~/.agents/daruma/data/bootstrap.token`.
+the CLI checks `$DARUMA_AGENT_DIR/data/bootstrap.token`, else
+`~/.agents/daruma/data/bootstrap.token` — the same directory the server uses
+(see [local-dev-data.md](local-dev-data.md#defaults-in-code)).
 
 `daruma mcp` stdio remains available for clients that do not support remote
 HTTP MCP.

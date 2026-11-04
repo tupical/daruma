@@ -6,6 +6,15 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### `just server` uses the same data directory as the server and CLI
+
+- With `DARUMA_AGENT_DIR` set and `DARUMA_DATA_DIR` unset, `just server` used
+  to force `~/.agents/daruma/data`, while `daruma-server` started directly and
+  the CLI used `$DARUMA_AGENT_DIR/data` — two databases and two bootstrap
+  tokens. `just server` now leaves the choice to the server, so all three
+  agree: `DARUMA_DATA_DIR`, else `$DARUMA_AGENT_DIR/data`, else
+  `~/.agents/daruma/data`. The local-dev-data guide lists every combination.
+
 ### `daruma_complete` keeps the `comment` summary
 
 - `daruma_complete … comment="<summary>"`, as the `daruma-next` prompt and
