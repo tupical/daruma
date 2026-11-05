@@ -20,8 +20,10 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
   bootstrapped from such a snapshot, so its next `sync` rebuilds tasks,
   projects and comments once from the full server log. This costs one full
   replay per device. Events still in the outbox or refused by the server stay
-  applied on top, and a failed or interrupted rebuild reruns on the next
-  `sync`. The server's log must be the one the replica came from: a server
+  applied on top, and so does a command another process finishes during the
+  rebuild, which swaps the rows in one write transaction: a failed or
+  interrupted rebuild changes nothing and reruns on the next `sync`. The
+  server's log must be the one the replica came from: a server
   with an empty log is refused rather than adopted.
 
 ### Revoking a device closes a WebSocket that was still connecting
