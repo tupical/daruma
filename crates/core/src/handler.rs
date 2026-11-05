@@ -514,6 +514,7 @@ impl CommandHandler {
         // `source_event_id` to point at the real `PlanCreated` event id, which
         // only exists once envelopes are built below. Note the command now.
         let materialising = matches!(cmd, Command::MaterializePlan { .. });
+        let splitting = matches!(cmd, Command::SplitTask { .. });
         // ADR-0009: resolve/check the plan source under the command lock, so
         // the policy check, auto-parent lookup and plan creation are atomic.
         // `CreatePlan` with `external_ref` is an internal idempotent producer:
@@ -717,6 +718,9 @@ impl CommandHandler {
 
         if materialising {
             relink_materialised_provenance(&mut envelopes);
+        }
+        if splitting {
+            relink_split_provenance(&mut envelopes);
         }
 
         let task_lifecycle = envelopes.iter().any(|envelope| {
@@ -4471,6 +4475,27 @@ fn relink_materialised_provenance(envelopes: &mut [EventEnvelope]) {
     }
 }
 
+/// §3.8.10: bind every `TaskCreated` in a `SplitTask` batch to the batch's
+/// `TaskSplitGenerated` event id. The two events project the same children, and
+/// the later `TaskCreated` is a full upsert, so it has to state the same origin
+/// the split projection recorded. Runs after envelope ids are assigned and
+/// before persistence, so the stored log replays to the same links. No-op
+/// without a split event (defensive).
+fn relink_split_provenance(envelopes: &mut [EventEnvelope]) {
+    let split_event_id = envelopes
+        .iter()
+        .find(|env| matches!(env.payload, Event::TaskSplitGenerated { .. }))
+        .map(|env| env.id);
+    let Some(split_event_id) = split_event_id else {
+        return;
+    };
+    for env in envelopes.iter_mut() {
+        if let Event::TaskCreated { task } = &mut env.payload {
+            task.source_event_id = Some(split_event_id);
+        }
+    }
+}
+
 /// Build one `RuleFired` audit event per acting rule from a gate decision.
 ///
 /// `outcomes` yields `(details, message)` for each rule that warned, blocked or
@@ -4721,7 +4746,7 @@ mod tests {
         Actor, AgentSession, NewTask, Plan, PlanStatus as PS, PlanTask, Run, SessionArtifactKind,
     };
     use daruma_events::{Event, EventStore};
-    use daruma_shared::{ProjectId, RunId, TaskId};
+    use daruma_shared::{EventId, ProjectId, RunId, TaskId};
     use daruma_storage::{
         ActivityRepo, AgentClaimRepo, CommentRepo, Db, PlanRepo, ProjectRepo, RunRepo,
         SqliteEventStore, TaskRepo,
@@ -5359,6 +5384,81 @@ mod tests {
         assert_eq!(split_envs.len(), 3);
         assert_eq!(store.load_since(0, 100).await.unwrap().len(), 4);
         assert_eq!(tasks.list_all().await.unwrap().len(), 3);
+    }
+
+    /// §3.8.10: every child of a split points at that split's
+    /// `TaskSplitGenerated`, and a nested split at its own event, both in the
+    /// live projection and when the stored log is replayed into a clean store.
+    #[tokio::test]
+    async fn split_children_keep_split_provenance_through_replay() {
+        fn split_event(envs: &[EventEnvelope]) -> EventId {
+            envs.iter()
+                .find(|env| matches!(env.payload, Event::TaskSplitGenerated { .. }))
+                .expect("batch has TaskSplitGenerated")
+                .id
+        }
+
+        let (handler, store, tasks) = build_stack().await;
+        let parent = created_task_ids(
+            &handler
+                .handle(
+                    Command::CreateTask {
+                        task: NewTask::new("Parent"),
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap(),
+        )[0];
+
+        let split = handler
+            .handle(
+                Command::SplitTask {
+                    parent,
+                    subtasks: vec![NewTask::new("Sub A"), NewTask::new("Sub B")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let children = created_task_ids(&split);
+        let split_id = split_event(&split);
+        assert_eq!(children.len(), 2);
+
+        let nested = handler
+            .handle(
+                Command::SplitTask {
+                    parent: children[0],
+                    subtasks: vec![NewTask::new("Sub A1"), NewTask::new("Sub A2")],
+                },
+                Actor::user(),
+            )
+            .await
+            .unwrap();
+        let grandchildren = created_task_ids(&nested);
+        let nested_id = split_event(&nested);
+        assert_ne!(nested_id, split_id);
+
+        let expected: Vec<(TaskId, Option<EventId>)> = vec![
+            (parent, None),
+            (children[0], Some(split_id)),
+            (children[1], Some(split_id)),
+            (grandchildren[0], Some(nested_id)),
+            (grandchildren[1], Some(nested_id)),
+        ];
+        for (task_id, source) in &expected {
+            let task = tasks.get(*task_id).await.unwrap().unwrap();
+            assert_eq!(task.source_event_id, *source, "{}", task.title);
+        }
+
+        let (_, _, clean) = build_stack().await;
+        for env in store.load_since(0, 100).await.unwrap() {
+            clean.apply_event(&env).await.unwrap();
+        }
+        for (task_id, source) in &expected {
+            let task = clean.get(*task_id).await.unwrap().unwrap();
+            assert_eq!(task.source_event_id, *source, "replay {}", task.title);
+        }
     }
 
     #[tokio::test]

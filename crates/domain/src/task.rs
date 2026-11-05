@@ -278,9 +278,10 @@ pub struct NewTask {
     pub external_key: Option<String>,
     /// §3.8.10 provenance (ADR-0007 Q5): the upstream event that produced this
     /// task. `MaterializePlan` sets this to the `PlanCreated` event id so a
-    /// plan-derived task points back at its plan's creation. `None` for tasks
-    /// created outside a plan-materialisation. The `TaskCreated` projection
-    /// carries it onto [`Task::source_event_id`].
+    /// plan-derived task points back at its plan's creation; `SplitTask` sets
+    /// it to the `TaskSplitGenerated` event id on each child. `None` for other
+    /// tasks. The `TaskCreated` projection carries it onto
+    /// [`Task::source_event_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_event_id: Option<EventId>,
 }
