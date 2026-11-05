@@ -547,4 +547,37 @@ mod tests {
         // kind survives the edit — `CommentPatch` deliberately can't mutate it.
         assert_eq!(got.kind, Some(CommentKind::Intent));
     }
+
+    #[tokio::test]
+    async fn apply_event_tx_reads_its_own_writes_and_rolls_back_with_the_caller() {
+        let repo = make_repo().await;
+        let comment = make_comment(TaskId::new());
+        let id = comment.id;
+        let task_id = comment.task_id;
+        let added = EventEnvelope::new(Actor::user(), Event::CommentAdded { comment });
+        let edited = EventEnvelope::new(
+            Actor::user(),
+            Event::CommentEdited {
+                comment_id: id,
+                task_id,
+                patch: CommentPatch {
+                    body: Some("edited".into()),
+                },
+                edited_at: daruma_shared::time::now(),
+            },
+        );
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        repo.apply_event_tx(&mut tx, &added).await.unwrap();
+        repo.apply_event_tx(&mut tx, &edited).await.unwrap();
+        let body: String = sqlx::query_scalar("SELECT body FROM comments WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(body, "edited");
+        tx.rollback().await.unwrap();
+
+        assert!(repo.get(id).await.unwrap().is_none());
+    }
 }

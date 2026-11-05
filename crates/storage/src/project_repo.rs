@@ -415,4 +415,35 @@ mod tests {
         assert_eq!(tenant_a.len(), 1);
         assert_eq!(tenant_a[0].title, "tenant one");
     }
+
+    #[tokio::test]
+    async fn apply_event_tx_reads_its_own_writes_and_rolls_back_with_the_caller() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = ProjectRepo::new(db.pool().clone());
+        let project = Project::new("before", None);
+        let id = project.id;
+        let created = EventEnvelope::new(Actor::user(), Event::ProjectCreated { project });
+        let updated = EventEnvelope::new(
+            Actor::user(),
+            Event::ProjectUpdated {
+                project_id: id,
+                title: Some("after".into()),
+                description: None,
+            },
+        );
+
+        let mut tx = db.pool().begin().await.unwrap();
+        repo.apply_event_tx(&mut tx, &created).await.unwrap();
+        repo.apply_event_tx(&mut tx, &updated).await.unwrap();
+        let title: String = sqlx::query_scalar("SELECT title FROM projects WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(title, "after");
+        tx.rollback().await.unwrap();
+
+        assert!(repo.get(id).await.unwrap().is_none());
+    }
 }

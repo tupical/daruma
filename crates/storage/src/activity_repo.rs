@@ -2031,4 +2031,40 @@ mod tests {
             "status_changed row must inherit project_id from created row"
         );
     }
+
+    #[tokio::test]
+    async fn apply_event_tx_reads_its_own_writes_and_rolls_back_with_the_caller() {
+        let repo = make_repo().await;
+        let task_id = TaskId::new();
+        let project_id = ProjectId::new();
+        let task = NewTask {
+            id: Some(task_id),
+            project_id: Some(project_id),
+            ..NewTask::new("in a project")
+        };
+        let created = env_with_seq(Actor::user(), Event::TaskCreated { task }, 1);
+        let moved = env_with_seq(
+            Actor::user(),
+            Event::TaskStatusChanged {
+                task_id,
+                from: Status::Inbox,
+                to: Status::Todo,
+            },
+            2,
+        );
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        repo.apply_event_tx(&mut tx, &created).await.unwrap();
+        repo.apply_event_tx(&mut tx, &moved).await.unwrap();
+        let inherited: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM activity WHERE seq = 2")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(inherited, Some(project_id.to_string()));
+        tx.rollback().await.unwrap();
+
+        let (rows, _, _) = repo.list_for_task(task_id, None, 10, None).await.unwrap();
+        assert!(rows.is_empty());
+    }
 }

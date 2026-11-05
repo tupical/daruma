@@ -21,9 +21,11 @@ use daruma_domain::{Comment, Project, Task};
 use daruma_events::{EventEnvelope, EventStore};
 use daruma_shared::{CoreError, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
-use crate::{parse_ts, CommentRepo, Db, ProjectRepo, TaskRepo};
+use crate::{
+    entity_version::replace_task_versions, parse_ts, CommentRepo, Db, ProjectRepo, TaskRepo,
+};
 
 /// Version of the consistency guarantee behind a snapshot. `0` marks a row
 /// taken from the live projections, which may miss events up to its seq; such
@@ -109,6 +111,12 @@ impl ProjectionFold {
         self.projects.apply_event(event).await?;
         self.comments.apply_event(event).await?;
         Ok(())
+    }
+
+    /// Make the task history in `tx` the one folded so far. A snapshot leaves
+    /// history out, but a repair must not lose the part a stopped sync missed.
+    pub async fn replace_task_versions_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        replace_task_versions(&self.tasks.pool, tx).await
     }
 
     /// The projections as folded so far; more events may follow.
@@ -267,7 +275,9 @@ fn row_to_snapshot(row: &sqlx::sqlite::SqliteRow) -> Result<Snapshot> {
 mod tests {
     use super::*;
     use crate::Db;
-    use daruma_domain::NewTask;
+    use daruma_domain::{Actor, NewTask, TaskPatch};
+    use daruma_events::Event;
+    use daruma_shared::TaskId;
 
     fn payload_with_task(title: &str) -> ProjectionSnapshot {
         ProjectionSnapshot {
@@ -420,5 +430,76 @@ mod tests {
         assert_eq!(repo.write_if_due(&store, 1).await.unwrap(), Some(last));
         let snapshot = repo.latest().await.unwrap().unwrap();
         assert_eq!(snapshot.payload.tasks.len(), FOLD_PAGE_SIZE + 1);
+    }
+
+    #[tokio::test]
+    async fn fold_hands_over_task_history_and_leaves_other_entities_alone() {
+        let task_id = TaskId::new();
+        let task = NewTask {
+            id: Some(task_id),
+            ..NewTask::new("t")
+        };
+        let fold = ProjectionFold::new(None).await.unwrap();
+        for payload in [
+            Event::TaskCreated { task },
+            Event::TaskUpdated {
+                task_id,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..TaskPatch::default()
+                },
+            },
+        ] {
+            let env = EventEnvelope::new(Actor::user(), payload);
+            fold.apply(&env).await.unwrap();
+        }
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let live = db.pool();
+        sqlx::query(
+            "INSERT INTO entity_versions (id, entity_type, entity_id, version_number, \
+             actor_json, actor_kind, event_type, created_at, diff_json, summary) \
+             VALUES (?, ?, ?, 1, '{}', 'user', 'x', '2026-01-01T00:00:00Z', '{}', 's')",
+        )
+        .bind("ver_stale")
+        .bind("task")
+        .bind(task_id.to_string())
+        .execute(live)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO entity_versions (id, entity_type, entity_id, version_number, \
+             actor_json, actor_kind, event_type, created_at, diff_json, summary) \
+             VALUES (?, ?, ?, 1, '{}', 'user', 'x', '2026-01-01T00:00:00Z', '{}', 's')",
+        )
+        .bind("ver_doc")
+        .bind("document")
+        .bind("doc_1")
+        .execute(live)
+        .await
+        .unwrap();
+
+        let mut tx = live.begin().await.unwrap();
+        fold.replace_task_versions_tx(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let live_rows: Vec<(String, i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT entity_id, version_number, event_type, after_json FROM entity_versions \
+             ORDER BY entity_type, version_number",
+        )
+        .fetch_all(live)
+        .await
+        .unwrap();
+        let folded_rows: Vec<(String, i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT entity_id, version_number, event_type, after_json FROM entity_versions \
+             ORDER BY entity_type, version_number",
+        )
+        .fetch_all(&fold.tasks.pool)
+        .await
+        .unwrap();
+        assert_eq!(live_rows[0].0, "doc_1", "other entities stay");
+        assert_eq!(live_rows[1..], folded_rows[..]);
+        assert_eq!(folded_rows.len(), 2);
+        assert!(folded_rows[1].3.as_deref().unwrap().contains("renamed"));
     }
 }

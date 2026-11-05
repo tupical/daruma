@@ -143,6 +143,60 @@ impl EntityVersionRepo {
     }
 }
 
+/// Every column of `entity_versions`, for copying rows between databases.
+const VERSION_COLUMNS: [&str; 18] = [
+    "id",
+    "entity_type",
+    "entity_id",
+    "version_number",
+    "actor_json",
+    "actor_kind",
+    "actor_id",
+    "actor_name",
+    "event_type",
+    "reason",
+    "source_event_id",
+    "source_event_seq",
+    "created_at",
+    "before_json",
+    "after_json",
+    "diff_json",
+    "changed_fields_json",
+    "summary",
+];
+
+/// Make the task history in `tx` exactly the one in `source`.
+pub(crate) async fn replace_task_versions(
+    source: &SqlitePool,
+    tx: &mut Transaction<'_, Sqlite>,
+) -> Result<()> {
+    let columns = VERSION_COLUMNS.join(", ");
+    let rows = sqlx::query_as::<_, (String,)>(&format!(
+        "SELECT json_array({columns}) FROM entity_versions WHERE entity_type = 'task'"
+    ))
+    .fetch_all(source)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    sqlx::query("DELETE FROM entity_versions WHERE entity_type = 'task'")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    let values = (0..VERSION_COLUMNS.len())
+        .map(|i| format!("json_extract(?1, '$[{i}]')"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert = format!("INSERT INTO entity_versions ({columns}) VALUES ({values})");
+    for (row,) in rows {
+        sqlx::query(&insert)
+            .bind(row)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn insert_entity_version(
     tx: &mut Transaction<'_, Sqlite>,
     entity_type: &'static str,

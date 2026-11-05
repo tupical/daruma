@@ -371,8 +371,7 @@ impl TaskRepo {
                     if let Some(position) = &patch.pipeline_position {
                         stamp_pipeline_position(tx, *task_id, position).await?;
                     }
-                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
-                        .await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after)).await?;
                 }
             }
 
@@ -391,8 +390,7 @@ impl TaskRepo {
                     let after = task_value(&task)?;
                     self.upsert_task_tx(tx, &task).await?;
                     stamp_status_changed_at(tx, *task_id, occurred_at).await?;
-                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
-                        .await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after)).await?;
                 }
             }
 
@@ -404,8 +402,7 @@ impl TaskRepo {
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
                     self.upsert_task_tx(tx, &task).await?;
-                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
-                        .await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after)).await?;
                 }
             }
 
@@ -428,8 +425,7 @@ impl TaskRepo {
                     if entered_done {
                         stamp_status_changed_at(tx, *task_id, occurred_at).await?;
                     }
-                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
-                        .await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after)).await?;
                 }
             }
 
@@ -497,8 +493,7 @@ impl TaskRepo {
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
                     self.upsert_task_tx(tx, &task).await?;
-                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
-                        .await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after)).await?;
                 }
             }
 
@@ -511,8 +506,7 @@ impl TaskRepo {
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
                     self.upsert_task_tx(tx, &task).await?;
-                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
-                        .await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after)).await?;
                 }
             }
 
@@ -1447,5 +1441,46 @@ mod tests {
         // inbox-orphan — done-A and done-orphan are excluded).
         let global_active = repo.list_all_filtered(&active).await.unwrap();
         assert_eq!(global_active.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn apply_event_tx_reads_its_own_writes_and_rolls_back_with_the_caller() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = TaskRepo::new(db.pool().clone());
+        let id = TaskId::new();
+        let created = EventEnvelope::new(
+            Actor::user(),
+            Event::TaskCreated {
+                task: daruma_domain::NewTask {
+                    id: Some(id),
+                    ..daruma_domain::NewTask::new("before")
+                },
+            },
+        );
+        let updated = EventEnvelope::new(
+            Actor::user(),
+            Event::TaskUpdated {
+                task_id: id,
+                patch: daruma_domain::TaskPatch {
+                    title: Some("after".into()),
+                    ..daruma_domain::TaskPatch::default()
+                },
+            },
+        );
+
+        let mut tx = db.pool().begin().await.unwrap();
+        repo.apply_event_tx(&mut tx, &created).await.unwrap();
+        repo.apply_event_tx(&mut tx, &updated).await.unwrap();
+        let task = get_task_tx(&mut tx, id).await.unwrap().unwrap();
+        assert_eq!(task.title, "after");
+        tx.rollback().await.unwrap();
+
+        assert!(repo.get(id).await.unwrap().is_none());
+        let versions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entity_versions")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(versions, 0);
     }
 }
