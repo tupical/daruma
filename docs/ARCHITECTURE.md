@@ -331,7 +331,8 @@ whose remaining blockers are all Done.
 `TaskUnblocked` for any newly unblocked downstreams.
 
 **UnlinkTasks.** Removing the last active `Blocks` edge of a task emits
-`TaskUnblocked` after `TaskUnlinked`, in the same batch.
+`TaskUnblocked` after `TaskUnlinked`, in the same batch. An edge from a task
+already `Done` is not an active blocker: removing it emits `TaskUnlinked` alone.
 
 **Cycle detection.** `relation_enforcement::detect_cycle` runs on every
 `LinkTasks { kind: Blocks }` command: iterative DFS from `to` searching

@@ -3440,8 +3440,9 @@ impl CommandHandler {
                 let kind = relation.kind;
 
                 // Dropping the last active blocker frees `to` the same way
-                // the blocker reaching Done does. Computed BEFORE the delete,
-                // like the `DeleteTask` cascade.
+                // the blocker reaching Done does; an edge from a task already
+                // Done was not holding it. Computed BEFORE the delete, like
+                // the `DeleteTask` cascade.
                 let unblocked = kind == daruma_domain::RelationKind::Blocks
                     && relation_enforcement::list_downstream_to_unblock(
                         relations,

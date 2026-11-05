@@ -85,7 +85,9 @@ pub async fn list_active_blockers(
 /// if `blocker_id` transitions to Done.
 ///
 /// A downstream task is "fully unblocked" when all of its remaining blockers
-/// (other than `blocker_id` itself) are already Done.
+/// (other than `blocker_id` itself) are already Done. A `blocker_id` that is
+/// Done already, or gone, holds nothing back, so it frees nobody: an edge may
+/// still point out of it when it was linked after the blocker finished.
 ///
 /// Used by W2.2 to emit `TaskUnblocked` events alongside `TaskStatusChanged`.
 /// Implemented here; called from handler.rs in W2.2.
@@ -94,6 +96,11 @@ pub async fn list_downstream_to_unblock(
     tasks: &TaskRepo,
     blocker_id: TaskId,
 ) -> Result<Vec<TaskId>> {
+    match tasks.get(blocker_id).await? {
+        Some(task) if task.status != Status::Done => {}
+        _ => return Ok(Vec::new()),
+    }
+
     // Find all tasks that `blocker_id` blocks.
     let downstream = repo.list_blocks_targets(blocker_id).await?;
     let mut result = Vec::new();
