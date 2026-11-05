@@ -4790,10 +4790,11 @@ async fn list_events(
 }
 
 /// Latest bootstrap snapshot for device-sync catch-up (§3.3 Phase 5
-/// follow-up), or `null` when the writer has not produced one yet (fresh or
-/// small workspace). A freshly paired device restores the projections from
-/// the payload and then replays only `GET /v1/events?since=<seq>`; when the
-/// body is `null` it falls back to a full replay from seq 0.
+/// follow-up), or `null` when the writer has not produced a consistent one
+/// yet (fresh or small workspace, or only pre-0063 rows). A freshly paired
+/// device restores the projections from the payload and then replays only
+/// `GET /v1/events?since=<seq>`; when the body is `null` it falls back to a
+/// full replay from seq 0.
 async fn latest_bootstrap_snapshot(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,

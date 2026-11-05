@@ -78,7 +78,9 @@ pub use rule_repo::RuleRepo;
 pub use run_note_repo::RunNoteRepo;
 pub use run_repo::RunRepo;
 pub use session_repo::SessionRepo;
-pub use snapshot_repo::{ProjectionSnapshot, Snapshot, SnapshotRepo};
+pub use snapshot_repo::{
+    ProjectionFold, ProjectionSnapshot, Snapshot, SnapshotRepo, SNAPSHOT_CUT_VERSION,
+};
 pub use task_complexity_repo::TaskComplexityRepo;
 pub use task_repo::{StuckTask, TaskRepo};
 pub use tenant_quota_repo::TenantQuotaRepo;

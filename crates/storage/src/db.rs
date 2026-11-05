@@ -88,7 +88,7 @@ impl Db {
     /// Open an in-memory SQLite database.
     ///
     /// Uses a single-connection pool so all callers share the same in-memory DB.
-    /// Intended for tests only.
+    /// Intended for tests and throwaway scratch state.
     pub async fn memory() -> Result<Self> {
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")
             .map_err(|e| CoreError::storage(e.to_string()))?
