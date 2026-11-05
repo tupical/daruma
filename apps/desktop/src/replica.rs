@@ -1088,6 +1088,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repair_interrupted_after_touching_rows_reruns_on_the_next_sync() {
+        let server = Server::start().await;
+        let (device, missing) = stranded_device(&server).await;
+        let mut offline = NewTask::new("created offline");
+        let offline_id = TaskId::new();
+        offline.id = Some(offline_id);
+        device
+            .local_event(Event::TaskCreated { task: offline })
+            .await;
+        // Lets the rebuild replace the rows, then stops it on the local event.
+        let trigger = "CREATE TRIGGER stop_rebuild BEFORE INSERT ON tasks \
+             WHEN NEW.title = 'created offline' \
+             BEGIN SELECT RAISE(ABORT, 'interrupted'); END";
+        sqlx::query(trigger).execute(&device.pool).await.unwrap();
+
+        assert!(device.replica.catch_up(&server, 50).await.is_err());
+        assert!(!device.replica.baseline_verified().await.unwrap());
+
+        sqlx::query("DROP TRIGGER stop_rebuild")
+            .execute(&device.pool)
+            .await
+            .unwrap();
+        device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert!(device.replica.baseline_verified().await.unwrap());
+        assert!(device.tasks.get(missing).await.unwrap().is_some());
+        assert!(device.tasks.get(offline_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn repair_refuses_an_empty_server_log() {
         let server = Server::start().await;
         let device = fresh_device().await;
