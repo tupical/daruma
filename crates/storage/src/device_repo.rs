@@ -72,6 +72,20 @@ impl DeviceRepo {
         rows.iter().map(row_to_device).collect()
     }
 
+    /// Authoritative revocation state; an unknown device counts as revoked.
+    pub async fn is_revoked(&self, id: DeviceId) -> Result<bool> {
+        let row = sqlx::query("SELECT revoked_at FROM devices WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        row.map_or(Ok(true), |row| {
+            row.try_get::<Option<String>, _>("revoked_at")
+                .map(|revoked_at| revoked_at.is_some())
+                .map_err(|e| CoreError::storage(e.to_string()))
+        })
+    }
+
     pub async fn revoke(&self, id: DeviceId) -> Result<bool> {
         let res =
             sqlx::query("UPDATE devices SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?")
@@ -164,6 +178,19 @@ mod tests {
         let rows = tokens.list_by_prefix(&secret.record.prefix).await.unwrap();
         assert_eq!(rows[0].device_id, Some(device.id));
         assert!(rows[0].device_revoked_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn is_revoked_reads_the_device_row_and_refuses_unknown_ids() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let devices = DeviceRepo::new(db.pool().clone());
+        let device = devices.insert(DeviceId::new(), "laptop").await.unwrap();
+
+        assert!(!devices.is_revoked(device.id).await.unwrap());
+        devices.revoke(device.id).await.unwrap();
+        assert!(devices.is_revoked(device.id).await.unwrap());
+        assert!(devices.is_revoked(DeviceId::new()).await.unwrap());
     }
 
     #[tokio::test]

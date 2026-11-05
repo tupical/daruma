@@ -6,6 +6,17 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Revoking a device closes a WebSocket that was still connecting
+
+- A socket subscribed to device revocations only after authentication, so a
+  revoke landing in between left it open on the old `AuthContext`: it kept
+  running commands and receiving events. A connection now watches revocations
+  before it validates the token and rechecks the device before admission.
+  Once a revoke returns, the device's frames are refused on ingress and its
+  outgoing queue is replaced by the `unauthorized` error and a 1008 close. A
+  broadcast missed through lag no longer hides the revocation. Revoking a token
+  through `DELETE /v1/tokens/{id}` still affects only new connections.
+
 ### Tasks created by a split keep their origin
 
 - After `daruma_split`, each child lost `source_event_id`: the split event set
