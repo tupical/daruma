@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::{Activity, Actor, Verb};
 use daruma_events::{Event, EventEnvelope, EventStore};
 use daruma_shared::{ActivityId, CoreError, EventId, PlanId, ProjectId, Result, RunId, TaskId};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 /// Read/write access to the `activity` projection table.
 pub struct ActivityRepo {
@@ -122,6 +122,30 @@ impl ActivityRepo {
     /// the same `task_id` rather than appending a new row.  If no row is found
     /// (legacy / replay), a new row is inserted as fallback.
     pub async fn apply_event(&self, envelope: &EventEnvelope) -> Result<()> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        self.apply_event_on(&mut conn, envelope).await
+    }
+
+    /// [`Self::apply_event`] inside the caller's transaction.
+    pub async fn apply_event_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        envelope: &EventEnvelope,
+    ) -> Result<()> {
+        self.apply_event_on(tx, envelope).await
+    }
+
+    /// Statements run one by one on `conn`: a plain connection commits each
+    /// on its own, a transaction's connection holds them all back.
+    async fn apply_event_on(
+        &self,
+        conn: &mut SqliteConnection,
+        envelope: &EventEnvelope,
+    ) -> Result<()> {
         let actor = &envelope.actor;
         let occurred_at = envelope.occurred_at;
         let event_id = envelope.id;
@@ -130,7 +154,7 @@ impl ActivityRepo {
         match &envelope.payload {
             // ── Task lifecycle ────────────────────────────────────────────
             Event::TaskCreated { task } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: task.id,
                     project_id: task.project_id,
@@ -147,10 +171,10 @@ impl ActivityRepo {
             }
 
             Event::TaskUpdated { task_id, patch } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
                 let new_value =
                     serde_json::to_string(patch).map_err(|e| CoreError::serde(e.to_string()))?;
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -167,8 +191,8 @@ impl ActivityRepo {
             }
 
             Event::TaskStatusChanged { task_id, from, to } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -185,8 +209,8 @@ impl ActivityRepo {
             }
 
             Event::TaskPriorityChanged { task_id, from, to } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -207,14 +231,14 @@ impl ActivityRepo {
                 completion_note,
                 ..
             } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
                 // Carry a short completion-note summary so the feed shows *why*
                 // a task was completed; `None` for legacy/bulk completes.
                 let new_value = completion_note
                     .as_ref()
                     .filter(|n| n.is_substantive())
                     .and_then(|n| serde_json::to_string(n).ok());
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -242,10 +266,10 @@ impl ActivityRepo {
                 // the project from the task when the rule was task-scoped.
                 let project_id = match (project_id, task_id) {
                     (Some(p), _) => Some(*p),
-                    (None, Some(t)) => self.inherit_project_id(*t).await?,
+                    (None, Some(t)) => self.inherit_project_id(conn, *t).await?,
                     (None, None) => None,
                 };
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: *task_id,
                     project_id,
@@ -262,8 +286,8 @@ impl ActivityRepo {
             }
 
             Event::TaskDeleted { task_id } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -280,8 +304,8 @@ impl ActivityRepo {
             }
 
             Event::TaskSplitGenerated { parent, .. } => {
-                let project_id = self.inherit_project_id(*parent).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *parent).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*parent),
                     project_id,
@@ -301,12 +325,12 @@ impl ActivityRepo {
             Event::TaskClosed { task_id, .. } => {
                 let prev = envelope.seq.saturating_sub(1) as i64;
                 if !self
-                    .try_update_verb_at_seq(*task_id, prev, Verb::Closed)
+                    .try_update_verb_at_seq(conn, *task_id, prev, Verb::Closed)
                     .await?
                 {
                     // Fallback: no mechanical row at seq-1 (legacy events).
-                    let project_id = self.inherit_project_id(*task_id).await?;
-                    self.insert_row(Activity {
+                    let project_id = self.inherit_project_id(conn, *task_id).await?;
+                    self.insert_row(conn, Activity {
                         id: ActivityId::new(),
                         task_id: Some(*task_id),
                         project_id,
@@ -326,11 +350,11 @@ impl ActivityRepo {
             Event::TaskReopened { task_id, .. } => {
                 let prev = envelope.seq.saturating_sub(1) as i64;
                 if !self
-                    .try_update_verb_at_seq(*task_id, prev, Verb::Reopened)
+                    .try_update_verb_at_seq(conn, *task_id, prev, Verb::Reopened)
                     .await?
                 {
-                    let project_id = self.inherit_project_id(*task_id).await?;
-                    self.insert_row(Activity {
+                    let project_id = self.inherit_project_id(conn, *task_id).await?;
+                    self.insert_row(conn, Activity {
                         id: ActivityId::new(),
                         task_id: Some(*task_id),
                         project_id,
@@ -352,12 +376,12 @@ impl ActivityRepo {
             } => {
                 let prev = envelope.seq.saturating_sub(1) as i64;
                 if !self
-                    .try_update_commented_at_seq(*task_id, prev, preview)
+                    .try_update_commented_at_seq(conn, *task_id, prev, preview)
                     .await?
                 {
                     // Fallback: CommentAdded not found (replay-only case).
-                    let project_id = self.inherit_project_id(*task_id).await?;
-                    self.insert_row(Activity {
+                    let project_id = self.inherit_project_id(conn, *task_id).await?;
+                    self.insert_row(conn, Activity {
                         id: ActivityId::new(),
                         task_id: Some(*task_id),
                         project_id,
@@ -376,7 +400,7 @@ impl ActivityRepo {
 
             // ── Project events ────────────────────────────────────────────
             Event::ProjectCreated { project } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id: Some(project.id),
@@ -393,7 +417,7 @@ impl ActivityRepo {
             }
 
             Event::ProjectUpdated { project_id, .. } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id: Some(*project_id),
@@ -414,7 +438,7 @@ impl ActivityRepo {
                 auto_append,
                 ..
             } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id: Some(*project_id),
@@ -431,7 +455,7 @@ impl ActivityRepo {
             }
 
             Event::ProjectDeleted { project_id } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id: Some(*project_id),
@@ -451,9 +475,9 @@ impl ActivityRepo {
             Event::CommentAdded { comment } => {
                 // Insert initial Commented row; TaskCommented (seq+1) will enrich
                 // new_value with its canonical preview via pair-merge.
-                let project_id = self.inherit_project_id(comment.task_id).await?;
+                let project_id = self.inherit_project_id(conn, comment.task_id).await?;
                 let preview: String = comment.body.chars().take(80).collect();
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(comment.task_id),
                     project_id,
@@ -470,8 +494,8 @@ impl ActivityRepo {
             }
 
             Event::CommentEdited { task_id, .. } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -488,8 +512,8 @@ impl ActivityRepo {
             }
 
             Event::CommentDeleted { task_id, .. } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -507,7 +531,7 @@ impl ActivityRepo {
 
             // ── Agent events ──────────────────────────────────────────────
             Event::AgentActionRecorded { .. } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id: None,
@@ -525,7 +549,7 @@ impl ActivityRepo {
 
             // ── Plan events ───────────────────────────────────────────────
             Event::PlanCreated { plan } => {
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id: Some(plan.project_id),
@@ -542,7 +566,7 @@ impl ActivityRepo {
             }
 
             Event::PlanUpdated { plan_id, patch } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
                 // When parent_plan_id changes, use a dedicated PlanReparented verb so
                 // activity consumers can distinguish hierarchy edits from content edits.
                 let (verb, field, new_value) = if patch.parent_plan_id.is_some() {
@@ -555,7 +579,7 @@ impl ActivityRepo {
                 } else {
                     (Verb::PlanModified, None, None)
                 };
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -572,8 +596,8 @@ impl ActivityRepo {
             }
 
             Event::PlanReordered { plan_id, .. } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -590,14 +614,14 @@ impl ActivityRepo {
             }
 
             Event::PlanStatusChanged { plan_id, from, to } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
                 let old_value = serde_json::to_value(from)
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_owned));
                 let new_value = serde_json::to_value(to)
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_owned));
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -614,8 +638,8 @@ impl ActivityRepo {
             }
 
             Event::PlanGoalChanged { plan_id, from, to } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -634,8 +658,8 @@ impl ActivityRepo {
             Event::PlanTaskAdded {
                 plan_id, task_id, ..
             } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -652,8 +676,8 @@ impl ActivityRepo {
             }
 
             Event::PlanTaskRemoved { plan_id, task_id } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -670,8 +694,8 @@ impl ActivityRepo {
             }
 
             Event::PlanArchived { plan_id, .. } => {
-                let project_id = self.inherit_plan_project_id(*plan_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_plan_project_id(conn, *plan_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -689,8 +713,8 @@ impl ActivityRepo {
 
             // ── Run events ────────────────────────────────────────────────
             Event::RunStarted { run } => {
-                let project_id = self.inherit_plan_project_id(run.plan_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_plan_project_id(conn, run.plan_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -707,8 +731,8 @@ impl ActivityRepo {
             }
 
             Event::RunCompleted { run_id, .. } => {
-                let project_id = self.inherit_run_project_id(*run_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_run_project_id(conn, *run_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -725,8 +749,8 @@ impl ActivityRepo {
             }
 
             Event::RunFailed { run_id, reason, .. } => {
-                let project_id = self.inherit_run_project_id(*run_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_run_project_id(conn, *run_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -743,8 +767,8 @@ impl ActivityRepo {
             }
 
             Event::RunAborted { run_id, reason, .. } => {
-                let project_id = self.inherit_run_project_id(*run_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_run_project_id(conn, *run_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: None,
                     project_id,
@@ -762,8 +786,8 @@ impl ActivityRepo {
 
             // ── Agent claims ──────────────────────────────────────────────
             Event::AgentClaimed { task_id, .. } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -780,8 +804,8 @@ impl ActivityRepo {
             }
 
             Event::AgentReleased { task_id, .. } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -845,14 +869,14 @@ impl ActivityRepo {
                 kind,
                 ..
             } => {
-                let project_id = self.inherit_project_id(*from).await?;
+                let project_id = self.inherit_project_id(conn, *from).await?;
                 let payload = serde_json::json!({
                     "relation_id": relation_id.to_string(),
                     "kind": kind,
                     "to": to.to_string(),
                 })
                 .to_string();
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*from),
                     project_id,
@@ -875,14 +899,14 @@ impl ActivityRepo {
                 kind,
                 ..
             } => {
-                let project_id = self.inherit_project_id(*from).await?;
+                let project_id = self.inherit_project_id(conn, *from).await?;
                 let payload = serde_json::json!({
                     "relation_id": relation_id.to_string(),
                     "kind": kind,
                     "to": to.to_string(),
                 })
                 .to_string();
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*from),
                     project_id,
@@ -903,12 +927,12 @@ impl ActivityRepo {
                 unblocked_by,
                 ..
             } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
                 let payload = serde_json::json!({
                     "unblocked_by": unblocked_by.to_string(),
                 })
                 .to_string();
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -927,8 +951,8 @@ impl ActivityRepo {
             Event::TaskDueElapsed {
                 task_id, due_at, ..
             } => {
-                let project_id = self.inherit_project_id(*task_id).await?;
-                self.insert_row(Activity {
+                let project_id = self.inherit_project_id(conn, *task_id).await?;
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*task_id),
                     project_id,
@@ -953,7 +977,7 @@ impl ActivityRepo {
                 to_kind,
                 ..
             } => {
-                let project_id = self.inherit_project_id(*from).await?;
+                let project_id = self.inherit_project_id(conn, *from).await?;
                 let payload = serde_json::json!({
                     "relation_id": relation_id.to_string(),
                     "from_kind": from_kind,
@@ -961,7 +985,7 @@ impl ActivityRepo {
                     "to": to.to_string(),
                 })
                 .to_string();
-                self.insert_row(Activity {
+                self.insert_row(conn, Activity {
                     id: ActivityId::new(),
                     task_id: Some(*from),
                     project_id,
@@ -991,13 +1015,17 @@ impl ActivityRepo {
     /// Used to propagate `project_id` to subsequent task events that don't carry
     /// it in their payload (only `TaskCreated` does).  Returns `None` when no
     /// preceding row exists (orphan events during partial-log backfill).
-    async fn inherit_project_id(&self, task_id: TaskId) -> Result<Option<ProjectId>> {
+    async fn inherit_project_id(
+        &self,
+        conn: &mut SqliteConnection,
+        task_id: TaskId,
+    ) -> Result<Option<ProjectId>> {
         let row = sqlx::query(
             "SELECT project_id FROM activity WHERE task_id = ? \
              ORDER BY seq DESC LIMIT 1",
         )
         .bind(task_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
@@ -1018,10 +1046,14 @@ impl ActivityRepo {
     /// Look up the `project_id` for a plan by `plan_id`.
     ///
     /// Returns `None` when the plan is not yet in the DB (partial-log replay).
-    async fn inherit_plan_project_id(&self, plan_id: PlanId) -> Result<Option<ProjectId>> {
+    async fn inherit_plan_project_id(
+        &self,
+        conn: &mut SqliteConnection,
+        plan_id: PlanId,
+    ) -> Result<Option<ProjectId>> {
         let row = sqlx::query("SELECT project_id FROM plans WHERE id = ?")
             .bind(plan_id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
         let Some(row) = row else {
@@ -1039,14 +1071,18 @@ impl ActivityRepo {
     /// Look up the `project_id` for a run by joining `runs` → `plans`.
     ///
     /// Returns `None` when the run or its plan is not yet in the DB.
-    async fn inherit_run_project_id(&self, run_id: RunId) -> Result<Option<ProjectId>> {
+    async fn inherit_run_project_id(
+        &self,
+        conn: &mut SqliteConnection,
+        run_id: RunId,
+    ) -> Result<Option<ProjectId>> {
         let row = sqlx::query(
             "SELECT p.project_id FROM plans p \
              JOIN runs r ON r.plan_id = p.id \
              WHERE r.id = ?",
         )
         .bind(run_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
         let Some(row) = row else {
@@ -1086,7 +1122,7 @@ impl ActivityRepo {
     // ── Private helpers ────────────────────────────────────────────────────
 
     /// Insert an activity row; silently ignores duplicate `event_id`.
-    async fn insert_row(&self, a: Activity) -> Result<()> {
+    async fn insert_row(&self, conn: &mut SqliteConnection, a: Activity) -> Result<()> {
         let actor_json =
             serde_json::to_string(&a.actor).map_err(|e| CoreError::serde(e.to_string()))?;
         sqlx::query(
@@ -1106,7 +1142,7 @@ impl ActivityRepo {
         .bind(a.occurred_at.to_rfc3339())
         .bind(a.event_id.to_string())
         .bind(a.seq)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
@@ -1114,12 +1150,18 @@ impl ActivityRepo {
 
     /// Pair-merge: update the verb of the activity row at `(task_id, seq)`.
     /// Returns `true` if a row was found and updated.
-    async fn try_update_verb_at_seq(&self, task_id: TaskId, seq: i64, verb: Verb) -> Result<bool> {
+    async fn try_update_verb_at_seq(
+        &self,
+        conn: &mut SqliteConnection,
+        task_id: TaskId,
+        seq: i64,
+        verb: Verb,
+    ) -> Result<bool> {
         let n = sqlx::query("UPDATE activity SET verb = ? WHERE task_id = ? AND seq = ?")
             .bind(verb.to_string())
             .bind(task_id.to_string())
             .bind(seq)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?
             .rows_affected();
@@ -1130,6 +1172,7 @@ impl ActivityRepo {
     /// `CommentAdded` row at `(task_id, seq)`.  Returns `true` if updated.
     async fn try_update_commented_at_seq(
         &self,
+        conn: &mut SqliteConnection,
         task_id: TaskId,
         seq: i64,
         preview: &str,
@@ -1141,7 +1184,7 @@ impl ActivityRepo {
         .bind(preview)
         .bind(task_id.to_string())
         .bind(seq)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?
         .rows_affected();

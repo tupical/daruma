@@ -29,6 +29,22 @@ impl SqliteEventStore {
         load_since_on(&mut **tx, since_seq, limit).await
     }
 
+    /// [`EventStore::load_by_id`] inside the caller's transaction.
+    pub async fn load_by_id_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: EventId,
+    ) -> Result<Option<EventEnvelope>> {
+        load_by_id_on(&mut **tx, id).await
+    }
+
+    /// [`EventStore::append`] inside the caller's transaction.
+    pub async fn append_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        envelope: EventEnvelope,
+    ) -> Result<EventEnvelope> {
+        append_on(&mut **tx, envelope).await
+    }
+
     /// Deletes telemetry older than `cutoff` without renumbering the event log.
     pub async fn purge_telemetry_before(&self, cutoff: DateTime<Utc>) -> Result<u64> {
         sqlx::query("DELETE FROM events WHERE event_class = ? AND occurred_at < ?")
@@ -196,17 +212,7 @@ impl EventStore for SqliteEventStore {
     }
 
     async fn load_by_id(&self, id: EventId) -> Result<Option<EventEnvelope>> {
-        let row = sqlx::query(
-            "SELECT seq, event_id, occurred_at, actor_json, payload_json, \
-             origin_device_id, origin_seq \
-             FROM events WHERE event_id = ? LIMIT 1",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-
-        row.as_ref().map(parse_row).transpose()
+        load_by_id_on(&self.pool, id).await
     }
 
     async fn latest_seq(&self) -> Result<u64> {
@@ -227,6 +233,23 @@ impl EventStore for SqliteEventStore {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+async fn load_by_id_on<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    id: EventId,
+) -> Result<Option<EventEnvelope>> {
+    let row = sqlx::query(
+        "SELECT seq, event_id, occurred_at, actor_json, payload_json, \
+         origin_device_id, origin_seq \
+         FROM events WHERE event_id = ? LIMIT 1",
+    )
+    .bind(id.to_string())
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    row.as_ref().map(parse_row).transpose()
+}
 
 async fn load_since_on<'e, E: SqliteExecutor<'e>>(
     executor: E,

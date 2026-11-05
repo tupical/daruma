@@ -14,6 +14,9 @@ use sqlx::{Sqlite, SqliteExecutor, SqlitePool, Transaction};
 /// Local event-log rows read per round during a rebuild.
 const LOCAL_LOG_PAGE_SIZE: usize = 1000;
 
+/// SQL for whether the rows can be trusted to match the cursor.
+const VERIFIED: &str = "baseline_verified AND projections_verified";
+
 /// The server side of a catch-up.
 #[async_trait]
 pub trait ReplicaSource: Send + Sync {
@@ -70,25 +73,32 @@ impl Replica {
             .execute(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        // 1 once the cursor is known to rest on a replay from seq 0 or on a
-        // consistent snapshot. A cursor written before this column existed
-        // may rest on a snapshot that missed events, and the column default
-        // sends such a replica through `rebuild_from_log`.
-        let (has_baseline,) = sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM pragma_table_info('desktop_replica_state') \
-             WHERE name = 'baseline_verified'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-        if has_baseline == 0 {
-            sqlx::query(
-                "ALTER TABLE desktop_replica_state \
-                 ADD COLUMN baseline_verified INTEGER NOT NULL DEFAULT 0",
+        // baseline_verified: 1 once the cursor is known to rest on a replay
+        // from seq 0 or on a consistent snapshot. A cursor written before this
+        // column existed may rest on a snapshot that missed events.
+        // projections_verified: 1 once every event in the local log is known
+        // to be projected. A sync that stopped between the append and the
+        // projectors used to leave its event behind for good.
+        // The column defaults send both kinds of replica through
+        // `rebuild_from_log`.
+        for column in ["baseline_verified", "projections_verified"] {
+            let (present,) = sqlx::query_as::<_, (i64,)>(
+                "SELECT COUNT(*) FROM pragma_table_info('desktop_replica_state') \
+                 WHERE name = ?",
             )
-            .execute(&self.pool)
+            .bind(column)
+            .fetch_one(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
+            if present == 0 {
+                sqlx::query(&format!(
+                    "ALTER TABLE desktop_replica_state \
+                     ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                ))
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
         }
         Ok(())
     }
@@ -103,19 +113,10 @@ impl Replica {
         Ok(row.0.max(0) as u64)
     }
 
-    async fn set_server_seq(&self, server_seq: u64) -> Result<()> {
-        sqlx::query("UPDATE desktop_replica_state SET server_seq = ? WHERE id = 1")
-            .bind(server_seq as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
-        Ok(())
-    }
-
     async fn baseline_verified(&self) -> Result<bool> {
-        let row = sqlx::query_as::<_, (i64,)>(
-            "SELECT baseline_verified FROM desktop_replica_state WHERE id = 1",
-        )
+        let row = sqlx::query_as::<_, (i64,)>(&format!(
+            "SELECT {VERIFIED} FROM desktop_replica_state WHERE id = 1"
+        ))
         .fetch_one(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -128,10 +129,17 @@ impl Replica {
     }
 
     pub async fn catch_up(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<CatchUpStats> {
+        // A brand new replica has nothing to repair; one that holds events
+        // does even at cursor 0, since a first sync that stopped midway left
+        // them in the log without writing a cursor.
+        let repaired = if !self.baseline_verified().await?
+            && (self.server_seq().await? > 0 || self.store.latest_seq().await? > 0)
+        {
+            self.rebuild_from_log(remote, limit).await?
+        } else {
+            0
+        };
         let mut since = self.server_seq().await?;
-        if since > 0 && !self.baseline_verified().await? {
-            return self.rebuild_from_log(remote, limit).await;
-        }
         if since == 0 {
             // First catch-up on this device: try to bootstrap from the
             // server's materialised projection snapshot instead of replaying
@@ -157,7 +165,9 @@ impl Replica {
             }
         }
         let events = remote.fetch_events(since, limit).await?;
-        self.apply_remote_events(events).await
+        let mut stats = self.apply_remote_events(events).await?;
+        stats.fetched += repaired;
+        Ok(stats)
     }
 
     /// Bootstrap from a server snapshot: restore the projection state and
@@ -177,36 +187,40 @@ impl Replica {
             .map_err(|e| CoreError::storage(e.to_string()))
     }
 
-    /// One-time repair for a cursor that may rest on a snapshot which missed
-    /// events: those events sit at or below the cursor, so no delta can bring
-    /// them back. Rebuild the projections as the server log plus whatever only
-    /// this device has (events still in the outbox or refused by the server).
+    /// One-time repair for a replica whose rows may not match its cursor: the
+    /// cursor rests on a snapshot which missed events, or on events that
+    /// reached the local log but not the projectors. Those events sit at or
+    /// below the cursor, so no delta can bring them back. Rebuild the
+    /// projections as the server log up to the cursor plus whatever else this
+    /// device has (events still in the outbox or refused by the server, and
+    /// events past the cursor, which the next delta then finds done). Returns
+    /// how many server events were read.
     ///
-    /// Everything is folded on the side, so a failed fetch leaves the replica
-    /// untouched. Other processes of this device keep writing meanwhile: the
-    /// rows and the baseline change in one write transaction, which first
-    /// reads whatever reached the local log since. A command that committed
-    /// before it is in the fold, and any later one lands on the new rows. A
-    /// crash rolls back, and the next sync reruns the repair.
-    async fn rebuild_from_log(
-        &self,
-        remote: &dyn ReplicaSource,
-        limit: u32,
-    ) -> Result<CatchUpStats> {
+    /// Everything but the activity feed is folded on the side, so a failed
+    /// fetch leaves the replica untouched. The feed comes from the local log:
+    /// it only ever covered what this device saw. Other processes of this
+    /// device keep writing meanwhile: the rows and the baseline change in one
+    /// write transaction, which first reads whatever reached the local log
+    /// since. A command that committed before it is in the fold, and any later
+    /// one lands on the new rows. A crash rolls back, and the next sync reruns
+    /// the repair. `entity_versions` and the other audit aids listed on
+    /// [`ProjectionSnapshot`] are not rebuilt, as a snapshot does not carry
+    /// them either.
+    async fn rebuild_from_log(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<usize> {
         let cursor = self.server_seq().await?;
         let fold = ProjectionFold::new(None).await?;
         let mut server_ids = HashSet::new();
         let mut since = 0;
-        loop {
+        while since < cursor {
             let page = remote.fetch_events(since, limit).await?;
             let Some(last) = page.last() else { break };
             since = last.seq;
-            for event in &page {
+            for event in page.iter().filter(|e| e.seq <= cursor) {
                 fold.apply(event).await?;
                 server_ids.insert(event.id);
             }
         }
-        if server_ids.is_empty() {
+        if cursor > 0 && server_ids.is_empty() {
             // An empty log cannot be the one this cursor came from, and
             // adopting it would wipe the replica.
             return Err(CoreError::sync(format!(
@@ -215,12 +229,11 @@ impl Replica {
         }
         tracing::info!(
             cursor,
-            server_seq = since,
             events = server_ids.len(),
             "rebuilding replica from the server log"
         );
         // The bulk of the local log goes in before the lock is taken, so
-        // writers only ever wait for the tail and the row swap.
+        // writers only wait for the tail, the row swap and the feed.
         let mut local_seq = 0;
         loop {
             let page = self
@@ -232,26 +245,16 @@ impl Replica {
             }
         }
 
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
-        let (current, verified) = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT server_seq, baseline_verified FROM desktop_replica_state WHERE id = 1",
-        )
+        let mut tx = self.begin_write().await?;
+        let (current, verified) = sqlx::query_as::<_, (i64, i64)>(&format!(
+            "SELECT server_seq, {VERIFIED} FROM desktop_replica_state WHERE id = 1"
+        ))
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
-        let current = current.max(0) as u64;
         if verified != 0 {
-            // Another sync of this device finished the repair, maybe from a
-            // newer server log than the one folded here.
-            return Ok(CatchUpStats {
-                fetched: server_ids.len(),
-                applied: 0,
-                server_seq: current,
-            });
+            // Another sync of this device finished the repair.
+            return Ok(server_ids.len());
         }
         loop {
             let page =
@@ -262,16 +265,33 @@ impl Replica {
         }
         let state = fold.state().await?;
         self.replace_projections(&mut tx, &state).await?;
-        let server_seq = since.max(current);
-        mark_verified_baseline(&mut *tx, server_seq).await?;
+        self.replace_activity(&mut tx).await?;
+        mark_verified_baseline(&mut *tx, (current.max(0) as u64).max(cursor)).await?;
         tx.commit()
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        Ok(CatchUpStats {
-            fetched: server_ids.len(),
-            applied: server_ids.len(),
-            server_seq,
-        })
+        Ok(server_ids.len())
+    }
+
+    /// Replay the activity feed from the local log. A row comes from exactly
+    /// one logged event, and pair merges look at the neighbouring seq, so
+    /// starting over gives what an uninterrupted replay gives.
+    async fn replace_activity(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        sqlx::query("DELETE FROM activity")
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut local_seq = 0;
+        loop {
+            let page = SqliteEventStore::load_since_tx(tx, local_seq, LOCAL_LOG_PAGE_SIZE).await?;
+            let Some(last) = page.last() else {
+                return Ok(());
+            };
+            local_seq = last.seq;
+            for event in &page {
+                self.activity.apply_event_tx(tx, event).await?;
+            }
+        }
     }
 
     /// Make the projections hold exactly `state`. Only rows `state` lacks are
@@ -338,19 +358,15 @@ impl Replica {
         let mut max_server_seq = self.server_seq().await?;
         let fetched = events.len();
 
-        for mut event in events {
-            let server_seq = event.seq;
-            max_server_seq = max_server_seq.max(server_seq);
-            if self.store.load_by_id(event.id).await?.is_some() {
-                continue;
+        // The first failure ends the batch: the cursor stays on the last
+        // event that took effect, so no later one can hide the gap.
+        for event in events {
+            max_server_seq = max_server_seq.max(event.seq);
+            if self.apply_remote_event(event).await? {
+                applied += 1;
             }
-            event.seq = 0;
-            let persisted = self.store.append(event).await?;
-            self.apply_projection(&persisted).await?;
-            applied += 1;
         }
 
-        self.set_server_seq(max_server_seq).await?;
         Ok(CatchUpStats {
             fetched,
             applied,
@@ -358,13 +374,49 @@ impl Replica {
         })
     }
 
-    async fn apply_projection(&self, event: &EventEnvelope) -> Result<()> {
-        self.tasks.apply_event(event).await?;
-        self.projects.apply_event(event).await?;
-        self.comments.apply_event(event).await?;
-        self.activity.apply_event(event).await?;
-        Ok(())
+    /// Log one server event, run every projector and move the cursor past it,
+    /// all in one transaction. An event in the local log has therefore always
+    /// taken full effect, so finding its id means there is nothing left to do,
+    /// whether it is a retry or the echo of a local command. `false` for those.
+    async fn apply_remote_event(&self, mut event: EventEnvelope) -> Result<bool> {
+        let server_seq = event.seq;
+        let mut tx = self.begin_write().await?;
+        let unseen = SqliteEventStore::load_by_id_tx(&mut tx, event.id)
+            .await?
+            .is_none();
+        if unseen {
+            event.seq = 0;
+            let persisted = SqliteEventStore::append_tx(&mut tx, event).await?;
+            self.tasks.apply_event_tx(&mut tx, &persisted).await?;
+            self.projects.apply_event_tx(&mut tx, &persisted).await?;
+            self.comments.apply_event_tx(&mut tx, &persisted).await?;
+            self.activity.apply_event_tx(&mut tx, &persisted).await?;
+        }
+        advance_server_seq(&mut *tx, server_seq).await?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(unseen)
     }
+
+    /// A transaction that holds the write lock from its first statement, so
+    /// what it reads cannot change before it writes.
+    async fn begin_write(&self) -> Result<Transaction<'_, Sqlite>> {
+        self.pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))
+    }
+}
+
+/// Two processes of one device may sync at once, so the cursor only moves up.
+async fn advance_server_seq<'e, E: SqliteExecutor<'e>>(executor: E, server_seq: u64) -> Result<()> {
+    sqlx::query("UPDATE desktop_replica_state SET server_seq = MAX(server_seq, ?) WHERE id = 1")
+        .bind(server_seq as i64)
+        .execute(executor)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(())
 }
 
 async fn mark_verified_baseline<'e, E: SqliteExecutor<'e>>(
@@ -372,7 +424,8 @@ async fn mark_verified_baseline<'e, E: SqliteExecutor<'e>>(
     server_seq: u64,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE desktop_replica_state SET server_seq = ?, baseline_verified = 1 WHERE id = 1",
+        "UPDATE desktop_replica_state \
+         SET server_seq = ?, baseline_verified = 1, projections_verified = 1 WHERE id = 1",
     )
     .bind(server_seq as i64)
     .execute(executor)
@@ -480,7 +533,7 @@ mod tests {
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
-            self.replica.set_server_seq(seq).await.unwrap();
+            advance_server_seq(&self.pool, seq).await.unwrap();
         }
     }
 
@@ -1521,7 +1574,7 @@ mod tests {
         let server = Server::start().await;
         let (device, _missing) = stranded_device(&server).await;
         let ahead = server.store.latest_seq().await.unwrap() + 5;
-        device.replica.set_server_seq(ahead).await.unwrap();
+        advance_server_seq(&device.pool, ahead).await.unwrap();
 
         let stats = device.replica.catch_up(&server, 50).await.unwrap();
 

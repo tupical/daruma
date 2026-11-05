@@ -292,11 +292,23 @@ impl TaskRepo {
     ///
     /// Non-task events are silently ignored.
     pub async fn apply_event(&self, envelope: &EventEnvelope) -> Result<()> {
+        let mut tx = self.begin_tx().await?;
+        self.apply_event_tx(&mut tx, envelope).await?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))
+    }
+
+    /// [`Self::apply_event`] inside the caller's transaction.
+    pub async fn apply_event_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        envelope: &EventEnvelope,
+    ) -> Result<()> {
         let occurred_at = envelope.occurred_at;
 
         match &envelope.payload {
             Event::TaskCreated { task: new_task } => {
-                let mut tx = self.begin_tx().await?;
                 let task = Task {
                     id: new_task.id.unwrap_or_default(),
                     project_id: new_task.project_id,
@@ -323,15 +335,12 @@ impl TaskRepo {
                     git_context: None,
                 };
                 let after = task_value(&task)?;
-                self.upsert_task_tx(&mut tx, &task).await?;
+                self.upsert_task_tx(tx, &task).await?;
                 // Entering the initial status is a status change: without it a
                 // task that never moves stays NULL and is invisible to the
                 // "stuck in status" audit (the todo backlog it exists for).
-                stamp_status_changed_at(&mut tx, task.id, occurred_at).await?;
-                insert_task_version(&mut tx, envelope, task.id, None, Some(after)).await?;
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                stamp_status_changed_at(tx, task.id, occurred_at).await?;
+                insert_task_version(tx, envelope, task.id, None, Some(after)).await?;
             }
 
             Event::TaskDueElapsed {
@@ -346,34 +355,29 @@ impl TaskRepo {
                 .bind(task_id.to_string())
                 .bind(due_at.to_rfc3339())
                 .bind(at.to_rfc3339())
-                .execute(&self.pool)
+                .execute(&mut **tx)
                 .await
                 .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskUpdated { task_id, patch } => {
-                let mut tx = self.begin_tx().await?;
-                if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
+                if let Some(mut task) = get_task_tx(tx, *task_id).await? {
                     let before = task_value(&task)?;
                     patch.clone().apply(&mut task);
                     task.updated_at = occurred_at;
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
+                    self.upsert_task_tx(tx, &task).await?;
                     if let Some(position) = &patch.pipeline_position {
-                        stamp_pipeline_position(&mut tx, *task_id, position).await?;
+                        stamp_pipeline_position(tx, *task_id, position).await?;
                     }
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskStatusChanged { task_id, to, .. } => {
-                let mut tx = self.begin_tx().await?;
-                if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
+                if let Some(mut task) = get_task_tx(tx, *task_id).await? {
                     let before = task_value(&task)?;
                     task.status = *to;
                     task.updated_at = occurred_at;
@@ -385,31 +389,24 @@ impl TaskRepo {
                     }
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
-                    stamp_status_changed_at(&mut tx, *task_id, occurred_at).await?;
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
+                    self.upsert_task_tx(tx, &task).await?;
+                    stamp_status_changed_at(tx, *task_id, occurred_at).await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskPriorityChanged { task_id, to, .. } => {
-                let mut tx = self.begin_tx().await?;
-                if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
+                if let Some(mut task) = get_task_tx(tx, *task_id).await? {
                     let before = task_value(&task)?;
                     task.priority = *to;
                     task.updated_at = occurred_at;
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
+                    self.upsert_task_tx(tx, &task).await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskCompleted {
@@ -417,8 +414,7 @@ impl TaskRepo {
                 completed_at,
                 ..
             } => {
-                let mut tx = self.begin_tx().await?;
-                if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
+                if let Some(mut task) = get_task_tx(tx, *task_id).await? {
                     let before = task_value(&task)?;
                     let entered_done = task.status != Status::Done;
                     task.status = Status::Done;
@@ -428,44 +424,36 @@ impl TaskRepo {
                     task.completed_by = Some(envelope.actor.clone());
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
+                    self.upsert_task_tx(tx, &task).await?;
                     if entered_done {
-                        stamp_status_changed_at(&mut tx, *task_id, occurred_at).await?;
+                        stamp_status_changed_at(tx, *task_id, occurred_at).await?;
                     }
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskDeleted { task_id } => {
-                let mut tx = self.begin_tx().await?;
-                let before = get_task_tx(&mut tx, *task_id)
+                let before = get_task_tx(tx, *task_id)
                     .await?
                     .map(|task| task_value(&task))
                     .transpose()?;
                 sqlx::query("DELETE FROM tasks WHERE id = ?")
                     .bind(task_id.to_string())
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await
                     .map_err(|e| CoreError::storage(e.to_string()))?;
                 sqlx::query("DELETE FROM task_due_notifications WHERE task_id = ?")
                     .bind(task_id.to_string())
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await
                     .map_err(|e| CoreError::storage(e.to_string()))?;
                 if let Some(before) = before {
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), None).await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), None).await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskSplitGenerated { subtasks, .. } => {
-                let mut tx = self.begin_tx().await?;
                 for new_task in subtasks {
                     let task = Task {
                         id: new_task.id.unwrap_or_default(),
@@ -493,50 +481,39 @@ impl TaskRepo {
                         git_context: None,
                     };
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
-                    insert_task_version(&mut tx, envelope, task.id, None, Some(after)).await?;
+                    self.upsert_task_tx(tx, &task).await?;
+                    insert_task_version(tx, envelope, task.id, None, Some(after)).await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             // Semantic events (W2.1) — update lifecycle timestamps in
             // addition to the mechanical `TaskStatusChanged` that precedes
             // them in the same batch.
             Event::TaskReopened { task_id, at, .. } => {
-                let mut tx = self.begin_tx().await?;
-                if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
+                if let Some(mut task) = get_task_tx(tx, *task_id).await? {
                     let before = task_value(&task)?;
                     task.completed_at = None;
                     task.updated_at = *at;
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
+                    self.upsert_task_tx(tx, &task).await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             Event::TaskClosed { task_id, at, .. } => {
-                let mut tx = self.begin_tx().await?;
-                if let Some(mut task) = get_task_tx(&mut tx, *task_id).await? {
+                if let Some(mut task) = get_task_tx(tx, *task_id).await? {
                     let before = task_value(&task)?;
                     task.completed_at = Some(*at);
                     task.updated_at = *at;
                     task.started_at = task.started_at.or(Some(*at));
                     stamp_last_change(&mut task, envelope);
                     let after = task_value(&task)?;
-                    self.upsert_task_tx(&mut tx, &task).await?;
-                    insert_task_version(&mut tx, envelope, *task_id, Some(before), Some(after))
+                    self.upsert_task_tx(tx, &task).await?;
+                    insert_task_version(tx, envelope, *task_id, Some(before), Some(after))
                         .await?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
 
             // Non-task projection-affecting events are ignored by this repo.
