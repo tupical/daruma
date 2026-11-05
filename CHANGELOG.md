@@ -26,6 +26,30 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
   server's log must be the one the replica came from: a server
   with an empty log is refused rather than adopted.
 
+### Revoking a token ends its open WebSocket and its cached HTTP access
+
+- `DELETE /v1/tokens/{id}` used to change only the token row, so an open
+  WebSocket kept running commands and receiving events on the old
+  `AuthContext`, and the HTTP cache kept accepting the bearer for up to 30
+  seconds. Once the `204` returns, the token's sockets get the `auth_revoked`
+  error and a 1008 close, frames queued for them are dropped, and later HTTP
+  requests get `401 auth_revoked` even if a verification that started earlier
+  fills the cache afterwards. Only that token is affected: other tokens of the
+  same agent or device keep working. Revoking a device still refuses all of
+  its tokens with `unauthorized`.
+- A socket rereads the token row before each client frame runs and before each
+  server frame is written, so a revoke from another process or a lost
+  notification still holds. A quiet socket finds out at its next `Ping`, within
+  25 seconds. This adds one primary-key read per WebSocket frame. If the row
+  cannot be read, the socket closes with `auth_storage` and 1011; the client
+  can reconnect.
+- Limits: a frame that passed this check before the revoke committed still runs
+  or is delivered, and a request already past the auth middleware finishes. A
+  revoke that skips this server's hub reaches the HTTP cache only when the
+  entry expires, 30 seconds after the cache fill rather than after the revoke,
+  or sooner if one of the token's sockets finds the revoked row first. Token
+  expiry during an open socket is not rechecked.
+
 ### Revoking a device closes a WebSocket that was still connecting
 
 - A socket subscribed to device revocations only after authentication, so a
@@ -34,8 +58,7 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
   before it validates the token and rechecks the device before admission.
   Once a revoke returns, the device's frames are refused on ingress and its
   outgoing queue is replaced by the `unauthorized` error and a 1008 close. A
-  broadcast missed through lag no longer hides the revocation. Revoking a token
-  through `DELETE /v1/tokens/{id}` still affects only new connections.
+  broadcast missed through lag no longer hides the revocation.
 
 ### Tasks created by a split keep their origin
 

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use daruma_core::{Command, CommandBus};
 use daruma_domain::Actor;
 use daruma_events::{EventBus, EventEnvelope, EventReceiver};
-use daruma_shared::{AgentId, DeviceId, Result};
+use daruma_shared::{AgentId, DeviceId, Result, TokenId};
 use dashmap::{DashMap, DashSet};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -75,7 +75,10 @@ struct HubInner {
     connected_devices: Arc<DashMap<DeviceId, usize>>,
     /// Revocation is permanent, so this grows only with revoked devices.
     revoked_devices: DashSet<DeviceId>,
-    device_revocations: broadcast::Sender<DeviceId>,
+    /// Revocation is permanent, so this grows only with revoked tokens.
+    revoked_tokens: DashSet<TokenId>,
+    /// Wake-up only: the latches above carry the decision.
+    revocations: broadcast::Sender<()>,
     fanout_task: AbortHandle,
 }
 
@@ -93,7 +96,7 @@ impl Hub {
     pub fn new(bus: EventBus, commands: Arc<CommandBus>) -> Self {
         let subscribers: Arc<SubscriberMap> = Arc::new(DashMap::new());
         let connected_devices = Arc::new(DashMap::new());
-        let (device_revocations, _rx) = broadcast::channel(128);
+        let (revocations, _rx) = broadcast::channel(128);
         let bus_rx = bus.subscribe();
         let fanout_handle = spawn_fanout(bus_rx, Arc::clone(&subscribers));
 
@@ -104,7 +107,8 @@ impl Hub {
                 subscribers,
                 connected_devices,
                 revoked_devices: DashSet::new(),
-                device_revocations,
+                revoked_tokens: DashSet::new(),
+                revocations,
                 fanout_task: fanout_handle.abort_handle(),
             }),
         }
@@ -185,15 +189,27 @@ impl Hub {
     /// returns and answers every later [`Hub::is_device_revoked`].
     pub fn notify_device_revoked(&self, id: DeviceId) {
         self.inner.revoked_devices.insert(id);
-        let _ = self.inner.device_revocations.send(id);
+        let _ = self.inner.revocations.send(());
     }
 
     pub fn is_device_revoked(&self, id: DeviceId) -> bool {
         self.inner.revoked_devices.contains(&id)
     }
 
-    pub fn subscribe_device_revocations(&self) -> broadcast::Receiver<DeviceId> {
-        self.inner.device_revocations.subscribe()
+    /// Same contract as [`Hub::notify_device_revoked`], for one token: other
+    /// tokens of the agent or the device are untouched.
+    pub fn notify_token_revoked(&self, id: TokenId) {
+        self.inner.revoked_tokens.insert(id);
+        let _ = self.inner.revocations.send(());
+    }
+
+    pub fn is_token_revoked(&self, id: TokenId) -> bool {
+        self.inner.revoked_tokens.contains(&id)
+    }
+
+    /// Fires after any device or token revocation.
+    pub fn subscribe_revocations(&self) -> broadcast::Receiver<()> {
+        self.inner.revocations.subscribe()
     }
 
     /// Current number of registered WS subscribers. Test helper.

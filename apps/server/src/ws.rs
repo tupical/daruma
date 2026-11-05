@@ -22,6 +22,15 @@
 //!     device is rechecked before admission. A revoked device gets the
 //!     `unauthorized` error and a `1008` close; frames it sent stay unexecuted
 //!     and frames queued for it are dropped.
+//!   * Token revocation: `DELETE /v1/tokens/{id}` latches the token in the
+//!     hub, which ends that token's sockets the same way with `auth_revoked`
+//!     and `1008`; other tokens of the agent or device keep theirs. The latch
+//!     only serves this hub, so the token row is reread before each client
+//!     frame runs and each server frame is written: a revoke from another
+//!     process or a lost notification holds too, and a quiet socket learns of
+//!     it from its next `Ping`. A frame that passed this check before the
+//!     revoke committed still runs or is delivered. A row that cannot be read
+//!     closes the socket with `auth_storage` and `1011`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,9 +49,9 @@ use daruma_auth::{
 };
 use daruma_domain::Actor;
 use daruma_events::{Channel, Event, EventEnvelope};
-use daruma_shared::{time, AgentId, DeviceId, EventId, PlanId, ProjectId, TaskId};
+use daruma_shared::{time, AgentId, DeviceId, EventId, PlanId, ProjectId, TaskId, TokenId};
 use daruma_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
-use daruma_sync::{WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
+use daruma_sync::{Hub, WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
 use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -110,7 +119,7 @@ async fn handle_socket(
 
     // 1. Watch revocations before validating, so a revoke landing after the
     //    token read below still wakes this connection.
-    let mut revocations = state.hub.subscribe_device_revocations();
+    let mut revocations = state.hub.subscribe_revocations();
 
     // 2. Authenticate.
     let mut auth_ctx = match authenticate(&state.auth_store, token.as_deref()).await {
@@ -138,15 +147,18 @@ async fn handle_socket(
     }
     let mine = mine.then(|| auth_ctx.principal_id.unwrap_or(auth_ctx.agent_id));
     let device_id = auth_ctx.device_id;
+    let token_id = auth_ctx.token_id;
     // The token row above may predate a revoke that committed since.
-    if let Some(id) = device_id {
-        if !device_still_admitted(&state, id).await {
-            for frame in device_revoked_frames() {
-                let _ = ws_sink.send(frame).await;
-            }
-            drain_refused(&mut ws_stream).await;
-            return;
+    let refusal = match device_id {
+        Some(id) if !device_still_admitted(&state, id).await => Some(Refusal::Device),
+        _ => current_refusal(&state.hub, &state.auth_store, device_id, token_id).await,
+    };
+    if let Some(refusal) = refusal {
+        for frame in refusal.frames() {
+            let _ = ws_sink.send(frame).await;
         }
+        drain_refused(&mut ws_stream).await;
+        return;
     }
     if let Some(device_id) = device_id {
         state.hub.device_connected(device_id);
@@ -189,13 +201,16 @@ async fn handle_socket(
     );
 
     // 5. Spawn the write-side task that drains `out_rx` to the WS sink. Every
-    //    server frame passes here, so once a revoke returns the device gets
+    //    server frame passes here, so once a revoke returns the client gets
     //    the refusal instead of whatever was still queued.
     let write_hub = state.hub.clone();
+    let write_store = state.auth_store.clone();
     let write_task = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
-            if device_id.is_some_and(|id| write_hub.is_device_revoked(id)) {
-                for frame in device_revoked_frames() {
+            if let Some(refusal) =
+                current_refusal(&write_hub, &write_store, device_id, token_id).await
+            {
+                for frame in refusal.frames() {
                     let _ = ws_sink.send(frame).await;
                 }
                 break;
@@ -223,12 +238,15 @@ async fn handle_socket(
         tokio::select! {
             // The hub latch decides: `recv` is only a wake-up, and a lagged
             // receiver wakes without the id it missed.
-            _ = revocations.recv(), if device_id.is_some() => {
-                if device_is_revoked(&state, device_id) {
-                    send_unauthorized_close(&out_tx);
+            _ = revocations.recv() => {
+                if let Some(refusal) = latched_refusal(&state.hub, device_id, token_id) {
+                    send_refusal(&out_tx, refusal);
                     break;
                 }
             }
+
+            // The writer refused or lost the socket: nothing can answer now.
+            _ = out_tx.closed() => break,
 
             // ── heartbeat tick ───────────────────────────────────────────────
             _ = hb.tick() => {
@@ -250,9 +268,12 @@ async fn handle_socket(
             // ── incoming WS frame ────────────────────────────────────────────
             maybe_msg = ws_stream.next() => {
                 let Some(Ok(msg)) = maybe_msg else { break };
-                // `select!` may pick this branch over a pending revocation.
-                if device_is_revoked(&state, device_id) {
-                    send_unauthorized_close(&out_tx);
+                // `select!` may pick this branch over a pending revocation,
+                // and a revoke that skipped this hub is only in the token row.
+                let refusal =
+                    current_refusal(&state.hub, &state.auth_store, device_id, token_id).await;
+                if let Some(refusal) = refusal {
+                    send_refusal(&out_tx, refusal);
                     break;
                 }
                 match msg {
@@ -348,7 +369,7 @@ async fn handle_socket(
     }
     drop(out_tx);
     let _ = tokio::time::timeout(Duration::from_secs(1), write_task).await;
-    if device_is_revoked(&state, device_id) {
+    if latched_refusal(&state.hub, device_id, token_id).is_some() {
         drain_refused(&mut ws_stream).await;
     }
 }
@@ -372,8 +393,68 @@ async fn drain_refused(ws_stream: &mut SplitStream<WebSocket>) {
     .await;
 }
 
-fn device_is_revoked(state: &AppState, device_id: Option<DeviceId>) -> bool {
-    device_id.is_some_and(|id| state.hub.is_device_revoked(id))
+/// Why an authenticated connection has to end.
+#[derive(Clone, Copy)]
+enum Refusal {
+    Device,
+    Token,
+    /// The token row is unreadable, so the grant cannot be confirmed.
+    TokenUnverified,
+}
+
+impl Refusal {
+    fn frames(self) -> [Message; 2] {
+        let (code, reason, close_code) = match self {
+            Refusal::Device => ("unauthorized", "device revoked", 1008),
+            Refusal::Token => ("auth_revoked", "token revoked", 1008),
+            Refusal::TokenUnverified => ("auth_storage", "token check failed", 1011),
+        };
+        let error = WsServerMessage::Error {
+            code: code.to_string(),
+            message: reason.to_string(),
+            request_id: None,
+        };
+        let text = serde_json::to_string(&error).unwrap_or_default();
+        [
+            Message::Text(text.into()),
+            Message::Close(Some(CloseFrame {
+                code: close_code,
+                reason: reason.into(),
+            })),
+        ]
+    }
+}
+
+/// The hub latches alone. Cheap enough for every wake-up.
+fn latched_refusal(hub: &Hub, device_id: Option<DeviceId>, token_id: TokenId) -> Option<Refusal> {
+    if device_id.is_some_and(|id| hub.is_device_revoked(id)) {
+        return Some(Refusal::Device);
+    }
+    hub.is_token_revoked(token_id).then_some(Refusal::Token)
+}
+
+/// The latches, then the token row, which also answers for a revoke that never
+/// reached this hub. A revoked row latches it here for the HTTP cache too.
+async fn current_refusal(
+    hub: &Hub,
+    store: &Arc<dyn TokenStore>,
+    device_id: Option<DeviceId>,
+    token_id: TokenId,
+) -> Option<Refusal> {
+    if let Some(refusal) = latched_refusal(hub, device_id, token_id) {
+        return Some(refusal);
+    }
+    match store.get(token_id).await {
+        Ok(Some(token)) if token.revoked_at.is_none() => None,
+        Ok(_) => {
+            hub.notify_token_revoked(token_id);
+            Some(Refusal::Token)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "ws: token recheck failed");
+            Some(Refusal::TokenUnverified)
+        }
+    }
 }
 
 /// Admission recheck after the revocation watch is up. The store read covers a
@@ -391,24 +472,8 @@ async fn device_still_admitted(state: &AppState, id: DeviceId) -> bool {
     }
 }
 
-fn device_revoked_frames() -> [Message; 2] {
-    let error = WsServerMessage::Error {
-        code: "unauthorized".to_string(),
-        message: "device revoked".to_string(),
-        request_id: None,
-    };
-    let text = serde_json::to_string(&error).unwrap_or_default();
-    [
-        Message::Text(text.into()),
-        Message::Close(Some(CloseFrame {
-            code: 1008,
-            reason: "device revoked".into(),
-        })),
-    ]
-}
-
-fn send_unauthorized_close(out_tx: &mpsc::Sender<Message>) {
-    for frame in device_revoked_frames() {
+fn send_refusal(out_tx: &mpsc::Sender<Message>, refusal: Refusal) {
+    for frame in refusal.frames() {
         let _ = try_send_message(out_tx, frame);
     }
 }
