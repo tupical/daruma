@@ -387,6 +387,30 @@ async fn revoke_after_admission_stops_hello_commands_and_events() {
     assert!(!task_exists(&app, "sent before hello").await);
 }
 
+/// `select!` polls its branches in random order, so every round is a coin flip
+/// for a main loop that does not check the latch on ingress. A guarded loop
+/// refuses in all of them; nothing here waits for the race to happen.
+#[tokio::test]
+async fn buffered_command_never_beats_a_pending_revocation() {
+    let app = test_app().await;
+    for round in 0..24 {
+        let (device_id, token) = device_token(&app, TokenScope::default_user()).await;
+        let barrier = Barrier::armed();
+        let addr = serve_paused_before_hello(&app, barrier.clone()).await;
+        let title = format!("round {round}");
+
+        let (mut sink, mut stream) = connect(addr, &token).await;
+        barrier.wait_reached().await;
+        sink.send(create_task_frame(&title)).await.unwrap();
+
+        revoke_over_http(addr, &app, device_id).await;
+        barrier.release();
+
+        read_until_closed(&mut stream).await.assert_refused_only();
+        assert!(!task_exists(&app, &title).await, "{title} ran after revoke");
+    }
+}
+
 #[tokio::test]
 async fn revocation_lost_to_broadcast_lag_still_closes_the_connection() {
     let app = test_app().await;
