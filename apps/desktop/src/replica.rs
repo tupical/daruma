@@ -1450,6 +1450,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repair_waits_for_a_writer_holding_the_lock() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let hook = {
+            let writer = file.open_plain().await;
+            Box::pin(async move {
+                let mut tx = writer
+                    .device
+                    .pool
+                    .begin_with("BEGIN IMMEDIATE")
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE desktop_replica_state SET server_seq = server_seq")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    tx.commit().await.unwrap();
+                    drop(writer);
+                });
+            })
+        };
+        let syncing = file.open_hooked(hook).await;
+        let missing = syncing.strand(&server).await;
+
+        syncing.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert!(syncing.device.tasks.get(missing).await.unwrap().is_some());
+        assert!(syncing.device.replica.baseline_verified().await.unwrap());
+    }
+
+    #[tokio::test]
     async fn slower_repair_does_not_undo_a_finished_one() {
         let server = Arc::new(Server::start().await);
         let file = ReplicaFile::create().await;
@@ -1481,6 +1514,48 @@ mod tests {
             slow.device.state().await,
             server.full_replay().await.state().await
         );
+    }
+
+    #[tokio::test]
+    async fn repair_never_moves_the_cursor_back() {
+        let server = Server::start().await;
+        let (device, _missing) = stranded_device(&server).await;
+        let ahead = server.store.latest_seq().await.unwrap() + 5;
+        device.replica.set_server_seq(ahead).await.unwrap();
+
+        let stats = device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!(stats.server_seq, ahead);
+        assert_eq!(device.replica.server_seq().await.unwrap(), ahead);
+    }
+
+    #[tokio::test]
+    async fn repair_does_not_replay_an_event_the_server_already_has() {
+        let server = Server::start().await;
+        let (device, missing) = stranded_device(&server).await;
+        let rename = |title: &str| Event::TaskUpdated {
+            task_id: missing,
+            patch: TaskPatch {
+                title: Some(title.into()),
+                ..TaskPatch::default()
+            },
+        };
+        // A local edit reached the server, and the server moved on from it.
+        let mut flushed = device.local_event(rename("local")).await;
+        flushed.seq = 0;
+        let env = server.store.append(flushed).await.unwrap();
+        server.tasks.apply_event(&env).await.unwrap();
+        let env = server
+            .store
+            .append(EventEnvelope::new(Actor::user(), rename("server")))
+            .await
+            .unwrap();
+        server.tasks.apply_event(&env).await.unwrap();
+
+        device.replica.catch_up(&server, 50).await.unwrap();
+
+        let task = device.tasks.get(missing).await.unwrap().unwrap();
+        assert_eq!(task.title, "server");
     }
 
     #[tokio::test]
