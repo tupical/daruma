@@ -241,10 +241,7 @@ async fn unlink_of_last_blocker_emits_task_unblocked() {
 
 async fn complete_task(handler: &CommandHandler, id: TaskId) {
     handler
-        .handle(
-            Command::CompleteTask { id, note: None },
-            Actor::user(),
-        )
+        .handle(Command::CompleteTask { id, note: None }, Actor::user())
         .await
         .unwrap();
 }
