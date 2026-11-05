@@ -6,6 +6,26 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### A new device no longer starts from an incomplete snapshot
+
+- A bootstrap snapshot took its `seq` from the event log and its content from
+  the live projections, and an event is committed before it is applied. An
+  event caught in between, or left unapplied by a projector error or a crash,
+  sat under `seq` without being in the snapshot, so the device never replayed
+  it and silently missed the task or comment. Snapshots are now folded from
+  the event log through the same projectors, so `seq` holds every event up to
+  it. Snapshots written before this change are never served again, and until
+  the writer produces a new one devices replay the whole log.
+- A desktop replica that synced before this change cannot tell whether it was
+  bootstrapped from such a snapshot, so its next `sync` rebuilds tasks,
+  projects and comments once from the full server log. This costs one full
+  replay per device. Events still in the outbox or refused by the server stay
+  applied on top, and so does a command another process finishes during the
+  rebuild, which swaps the rows in one write transaction: a failed or
+  interrupted rebuild changes nothing and reruns on the next `sync`. The
+  server's log must be the one the replica came from: a server
+  with an empty log is refused rather than adopted.
+
 ### Revoking a device closes a WebSocket that was still connecting
 
 - A socket subscribed to device revocations only after authentication, so a

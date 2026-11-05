@@ -421,8 +421,8 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Background: bootstrap snapshot writer (device-sync catch-up) ──────────
     //
-    // Periodically materialises the device-replicated projections
-    // (tasks / projects / comments) into the `snapshots` table, so a freshly
+    // Periodically folds the event log into the device-replicated state
+    // (tasks / projects / comments) in the `snapshots` table, so a freshly
     // paired device restores the latest snapshot and replays only the delta
     // instead of the full event log from seq 0. A new snapshot is written
     // when at least `DARUMA_SNAPSHOT_MIN_EVENTS` (default 500) events landed
@@ -440,23 +440,14 @@ async fn main() -> anyhow::Result<()> {
         if snapshot_interval > 0 {
             let store_bg = state.store.clone();
             let snapshots_bg = state.snapshots.clone();
-            let tasks_bg = state.tasks.clone();
-            let projects_bg = state.projects.clone();
-            let comments_bg = state.comments.clone();
             tokio::spawn(async move {
                 let mut tick =
                     tokio::time::interval(std::time::Duration::from_secs(snapshot_interval));
                 loop {
                     tick.tick().await;
-                    match maybe_write_snapshot(
-                        &*store_bg,
-                        &snapshots_bg,
-                        &tasks_bg,
-                        &projects_bg,
-                        &comments_bg,
-                        snapshot_min_events,
-                    )
-                    .await
+                    match snapshots_bg
+                        .write_if_due(&*store_bg, snapshot_min_events)
+                        .await
                     {
                         Ok(Some(seq)) => {
                             tracing::info!(seq, "bootstrap snapshot written");
@@ -607,35 +598,6 @@ async fn bootstrap_admin_token(
     );
 
     Ok(())
-}
-
-/// Write a bootstrap snapshot when at least `min_events` new events landed
-/// since the last one. Returns the new snapshot's seq, or `None` when the
-/// threshold has not been reached.
-///
-/// The seq label is read before the projections: the snapshot may already
-/// reflect a few newer events, which is safe — projectors are upsert-style,
-/// so a catching-up device re-applying them from the delta is a no-op.
-async fn maybe_write_snapshot(
-    store: &dyn EventStore,
-    snapshots: &daruma_storage::SnapshotRepo,
-    tasks: &TaskRepo,
-    projects: &ProjectRepo,
-    comments: &CommentRepo,
-    min_events: u64,
-) -> anyhow::Result<Option<u64>> {
-    let seq = store.latest_seq().await?;
-    let last = snapshots.latest().await?.map(|s| s.seq).unwrap_or(0);
-    if seq.saturating_sub(last) < min_events {
-        return Ok(None);
-    }
-    let payload = daruma_storage::ProjectionSnapshot {
-        tasks: tasks.list_all().await?,
-        projects: projects.list_all().await?,
-        comments: comments.list_all().await?,
-    };
-    let snapshot = snapshots.insert(seq, &payload).await?;
-    Ok(Some(snapshot.seq))
 }
 
 // ── Discovery helpers ─────────────────────────────────────────────────────────

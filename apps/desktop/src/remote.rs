@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::flush::{PushOutcome, RemoteEventSink};
+use crate::replica::ReplicaSource;
 
 pub struct HttpReplicaSink {
     client: reqwest::Client,
@@ -66,45 +67,6 @@ impl HttpReplicaSink {
         )
     }
 
-    pub async fn fetch_events(&self, since: u64, limit: u32) -> Result<Vec<EventEnvelope>> {
-        let response = self
-            .client
-            .get(self.events_url(since, limit))
-            .bearer_auth(&self.token)
-            .send()
-            .await
-            .map_err(|e| CoreError::sync(e.to_string()))?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(CoreError::sync(format!(
-                "replica fetch failed with {status}: {body}"
-            )));
-        }
-        response
-            .json::<Vec<EventEnvelope>>()
-            .await
-            .map_err(|e| CoreError::serde(e.to_string()))
-    }
-
-    /// Fetch the latest bootstrap snapshot for catch-up, if the server has
-    /// one. `Ok(None)` covers both "writer has not produced a snapshot yet"
-    /// (200 with a `null` body) and older servers without the endpoint
-    /// (404) — in both cases the caller falls back to a full replay.
-    pub async fn fetch_snapshot(&self) -> Result<Option<Snapshot>> {
-        let response = self
-            .client
-            .get(self.snapshot_url())
-            .bearer_auth(&self.token)
-            .send()
-            .await
-            .map_err(|e| CoreError::sync(e.to_string()))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        json_response(response, "snapshot fetch").await
-    }
-
     pub async fn list_devices(&self) -> Result<DevicesResponse> {
         let response = self
             .client
@@ -138,6 +100,48 @@ impl HttpReplicaSink {
 /// Server error codes that refuse one specific event for good: such an event
 /// is dead-lettered and the flush moves on.
 const EVENT_REJECTION_CODES: &[&str] = &["intake_source_admin_only"];
+
+#[async_trait]
+impl ReplicaSource for HttpReplicaSink {
+    async fn fetch_events(&self, since: u64, limit: u32) -> Result<Vec<EventEnvelope>> {
+        let response = self
+            .client
+            .get(self.events_url(since, limit))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CoreError::sync(e.to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(CoreError::sync(format!(
+                "replica fetch failed with {status}: {body}"
+            )));
+        }
+        response
+            .json::<Vec<EventEnvelope>>()
+            .await
+            .map_err(|e| CoreError::serde(e.to_string()))
+    }
+
+    /// Fetch the latest bootstrap snapshot for catch-up, if the server has
+    /// one. `Ok(None)` covers both "writer has not produced a snapshot yet"
+    /// (200 with a `null` body) and older servers without the endpoint
+    /// (404) — in both cases the caller falls back to a full replay.
+    async fn fetch_snapshot(&self) -> Result<Option<Snapshot>> {
+        let response = self
+            .client
+            .get(self.snapshot_url())
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| CoreError::sync(e.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        json_response(response, "snapshot fetch").await
+    }
+}
 
 #[async_trait]
 impl RemoteEventSink for HttpReplicaSink {

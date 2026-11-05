@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::{Actor, Comment, CommentKind, CommentPatch};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CommentId, CoreError, ProjectId, Result, TaskId};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
 /// Read/write access to the `comments` projection table.
 pub struct CommentRepo {
@@ -122,32 +122,16 @@ impl CommentRepo {
 
     /// Insert or replace a comment row.
     pub async fn upsert_comment(&self, c: &Comment) -> Result<()> {
-        let author_json =
-            serde_json::to_string(&c.author).map_err(|e| CoreError::serde(e.to_string()))?;
-        let parent_id = c.parent_id.map(|p| p.to_string());
-        let kind = c.kind.map(|k| k.as_str().to_string());
-        let edited_at = c.edited_at.map(|t| t.to_rfc3339());
-        let deleted_at = c.deleted_at.map(|t| t.to_rfc3339());
+        upsert_comment_on(&self.pool, c).await
+    }
 
-        sqlx::query(
-            "INSERT OR REPLACE INTO comments \
-             (id, task_id, parent_id, author_json, body, kind, created_at, edited_at, deleted_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(c.id.to_string())
-        .bind(c.task_id.to_string())
-        .bind(parent_id)
-        .bind(author_json)
-        .bind(&c.body)
-        .bind(kind)
-        .bind(c.created_at.to_rfc3339())
-        .bind(edited_at)
-        .bind(deleted_at)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-
-        Ok(())
+    /// [`Self::upsert_comment`] inside the caller's transaction.
+    pub async fn upsert_comment_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        c: &Comment,
+    ) -> Result<()> {
+        upsert_comment_on(&mut **tx, c).await
     }
 
     /// Apply a single event envelope, updating the `comments` projection.
@@ -193,6 +177,35 @@ impl CommentRepo {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+async fn upsert_comment_on<'e, E: SqliteExecutor<'e>>(executor: E, c: &Comment) -> Result<()> {
+    let author_json =
+        serde_json::to_string(&c.author).map_err(|e| CoreError::serde(e.to_string()))?;
+    let parent_id = c.parent_id.map(|p| p.to_string());
+    let kind = c.kind.map(|k| k.as_str().to_string());
+    let edited_at = c.edited_at.map(|t| t.to_rfc3339());
+    let deleted_at = c.deleted_at.map(|t| t.to_rfc3339());
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO comments \
+         (id, task_id, parent_id, author_json, body, kind, created_at, edited_at, deleted_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(c.id.to_string())
+    .bind(c.task_id.to_string())
+    .bind(parent_id)
+    .bind(author_json)
+    .bind(&c.body)
+    .bind(kind)
+    .bind(c.created_at.to_rfc3339())
+    .bind(edited_at)
+    .bind(deleted_at)
+    .execute(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    Ok(())
+}
 
 fn apply_patch(comment: &mut Comment, patch: &CommentPatch, edited_at: DateTime<Utc>) {
     if let Some(body) = &patch.body {

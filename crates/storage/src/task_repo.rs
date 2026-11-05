@@ -611,7 +611,11 @@ impl TaskRepo {
             .map_err(|e| CoreError::storage(e.to_string()))
     }
 
-    async fn upsert_task_tx(&self, tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {
+    pub async fn upsert_task_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        task: &Task,
+    ) -> Result<()> {
         let project_id = task.project_id.map(|p| p.to_string());
         let due_at = task.due_at.map(|t| t.to_rfc3339());
         let started_at = task.started_at.map(|t| t.to_rfc3339());
