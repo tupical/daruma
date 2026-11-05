@@ -18,6 +18,10 @@
 //!   * `?visibility=mine` on the upgrade: only events the principal authored
 //!     or about its own tasks, the same rule as the cloud task journal. The
 //!     principal is the embedding host's [`HostPrincipal`], else the token's.
+//!   * Device revocation: the watch starts before token validation and the
+//!     device is rechecked before admission. A revoked device gets the
+//!     `unauthorized` error and a `1008` close; frames it sent stay unexecuted
+//!     and frames queued for it are dropped.
 
 use std::sync::Arc;
 use std::time::Duration;
