@@ -6,6 +6,27 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### A sync stopped halfway no longer loses events on the device
+
+- `daruma-desktop sync` logged an incoming event first and ran the projectors
+  afterwards, one by one. A crash or a projector error in between left the
+  event in the local log without its effect, the retry took the known id for
+  a finished event, and the cursor moved past it: a task stayed invisible on
+  that device for good, with its history and activity incomplete. An event,
+  all its projections, its history and activity rows and the cursor now change
+  in one transaction, so a stopped sync leaves nothing behind and the next one
+  picks the event up.
+- A failure now ends the batch, and sync reports it on every run until it is
+  resolved. An event no projector can apply keeps the device from moving on,
+  where it used to be skipped on the second try.
+- A replica that synced before this change cannot tell which logged events
+  took effect, so its next `sync` rebuilds once: tasks, projects, comments and
+  task history from the server log up to its cursor plus what only this device
+  has, and the activity feed from the local log. This costs one full replay per
+  device, and at cursor 0 too if the device holds any events. Pending and
+  refused outbox events stay as they are, and events past the cursor arrive
+  through the ordinary delta.
+
 ### A new device no longer starts from an incomplete snapshot
 
 - A bootstrap snapshot took its `seq` from the event log and its content from

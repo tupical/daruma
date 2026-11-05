@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::{slugify_title, Project, DEFAULT_TENANT_ID};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, ProjectId, Result};
-use sqlx::{Row, Sqlite, SqliteExecutor, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, SqliteExecutor, SqlitePool, Transaction};
 
 /// Read/write access to the `projects` projection table.
 pub struct ProjectRepo {
@@ -50,16 +50,7 @@ impl ProjectRepo {
     }
 
     pub async fn get(&self, id: ProjectId) -> Result<Option<Project>> {
-        let row = sqlx::query(
-            "SELECT id, tenant_id, slug, title, description, triage_enabled, created_at, updated_at \
-             FROM projects WHERE id = ?",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-
-        row.as_ref().map(row_to_project).transpose()
+        get_project_on(&self.pool, id).await
     }
 
     pub async fn find_by_slug(&self, slug: &str) -> Result<Option<Project>> {
@@ -89,46 +80,21 @@ impl ProjectRepo {
     ///
     /// Non-project events are silently ignored.
     pub async fn apply_event(&self, envelope: &EventEnvelope) -> Result<()> {
-        let occurred_at = envelope.occurred_at;
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        apply_event_on(&mut conn, envelope).await
+    }
 
-        match &envelope.payload {
-            Event::ProjectCreated { project } => {
-                self.upsert_project(project).await?;
-            }
-
-            Event::ProjectUpdated {
-                project_id,
-                title,
-                description,
-            } => {
-                // Fetch current state, apply sparse patch, then upsert.
-                if let Some(mut project) = self.get(*project_id).await? {
-                    if let Some(t) = title {
-                        self.insert_alias(&project.slug, *project_id, occurred_at)
-                            .await?;
-                        self.insert_alias(&slugify_title(&project.title), *project_id, occurred_at)
-                            .await?;
-                        self.insert_alias(&slugify_title(t), *project_id, occurred_at)
-                            .await?;
-                        project.title = t.clone();
-                    }
-                    if let Some(d) = description {
-                        project.description = d.clone();
-                    }
-                    project.updated_at = occurred_at;
-                    self.upsert_project(&project).await?;
-                }
-            }
-
-            Event::ProjectDeleted { project_id } => {
-                self.delete(*project_id).await?;
-            }
-
-            // Non-project events are ignored by this repo.
-            _ => {}
-        }
-
-        Ok(())
+    /// [`Self::apply_event`] inside the caller's transaction.
+    pub async fn apply_event_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        envelope: &EventEnvelope,
+    ) -> Result<()> {
+        apply_event_on(tx, envelope).await
     }
 
     /// Delete a project row by id.
@@ -138,13 +104,7 @@ impl ProjectRepo {
     /// (no tasks, no plans) before invoking this; the command handler does
     /// that check before emitting `Event::ProjectDeleted`.
     pub async fn delete(&self, id: ProjectId) -> Result<bool> {
-        let n = sqlx::query("DELETE FROM projects WHERE id = ?")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?
-            .rows_affected();
-        Ok(n > 0)
+        delete_project_on(&self.pool, id).await
     }
 
     pub async fn set_triage_enabled(
@@ -182,25 +142,100 @@ impl ProjectRepo {
     ) -> Result<()> {
         upsert_project_on(&mut **tx, project).await
     }
+}
 
-    async fn insert_alias(
-        &self,
-        alias: &str,
-        project_id: ProjectId,
-        created_at: DateTime<Utc>,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO project_identifier_aliases (alias, project_id, created_at) \
-             VALUES (?, ?, ?)",
-        )
-        .bind(alias)
-        .bind(project_id.to_string())
-        .bind(created_at.to_rfc3339())
-        .execute(&self.pool)
+async fn get_project_on<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    id: ProjectId,
+) -> Result<Option<Project>> {
+    let row = sqlx::query(
+        "SELECT id, tenant_id, slug, title, description, triage_enabled, created_at, updated_at \
+         FROM projects WHERE id = ?",
+    )
+    .bind(id.to_string())
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    row.as_ref().map(row_to_project).transpose()
+}
+
+async fn delete_project_on<'e, E: SqliteExecutor<'e>>(executor: E, id: ProjectId) -> Result<bool> {
+    let n = sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(id.to_string())
+        .execute(executor)
         .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-        Ok(())
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        .rows_affected();
+    Ok(n > 0)
+}
+
+async fn insert_alias_on<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    alias: &str,
+    project_id: ProjectId,
+    created_at: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO project_identifier_aliases (alias, project_id, created_at) \
+         VALUES (?, ?, ?)",
+    )
+    .bind(alias)
+    .bind(project_id.to_string())
+    .bind(created_at.to_rfc3339())
+    .execute(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(())
+}
+
+/// Statements run one by one on `conn`: a plain connection commits each on its
+/// own, a transaction's connection holds them all back.
+async fn apply_event_on(conn: &mut SqliteConnection, envelope: &EventEnvelope) -> Result<()> {
+    let occurred_at = envelope.occurred_at;
+
+    match &envelope.payload {
+        Event::ProjectCreated { project } => {
+            upsert_project_on(&mut *conn, project).await?;
+        }
+
+        Event::ProjectUpdated {
+            project_id,
+            title,
+            description,
+        } => {
+            // Fetch current state, apply sparse patch, then upsert.
+            if let Some(mut project) = get_project_on(&mut *conn, *project_id).await? {
+                if let Some(t) = title {
+                    insert_alias_on(&mut *conn, &project.slug, *project_id, occurred_at).await?;
+                    insert_alias_on(
+                        &mut *conn,
+                        &slugify_title(&project.title),
+                        *project_id,
+                        occurred_at,
+                    )
+                    .await?;
+                    insert_alias_on(&mut *conn, &slugify_title(t), *project_id, occurred_at)
+                        .await?;
+                    project.title = t.clone();
+                }
+                if let Some(d) = description {
+                    project.description = d.clone();
+                }
+                project.updated_at = occurred_at;
+                upsert_project_on(&mut *conn, &project).await?;
+            }
+        }
+
+        Event::ProjectDeleted { project_id } => {
+            delete_project_on(&mut *conn, *project_id).await?;
+        }
+
+        // Non-project events are ignored by this repo.
+        _ => {}
     }
+
+    Ok(())
 }
 
 async fn upsert_project_on<'e, E: SqliteExecutor<'e>>(
@@ -379,5 +414,36 @@ mod tests {
 
         assert_eq!(tenant_a.len(), 1);
         assert_eq!(tenant_a[0].title, "tenant one");
+    }
+
+    #[tokio::test]
+    async fn apply_event_tx_reads_its_own_writes_and_rolls_back_with_the_caller() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let repo = ProjectRepo::new(db.pool().clone());
+        let project = Project::new("before", None);
+        let id = project.id;
+        let created = EventEnvelope::new(Actor::user(), Event::ProjectCreated { project });
+        let updated = EventEnvelope::new(
+            Actor::user(),
+            Event::ProjectUpdated {
+                project_id: id,
+                title: Some("after".into()),
+                description: None,
+            },
+        );
+
+        let mut tx = db.pool().begin().await.unwrap();
+        repo.apply_event_tx(&mut tx, &created).await.unwrap();
+        repo.apply_event_tx(&mut tx, &updated).await.unwrap();
+        let title: String = sqlx::query_scalar("SELECT title FROM projects WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(title, "after");
+        tx.rollback().await.unwrap();
+
+        assert!(repo.get(id).await.unwrap().is_none());
     }
 }

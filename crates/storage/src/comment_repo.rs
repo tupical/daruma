@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::{Actor, Comment, CommentKind, CommentPatch};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CommentId, CoreError, ProjectId, Result, TaskId};
-use sqlx::{Row, Sqlite, SqliteExecutor, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqliteConnection, SqliteExecutor, SqlitePool, Transaction};
 
 /// Read/write access to the `comments` projection table.
 pub struct CommentRepo {
@@ -105,17 +105,7 @@ impl CommentRepo {
 
     /// Get a single comment by id (returns `Some` even if soft-deleted).
     pub async fn get(&self, id: CommentId) -> Result<Option<Comment>> {
-        let row = sqlx::query(
-            "SELECT id, task_id, parent_id, author_json, body, kind, \
-             created_at, edited_at, deleted_at \
-             FROM comments WHERE id = ?",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-
-        row.as_ref().map(row_to_comment).transpose()
+        get_comment_on(&self.pool, id).await
     }
 
     // ── mutations ────────────────────────────────────────────────────────────
@@ -138,45 +128,82 @@ impl CommentRepo {
     ///
     /// Non-comment events are silently ignored.
     pub async fn apply_event(&self, envelope: &EventEnvelope) -> Result<()> {
-        match &envelope.payload {
-            Event::CommentAdded { comment } => {
-                self.upsert_comment(comment).await?;
-            }
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        apply_event_on(&mut conn, envelope).await
+    }
 
-            Event::CommentEdited {
-                comment_id,
-                patch,
-                edited_at,
-                ..
-            } => {
-                if let Some(mut comment) = self.get(*comment_id).await? {
-                    apply_patch(&mut comment, patch, *edited_at);
-                    self.upsert_comment(&comment).await?;
-                }
-            }
-
-            Event::CommentDeleted {
-                comment_id,
-                deleted_at,
-                ..
-            } => {
-                sqlx::query("UPDATE comments SET deleted_at = ? WHERE id = ?")
-                    .bind(deleted_at.to_rfc3339())
-                    .bind(comment_id.to_string())
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| CoreError::storage(e.to_string()))?;
-            }
-
-            // Non-comment events are ignored by this repo.
-            _ => {}
-        }
-
-        Ok(())
+    /// [`Self::apply_event`] inside the caller's transaction.
+    pub async fn apply_event_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        envelope: &EventEnvelope,
+    ) -> Result<()> {
+        apply_event_on(tx, envelope).await
     }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+async fn get_comment_on<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    id: CommentId,
+) -> Result<Option<Comment>> {
+    let row = sqlx::query(
+        "SELECT id, task_id, parent_id, author_json, body, kind, \
+         created_at, edited_at, deleted_at \
+         FROM comments WHERE id = ?",
+    )
+    .bind(id.to_string())
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    row.as_ref().map(row_to_comment).transpose()
+}
+
+/// Statements run one by one on `conn`: a plain connection commits each on its
+/// own, a transaction's connection holds them all back.
+async fn apply_event_on(conn: &mut SqliteConnection, envelope: &EventEnvelope) -> Result<()> {
+    match &envelope.payload {
+        Event::CommentAdded { comment } => {
+            upsert_comment_on(&mut *conn, comment).await?;
+        }
+
+        Event::CommentEdited {
+            comment_id,
+            patch,
+            edited_at,
+            ..
+        } => {
+            if let Some(mut comment) = get_comment_on(&mut *conn, *comment_id).await? {
+                apply_patch(&mut comment, patch, *edited_at);
+                upsert_comment_on(&mut *conn, &comment).await?;
+            }
+        }
+
+        Event::CommentDeleted {
+            comment_id,
+            deleted_at,
+            ..
+        } => {
+            sqlx::query("UPDATE comments SET deleted_at = ? WHERE id = ?")
+                .bind(deleted_at.to_rfc3339())
+                .bind(comment_id.to_string())
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
+
+        // Non-comment events are ignored by this repo.
+        _ => {}
+    }
+
+    Ok(())
+}
 
 async fn upsert_comment_on<'e, E: SqliteExecutor<'e>>(executor: E, c: &Comment) -> Result<()> {
     let author_json =
@@ -519,5 +546,38 @@ mod tests {
         assert_eq!(got.body, "revised intent");
         // kind survives the edit — `CommentPatch` deliberately can't mutate it.
         assert_eq!(got.kind, Some(CommentKind::Intent));
+    }
+
+    #[tokio::test]
+    async fn apply_event_tx_reads_its_own_writes_and_rolls_back_with_the_caller() {
+        let repo = make_repo().await;
+        let comment = make_comment(TaskId::new());
+        let id = comment.id;
+        let task_id = comment.task_id;
+        let added = EventEnvelope::new(Actor::user(), Event::CommentAdded { comment });
+        let edited = EventEnvelope::new(
+            Actor::user(),
+            Event::CommentEdited {
+                comment_id: id,
+                task_id,
+                patch: CommentPatch {
+                    body: Some("edited".into()),
+                },
+                edited_at: daruma_shared::time::now(),
+            },
+        );
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        repo.apply_event_tx(&mut tx, &added).await.unwrap();
+        repo.apply_event_tx(&mut tx, &edited).await.unwrap();
+        let body: String = sqlx::query_scalar("SELECT body FROM comments WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(body, "edited");
+        tx.rollback().await.unwrap();
+
+        assert!(repo.get(id).await.unwrap().is_none());
     }
 }
