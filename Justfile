@@ -19,6 +19,12 @@ fmt:
 fmt-check:
     CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER:-}" cargo fmt --all -- --check
 
+# Import boundary guards from CI, preceded by their fixture regression.
+audit-imports:
+    bash scripts/audit-imports.test.sh
+    bash scripts/audit-imports.sh core
+    bash scripts/audit-imports.sh embed
+
 # Enable the tracked git hooks (DCO auto sign-off via .githooks/). Run once per clone.
 hooks:
     git config core.hooksPath .githooks

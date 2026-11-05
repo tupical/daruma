@@ -9,6 +9,16 @@
 
 ## Не выпущено
 
+### CI-аудит границ ловит обычные импорты
+
+- Workflow `audit-imports` использовал BRE-экранирование под `grep -E`, и
+  обычный `use daruma_desktop::SomeType;` в ядре или
+  `use daruma_storage::Db;` в `apps/desktop/src` проходил как `OK`. Теперь
+  оба guard живут в `scripts/audit-imports.sh` с корректными ERE-шаблонами, а
+  CI сначала прогоняет их на fixture через `scripts/audit-imports.test.sh`.
+  Импорты через `daruma_core::embed` по-прежнему разрешены; те же проверки
+  локально запускает `just audit-imports`.
+
 ### `just server` берёт тот же каталог данных, что сервер и CLI
 
 - При заданном `DARUMA_AGENT_DIR` и незаданном `DARUMA_DATA_DIR`
