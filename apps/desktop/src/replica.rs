@@ -2145,6 +2145,13 @@ mod tests {
             })
             .await
             .unwrap();
+        // The baseline did go in before the first fetch.
+        process
+            .device
+            .replica
+            .set_verified_baseline(0)
+            .await
+            .unwrap();
 
         let process = upgraded(&file, process).await;
         process.device.replica.catch_up(&server, 50).await.unwrap();
