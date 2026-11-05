@@ -508,6 +508,12 @@ guard.
   - `Resync { from_seq, dropped }` — on broadcast `Lagged`.
   - `Ping` / `Pong` — both directions; the server pings every 25 s.
   - `Ack { event_id }` (scaffold).
+- **Revocation**: `Hub` latches revoked devices and tokens before the REST
+  call answers and wakes open sockets; the latch serves only this process.
+  A socket also rereads its token row before running a client frame or
+  writing a server frame, so a revoke from another process holds without a
+  notification. The HTTP auth cache honours the token latch on every lookup;
+  without one it keeps a bearer until the entry expires.
 - **Per-event capability gate**: before forwarding each envelope,
   the WS loop resolves the channel via `payload.channel()` and silently
   drops envelopes whose channel-required capability is absent from the
