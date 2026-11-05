@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::Actor;
 use daruma_events::{Event, EventClass, EventEnvelope, EventStore};
 use daruma_shared::{CoreError, DeviceId, EventId, Result};
-use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
 /// SQLite-backed event log.
 ///
@@ -18,6 +18,15 @@ pub struct SqliteEventStore {
 impl SqliteEventStore {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// [`EventStore::load_since`] inside the caller's transaction.
+    pub async fn load_since_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        since_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>> {
+        load_since_on(&mut **tx, since_seq, limit).await
     }
 
     /// Deletes telemetry older than `cutoff` without renumbering the event log.
@@ -183,18 +192,7 @@ impl EventStore for SqliteEventStore {
     }
 
     async fn load_since(&self, since_seq: u64, limit: usize) -> Result<Vec<EventEnvelope>> {
-        let rows = sqlx::query(
-            "SELECT seq, event_id, occurred_at, actor_json, payload_json, \
-             origin_device_id, origin_seq \
-             FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
-        )
-        .bind(since_seq as i64)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-
-        rows.iter().map(parse_row).collect()
+        load_since_on(&self.pool, since_seq, limit).await
     }
 
     async fn load_by_id(&self, id: EventId) -> Result<Option<EventEnvelope>> {
@@ -229,6 +227,25 @@ impl EventStore for SqliteEventStore {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+async fn load_since_on<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    since_seq: u64,
+    limit: usize,
+) -> Result<Vec<EventEnvelope>> {
+    let rows = sqlx::query(
+        "SELECT seq, event_id, occurred_at, actor_json, payload_json, \
+         origin_device_id, origin_seq \
+         FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+    )
+    .bind(since_seq as i64)
+    .bind(limit as i64)
+    .fetch_all(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    rows.iter().map(parse_row).collect()
+}
 
 fn parse_row(row: &sqlx::sqlite::SqliteRow) -> Result<EventEnvelope> {
     let seq: i64 = row

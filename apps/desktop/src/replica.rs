@@ -6,10 +6,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use daruma_core::embed::{
     ActivityRepo, CommentRepo, EventEnvelope, EventStore, ProjectRepo, ProjectionFold,
-    ProjectionSnapshot, Snapshot, TaskRepo,
+    ProjectionSnapshot, Snapshot, SqliteEventStore, TaskRepo,
 };
 use daruma_shared::{CoreError, EventId, Result};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
 /// Local event-log rows read per round during a rebuild.
 const LOCAL_LOG_PAGE_SIZE: usize = 1000;
@@ -124,14 +124,7 @@ impl Replica {
 
     /// Move the cursor onto a baseline known to hold every event up to it.
     async fn set_verified_baseline(&self, server_seq: u64) -> Result<()> {
-        sqlx::query(
-            "UPDATE desktop_replica_state SET server_seq = ?, baseline_verified = 1 WHERE id = 1",
-        )
-        .bind(server_seq as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
-        Ok(())
+        mark_verified_baseline(&self.pool, server_seq).await
     }
 
     pub async fn catch_up(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<CatchUpStats> {
@@ -172,8 +165,16 @@ impl Replica {
     /// only the delta. Restore goes through the same upsert SQL the
     /// projectors use.
     pub async fn bootstrap_from_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
-        self.restore_snapshot(&snapshot.payload).await?;
-        self.set_verified_baseline(snapshot.seq).await
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        self.restore_snapshot(&mut tx, &snapshot.payload).await?;
+        mark_verified_baseline(&mut *tx, snapshot.seq).await?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))
     }
 
     /// One-time repair for a cursor that may rest on a snapshot which missed
@@ -181,9 +182,12 @@ impl Replica {
     /// them back. Rebuild the projections as the server log plus whatever only
     /// this device has (events still in the outbox or refused by the server).
     ///
-    /// The log is folded on the side first, so a failed fetch leaves the
-    /// replica untouched. Local rows change next, and the baseline is marked
-    /// last: a crash in between reruns the whole repair from the same inputs.
+    /// Everything is folded on the side, so a failed fetch leaves the replica
+    /// untouched. Other processes of this device keep writing meanwhile: the
+    /// rows and the baseline change in one write transaction, which first
+    /// reads whatever reached the local log since. A command that committed
+    /// before it is in the fold, and any later one lands on the new rows. A
+    /// crash rolls back, and the next sync reruns the repair.
     async fn rebuild_from_log(
         &self,
         remote: &dyn ReplicaSource,
@@ -215,18 +219,54 @@ impl Replica {
             events = server_ids.len(),
             "rebuilding replica from the server log"
         );
-        let state = fold.finish().await?;
-        let local_only = self.local_only_events(&server_ids).await?;
-
-        self.replace_projections(&state).await?;
-        for event in &local_only {
-            self.tasks.apply_event(event).await?;
-            self.projects.apply_event(event).await?;
-            self.comments.apply_event(event).await?;
+        // The bulk of the local log goes in before the lock is taken, so
+        // writers only ever wait for the tail and the row swap.
+        let mut local_seq = 0;
+        loop {
+            let page = self
+                .store
+                .load_since(local_seq, LOCAL_LOG_PAGE_SIZE)
+                .await?;
+            if !fold_local_only(&fold, &server_ids, &mut local_seq, &page).await? {
+                break;
+            }
         }
 
-        let server_seq = since.max(cursor);
-        self.set_verified_baseline(server_seq).await?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let (current, verified) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT server_seq, baseline_verified FROM desktop_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        let current = current.max(0) as u64;
+        if verified != 0 {
+            // Another sync of this device finished the repair, maybe from a
+            // newer server log than the one folded here.
+            return Ok(CatchUpStats {
+                fetched: server_ids.len(),
+                applied: 0,
+                server_seq: current,
+            });
+        }
+        loop {
+            let page =
+                SqliteEventStore::load_since_tx(&mut tx, local_seq, LOCAL_LOG_PAGE_SIZE).await?;
+            if !fold_local_only(&fold, &server_ids, &mut local_seq, &page).await? {
+                break;
+            }
+        }
+        let state = fold.state().await?;
+        self.replace_projections(&mut tx, &state).await?;
+        let server_seq = since.max(current);
+        mark_verified_baseline(&mut *tx, server_seq).await?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(CatchUpStats {
             fetched: server_ids.len(),
             applied: server_ids.len(),
@@ -234,62 +274,61 @@ impl Replica {
         })
     }
 
-    /// Events in the local log the server does not have, oldest first.
-    async fn local_only_events(&self, server_ids: &HashSet<EventId>) -> Result<Vec<EventEnvelope>> {
-        let mut events = Vec::new();
-        let mut since = 0;
-        loop {
-            let page = self.store.load_since(since, LOCAL_LOG_PAGE_SIZE).await?;
-            let Some(last) = page.last() else { break };
-            since = last.seq;
-            events.extend(page.into_iter().filter(|e| !server_ids.contains(&e.id)));
-        }
-        Ok(events)
-    }
-
     /// Make the projections hold exactly `state`. Only rows `state` lacks are
-    /// deleted: side tables such as workspace roots cascade from tasks and
-    /// projects, and rows that stay must keep them.
-    async fn replace_projections(&self, state: &ProjectionSnapshot) -> Result<()> {
+    /// deleted: task side tables cascade from `tasks`, and rows that stay
+    /// must keep them.
+    async fn replace_projections(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        state: &ProjectionSnapshot,
+    ) -> Result<()> {
         sqlx::query("DELETE FROM comments")
-            .execute(&self.pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        let kept: HashSet<_> = state.tasks.iter().map(|t| t.id).collect();
-        for task in self.tasks.list_all().await? {
-            if !kept.contains(&task.id) {
+        let kept: HashSet<_> = state.tasks.iter().map(|t| t.id.to_string()).collect();
+        for id in row_ids(tx, "SELECT id FROM tasks").await? {
+            if !kept.contains(&id) {
                 for sql in [
                     "DELETE FROM tasks WHERE id = ?",
                     "DELETE FROM task_due_notifications WHERE task_id = ?",
                 ] {
                     sqlx::query(sql)
-                        .bind(task.id.to_string())
-                        .execute(&self.pool)
+                        .bind(&id)
+                        .execute(&mut **tx)
                         .await
                         .map_err(|e| CoreError::storage(e.to_string()))?;
                 }
             }
         }
-        let kept: HashSet<_> = state.projects.iter().map(|p| p.id).collect();
-        for project in self.projects.list_all().await? {
-            if !kept.contains(&project.id) {
-                self.projects.delete(project.id).await?;
+        let kept: HashSet<_> = state.projects.iter().map(|p| p.id.to_string()).collect();
+        for id in row_ids(tx, "SELECT id FROM projects").await? {
+            if !kept.contains(&id) {
+                sqlx::query("DELETE FROM projects WHERE id = ?")
+                    .bind(&id)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
             }
         }
-        self.restore_snapshot(state).await
+        self.restore_snapshot(tx, state).await
     }
 
-    async fn restore_snapshot(&self, payload: &ProjectionSnapshot) -> Result<()> {
+    async fn restore_snapshot(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        payload: &ProjectionSnapshot,
+    ) -> Result<()> {
         // Restore parents before children (projects → tasks → comments) to
         // match the replay order a full catch-up would produce.
         for project in &payload.projects {
-            self.projects.upsert_project(project).await?;
+            self.projects.upsert_project_tx(tx, project).await?;
         }
         for task in &payload.tasks {
-            self.tasks.upsert_task(task).await?;
+            self.tasks.upsert_task_tx(tx, task).await?;
         }
         for comment in &payload.comments {
-            self.comments.upsert_comment(comment).await?;
+            self.comments.upsert_comment_tx(tx, comment).await?;
         }
         Ok(())
     }
@@ -328,19 +367,64 @@ impl Replica {
     }
 }
 
+async fn mark_verified_baseline<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    server_seq: u64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE desktop_replica_state SET server_seq = ?, baseline_verified = 1 WHERE id = 1",
+    )
+    .bind(server_seq as i64)
+    .execute(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(())
+}
+
+/// Fold one page of the local log, skipping what the server already has, and
+/// move `local_seq` past it. `false` once the log is exhausted.
+async fn fold_local_only(
+    fold: &ProjectionFold,
+    server_ids: &HashSet<EventId>,
+    local_seq: &mut u64,
+    page: &[EventEnvelope],
+) -> Result<bool> {
+    let Some(last) = page.last() else {
+        return Ok(false);
+    };
+    *local_seq = last.seq;
+    for event in page.iter().filter(|e| !server_ids.contains(&e.id)) {
+        fold.apply(event).await?;
+    }
+    Ok(true)
+}
+
+async fn row_ids(tx: &mut Transaction<'_, Sqlite>, sql: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query_as::<_, (String,)>(sql)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use daruma_core::{
-        embed::{Command, CommandBus, Db, Event, EventBus, SnapshotRepo, SqliteEventStore},
+        embed::{Command, CommandBus, Db, Event, EventBus, SnapshotRepo},
         CommandHandler,
     };
     use daruma_domain::{
         Actor, Comment, CommentPatch, NewComment, NewTask, Project, Status, TaskPatch,
     };
     use daruma_shared::TaskId;
+    use std::future::Future;
+    use std::path::PathBuf;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::{Mutex, Notify};
+
+    use crate::{local_executor::LocalExecutor, outbox::Outbox};
 
     struct Device {
         replica: Replica,
@@ -390,7 +474,12 @@ mod tests {
         /// What a replica looks like after bootstrapping from a pre-0063
         /// snapshot: restored state, cursor, no proof the two agree.
         async fn bootstrapped_from_legacy(&self, payload: &ProjectionSnapshot, seq: u64) {
-            self.replica.restore_snapshot(payload).await.unwrap();
+            let mut tx = self.pool.begin().await.unwrap();
+            self.replica
+                .restore_snapshot(&mut tx, payload)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
             self.replica.set_server_seq(seq).await.unwrap();
         }
     }
@@ -399,7 +488,10 @@ mod tests {
         let db = Db::memory().await.unwrap();
         db.migrate().await.unwrap();
         let pool = db.pool().clone();
-        let store: Arc<dyn EventStore> = Arc::new(SqliteEventStore::new(pool.clone()));
+        device_on(pool.clone(), Arc::new(SqliteEventStore::new(pool))).await
+    }
+
+    async fn device_on(pool: SqlitePool, store: Arc<dyn EventStore>) -> Device {
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
         let projects = Arc::new(ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
@@ -1088,9 +1180,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repair_interrupted_after_touching_rows_reruns_on_the_next_sync() {
+    async fn repair_interrupted_after_touching_rows_rolls_back_and_reruns() {
         let server = Server::start().await;
         let (device, missing) = stranded_device(&server).await;
+        let mut ghost = daruma_domain::Task::from_new(NewTask::new("deleted on the server"));
+        ghost.id = TaskId::new();
+        device.tasks.upsert_task(&ghost).await.unwrap();
         let mut offline = NewTask::new("created offline");
         let offline_id = TaskId::new();
         offline.id = Some(offline_id);
@@ -1103,8 +1198,10 @@ mod tests {
              BEGIN SELECT RAISE(ABORT, 'interrupted'); END";
         sqlx::query(trigger).execute(&device.pool).await.unwrap();
 
+        let before = device.state().await;
         assert!(device.replica.catch_up(&server, 50).await.is_err());
         assert!(!device.replica.baseline_verified().await.unwrap());
+        assert_eq!(device.state().await, before, "the swap is all or nothing");
 
         sqlx::query("DROP TRIGGER stop_rebuild")
             .execute(&device.pool)
@@ -1115,6 +1212,275 @@ mod tests {
         assert!(device.replica.baseline_verified().await.unwrap());
         assert!(device.tasks.get(missing).await.unwrap().is_some());
         assert!(device.tasks.get(offline_id).await.unwrap().is_some());
+        assert!(device.tasks.get(ghost.id).await.unwrap().is_none());
+    }
+
+    // ── repair next to other processes of the same device ────────────────────
+
+    type Hook = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Runs a hook once the repair has read the last page of the local log.
+    struct AfterLocalLogRead {
+        inner: SqliteEventStore,
+        hook: Mutex<Option<Hook>>,
+    }
+
+    #[async_trait]
+    impl EventStore for AfterLocalLogRead {
+        async fn append(&self, envelope: EventEnvelope) -> Result<EventEnvelope> {
+            self.inner.append(envelope).await
+        }
+
+        async fn append_batch(&self, envelopes: Vec<EventEnvelope>) -> Result<Vec<EventEnvelope>> {
+            self.inner.append_batch(envelopes).await
+        }
+
+        async fn load_since(&self, since_seq: u64, limit: usize) -> Result<Vec<EventEnvelope>> {
+            let page = self.inner.load_since(since_seq, limit).await?;
+            if page.is_empty() {
+                let hook = self.hook.lock().await.take();
+                if let Some(hook) = hook {
+                    hook.await;
+                }
+            }
+            Ok(page)
+        }
+
+        async fn load_by_id(&self, id: EventId) -> Result<Option<EventEnvelope>> {
+            self.inner.load_by_id(id).await
+        }
+
+        async fn latest_seq(&self) -> Result<u64> {
+            self.inner.latest_seq().await
+        }
+    }
+
+    /// One `replica.sqlite`. Each `open` is a separate connection pool on it,
+    /// as a separate `daruma-desktop` process would have.
+    struct ReplicaFile {
+        dir: PathBuf,
+    }
+
+    /// A process of the device: the catch-up side and real local commands.
+    struct Process {
+        device: Device,
+        local: LocalExecutor,
+    }
+
+    impl ReplicaFile {
+        async fn create() -> Self {
+            let dir = std::env::temp_dir().join(format!("daruma-replica-{}", TaskId::new()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+
+        async fn open(
+            &self,
+            wrap: impl FnOnce(SqliteEventStore) -> Arc<dyn EventStore>,
+        ) -> Process {
+            let path = self.dir.join("replica.sqlite");
+            let db = Db::open(path.to_str().unwrap()).await.unwrap();
+            db.migrate().await.unwrap();
+            let pool = db.pool().clone();
+            let store = wrap(SqliteEventStore::new(pool.clone()));
+            let device = device_on(pool, store.clone()).await;
+            let commands = CommandBus::new(Arc::new(CommandHandler::new(
+                store,
+                device.tasks.clone(),
+                device.projects.clone(),
+                device.comments.clone(),
+                device.replica.activity.clone(),
+                EventBus::new(16),
+            )));
+            let outbox = Outbox::new(db);
+            outbox.ensure_schema().await.unwrap();
+            let local = LocalExecutor::new(commands, outbox).await.unwrap();
+            Process { device, local }
+        }
+
+        async fn open_plain(&self) -> Process {
+            self.open(|store| Arc::new(store)).await
+        }
+
+        /// Open a process whose repair calls `hook` after its last local read.
+        async fn open_hooked(&self, hook: Hook) -> Process {
+            self.open(|inner| {
+                Arc::new(AfterLocalLogRead {
+                    inner,
+                    hook: Mutex::new(Some(hook)),
+                })
+            })
+            .await
+        }
+    }
+
+    impl Drop for ReplicaFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl Process {
+        /// Put the replica where an old bootstrap left it: the server's
+        /// "seen" task, a cursor past the event it missed.
+        async fn strand(&self, server: &Server) -> TaskId {
+            server.create_task("seen").await;
+            let seen = server.full_replay().await.state().await;
+            let missing = server.create_task("missing from the snapshot").await;
+            let cursor = server.store.latest_seq().await.unwrap();
+            self.device.bootstrapped_from_legacy(&seen, cursor).await;
+            missing
+        }
+
+        async fn create_task(&self, title: &str, id: TaskId) {
+            let mut task = NewTask::new(title);
+            task.id = Some(id);
+            self.local
+                .dispatch(Command::CreateTask { task }, Actor::user())
+                .await
+                .unwrap();
+        }
+
+        async fn pending_outbox(&self) -> i64 {
+            sqlx::query_as::<_, (i64,)>(
+                "SELECT COUNT(*) FROM desktop_outbox WHERE flushed_at IS NULL",
+            )
+            .fetch_one(&self.device.pool)
+            .await
+            .unwrap()
+            .0
+        }
+
+        /// Flush what is in the local log and not on the server, then echo.
+        async fn echo_local_events(&self, server: &Server) -> CatchUpStats {
+            let log = self.device.store.load_since(0, 1000).await.unwrap();
+            for mut event in log {
+                if server.store.load_by_id(event.id).await.unwrap().is_none() {
+                    event.seq = 0;
+                    let env = server.store.append(event).await.unwrap();
+                    server.tasks.apply_event(&env).await.unwrap();
+                }
+            }
+            self.device.replica.catch_up(server, 50).await.unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn local_command_finished_during_repair_survives_it() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let local_id = TaskId::new();
+        let other = file.open_plain().await;
+        let hook = {
+            let process = file.open_plain().await;
+            Box::pin(async move {
+                process
+                    .create_task("created while repair runs", local_id)
+                    .await;
+                assert!(process.device.tasks.get(local_id).await.unwrap().is_some());
+            })
+        };
+        let syncing = file.open_hooked(hook).await;
+        let missing = syncing.strand(&server).await;
+
+        let stats = syncing.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!(stats.fetched, 2);
+        assert!(other.device.tasks.get(local_id).await.unwrap().is_some());
+        assert!(other.device.tasks.get(missing).await.unwrap().is_some());
+        assert_eq!(other.pending_outbox().await, 1, "still on its way out");
+        assert!(other.device.replica.baseline_verified().await.unwrap());
+
+        let stats = other.echo_local_events(&server).await;
+        assert_eq!((stats.fetched, stats.applied), (1, 0));
+        assert!(other.device.tasks.get(local_id).await.unwrap().is_some());
+        assert_eq!(
+            other.device.state().await,
+            server.full_replay().await.state().await
+        );
+    }
+
+    #[tokio::test]
+    async fn local_command_stalled_before_its_apply_lands_on_the_repaired_rows() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let syncing = file.open_plain().await;
+        let store = Arc::new(Mutex::new(None));
+        let writer = {
+            let store = store.clone();
+            let process = file
+                .open(move |inner| {
+                    let pausing = Arc::new(PausingStore {
+                        inner,
+                        armed: AtomicBool::new(true),
+                        committed: Notify::new(),
+                        resume: Notify::new(),
+                    });
+                    *store.try_lock().unwrap() = Some(pausing.clone());
+                    pausing
+                })
+                .await;
+            Arc::new(process)
+        };
+        let pausing = store.lock().await.take().unwrap();
+        let missing = syncing.strand(&server).await;
+
+        let local_id = TaskId::new();
+        let command = tokio::spawn({
+            let writer = writer.clone();
+            async move { writer.create_task("stalled command", local_id).await }
+        });
+        pausing.committed.notified().await;
+
+        syncing.device.replica.catch_up(&server, 50).await.unwrap();
+        assert!(syncing.device.tasks.get(local_id).await.unwrap().is_some());
+        assert!(syncing.device.tasks.get(missing).await.unwrap().is_some());
+
+        pausing.resume.notify_one();
+        command.await.unwrap();
+
+        assert!(syncing.device.tasks.get(local_id).await.unwrap().is_some());
+        assert_eq!(syncing.pending_outbox().await, 1);
+        let stats = syncing.echo_local_events(&server).await;
+        assert_eq!((stats.fetched, stats.applied), (1, 0));
+        assert_eq!(
+            syncing.device.state().await,
+            server.full_replay().await.state().await
+        );
+    }
+
+    #[tokio::test]
+    async fn slower_repair_does_not_undo_a_finished_one() {
+        let server = Arc::new(Server::start().await);
+        let file = ReplicaFile::create().await;
+        let newer = TaskId::new();
+        let hook = {
+            let server = server.clone();
+            let first = file.open_plain().await;
+            Box::pin(async move {
+                let mut task = NewTask::new("after the slow fold");
+                task.id = Some(newer);
+                server
+                    .commands
+                    .dispatch(Command::CreateTask { task }, Actor::user())
+                    .await
+                    .unwrap();
+                first.device.replica.catch_up(&*server, 50).await.unwrap();
+            })
+        };
+        let slow = file.open_hooked(hook).await;
+        slow.strand(&server).await;
+
+        let stats = slow.device.replica.catch_up(&*server, 50).await.unwrap();
+
+        let cursor = server.store.latest_seq().await.unwrap();
+        assert_eq!((stats.applied, stats.server_seq), (0, cursor));
+        assert!(slow.device.tasks.get(newer).await.unwrap().is_some());
+        assert_eq!(slow.device.replica.server_seq().await.unwrap(), cursor);
+        assert_eq!(
+            slow.device.state().await,
+            server.full_replay().await.state().await
+        );
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use daruma_domain::{slugify_title, Project, DEFAULT_TENANT_ID};
 use daruma_events::{Event, EventEnvelope};
 use daruma_shared::{CoreError, ProjectId, Result};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
 /// Read/write access to the `projects` projection table.
 pub struct ProjectRepo {
@@ -171,24 +171,16 @@ impl ProjectRepo {
     /// Insert or replace a project row. Also used by the bootstrap-snapshot
     /// restore path (device-sync catch-up).
     pub async fn upsert_project(&self, project: &Project) -> Result<()> {
-        sqlx::query(
-            "INSERT OR REPLACE INTO projects \
-             (id, tenant_id, slug, title, description, triage_enabled, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(project.id.to_string())
-        .bind(project.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT_ID))
-        .bind(&project.slug)
-        .bind(&project.title)
-        .bind(&project.description)
-        .bind(project.triage_enabled)
-        .bind(project.created_at.to_rfc3339())
-        .bind(project.updated_at.to_rfc3339())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| CoreError::storage(e.to_string()))?;
+        upsert_project_on(&self.pool, project).await
+    }
 
-        Ok(())
+    /// [`Self::upsert_project`] inside the caller's transaction.
+    pub async fn upsert_project_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        project: &Project,
+    ) -> Result<()> {
+        upsert_project_on(&mut **tx, project).await
     }
 
     async fn insert_alias(
@@ -209,6 +201,30 @@ impl ProjectRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
     }
+}
+
+async fn upsert_project_on<'e, E: SqliteExecutor<'e>>(
+    executor: E,
+    project: &Project,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT OR REPLACE INTO projects \
+         (id, tenant_id, slug, title, description, triage_enabled, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(project.id.to_string())
+    .bind(project.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT_ID))
+    .bind(&project.slug)
+    .bind(&project.title)
+    .bind(&project.description)
+    .bind(project.triage_enabled)
+    .bind(project.created_at.to_rfc3339())
+    .bind(project.updated_at.to_rfc3339())
+    .execute(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+
+    Ok(())
 }
 
 // ── row mapping ───────────────────────────────────────────────────────────────

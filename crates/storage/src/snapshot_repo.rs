@@ -111,7 +111,8 @@ impl ProjectionFold {
         Ok(())
     }
 
-    pub async fn finish(self) -> Result<ProjectionSnapshot> {
+    /// The projections as folded so far; more events may follow.
+    pub async fn state(&self) -> Result<ProjectionSnapshot> {
         Ok(ProjectionSnapshot {
             tasks: self.tasks.list_all().await?,
             projects: self.projects.list_all().await?,
@@ -178,7 +179,7 @@ impl SnapshotRepo {
             }
         }
 
-        let payload = fold.finish().await?;
+        let payload = fold.state().await?;
         Ok(Some(self.insert(target, &payload).await?.seq))
     }
 
