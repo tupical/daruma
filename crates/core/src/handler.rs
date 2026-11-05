@@ -3439,15 +3439,35 @@ impl CommandHandler {
                 let to = relation.to;
                 let kind = relation.kind;
 
+                // Dropping the last active blocker frees `to` the same way
+                // the blocker reaching Done does. Computed BEFORE the delete,
+                // like the `DeleteTask` cascade.
+                let unblocked = kind == daruma_domain::RelationKind::Blocks
+                    && relation_enforcement::list_downstream_to_unblock(
+                        relations,
+                        &self.tasks,
+                        from,
+                    )
+                    .await?
+                    .contains(&to);
+
                 relations.delete(id).await?;
 
-                Ok(vec![Event::TaskUnlinked {
+                let mut events = vec![Event::TaskUnlinked {
                     relation_id: id,
                     from,
                     to,
                     kind,
                     occurred_at: now,
-                }])
+                }];
+                if unblocked {
+                    events.push(Event::TaskUnblocked {
+                        task_id: to,
+                        unblocked_by: from,
+                        occurred_at: now,
+                    });
+                }
+                Ok(events)
             }
 
             // ── Claim commands ────────────────────────────────────────────────

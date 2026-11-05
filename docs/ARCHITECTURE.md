@@ -249,7 +249,8 @@ network by design.
     `"task.linked"`, `"task.unlinked"`, `"task.unblocked"`.
     `target_task()` returns `from` for Linked/Unlinked, `task_id` for
     Unblocked. `TaskUnblocked` is emitted in the same `append_batch` as
-    the blocker's `TaskStatusChanged(to: Done)`.
+    the blocker's `TaskStatusChanged(to: Done)`, or as the `TaskUnlinked`
+    that removed the last active `Blocks` edge.
   - **Projects**: `ProjectCreated`, `ProjectUpdated`.
   - **Comments**: `CommentAdded`, `CommentEdited`, `CommentDeleted`.
   - **Agents**: `AgentActionRecorded`.
@@ -328,6 +329,9 @@ whose remaining blockers are all Done.
 **DeleteTask cascade.** Before the `TaskDeleted` event, one
 `TaskUnlinked` is emitted per affected relation, followed by
 `TaskUnblocked` for any newly unblocked downstreams.
+
+**UnlinkTasks.** Removing the last active `Blocks` edge of a task emits
+`TaskUnblocked` after `TaskUnlinked`, in the same batch.
 
 **Cycle detection.** `relation_enforcement::detect_cycle` runs on every
 `LinkTasks { kind: Blocks }` command: iterative DFS from `to` searching

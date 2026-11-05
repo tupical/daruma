@@ -184,6 +184,61 @@ async fn link_duplicate_returns_relation_exists_conflict() {
     }
 }
 
+// ── unlink_blocks_unblocks ───────────────────────────────────────────────────
+
+async fn link_blocks(handler: &CommandHandler, from: TaskId, to: TaskId) -> RelationId {
+    let envs = handler
+        .handle(
+            Command::LinkTasks {
+                from,
+                to,
+                kind: RelationKind::Blocks,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    match &envs[0].payload {
+        Event::TaskLinked { relation_id, .. } => *relation_id,
+        other => panic!("expected TaskLinked, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn unlink_of_last_blocker_emits_task_unblocked() {
+    let (handler, _store, _tasks, _relations) = build_stack().await;
+    let blocker = create_task(&handler, "Blocker").await;
+    let other = create_task(&handler, "Other blocker").await;
+    let blocked = create_task(&handler, "Blocked").await;
+    let first = link_blocks(&handler, blocker, blocked).await;
+    let second = link_blocks(&handler, other, blocked).await;
+
+    // `other` still blocks: the task is not free yet.
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: first }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1, "exactly 1 event: TaskUnlinked");
+
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: second }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 2, "TaskUnlinked and TaskUnblocked");
+    assert!(matches!(envs[0].payload, Event::TaskUnlinked { .. }));
+    match &envs[1].payload {
+        Event::TaskUnblocked {
+            task_id,
+            unblocked_by,
+            ..
+        } => {
+            assert_eq!(*task_id, blocked);
+            assert_eq!(*unblocked_by, other);
+        }
+        other => panic!("expected TaskUnblocked, got: {other:?}"),
+    }
+}
+
 // ── unlink_nonexistent_returns_not_found ──────────────────────────────────────
 
 #[tokio::test]

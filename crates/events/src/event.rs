@@ -526,11 +526,12 @@ pub enum Event {
 
     /// All blocking tasks for `task_id` are now Done; this task is free to
     /// proceed. Emitted in the same `append_batch` as the blocker's
-    /// `TaskStatusChanged(to: Done)`.
+    /// `TaskStatusChanged(to: Done)`, or as the `TaskUnlinked` that removed
+    /// its last active `Blocks` edge.
     TaskUnblocked {
         task_id: TaskId,
-        /// The task that just became Done, completing the last blocking
-        /// dependency.
+        /// The task that just became Done, or whose edge was removed,
+        /// releasing the last blocking dependency.
         unblocked_by: TaskId,
         occurred_at: Timestamp,
     },
