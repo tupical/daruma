@@ -184,6 +184,143 @@ async fn link_duplicate_returns_relation_exists_conflict() {
     }
 }
 
+// ── unlink_blocks_unblocks ───────────────────────────────────────────────────
+
+async fn link_blocks(handler: &CommandHandler, from: TaskId, to: TaskId) -> RelationId {
+    let envs = handler
+        .handle(
+            Command::LinkTasks {
+                from,
+                to,
+                kind: RelationKind::Blocks,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    match &envs[0].payload {
+        Event::TaskLinked { relation_id, .. } => *relation_id,
+        other => panic!("expected TaskLinked, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn unlink_of_last_blocker_emits_task_unblocked() {
+    let (handler, _store, _tasks, _relations) = build_stack().await;
+    let blocker = create_task(&handler, "Blocker").await;
+    let other = create_task(&handler, "Other blocker").await;
+    let blocked = create_task(&handler, "Blocked").await;
+    let first = link_blocks(&handler, blocker, blocked).await;
+    let second = link_blocks(&handler, other, blocked).await;
+
+    // `other` still blocks: the task is not free yet.
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: first }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1, "exactly 1 event: TaskUnlinked");
+
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: second }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 2, "TaskUnlinked and TaskUnblocked");
+    assert!(matches!(envs[0].payload, Event::TaskUnlinked { .. }));
+    match &envs[1].payload {
+        Event::TaskUnblocked {
+            task_id,
+            unblocked_by,
+            ..
+        } => {
+            assert_eq!(*task_id, blocked);
+            assert_eq!(*unblocked_by, other);
+        }
+        other => panic!("expected TaskUnblocked, got: {other:?}"),
+    }
+}
+
+async fn complete_task(handler: &CommandHandler, id: TaskId) {
+    handler
+        .handle(Command::CompleteTask { id, note: None }, Actor::user())
+        .await
+        .unwrap();
+}
+
+/// An edge linked from a task that is already Done never held anything back,
+/// so removing it is no unblock: nothing went from blocked to ready.
+#[tokio::test]
+async fn unlink_of_done_blocker_emits_no_task_unblocked() {
+    let (handler, _store, _tasks, _relations) = build_stack().await;
+    let done = create_task(&handler, "Finished first").await;
+    let blocked = create_task(&handler, "Linked later").await;
+    complete_task(&handler, done).await;
+    let edge = link_blocks(&handler, done, blocked).await;
+
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: edge }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1, "exactly 1 event: TaskUnlinked");
+    assert!(matches!(envs[0].payload, Event::TaskUnlinked { .. }));
+}
+
+/// The same edge next to a live blocker: the Done one goes first and frees
+/// nothing, the live one goes last and is the real unblock.
+#[tokio::test]
+async fn unlink_of_last_live_blocker_after_done_one_emits_task_unblocked() {
+    let (handler, _store, _tasks, _relations) = build_stack().await;
+    let done = create_task(&handler, "Finished first").await;
+    let live = create_task(&handler, "Still open").await;
+    let blocked = create_task(&handler, "Blocked").await;
+    complete_task(&handler, done).await;
+    let done_edge = link_blocks(&handler, done, blocked).await;
+    let live_edge = link_blocks(&handler, live, blocked).await;
+
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: done_edge }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 1, "exactly 1 event: TaskUnlinked");
+
+    let envs = handler
+        .handle(Command::UnlinkTasks { id: live_edge }, Actor::user())
+        .await
+        .unwrap();
+    assert_eq!(envs.len(), 2, "TaskUnlinked and TaskUnblocked");
+    match &envs[1].payload {
+        Event::TaskUnblocked {
+            task_id,
+            unblocked_by,
+            ..
+        } => {
+            assert_eq!(*task_id, blocked);
+            assert_eq!(*unblocked_by, live);
+        }
+        other => panic!("expected TaskUnblocked, got: {other:?}"),
+    }
+}
+
+/// `DeleteTask` shares the helper, so a Done blocker going away frees no one.
+#[tokio::test]
+async fn delete_of_done_blocker_emits_no_task_unblocked() {
+    let (handler, _store, _tasks, _relations) = build_stack().await;
+    let done = create_task(&handler, "Finished first").await;
+    let blocked = create_task(&handler, "Linked later").await;
+    complete_task(&handler, done).await;
+    link_blocks(&handler, done, blocked).await;
+
+    let envs = handler
+        .handle(Command::DeleteTask { id: done }, Actor::user())
+        .await
+        .unwrap();
+    assert!(
+        !envs
+            .iter()
+            .any(|env| matches!(env.payload, Event::TaskUnblocked { .. })),
+        "{envs:?}"
+    );
+}
+
 // ── unlink_nonexistent_returns_not_found ──────────────────────────────────────
 
 #[tokio::test]
