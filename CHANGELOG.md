@@ -6,6 +6,16 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### The import boundary guards catch ordinary imports
+
+- The `audit-imports` CI workflow used BRE escapes under `grep -E`, so a plain
+  `use daruma_desktop::SomeType;` in the core layer or
+  `use daruma_storage::Db;` in `apps/desktop/src` passed as `OK`. Both guards
+  now live in `scripts/audit-imports.sh` with correct ERE patterns, and CI
+  first runs `scripts/audit-imports.test.sh` against fixtures. Imports through
+  `daruma_core::embed` stay allowed; `just audit-imports` runs the same checks
+  locally.
+
 ### `just server` uses the same data directory as the server and CLI
 
 - With `DARUMA_AGENT_DIR` set and `DARUMA_DATA_DIR` unset, `just server` used
