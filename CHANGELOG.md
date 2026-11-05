@@ -6,6 +6,15 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Tasks created by a split keep their origin
+
+- After `daruma_split`, each child lost `source_event_id`: the split event set
+  it, and the `TaskCreated` that followed cleared it again. `TaskCreated` for a
+  split child now carries the id of its `TaskSplitGenerated`, so the link
+  survives both the live write and a replay of the stored log, and a nested
+  split points at its own event. Children split before this change keep `NULL`;
+  there is no backfill.
+
 ### The import boundary guards catch ordinary imports
 
 - The `audit-imports` CI workflow used BRE escapes under `grep -E`, so a plain
