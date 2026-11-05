@@ -31,7 +31,7 @@ use daruma_core::{Command, CommandBus};
 use daruma_domain::Actor;
 use daruma_events::{EventBus, EventEnvelope, EventReceiver};
 use daruma_shared::{AgentId, DeviceId, Result};
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -73,6 +73,8 @@ pub struct Hub {
 struct HubInner {
     subscribers: Arc<SubscriberMap>,
     connected_devices: Arc<DashMap<DeviceId, usize>>,
+    /// Revocation is permanent, so this grows only with revoked devices.
+    revoked_devices: DashSet<DeviceId>,
     device_revocations: broadcast::Sender<DeviceId>,
     fanout_task: AbortHandle,
 }
@@ -101,6 +103,7 @@ impl Hub {
             inner: Arc::new(HubInner {
                 subscribers,
                 connected_devices,
+                revoked_devices: DashSet::new(),
                 device_revocations,
                 fanout_task: fanout_handle.abort_handle(),
             }),
@@ -176,8 +179,17 @@ impl Hub {
             .collect()
     }
 
+    /// Latches the revocation, then wakes open sockets. The broadcast alone
+    /// cannot carry the decision: a receiver subscribed later or lagged past
+    /// its buffer never sees the id, while the latch is set before this
+    /// returns and answers every later [`Hub::is_device_revoked`].
     pub fn notify_device_revoked(&self, id: DeviceId) {
+        self.inner.revoked_devices.insert(id);
         let _ = self.inner.device_revocations.send(id);
+    }
+
+    pub fn is_device_revoked(&self, id: DeviceId) -> bool {
+        self.inner.revoked_devices.contains(&id)
     }
 
     pub fn subscribe_device_revocations(&self) -> broadcast::Receiver<DeviceId> {

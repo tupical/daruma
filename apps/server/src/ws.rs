@@ -36,9 +36,10 @@ use daruma_auth::{
 };
 use daruma_domain::Actor;
 use daruma_events::{Channel, Event, EventEnvelope};
-use daruma_shared::{time, AgentId, EventId, PlanId, ProjectId, TaskId};
+use daruma_shared::{time, AgentId, DeviceId, EventId, PlanId, ProjectId, TaskId};
 use daruma_storage::{AgentClaimRepo, PlanRepo, TaskRepo};
 use daruma_sync::{WsClientMessage, WsServerMessage, WS_SUBSCRIBER_CHANNEL};
+use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -48,6 +49,7 @@ use crate::state::AppState;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(25);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+const REFUSED_DRAIN: Duration = Duration::from_secs(1);
 const SNAPSHOT_PAGE: usize = 1000;
 const WS_PROTOCOL: &str = "daruma.v1";
 const BEARER_PROTOCOL_PREFIX: &str = "bearer.";
@@ -102,7 +104,11 @@ async fn handle_socket(
 ) {
     let (mut ws_sink, mut ws_stream) = socket.split();
 
-    // 1. Authenticate.
+    // 1. Watch revocations before validating, so a revoke landing after the
+    //    token read below still wakes this connection.
+    let mut revocations = state.hub.subscribe_device_revocations();
+
+    // 2. Authenticate.
     let mut auth_ctx = match authenticate(&state.auth_store, token.as_deref()).await {
         Ok(ctx) => ctx,
         Err(err) => {
@@ -112,6 +118,7 @@ async fn handle_socket(
                     reason: err.into(),
                 })))
                 .await;
+            drain_refused(&mut ws_stream).await;
             return;
         }
     };
@@ -127,6 +134,16 @@ async fn handle_socket(
     }
     let mine = mine.then(|| auth_ctx.principal_id.unwrap_or(auth_ctx.agent_id));
     let device_id = auth_ctx.device_id;
+    // The token row above may predate a revoke that committed since.
+    if let Some(id) = device_id {
+        if !device_still_admitted(&state, id).await {
+            for frame in device_revoked_frames() {
+                let _ = ws_sink.send(frame).await;
+            }
+            drain_refused(&mut ws_stream).await;
+            return;
+        }
+    }
     if let Some(device_id) = device_id {
         state.hub.device_connected(device_id);
         emit_presence(
@@ -139,7 +156,7 @@ async fn handle_socket(
         .await;
     }
 
-    // 2. Outgoing serialiser — bounded mpsc that funnels all server frames.
+    // 3. Outgoing serialiser — bounded mpsc that funnels all server frames.
     //
     // §3.9.5: bounded(WS_SUBSCRIBER_CHANNEL) so a stalled `ws_sink.send()`
     // applies backpressure to the forwarder instead of letting the queue
@@ -147,7 +164,7 @@ async fn handle_socket(
     // same close-and-reconnect path as the upstream slow-consumer drop.
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(WS_SUBSCRIBER_CHANNEL);
 
-    // 3. Send Hello.
+    // 4. Send Hello.
     let server_seq = state.store.latest_seq().await.unwrap_or(0);
     send_json(
         &out_tx,
@@ -167,33 +184,43 @@ async fn handle_socket(
         },
     );
 
-    // 4. Spawn the write-side task that drains `out_rx` to the WS sink.
+    // 5. Spawn the write-side task that drains `out_rx` to the WS sink. Every
+    //    server frame passes here, so once a revoke returns the device gets
+    //    the refusal instead of whatever was still queued.
+    let write_hub = state.hub.clone();
     let write_task = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
+            if device_id.is_some_and(|id| write_hub.is_device_revoked(id)) {
+                for frame in device_revoked_frames() {
+                    let _ = ws_sink.send(frame).await;
+                }
+                break;
+            }
             if ws_sink.send(msg).await.is_err() {
                 break;
             }
         }
     });
 
-    // 5. Connection-wide live subscription handle. Set by the first
+    // 6. Connection-wide live subscription handle. Set by the first
     //    successful `Subscribe`; cancelled and replaced on re-subscribe.
     let mut live_task: Option<tokio::task::JoinHandle<()>> = None;
 
-    // 6. Heartbeat tracking.
+    // 7. Heartbeat tracking.
     let mut hb = interval(HEARTBEAT_INTERVAL);
     hb.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // Skip the first immediate tick.
     hb.tick().await;
 
     let mut awaiting_pong = false;
-    let mut revocations = state.hub.subscribe_device_revocations();
 
-    // 7. Main read loop.
+    // 8. Main read loop.
     loop {
         tokio::select! {
-            revoked = revocations.recv(), if device_id.is_some() => {
-                if matches!(revoked, Ok(revoked_id) if Some(revoked_id) == device_id) {
+            // The hub latch decides: `recv` is only a wake-up, and a lagged
+            // receiver wakes without the id it missed.
+            _ = revocations.recv(), if device_id.is_some() => {
+                if device_is_revoked(&state, device_id) {
                     send_unauthorized_close(&out_tx);
                     break;
                 }
@@ -219,6 +246,11 @@ async fn handle_socket(
             // ── incoming WS frame ────────────────────────────────────────────
             maybe_msg = ws_stream.next() => {
                 let Some(Ok(msg)) = maybe_msg else { break };
+                // `select!` may pick this branch over a pending revocation.
+                if device_is_revoked(&state, device_id) {
+                    send_unauthorized_close(&out_tx);
+                    break;
+                }
                 match msg {
                     Message::Text(text) => {
                         match serde_json::from_str::<WsClientMessage>(&text) {
@@ -312,6 +344,9 @@ async fn handle_socket(
     }
     drop(out_tx);
     let _ = tokio::time::timeout(Duration::from_secs(1), write_task).await;
+    if device_is_revoked(&state, device_id) {
+        drain_refused(&mut ws_stream).await;
+    }
 }
 
 async fn emit_presence(state: &AppState, payload: Event) {
@@ -324,22 +359,54 @@ async fn emit_presence(state: &AppState, payload: Event) {
     }
 }
 
-fn send_unauthorized_close(out_tx: &mpsc::Sender<Message>) {
-    send_json(
-        out_tx,
-        &WsServerMessage::Error {
-            code: "unauthorized".to_string(),
-            message: "device revoked".to_string(),
-            request_id: None,
-        },
-    );
-    let _ = try_send_message(
-        out_tx,
+/// Reads out what a refused client already sent, without acting on it: closing
+/// over unread data resets the connection and can cost it the close frame.
+async fn drain_refused(ws_stream: &mut SplitStream<WebSocket>) {
+    let _ = tokio::time::timeout(REFUSED_DRAIN, async {
+        while matches!(ws_stream.next().await, Some(Ok(_))) {}
+    })
+    .await;
+}
+
+fn device_is_revoked(state: &AppState, device_id: Option<DeviceId>) -> bool {
+    device_id.is_some_and(|id| state.hub.is_device_revoked(id))
+}
+
+/// Admission recheck after the revocation watch is up. The store read covers a
+/// revoke that did not pass through this hub; a failed read refuses the socket.
+async fn device_still_admitted(state: &AppState, id: DeviceId) -> bool {
+    if state.hub.is_device_revoked(id) {
+        return false;
+    }
+    match state.devices.is_revoked(id).await {
+        Ok(revoked) => !revoked,
+        Err(err) => {
+            tracing::warn!(err = %err, device_id = %id, "ws: device recheck failed");
+            false
+        }
+    }
+}
+
+fn device_revoked_frames() -> [Message; 2] {
+    let error = WsServerMessage::Error {
+        code: "unauthorized".to_string(),
+        message: "device revoked".to_string(),
+        request_id: None,
+    };
+    let text = serde_json::to_string(&error).unwrap_or_default();
+    [
+        Message::Text(text.into()),
         Message::Close(Some(CloseFrame {
             code: 1008,
             reason: "device revoked".into(),
         })),
-    );
+    ]
+}
+
+fn send_unauthorized_close(out_tx: &mpsc::Sender<Message>) {
+    for frame in device_revoked_frames() {
+        let _ = try_send_message(out_tx, frame);
+    }
 }
 
 // ── authentication ────────────────────────────────────────────────────────────
