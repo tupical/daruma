@@ -92,7 +92,7 @@ fn compute_sunset() -> HeaderValue {
 /// Build the complete Axum [`Router`].
 pub fn router(state: AppState) -> Router {
     let sunset: Arc<HeaderValue> = Arc::new(compute_sunset());
-    let auth_layer = AuthLayer::new(state.auth_store.clone());
+    let auth_layer = AuthLayer::new(state.auth_store.clone(), state.hub.clone());
 
     let sv = Arc::clone(&sunset);
     let deprecation_layer = axum::middleware::from_fn(move |req: Request, next: Next| {
@@ -5557,6 +5557,7 @@ async fn revoke_token(
     let id = parse_id(&id_str, "token id")?;
     let revoked = state.tokens.revoke(id).await.map_err(ApiError::from)?;
     if revoked {
+        state.hub.notify_token_revoked(id);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::from(CoreError::not_found(format!(
