@@ -13,7 +13,7 @@
 //! Accepts a `daruma://pair?host=…&token=…&fpr=sha256:…` URL (paste from
 //! QR code or copy from the server's `/v1/devices/pair/ticket` output), sends
 //! `POST /v1/devices/pair` to the server over TLS, and persists the returned
-//! bearer token + server URL to the local config.
+//! bearer token + server URL + verified fingerprint to the local config.
 //!
 //! ### Camera / QR scan
 //!
@@ -34,6 +34,12 @@
 //! 3. If the digests differ the TLS handshake is aborted before any HTTP bytes
 //!    are exchanged; a MITM cannot forge the cert even if they intercept DNS /
 //!    mDNS because they do not possess the server's private key.
+//! 4. The verified fingerprint is stored in `paired.json` next to the server URL
+//!    it was verified for, and every later `sync` / `devices` request to that
+//!    URL's scheme, host and port goes through the same verifier. A certificate
+//!    that differs from the pin ends the handshake before the bearer token is
+//!    sent; only a new `pair` with a fresh ticket moves the pin. Any other URL
+//!    gets the system's trust, never the pin.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -191,12 +197,13 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
         .context("POST /v1/devices/pair")?;
 
     // Persist credentials.
-    persist_credentials(&params.host, &pair_resp.access_token)
+    let server_url = paired_server_url(&params.host)?;
+    persist_credentials(&server_url, &pair_resp.access_token, &expected_hex)
         .await
         .context("persist credentials")?;
 
     println!("Paired successfully!");
-    println!("  Server URL  : https://{}", params.host);
+    println!("  Server URL  : {server_url}");
     println!("  Token prefix: {}", pair_resp.token_prefix);
     if let Some(device_id) = pair_resp.device_id {
         println!("  Device ID   : {device_id}");
@@ -226,14 +233,7 @@ async fn post_pair_pinned(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
 
-    // Build a rustls ClientConfig that skips CA verification and instead
-    // delegates to our fingerprint verifier.
-    let verifier = Arc::new(FingerprintVerifier::new(expected_sha256_hex)?);
-    let tls_cfg = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(tls_cfg));
+    let connector = TlsConnector::from(Arc::new(pinned_tls_config(expected_sha256_hex)?));
 
     // Resolve host and port.
     let (hostname, port) = split_host_port(host)?;
@@ -305,6 +305,16 @@ async fn post_pair_pinned(
     let pair_resp: PairResponse =
         serde_json::from_str(body).context("parse pairing response JSON")?;
     Ok(pair_resp)
+}
+
+/// A rustls `ClientConfig` that skips CA verification and instead delegates to
+/// our fingerprint verifier.
+pub(crate) fn pinned_tls_config(expected_sha256_hex: &str) -> Result<rustls::ClientConfig> {
+    let verifier = std::sync::Arc::new(FingerprintVerifier::new(expected_sha256_hex)?);
+    Ok(rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth())
 }
 
 /// JSON body of `POST /v1/devices/pair`.
@@ -501,12 +511,34 @@ fn hostname_label() -> String {
         .unwrap_or_else(|_| "desktop".to_string())
 }
 
-/// Persist `server_url` + `token` to the local config file used by `sync`.
+/// The URL pairing actually reached: `host` with the port the TLS connection
+/// used, so the pin below is bound to that port even if `host` omitted it.
+fn paired_server_url(host: &str) -> Result<String> {
+    let (hostname, port) = split_host_port(host)?;
+    Ok(format!("https://{hostname}:{port}"))
+}
+
+/// Contents of `paired.json`. `tls_fingerprint` is the digest the pairing
+/// handshake verified, in the `sha256:<hex>` form the ticket uses.
+fn paired_config(server_url: &str, token: &str, verified_sha256_hex: &str) -> serde_json::Value {
+    serde_json::json!({
+        "server_url": server_url,
+        "token": token,
+        "tls_fingerprint": format!("sha256:{}", verified_sha256_hex.to_ascii_lowercase()),
+    })
+}
+
+/// Persist `server_url` + `token` + the verified fingerprint to the local
+/// config file used by `sync`.
 ///
 /// This writes (or overwrites) `<data_dir>/paired.json` — the `sync` command
 /// checks this file for credentials when `DARUMA_API_URL` / `DARUMA_TOKEN`
-/// are not set.
-async fn persist_credentials(host: &str, token: &str) -> Result<()> {
+/// are not set, and for the certificate pin of `server_url`.
+async fn persist_credentials(
+    server_url: &str,
+    token: &str,
+    verified_sha256_hex: &str,
+) -> Result<()> {
     let path = paired_credentials_path();
     let data_dir = path
         .parent()
@@ -515,10 +547,7 @@ async fn persist_credentials(host: &str, token: &str) -> Result<()> {
         .await
         .context("create data dir")?;
 
-    let config = serde_json::json!({
-        "server_url": format!("https://{host}"),
-        "token": token,
-    });
+    let config = paired_config(server_url, token, verified_sha256_hex);
 
     tokio::fs::write(&path, serde_json::to_vec_pretty(&config)?)
         .await
@@ -570,6 +599,26 @@ mod tests {
         assert_eq!(body["token"], "tok");
         assert_eq!(body["tls_fingerprint"], "sha256:abcdef");
         assert_eq!(body["device_label"], "laptop");
+    }
+
+    #[test]
+    fn paired_server_url_names_the_port_pairing_used() {
+        assert_eq!(
+            paired_server_url("10.0.0.5:9443").unwrap(),
+            "https://10.0.0.5:9443"
+        );
+        assert_eq!(
+            paired_server_url("daruma.local").unwrap(),
+            "https://daruma.local:8443"
+        );
+    }
+
+    #[test]
+    fn paired_config_keeps_the_verified_fingerprint_with_one_prefix() {
+        let config = paired_config("https://h:8443", "tok", "ABCDEF");
+        assert_eq!(config["server_url"], "https://h:8443");
+        assert_eq!(config["token"], "tok");
+        assert_eq!(config["tls_fingerprint"], "sha256:abcdef");
     }
 
     #[test]
