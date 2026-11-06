@@ -11,6 +11,8 @@ use daruma_core::embed::{
 use daruma_shared::{CoreError, EventId, Result};
 use sqlx::{Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
+use crate::outbox::UNPROJECTED_SCHEMA;
+
 /// Local event-log rows read per round during a rebuild.
 const LOCAL_LOG_PAGE_SIZE: usize = 1000;
 
@@ -73,6 +75,10 @@ impl Replica {
             .execute(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
+        sqlx::query(UNPROJECTED_SCHEMA)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
         // baseline_verified: 1 once the cursor is known to rest on a replay
         // from seq 0 or on a consistent snapshot. A cursor written before this
         // column existed may rest on a snapshot that missed events.
@@ -129,6 +135,16 @@ impl Replica {
     }
 
     pub async fn catch_up(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<CatchUpStats> {
+        // A local command stopped between its commit and its projectors left
+        // an event the echo will skip as already taken care of. One still
+        // running is safe to catch here too: it applies onto the rebuilt rows.
+        sqlx::query(
+            "UPDATE desktop_replica_state SET projections_verified = 0 \
+             WHERE id = 1 AND EXISTS (SELECT 1 FROM desktop_unprojected)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
         // A brand new replica has nothing to repair; one that holds events
         // does even at cursor 0, since a first sync that stopped midway left
         // them in the log without writing a cursor.
@@ -266,6 +282,10 @@ impl Replica {
         self.replace_projections(&mut tx, &state).await?;
         fold.replace_task_versions_tx(&mut tx).await?;
         self.replace_activity(&mut tx).await?;
+        sqlx::query("DELETE FROM desktop_unprojected")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
         mark_verified_baseline(&mut *tx, (current.max(0) as u64).max(cursor)).await?;
         tx.commit()
             .await
@@ -470,14 +490,18 @@ mod tests {
     use daruma_domain::{
         Actor, Comment, CommentPatch, NewComment, NewTask, Project, Status, TaskPatch,
     };
-    use daruma_shared::TaskId;
+    use daruma_shared::{DeviceId, TaskId};
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::{Mutex, Notify};
 
-    use crate::{local_executor::LocalExecutor, outbox::Outbox};
+    use crate::{
+        flush::{PushOutcome, RemoteEventSink},
+        local_executor::LocalExecutor,
+        outbox::{enqueue_on, OutboundStore, Outbox},
+    };
 
     struct Device {
         replica: Replica,
@@ -761,15 +785,15 @@ mod tests {
 
     /// Forwards to the real log and can stop a command right after
     /// `append_batch` has committed, before any projector ran.
-    struct PausingStore {
-        inner: SqliteEventStore,
+    struct PausingStore<S = SqliteEventStore> {
+        inner: S,
         armed: AtomicBool,
         committed: Notify,
         resume: Notify,
     }
 
     #[async_trait]
-    impl EventStore for PausingStore {
+    impl<S: EventStore> EventStore for PausingStore<S> {
         async fn append(&self, envelope: EventEnvelope) -> Result<EventEnvelope> {
             self.inner.append(envelope).await
         }
@@ -1331,23 +1355,33 @@ mod tests {
             &self,
             wrap: impl FnOnce(SqliteEventStore) -> Arc<dyn EventStore>,
         ) -> Process {
+            self.open_with(wrap, |outbound| Arc::new(outbound)).await
+        }
+
+        /// `wrap` the store of the catch-up, `wrap_outbound` the one of local
+        /// commands.
+        async fn open_with(
+            &self,
+            wrap: impl FnOnce(SqliteEventStore) -> Arc<dyn EventStore>,
+            wrap_outbound: impl FnOnce(OutboundStore) -> Arc<dyn EventStore>,
+        ) -> Process {
             let path = self.dir.join("replica.sqlite");
             let db = Db::open(path.to_str().unwrap()).await.unwrap();
             db.migrate().await.unwrap();
             let pool = db.pool().clone();
             let store = wrap(SqliteEventStore::new(pool.clone()));
-            let device = device_on(pool, store.clone()).await;
+            let device = device_on(pool, store).await;
+            let outbox = Outbox::new(db);
+            outbox.ensure_schema().await.unwrap();
             let commands = CommandBus::new(Arc::new(CommandHandler::new(
-                store,
+                wrap_outbound(outbox.outbound_store().await.unwrap()),
                 device.tasks.clone(),
                 device.projects.clone(),
                 device.comments.clone(),
                 device.replica.activity.clone(),
                 EventBus::new(16),
             )));
-            let outbox = Outbox::new(db);
-            outbox.ensure_schema().await.unwrap();
-            let local = LocalExecutor::new(commands, outbox).await.unwrap();
+            let local = LocalExecutor::new(commands, outbox);
             Process { device, local }
         }
 
@@ -1462,16 +1496,19 @@ mod tests {
         let writer = {
             let store = store.clone();
             let process = file
-                .open(move |inner| {
-                    let pausing = Arc::new(PausingStore {
-                        inner,
-                        armed: AtomicBool::new(true),
-                        committed: Notify::new(),
-                        resume: Notify::new(),
-                    });
-                    *store.try_lock().unwrap() = Some(pausing.clone());
-                    pausing
-                })
+                .open_with(
+                    |plain| Arc::new(plain),
+                    move |inner| {
+                        let pausing = Arc::new(PausingStore {
+                            inner,
+                            armed: AtomicBool::new(true),
+                            committed: Notify::new(),
+                            resume: Notify::new(),
+                        });
+                        *store.try_lock().unwrap() = Some(pausing.clone());
+                        pausing
+                    },
+                )
                 .await;
             Arc::new(process)
         };
@@ -2209,5 +2246,512 @@ mod tests {
             process.device.state().await,
             server.full_replay().await.state().await
         );
+    }
+
+    // ── delivery of local commands ───────────────────────────────────────────
+
+    /// `POST /v1/events/replica`: takes an event once, by id, and remembers
+    /// every push it got.
+    struct Uplink<'a> {
+        server: &'a Server,
+        pushes: std::sync::Mutex<Vec<EventEnvelope>>,
+        refused: HashSet<EventId>,
+    }
+
+    impl<'a> Uplink<'a> {
+        fn to(server: &'a Server) -> Self {
+            Self::refusing(server, HashSet::new())
+        }
+
+        fn refusing(server: &'a Server, refused: HashSet<EventId>) -> Self {
+            Self {
+                server,
+                pushes: std::sync::Mutex::new(Vec::new()),
+                refused,
+            }
+        }
+
+        fn pushed(&self) -> Vec<EventId> {
+            self.pushes.lock().unwrap().iter().map(|e| e.id).collect()
+        }
+    }
+
+    #[async_trait]
+    impl RemoteEventSink for Uplink<'_> {
+        async fn push(&self, mut envelope: EventEnvelope) -> Result<PushOutcome> {
+            if self.refused.contains(&envelope.id) {
+                return Ok(PushOutcome::Rejected {
+                    status: 403,
+                    code: "intake_source_admin_only".into(),
+                });
+            }
+            self.pushes.lock().unwrap().push(envelope.clone());
+            if self.server.store.load_by_id(envelope.id).await?.is_none() {
+                envelope.seq = 0;
+                let env = self.server.store.append(envelope).await?;
+                self.server.tasks.apply_event(&env).await?;
+            }
+            Ok(PushOutcome::Accepted)
+        }
+    }
+
+    /// A server nobody can reach.
+    struct Unreachable;
+
+    #[async_trait]
+    impl ReplicaSource for Unreachable {
+        async fn fetch_events(&self, _: u64, _: u32) -> Result<Vec<EventEnvelope>> {
+            Err(CoreError::sync("server unreachable"))
+        }
+
+        async fn fetch_snapshot(&self) -> Result<Option<Snapshot>> {
+            Err(CoreError::sync("server unreachable"))
+        }
+    }
+
+    fn complete(id: TaskId) -> Command {
+        Command::CompleteTask { id, note: None }
+    }
+
+    fn new_task(title: &str, id: TaskId) -> Command {
+        let mut task = NewTask::new(title);
+        task.id = Some(id);
+        Command::CreateTask { task }
+    }
+
+    impl Process {
+        /// `daruma sync`: what `cmds::sync` runs, in that order.
+        async fn sync(&self, uplink: &Uplink<'_>) -> Result<usize> {
+            let restored = self.local.restore_lost(uplink.server, 50).await?;
+            self.local.flush_pending(uplink, 50).await?;
+            self.device.replica.catch_up(uplink.server, 50).await?;
+            Ok(restored)
+        }
+
+        /// A command as an older binary ran it: committed and projected, then
+        /// queued event by event under a device id of its own, until it
+        /// stopped after `queued` of them. Returns the events it logged.
+        async fn run_like_the_old_binary(&self, cmd: Command, queued: usize) -> Vec<EventId> {
+            let pool = &self.device.pool;
+            let commands = CommandBus::new(Arc::new(CommandHandler::new(
+                Arc::new(SqliteEventStore::new(pool.clone())),
+                self.device.tasks.clone(),
+                self.device.projects.clone(),
+                self.device.comments.clone(),
+                self.device.replica.activity.clone(),
+                EventBus::new(16),
+            )));
+            let events = commands.dispatch(cmd, Actor::user()).await.unwrap();
+            let origin = DeviceId::new();
+            for (seq, event) in events.iter().take(queued).enumerate() {
+                enqueue_on(pool, origin, seq as u64 + 1, event.clone())
+                    .await
+                    .unwrap();
+            }
+            events.iter().map(|event| event.id).collect()
+        }
+
+        async fn log_ids(&self) -> Vec<EventId> {
+            let log = self.device.store.load_since(0, 1000).await.unwrap();
+            log.iter().map(|event| event.id).collect()
+        }
+
+        async fn unprojected(&self) -> i64 {
+            sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM desktop_unprojected")
+                .fetch_one(&self.device.pool)
+                .await
+                .unwrap()
+                .0
+        }
+
+        async fn status_of(&self, id: TaskId) -> Status {
+            self.device.tasks.get(id).await.unwrap().unwrap().status
+        }
+    }
+
+    impl Server {
+        async fn times_logged(&self, id: EventId) -> usize {
+            let log = self.store.load_since(0, 10_000).await.unwrap();
+            log.iter().filter(|event| event.id == id).count()
+        }
+    }
+
+    /// A device that caught up once, as any binary would, so its cursor is
+    /// past zero and it has not looked for lost events yet.
+    async fn synced_device(server: &Server, file: &ReplicaFile) -> Process {
+        server.create_task("already on the server").await;
+        let process = file.open_plain().await;
+        process.device.replica.catch_up(server, 50).await.unwrap();
+        assert!(process.device.replica.server_seq().await.unwrap() > 0);
+        process
+    }
+
+    #[tokio::test]
+    async fn command_stopped_after_its_commit_reaches_both_sides_after_a_restart() {
+        // `tasks` stops it before any projector took effect, `activity` after
+        // the task is visible. On a command that queues after the fact either
+        // one leaves the outbox empty and the server without the event.
+        for projector in ["tasks", "activity"] {
+            let server = Server::start().await;
+            let file = ReplicaFile::create().await;
+            let process = synced_device(&server, &file).await;
+            let id = TaskId::new();
+
+            process.device.stop_sync_at(projector, "1").await;
+            let stopped = process
+                .local
+                .dispatch(new_task("stopped", id), Actor::user())
+                .await;
+            assert!(stopped.is_err(), "{projector}");
+            process.device.let_sync_through().await;
+            drop(process);
+
+            let restarted = file.open_plain().await;
+            assert_eq!(restarted.pending_outbox().await, 1, "{projector}");
+            let uplink = Uplink::to(&server);
+            restarted.sync(&uplink).await.unwrap();
+
+            let pushed = uplink.pushed();
+            assert_eq!(pushed.len(), 1, "{projector}");
+            assert_eq!(server.times_logged(pushed[0]).await, 1);
+            assert!(server.tasks.get(id).await.unwrap().is_some(), "{projector}");
+            assert!(
+                restarted.device.tasks.get(id).await.unwrap().is_some(),
+                "{projector}"
+            );
+            assert_eq!(restarted.unprojected().await, 0);
+            assert_eq!(restarted.pending_outbox().await, 0);
+            assert_eq!(
+                restarted.device.state().await,
+                server.full_replay().await.state().await,
+                "{projector}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn outbox_error_takes_back_the_whole_command_and_a_retry_delivers_all_of_it() {
+        // CompleteTask logs three events: fail on the queueing of each.
+        for queued_before_the_error in 0..3 {
+            let server = Server::start().await;
+            let file = ReplicaFile::create().await;
+            let process = synced_device(&server, &file).await;
+            let id = TaskId::new();
+            process.create_task("to finish", id).await;
+            process.sync(&Uplink::to(&server)).await.unwrap();
+            let log_before = process.log_ids().await;
+            let status_before = process.status_of(id).await;
+
+            let queued = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM desktop_outbox")
+                .fetch_one(&process.device.pool)
+                .await
+                .unwrap()
+                .0;
+            let when = format!(
+                "(SELECT COUNT(*) FROM desktop_outbox) >= {}",
+                queued + queued_before_the_error
+            );
+            process.device.stop_sync_at("desktop_outbox", &when).await;
+            let failed = process.local.dispatch(complete(id), Actor::user()).await;
+            assert!(failed.is_err(), "a partial success must not pass as one");
+            process.device.let_sync_through().await;
+
+            assert_eq!(process.log_ids().await, log_before);
+            assert_eq!(process.pending_outbox().await, 0);
+            assert_eq!(process.unprojected().await, 0);
+            assert_eq!(process.status_of(id).await, status_before);
+
+            let events = process
+                .local
+                .dispatch(complete(id), Actor::user())
+                .await
+                .unwrap();
+            let uplink = Uplink::to(&server);
+            process.sync(&uplink).await.unwrap();
+
+            let sent: Vec<_> = events.iter().map(|event| event.id).collect();
+            assert_eq!(sent.len(), 3);
+            assert_eq!(uplink.pushed(), sent);
+            assert_eq!(process.status_of(id).await, Status::Done);
+            assert_eq!(
+                process.device.state().await,
+                server.full_replay().await.state().await
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn events_the_old_binary_never_queued_go_out_in_log_order() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let (lost, partly_lost) = (TaskId::new(), TaskId::new());
+
+        // A create with nothing queued, and two completes behind it that got
+        // all and one of their three events queued: those must not overtake it.
+        process
+            .run_like_the_old_binary(new_task("lost", lost), 0)
+            .await;
+        process
+            .run_like_the_old_binary(new_task("partly lost", partly_lost), 1)
+            .await;
+        process.run_like_the_old_binary(complete(lost), 3).await;
+        process
+            .run_like_the_old_binary(complete(partly_lost), 1)
+            .await;
+        let log = process.log_ids().await;
+        let local_commands = log.len() - 1;
+        drop(process);
+
+        let restarted = file.open_plain().await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 3);
+
+        assert_eq!(uplink.pushed(), log[log.len() - local_commands..].to_vec());
+        for id in [lost, partly_lost] {
+            assert_eq!(restarted.status_of(id).await, Status::Done);
+            let on_server = server.tasks.get(id).await.unwrap().unwrap();
+            assert_eq!(on_server.status, Status::Done);
+        }
+        assert_eq!(restarted.pending_outbox().await, 0);
+        assert_eq!(
+            restarted.device.state().await,
+            server.full_replay().await.state().await
+        );
+    }
+
+    #[tokio::test]
+    async fn retries_after_an_unrecorded_accept_keep_the_identity_and_add_nothing() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let id = TaskId::new();
+        process.create_task("accepted", id).await;
+        let log = process.log_ids().await;
+
+        sqlx::query(
+            "CREATE TRIGGER stop_mark BEFORE UPDATE ON desktop_outbox \
+             BEGIN SELECT RAISE(ABORT, 'stopped before the mark'); END",
+        )
+        .execute(&process.device.pool)
+        .await
+        .unwrap();
+        let uplink = Uplink::to(&server);
+        assert!(process.local.flush_pending(&uplink, 50).await.is_err());
+        sqlx::query("DROP TRIGGER stop_mark")
+            .execute(&process.device.pool)
+            .await
+            .unwrap();
+        drop(process);
+
+        for _ in 0..3 {
+            let restarted = file.open_plain().await;
+            assert_eq!(restarted.sync(&uplink).await.unwrap(), 0);
+        }
+
+        let pushes = uplink.pushes.lock().unwrap().clone();
+        assert_eq!(pushes.len(), 2, "one accept lost, one retry, then quiet");
+        assert_eq!(pushes[0].id, pushes[1].id);
+        assert!(pushes[0].origin_device_id.is_some());
+        assert_eq!(pushes[0].origin_device_id, pushes[1].origin_device_id);
+        assert_eq!(pushes[0].origin_seq, pushes[1].origin_seq);
+        assert_eq!(server.times_logged(pushes[0].id).await, 1);
+        let restarted = file.open_plain().await;
+        assert_eq!(restarted.log_ids().await, log);
+        assert_eq!(restarted.pending_outbox().await, 0);
+    }
+
+    #[tokio::test]
+    async fn restore_takes_only_the_lost_event() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        // Looks like a local command in the log: same actor, no origin.
+        server.create_task("incoming from the server").await;
+        // Keeps the origin of the device that made it.
+        let other_file = ReplicaFile::create().await;
+        let other = other_file.open_plain().await;
+        other
+            .create_task("from another device", TaskId::new())
+            .await;
+        other.sync(&Uplink::to(&server)).await.unwrap();
+
+        let process = file.open_plain().await;
+        let delivered = process
+            .run_like_the_old_binary(new_task("delivered", TaskId::new()), 1)
+            .await[0];
+        let refused = process
+            .run_like_the_old_binary(new_task("refused", TaskId::new()), 1)
+            .await[0];
+        let uplink = Uplink::refusing(&server, HashSet::from([refused]));
+        flush_pending_of(&process, &uplink).await;
+        assert_eq!(uplink.pushed(), vec![delivered]);
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+        let pending = process
+            .run_like_the_old_binary(new_task("pending", TaskId::new()), 1)
+            .await[0];
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
+            .await[0];
+        let log = process.log_ids().await;
+        assert_eq!(process.local.rejected_count().await.unwrap(), 1);
+        drop(process);
+
+        let restarted = file.open_plain().await;
+        let uplink = Uplink::refusing(&server, HashSet::from([refused]));
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+
+        assert_eq!(uplink.pushed(), vec![pending, lost]);
+        assert_eq!(restarted.local.rejected_count().await.unwrap(), 1);
+        assert_eq!(restarted.pending_outbox().await, 1, "the refused one");
+        assert_eq!(server.store.load_by_id(refused).await.unwrap(), None);
+        assert_eq!(restarted.log_ids().await, log);
+
+        // It looked once: a replica that is whole stays off the server.
+        assert_eq!(
+            restarted
+                .local
+                .restore_lost(&Unreachable, 50)
+                .await
+                .unwrap(),
+            0
+        );
+        let again = Uplink::refusing(&server, HashSet::from([refused]));
+        assert_eq!(restarted.sync(&again).await.unwrap(), 0);
+        assert!(again.pushed().is_empty());
+        assert_eq!(restarted.local.rejected_count().await.unwrap(), 1);
+    }
+
+    async fn flush_pending_of(process: &Process, uplink: &Uplink<'_>) {
+        process.local.flush_pending(uplink, 50).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_needs_the_server_only_when_something_may_be_lost() {
+        let file = ReplicaFile::create().await;
+        let process = file.open_plain().await;
+        process
+            .create_task("queued with its commit", TaskId::new())
+            .await;
+        assert_eq!(
+            process.local.restore_lost(&Unreachable, 50).await.unwrap(),
+            0
+        );
+
+        let later = ReplicaFile::create().await;
+        let process = later.open_plain().await;
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
+            .await[0];
+        assert!(process.local.restore_lost(&Unreachable, 50).await.is_err());
+        assert_eq!(process.pending_outbox().await, 0);
+
+        let server = Server::start().await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(process.sync(&uplink).await.unwrap(), 1);
+        assert_eq!(uplink.pushed(), vec![lost]);
+    }
+
+    #[tokio::test]
+    async fn restore_refuses_a_server_that_lost_its_log() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        process
+            .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
+            .await;
+        let emptied = Server::start().await;
+
+        let refused = process.local.restore_lost(&emptied, 50).await;
+
+        assert!(refused.unwrap_err().to_string().contains("log is empty"));
+        assert_eq!(process.pending_outbox().await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_incoming_event_that_lands_during_the_restore_stays_incoming() {
+        /// Hands an incoming event to the device as soon as the server log
+        /// has been read, like a second `daruma sync` would.
+        struct WritesAfterTheScan<'a> {
+            server: &'a Server,
+            device: &'a Device,
+            armed: AtomicBool,
+        }
+
+        #[async_trait]
+        impl ReplicaSource for WritesAfterTheScan<'_> {
+            async fn fetch_events(&self, since: u64, limit: u32) -> Result<Vec<EventEnvelope>> {
+                let page = self.server.fetch_events(since, limit).await?;
+                if page.is_empty() && self.armed.swap(false, Ordering::SeqCst) {
+                    self.server.create_task("incoming after the scan").await;
+                    let tip = self.device.replica.server_seq().await?;
+                    let incoming = self.server.fetch_events(tip, limit).await?;
+                    self.device.replica.apply_remote_events(incoming).await?;
+                }
+                Ok(page)
+            }
+
+            async fn fetch_snapshot(&self) -> Result<Option<Snapshot>> {
+                self.server.fetch_snapshot().await
+            }
+        }
+
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = file.open_plain().await;
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
+            .await[0];
+        let source = WritesAfterTheScan {
+            server: &server,
+            device: &process.device,
+            armed: AtomicBool::new(true),
+        };
+
+        assert_eq!(process.local.restore_lost(&source, 50).await.unwrap(), 1);
+
+        let uplink = Uplink::to(&server);
+        process.local.flush_pending(&uplink, 50).await.unwrap();
+        assert_eq!(uplink.pushed(), vec![lost]);
+    }
+
+    #[tokio::test]
+    async fn processes_of_one_device_share_its_origin_and_never_a_sequence_number() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let first = Arc::new(file.open_plain().await);
+        let second = Arc::new(file.open_plain().await);
+        let writers = [first.clone(), second.clone()].map(|process| {
+            tokio::spawn(async move {
+                for _ in 0..10 {
+                    process.create_task("concurrent", TaskId::new()).await;
+                }
+            })
+        });
+        for writer in writers {
+            writer.await.unwrap();
+        }
+
+        let uplink = Uplink::to(&server);
+        first.sync(&uplink).await.unwrap();
+
+        let pushes = uplink.pushes.lock().unwrap().clone();
+        assert_eq!(pushes.len(), 20);
+        let origins: HashSet<_> = pushes.iter().map(|e| e.origin_device_id).collect();
+        assert_eq!(origins.len(), 1);
+        let numbers: HashSet<_> = pushes.iter().map(|e| e.origin_seq).collect();
+        assert_eq!(numbers.len(), 20);
+    }
+
+    #[tokio::test]
+    async fn finished_command_does_not_send_the_next_sync_into_a_rebuild() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+
+        process.create_task("finished", TaskId::new()).await;
+
+        assert_eq!(process.unprojected().await, 0);
+        let stats = process.echo_local_events(&server).await;
+        assert_eq!((stats.fetched, stats.applied), (1, 0), "only the echo");
     }
 }

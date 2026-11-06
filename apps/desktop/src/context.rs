@@ -58,9 +58,19 @@ impl Context {
         let comments = Arc::new(CommentRepo::new(pool.clone()));
         let activity = Arc::new(ActivityRepo::new(pool.clone()));
 
+        let outbox = Outbox::new(db);
+        outbox
+            .ensure_schema()
+            .await
+            .map_err(|e| anyhow::anyhow!("outbox schema: {e}"))?;
+        let outbound = outbox
+            .outbound_store()
+            .await
+            .map_err(|e| anyhow::anyhow!("outbox store: {e}"))?;
+
         let bus = EventBus::new(256);
         let handler = Arc::new(CommandHandler::new(
-            store.clone(),
+            Arc::new(outbound),
             tasks.clone(),
             projects.clone(),
             comments.clone(),
@@ -68,11 +78,6 @@ impl Context {
             bus,
         ));
         let commands = CommandBus::new(handler);
-        let outbox = Outbox::new(db);
-        outbox
-            .ensure_schema()
-            .await
-            .map_err(|e| anyhow::anyhow!("outbox schema: {e}"))?;
         let replica = Replica::new(
             pool.clone(),
             store.clone(),
@@ -85,9 +90,7 @@ impl Context {
             .ensure_schema()
             .await
             .map_err(|e| anyhow::anyhow!("replica schema: {e}"))?;
-        let local = LocalExecutor::new(commands.clone(), outbox)
-            .await
-            .map_err(|e| anyhow::anyhow!("local executor: {e}"))?;
+        let local = LocalExecutor::new(commands.clone(), outbox);
 
         let ai = AiConfig::from_env().ok().map(OpenAiClient::new);
 

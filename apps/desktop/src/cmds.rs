@@ -104,6 +104,14 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         println!("requeued {requeued} rejected event(s)");
     }
     let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let restored = ctx
+        .local
+        .restore_lost(&sink, limit)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if restored > 0 {
+        println!("restored {restored} event(s) missing from the outbox");
+    }
     let stats = ctx
         .local
         .flush_pending(&sink, limit)
