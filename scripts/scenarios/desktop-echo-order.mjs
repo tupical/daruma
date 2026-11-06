@@ -307,6 +307,8 @@ async function scenario() {
     check(`${step}: the old binary diverged`, stale !== server, { device: stale, server });
     const held = device.run(args['old-desktop'], step, 'add', 'written before the upgrade');
     check(`${step}: a local task waits`, held.status === 0 && device.pending() > 0, { pending: device.pending() });
+    // A replica from before bindings waits for this word; desktop-server-binding.mjs covers why.
+    check(`${step}: the replica is adopted by its server`, device.run(args.desktop, step, 'replica', 'adopt').status === 0);
     check(`${step}: new sync exits 0`, device.sync(step).status === 0);
     check(`${step}: the replica is repaired behind its cursor`, device.status(id) === 'done', {
       status: device.status(id),

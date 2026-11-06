@@ -43,6 +43,27 @@ self-signed certificate.
   pin. If the system does not trust the server, `sync` says so; run `pair` with a
   new ticket to add the pin.
 
+A replica belongs to one server, named by the identity the server reports for
+its event log. That identity lives in the server's database, so a new address or
+certificate keeps it, and restoring a backup onto another machine keeps it too; a
+fresh database gets a new one, and devices treat that as another server.
+
+- Pairing with another server selects that server's own replica under
+  `DARUMA_DATA_DIR`: the first server keeps `replica.sqlite`, others use
+  `servers/<server_id>/replica.sqlite`. `replicas.json` records which is active.
+  The previous replica stays as it is, with its queue; `daruma-desktop replica`
+  lists them all, and pairing with that server again brings it back.
+- `sync` reads `GET /v1/events/origin` first and stops before sending or fetching
+  anything if the server is not this replica's, or does not answer. That includes
+  `DARUMA_API_URL` pointing elsewhere, so use another `DARUMA_DATA_DIR` for another
+  server without pairing. It also means upgrading the server before the devices.
+- A replica that synced before bindings records no server, so `sync` stops on it
+  whichever server it reaches. If it has only ever synced with this server, run
+  `daruma-desktop replica adopt`. If not, keep it and use another `DARUMA_DATA_DIR`.
+  That word is not checked: adopting another server's replica sends it its queue.
+- A `replicas.json` that cannot be read stops every command rather than opening a
+  replica by guess. Delete it only if the data directory holds one replica.
+
 ## LAN Only
 
 Use this when all devices are on the same trusted network.

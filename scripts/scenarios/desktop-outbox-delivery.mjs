@@ -454,6 +454,11 @@ async function movedReplica(template) {
     check('moved: its cursor rests on that log', byOld.cursor() > leaving.cursor());
 
     for (const device of [direct, byOld]) {
+      const asked = device.sync('moved', args.desktop);
+      check(`${device.name}: with no server on record the new binary asks first`, asked.status !== 0
+        && /does not record with which server/.test(asked.stderr), { stderr: asked.stderr.slice(0, 200) });
+      // The wrong answer, on purpose: what the replica can tell still holds.
+      check(`${device.name}: adopted by the wrong server`, device.run(args.desktop, 'replica', 'adopt').status === 0);
       for (const round of [1, 2, 3]) {
         const synced = device.sync('moved', args.desktop);
         check(`${device.name}: sync ${round} succeeds`, synced.status === 0, { exit: synced.status });
@@ -532,6 +537,8 @@ async function upgradedDevice(reference, template) {
   const before = await serverLog('upgrade');
   const logBefore = logCount(device);
 
+  // A replica from before bindings waits for this word; desktop-server-binding.mjs covers why.
+  check('the replica is adopted by its server', device.run(args.desktop, 'replica', 'adopt').status === 0);
   const upgrade = device.sync('upgrade', args.desktop);
   check('the first sync of the new binary succeeds', upgrade.status === 0, { exit: upgrade.status });
   check('it names what it held back', /3 event\(s\) not sent/.test(upgrade.stdout), { stdout: upgrade.stdout.slice(0, 300) });
@@ -600,6 +607,7 @@ async function finishedAfterLoss() {
   const bareTask = id.replace(/^tsk_/, '');
   const ofTask = (log) => log.filter((event) => [id, bareTask].includes(event.payload.task_id) || event.payload.task?.id === bareTask);
 
+  check('finished after loss: the replica is adopted by its server', device.run(args.desktop, 'replica', 'adopt').status === 0);
   for (const round of [1, 2]) {
     const plain = device.sync('finished', args.desktop);
     check(`finished after loss: plain sync ${round} succeeds`, plain.status === 0, { exit: plain.status });

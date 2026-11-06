@@ -2,7 +2,8 @@
 //!
 //! Opens the local SQLite database and wires the same command / event /
 //! AI stack the server uses. Local-first: the CLI does not talk to the
-//! server; it embeds the engine directly.
+//! server; it embeds the engine directly. The database is the replica of the
+//! selected server: see [`crate::binding`].
 
 use std::{
     path::{Path, PathBuf},

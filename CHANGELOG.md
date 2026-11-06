@@ -6,6 +6,31 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### A desktop replica stays with its server
+
+- `daruma-desktop pair` with another server used to keep the same local replica:
+  the next `sync` sent events queued for the old server to the new one, read the
+  new server's log from the old server's cursor and so missed its earlier events,
+  and left both servers' data mixed on the device.
+- Every server now reports a stable identity of its event log
+  (`GET /v1/events/origin`, and `server_id` in the pairing response; migration
+  `0064_server_identity.sql`). Each server gets its own replica in the data
+  directory, selected by that identity: the first keeps `replica.sqlite`, others
+  use `servers/<server_id>/replica.sqlite`. Nothing moves between them.
+- Pairing with a server selects its replica. Pairing with the previous server
+  again brings its replica back and `sync` delivers its queue, once. A new token
+  for the same server, or a new address, changes nothing.
+- `sync` asks the server who it is before sending or fetching anything, and stops
+  if it is not this replica's server. This covers `DARUMA_API_URL` pointing
+  elsewhere.
+- `daruma replica` lists every replica with its cursor and queue.
+- **After this update, a replica that has already synced stops at the first
+  `sync`**: nothing records which server it belongs to, so a re-paired one cannot
+  be told apart. If it has only ever synced with this server, run
+  `daruma replica adopt`. Otherwise keep it, and use another `DARUMA_DATA_DIR`.
+- **`sync` needs a server with this update**: an older one does not report an
+  identity, and the device stops rather than guess.
+
 ### A desktop change no longer loses to an older change from elsewhere
 
 - `daruma-desktop` applies a command at once, and `sync` skipped its echo as
