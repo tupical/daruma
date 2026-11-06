@@ -23,11 +23,15 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
   identity. The server already takes a retried event once.
 - A replica upgraded from an older binary looks for such events once, at its
   next `sync`: anything of the kinds desktop commands make, from the anonymous
-  local user, with no origin, no queue entry and no copy in the server log, goes
-  out in log order. `sync` prints how many came back. Events still in the outbox
-  or refused by the server stay as they are. This reads the full server log once
-  on a device that has anything to check, and the first sync fails if that read
-  does.
+  local user, with no origin, no queue entry and no copy in the server log.
+  These stay on the device: an incoming event from a server the replica has left
+  reads exactly the same, so sending them on its own could publish that server's
+  data to this one. Every `sync` lists them and delivers everything else;
+  `sync --restore-lost` sends them in log order, and is for a replica that has
+  only ever synced with this server. Work that went out before that keeps its
+  place on the server. Events still in the outbox or refused by the server stay
+  as they are. The search reads the full server log once on a device that has
+  anything to check, and the first sync fails if that read does.
 
 ### A sync stopped halfway no longer loses events on the device
 

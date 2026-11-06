@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Real-binary scenario for local changes on their way to the server:
 // daruma-desktop commands stopped around their commit, against a live
-// daruma-server, and a device an old binary left with unqueued events.
+// daruma-server, a device an old binary left with unqueued events, and a
+// replica that moves to a second server.
 //
 //   GIT_SHA=$(git rev-parse HEAD) cargo build -p daruma-server -p daruma-desktop
 //   node scripts/scenarios/desktop-outbox-delivery.mjs \
@@ -13,7 +14,7 @@
 // old binary as --desktop is the negative control.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -81,11 +82,13 @@ const proxyFree = Object.fromEntries(
 );
 
 class Device {
-  constructor(name, token) {
+  constructor(name, token, port = args.port, from = null) {
     this.name = name;
     this.token = token;
+    this.port = port;
     this.dir = join(dir, name);
-    mkdirSync(this.dir);
+    if (from) cpSync(from.dir, this.dir, { recursive: true });
+    else mkdirSync(this.dir);
     this.db = join(this.dir, 'replica.sqlite');
   }
 
@@ -93,7 +96,7 @@ class Device {
     return {
       ...proxyFree,
       DARUMA_DATA_DIR: this.dir,
-      DARUMA_API_URL: `http://127.0.0.1:${args.port}`,
+      DARUMA_API_URL: `http://127.0.0.1:${this.port}`,
       DARUMA_TOKEN: this.token,
     };
   }
@@ -103,15 +106,15 @@ class Device {
     return { status: child.status, stdout: child.stdout.trim(), stderr: child.stderr.trim() };
   }
 
-  sync(step, binary) {
-    const result = this.run(binary, 'sync', '--limit', '1000');
+  sync(step, binary, ...flags) {
+    const result = this.run(binary, 'sync', '--limit', '1000', ...flags);
     record({
       step,
       device: this.name,
-      process: 'daruma-desktop sync',
+      process: `daruma-desktop sync ${flags.join(' ')}`.trim(),
       binary: binary === args.desktop ? 'under_test' : 'old',
       exit: result.status,
-      stdout: result.stdout.slice(0, 200),
+      stdout: result.stdout.slice(0, 400),
       stderr: result.stderr.slice(-200),
     });
     return result;
@@ -193,7 +196,8 @@ const EXPECTED = [
   'a command whose outbox write fails exits non-zero and leaves no event behind, also for the second event of a multi-event command; a retry delivers all of it',
   'a command killed with SIGKILL at any point leaves every logged event in the outbox',
   'an event the server accepted before the device could record it reaches the server once, under one identity',
-  'events the old binary logged and never queued reach the server once and in log order at the first sync after the upgrade; incoming, delivered, pending and refused events keep their state',
+  'a replica that moves to a second server, with no local command behind it, sends that server nothing, whether the move is its first sync on the new binary or the old binary made it, and however many syncs follow; the sync exits 0 and names the event it held back',
+  'events the old binary logged and never queued stay on the device at a plain sync, which says so and delivers everything else; sync --restore-lost sends them once and in log order; incoming, delivered, pending and refused events keep their state',
   'later syncs and restarts add nothing to either log',
 ];
 
@@ -385,6 +389,92 @@ async function unrecordedAccept(reference) {
   compare('unrecorded_accept', device, reference);
 }
 
+/** A second server, for a replica that moves. */
+async function secondServer() {
+  const port = String(Number(args.port) + 2);
+  const home = join(dir, 'second-server');
+  const child = spawn(args.server, [], {
+    env: {
+      ...proxyFree,
+      DARUMA_AGENT_DIR: home,
+      DARUMA_PORT: port,
+      DARUMA_TLS_PORT: String(Number(port) + 1),
+      DARUMA_MDNS_DISABLE: '1',
+    },
+    stdio: 'ignore',
+  });
+  const closed = new Promise((resolve) => child.on('close', resolve));
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    if (Date.now() > deadline) throw new Error('second server never answered /healthz');
+    const healthy = await fetch(`http://127.0.0.1:${port}/v1/healthz`).then((r) => r.ok).catch(() => false);
+    if (healthy) break;
+    await sleep(100);
+  }
+  const token = readFileSync(join(home, 'data', 'bootstrap.token'), 'utf8').trim();
+  secrets.set(token, 'second bootstrap');
+  return {
+    port,
+    token,
+    async log() {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/events?since=0&limit=1000`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error(`second server events: ${response.status}`);
+      return response.json();
+    },
+    async stop() {
+      child.kill('SIGTERM');
+      await closed;
+    },
+  };
+}
+
+async function movedReplica(template) {
+  const old = args['old-desktop'];
+  const incoming = await lookalike(adminToken, template);
+  const leaving = new Device('leaving', adminToken);
+  check('moved: old binary syncs with the first server', leaving.settle('moved', old));
+  check('moved: the incoming event is in the log, the outbox is empty', hasTask(leaving, 'incoming, reads like a local command')
+    && leaving.query('SELECT COUNT(*) AS n FROM desktop_outbox')[0].n === 0);
+
+  const second = await secondServer();
+  try {
+    const local = new Device('second-local', second.token, second.port);
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) add(local, args.desktop, `only on the second server ${n}`);
+    check('moved: the second server has a log of its own', local.settle('moved', args.desktop));
+    const before = await second.log();
+    check('moved: that log runs past the cursor', before.length > leaving.cursor(), { log: before.length, cursor: leaving.cursor() });
+
+    const direct = new Device('moved-directly', second.token, second.port, leaving);
+    const byOld = new Device('moved-by-old', second.token, second.port, leaving);
+    check('moved: the old binary takes the log of the second server', byOld.settle('moved', old));
+    check('moved: its cursor rests on that log', byOld.cursor() > leaving.cursor());
+
+    for (const device of [direct, byOld]) {
+      for (const round of [1, 2, 3]) {
+        const synced = device.sync('moved', args.desktop);
+        check(`${device.name}: sync ${round} succeeds`, synced.status === 0, { exit: synced.status });
+        check(`${device.name}: sync ${round} names what it held back`, /1 event\(s\) not sent/.test(synced.stdout)
+          && synced.stdout.includes(`evt_${incoming.id}`), { stdout: synced.stdout.slice(0, 300) });
+      }
+      const after = await second.log();
+      check(`${device.name}: the second server received nothing`, after.length === before.length, {
+        added: after.slice(before.length).map((event) => event.payload.type),
+      });
+      check(`${device.name}: nothing is queued`, device.query('SELECT COUNT(*) AS n FROM desktop_outbox')[0].n === 0);
+    }
+    check('moved: the incoming event is not on the second server', !(await second.log()).some((event) => event.id === incoming.id));
+
+    const work = 'made after the move';
+    add(direct, args.desktop, work);
+    check('moved: new work still goes out', direct.sync('moved', args.desktop).status === 0
+      && (await second.log()).some((event) => event.payload.task?.title === work));
+  } finally {
+    await second.stop();
+  }
+}
+
 async function upgradedDevice(reference, template) {
   const old = args['old-desktop'];
   const other = new Device('other-device', adminToken);
@@ -432,7 +522,16 @@ async function upgradedDevice(reference, template) {
 
   const upgrade = device.sync('upgrade', args.desktop);
   check('the first sync of the new binary succeeds', upgrade.status === 0, { exit: upgrade.status });
-  check('it reports what it restored', /restored 3 event/.test(upgrade.stdout), { stdout: upgrade.stdout.slice(0, 160) });
+  check('it names what it held back', /3 event\(s\) not sent/.test(upgrade.stdout), { stdout: upgrade.stdout.slice(0, 300) });
+  const held = await serverLog('upgrade');
+  const heldTitles = held.slice(before.length).filter((e) => e.payload.type === 'task_created').map((e) => e.payload.task.title);
+  check('a plain sync delivers everything else', ['partly lost by the old binary', 'pending at the upgrade'].every((title) => heldTitles.includes(title)), { titles: heldTitles });
+  check('a plain sync leaves the lost create on the device', !heldTitles.includes('lost by the old binary'));
+
+  const restore = device.sync('upgrade', args.desktop, '--restore-lost');
+  check('the explicit sync succeeds', restore.status === 0, { exit: restore.status });
+  check('it reports what it restored', /restored 3 event/.test(restore.stdout), { stdout: restore.stdout.slice(0, 160) });
+  check('it has nothing left to name', !/not sent/.test(restore.stdout));
 
   const after = await serverLog('upgrade');
   const added = after.slice(before.length);
@@ -450,10 +549,12 @@ async function upgradedDevice(reference, template) {
   });
   check('the incoming event was not sent back', after.filter((event) => `evt_${event.id}` === lookalikeId).length === 1);
 
-  const order = device.query(
-    `SELECT event_id FROM events WHERE event_id IN (${added.map((e) => `'evt_${e.id}'`).join(',')}) ORDER BY seq`,
-  ).map((row) => row.event_id);
-  check('events went out in the order of the local log', JSON.stringify(order) === JSON.stringify(added.map((e) => `evt_${e.id}`)));
+  for (const [name, batch] of [['plain', held.slice(before.length)], ['explicit', after.slice(held.length)]]) {
+    const order = device.query(
+      `SELECT event_id FROM events WHERE event_id IN (${batch.map((e) => `'evt_${e.id}'`).join(',')}) ORDER BY seq`,
+    ).map((row) => row.event_id);
+    check(`the ${name} sync sent them in the order of the local log`, batch.length > 0 && JSON.stringify(order) === JSON.stringify(batch.map((e) => `evt_${e.id}`)));
+  }
 
   check('the refused event stays refused', !after.some((event) => event.id === refused.event)
     && device.query('SELECT COUNT(*) AS n FROM desktop_outbox_rejected')[0].n === 1);
@@ -472,6 +573,7 @@ async function upgradedDevice(reference, template) {
 async function scenario(admin) {
   adminToken = admin;
   const template = await seedTitles(admin);
+  await movedReplica(template);
   const reference = new Device('reference', admin);
   check('reference device settles', reference.settle('reference', args.desktop));
 
