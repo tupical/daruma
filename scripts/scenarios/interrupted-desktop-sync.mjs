@@ -304,6 +304,9 @@ async function scenario(admin) {
   const pending = damaged.query('SELECT COUNT(*) AS n FROM desktop_outbox WHERE flushed_at IS NULL')[0].n;
   check('offline work is pending at the upgrade', pending === 1, { pending });
 
+  // A replica from before bindings waits for this word; desktop-server-binding.mjs covers why.
+  const adopted = damaged.run(args.desktop, 'replica', 'adopt');
+  check('the replica is adopted by its server', adopted.status === 0, { exit: adopted.status });
   const repaired = damaged.sync('upgrade', args.desktop);
   check('the first sync of the new binary succeeds', repaired.status === 0, { exit: repaired.status });
   check('the lost task is back', !lost('task 100'));

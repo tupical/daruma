@@ -52,6 +52,9 @@ pub struct PairResponse {
     pub device_id: DeviceId,
     /// The server's canonical base URL for future requests.
     pub server_url: String,
+    /// Identity of this server's event log: what the device's replica is
+    /// bound to, unlike the URL it can change.
+    pub server_id: String,
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -130,6 +133,9 @@ pub async fn pair_device(
         .await
         .map_err(ApiError::from)?;
     secret.record.device_id = Some(device.id);
+    let server_id = daruma_storage::server_identity::server_id(state.projects.pool())
+        .await
+        .map_err(ApiError::from)?;
 
     state
         .auth_store
@@ -148,6 +154,7 @@ pub async fn pair_device(
         token_prefix: secret.record.prefix,
         device_id: device.id,
         server_url: format!("https://{}", ticket.host),
+        server_id,
     }))
 }
 

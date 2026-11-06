@@ -239,6 +239,7 @@ fn authed_routes(state: AppState, auth_layer: AuthLayer) -> Router {
         .route("/mcp", post(mcp_http))
         .route("/commands", post(dispatch_command))
         .route("/events", get(list_events))
+        .route("/events/origin", get(event_log_origin))
         .route("/events/snapshot", get(latest_bootstrap_snapshot))
         .route("/events/replica", post(append_replica_events))
         .route("/history", get(list_entity_history))
@@ -4787,6 +4788,21 @@ async fn list_events(
         .await
         .map_err(ApiError::from)?;
     Ok(Json(events))
+}
+
+/// Identity of this server's event log. A device reads it before it sends or
+/// fetches anything: its cursor and queue belong to one log, whatever URL or
+/// token reaches it now.
+async fn event_log_origin(
+    auth: axum::Extension<AuthContext>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    auth.require(Capability::TaskRead)
+        .map_err(ApiError::from_missing_cap)?;
+    let server_id = daruma_storage::server_identity::server_id(state.projects.pool())
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(json!({ "server_id": server_id })))
 }
 
 /// Latest bootstrap snapshot for device-sync catch-up (§3.3 Phase 5

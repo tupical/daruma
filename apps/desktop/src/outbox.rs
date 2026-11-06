@@ -22,6 +22,14 @@ pub const UNPROJECTED_SCHEMA: &str =
 pub const UNECHOED_SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS desktop_unechoed (event_id TEXT PRIMARY KEY)";
 
+/// How far this replica has read its server's log.
+pub const REPLICA_CURSOR_SQL: &str = "SELECT server_seq FROM desktop_replica_state WHERE id = 1";
+
+/// Events that still wait to reach the server.
+pub const PENDING_COUNT_SQL: &str = "SELECT COUNT(*) FROM desktop_outbox
+     WHERE flushed_at IS NULL
+       AND id NOT IN (SELECT outbox_id FROM desktop_outbox_rejected)";
+
 /// Every kind the commands of an older binary could log. Newer events are
 /// queued with their commit, so `find_lost` never needs to grow this.
 const OLD_BINARY_KINDS: [&str; 5] = [
@@ -119,7 +127,61 @@ impl Outbox {
             .execute(self.db.pool())
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
+        // A row while this replica is known to hold nothing of any server's.
+        // An older binary never left one, so its data stays of unknown origin.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS desktop_no_owner (id INTEGER PRIMARY KEY CHECK (id = 1))",
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// An empty replica holds nothing of any server's, so whatever is written
+    /// here from now on is this device's own until a server is recorded.
+    pub async fn note_if_empty(&self) -> Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO desktop_no_owner (id)
+             SELECT 1
+             WHERE (SELECT server_seq FROM desktop_replica_state WHERE id = 1) = 0
+               AND NOT EXISTS (SELECT 1 FROM events)
+               AND NOT EXISTS (SELECT 1 FROM tasks)
+               AND NOT EXISTS (SELECT 1 FROM projects)
+               AND NOT EXISTS (SELECT 1 FROM desktop_outbox)
+               AND NOT EXISTS (SELECT 1 FROM desktop_outbox_rejected)",
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// A server was recorded for this replica, so its data is that server's
+    /// even if the record gets lost.
+    pub async fn note_owner(&self) -> Result<()> {
+        sqlx::query("DELETE FROM desktop_no_owner")
+            .execute(self.db.pool())
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Whether this replica may hold something of a server it cannot name: it
+    /// was not empty when first opened by a binary that records servers, it
+    /// read a log, or a log answered one of its events. An older queue with no
+    /// cursor is the first case: no server saw it, yet it was written for one.
+    pub async fn has_unknown_past(&self) -> Result<bool> {
+        let (unknown,) = sqlx::query_as::<_, (bool,)>(
+            "SELECT NOT EXISTS (SELECT 1 FROM desktop_no_owner)
+                 OR (SELECT server_seq FROM desktop_replica_state WHERE id = 1) > 0
+                 OR EXISTS (SELECT 1 FROM desktop_outbox WHERE flushed_at IS NOT NULL)
+                 OR EXISTS (SELECT 1 FROM desktop_outbox_rejected)",
+        )
+        .fetch_one(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(unknown)
     }
 
     /// The store local commands must write through.

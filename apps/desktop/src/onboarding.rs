@@ -198,15 +198,28 @@ pub async fn cmd_pair(args: &[String]) -> Result<()> {
 
     // Persist credentials.
     let server_url = paired_server_url(&params.host)?;
-    persist_credentials(&server_url, &pair_resp.access_token, &expected_hex)
-        .await
-        .context("persist credentials")?;
+    let server_id = pair_resp
+        .server_id
+        .as_deref()
+        .map(crate::binding::ServerId::parse)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    persist_credentials(
+        &server_url,
+        &pair_resp.access_token,
+        &expected_hex,
+        server_id.as_ref(),
+    )
+    .context("persist credentials")?;
 
     println!("Paired successfully!");
     println!("  Server URL  : {server_url}");
     println!("  Token prefix: {}", pair_resp.token_prefix);
     if let Some(device_id) = pair_resp.device_id {
         println!("  Device ID   : {device_id}");
+    }
+    if let Some(server_id) = &server_id {
+        println!("  Server ID   : {server_id}");
     }
     println!();
     println!("Credentials written to the local config.");
@@ -502,6 +515,9 @@ struct PairResponse {
     device_id: Option<daruma_shared::DeviceId>,
     #[allow(dead_code)] // included in JSON for forward-compat; not used locally
     server_url: String,
+    /// Absent from a server that predates identities.
+    #[serde(default)]
+    server_id: Option<String>,
 }
 
 /// Return a human-readable device label for the pairing request.
@@ -519,52 +535,45 @@ fn paired_server_url(host: &str) -> Result<String> {
 }
 
 /// Contents of `paired.json`. `tls_fingerprint` is the digest the pairing
-/// handshake verified, in the `sha256:<hex>` form the ticket uses.
-fn paired_config(server_url: &str, token: &str, verified_sha256_hex: &str) -> serde_json::Value {
-    serde_json::json!({
-        "server_url": server_url,
-        "token": token,
-        "tls_fingerprint": format!("sha256:{}", verified_sha256_hex.to_ascii_lowercase()),
-    })
-}
-
-/// Persist `server_url` + `token` + the verified fingerprint to the local
-/// config file used by `sync`.
-///
-/// This writes (or overwrites) `<data_dir>/paired.json` — the `sync` command
-/// checks this file for credentials when `DARUMA_API_URL` / `DARUMA_TOKEN`
-/// are not set, and for the certificate pin of `server_url`.
-async fn persist_credentials(
+/// handshake verified, in the `sha256:<hex>` form the ticket uses. `server_id`
+/// came over that verified channel: it picks the replica this pairing uses.
+fn paired_config(
     server_url: &str,
     token: &str,
     verified_sha256_hex: &str,
-) -> Result<()> {
-    let path = paired_credentials_path();
-    let data_dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("paired credentials path has no parent"))?;
-    tokio::fs::create_dir_all(&data_dir)
-        .await
-        .context("create data dir")?;
-
-    let config = paired_config(server_url, token, verified_sha256_hex);
-
-    tokio::fs::write(&path, serde_json::to_vec_pretty(&config)?)
-        .await
-        .context("write paired.json")?;
-
-    // Restrict to owner-read-only on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = tokio::fs::metadata(&path).await {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = tokio::fs::set_permissions(&path, perms).await;
-        }
+    server_id: Option<&crate::binding::ServerId>,
+) -> serde_json::Value {
+    let mut config = serde_json::json!({
+        "server_url": server_url,
+        "token": token,
+        "tls_fingerprint": format!("sha256:{}", verified_sha256_hex.to_ascii_lowercase()),
+    });
+    if let Some(server_id) = server_id {
+        config["server_id"] = serde_json::json!(server_id);
     }
+    config
+}
 
-    Ok(())
+/// Persist `server_url` + `token` + the verified fingerprint + the server's
+/// identity to the local config file used by `sync`.
+///
+/// This replaces `<data_dir>/paired.json` atomically, readable by the owner
+/// only — the `sync` command checks this file for credentials when
+/// `DARUMA_API_URL` / `DARUMA_TOKEN` are not set, and for the certificate pin
+/// of `server_url`. Writing it is what commits a change of server: see
+/// [`crate::binding`].
+fn persist_credentials(
+    server_url: &str,
+    token: &str,
+    verified_sha256_hex: &str,
+    server_id: Option<&crate::binding::ServerId>,
+) -> Result<()> {
+    let config = paired_config(server_url, token, verified_sha256_hex, server_id);
+    crate::binding::write_private(
+        &paired_credentials_path(),
+        &serde_json::to_vec_pretty(&config)?,
+    )
+    .context("write paired.json")
 }
 
 pub fn paired_credentials_path() -> std::path::PathBuf {
@@ -615,7 +624,7 @@ mod tests {
 
     #[test]
     fn paired_config_keeps_the_verified_fingerprint_with_one_prefix() {
-        let config = paired_config("https://h:8443", "tok", "ABCDEF");
+        let config = paired_config("https://h:8443", "tok", "ABCDEF", None);
         assert_eq!(config["server_url"], "https://h:8443");
         assert_eq!(config["token"], "tok");
         assert_eq!(config["tls_fingerprint"], "sha256:abcdef");

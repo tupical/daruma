@@ -35,6 +35,21 @@ impl LocalExecutor {
         Ok(envelopes)
     }
 
+    /// Note that this replica holds nothing of any server's, if so.
+    pub async fn note_if_empty(&self) -> Result<()> {
+        self.outbox.note_if_empty().await
+    }
+
+    /// Note that this replica now has a recorded server.
+    pub async fn note_owner(&self) -> Result<()> {
+        self.outbox.note_owner().await
+    }
+
+    /// Whether this replica may hold something of a server it cannot name.
+    pub async fn has_unknown_past(&self) -> Result<bool> {
+        self.outbox.has_unknown_past().await
+    }
+
     /// Search the log once for what an older binary left out of the outbox.
     pub async fn find_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<()> {
         self.outbox.find_lost(remote, limit).await

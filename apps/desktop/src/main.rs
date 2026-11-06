@@ -14,6 +14,7 @@
 //! daruma delete <id|prefix>
 //! ```
 
+mod binding;
 mod cmds;
 mod context;
 mod flush;
@@ -62,12 +63,15 @@ async fn main() -> anyhow::Result<()> {
             let ctx = context::Context::open().await?;
             cmds::sync(&ctx, &rest).await?;
         }
+        "replica" => {
+            cmds::replica(&rest).await?;
+        }
         "devices" => {
             cmds::devices(&rest).await?;
         }
         "where" => {
             // Print the resolved DB path for debugging.
-            let path = context::data_path();
+            let path = context::active_replica_path()?;
             println!("{}", path.display());
         }
         // ── LAN discovery + pairing (§3.3.5) ──────────────────────────────
@@ -108,13 +112,14 @@ fn print_help() {
          done <id|prefix>                     mark complete\n  \
          delete <id|prefix>                   delete a task\n  \
          sync [--retry-rejected] [--restore-lost] [--limit N]\n                                              flush offline events to server\n  \
+         replica [adopt]                      list replicas per server, or record the server of an older one\n  \
          devices [revoke <device_id>]         list or revoke paired devices\n  \
          discover [--timeout <secs>]          scan LAN for daruma servers (mDNS)\n  \
          pair <daruma://pair?…>            pair with a server via QR/paste URL\n  \
          where                                print the DB path\n  \
          help                                 this message\n\n\
          ENV\n  \
-         DARUMA_DATA_DIR   directory for replica.sqlite (default: `.`)\n  \
+         DARUMA_DATA_DIR   directory for replicas and pairing (default: `.`)\n  \
          DARUMA_API_URL    server base for `sync` (default: http://localhost:8080)\n  \
          DARUMA_TOKEN      bearer token for `sync`\n  \
          OPENAI_API_KEY       required for `ai *` subcommands\n  \
