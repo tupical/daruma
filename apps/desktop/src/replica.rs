@@ -2320,12 +2320,31 @@ mod tests {
     }
 
     impl Process {
-        /// `daruma sync`: what `cmds::sync` runs, in that order.
+        /// `daruma sync`: what `cmds::sync` runs, in that order. Returns how
+        /// many events it left waiting for a decision.
         async fn sync(&self, uplink: &Uplink<'_>) -> Result<usize> {
+            self.local.find_lost(uplink.server, 50).await?;
+            self.flush_and_catch_up(uplink).await?;
+            Ok(self.local.unconfirmed().await?.len())
+        }
+
+        /// `daruma sync --restore-lost`. Returns how many events came back.
+        async fn sync_restoring(&self, uplink: &Uplink<'_>) -> Result<usize> {
+            self.local.find_lost(uplink.server, 50).await?;
             let restored = self.local.restore_lost(uplink.server, 50).await?;
+            self.flush_and_catch_up(uplink).await?;
+            Ok(restored)
+        }
+
+        async fn flush_and_catch_up(&self, uplink: &Uplink<'_>) -> Result<()> {
             self.local.flush_pending(uplink, 50).await?;
             self.device.replica.catch_up(uplink.server, 50).await?;
-            Ok(restored)
+            Ok(())
+        }
+
+        async fn unconfirmed_ids(&self) -> Vec<EventId> {
+            let waiting = self.local.unconfirmed().await.unwrap();
+            waiting.iter().map(|event| event.id).collect()
         }
 
         /// A command as an older binary ran it: committed and projected, then
@@ -2505,7 +2524,7 @@ mod tests {
 
         let restarted = file.open_plain().await;
         let uplink = Uplink::to(&server);
-        assert_eq!(restarted.sync(&uplink).await.unwrap(), 3);
+        assert_eq!(restarted.sync_restoring(&uplink).await.unwrap(), 3);
 
         assert_eq!(uplink.pushed(), log[log.len() - local_commands..].to_vec());
         for id in [lost, partly_lost] {
@@ -2598,7 +2617,7 @@ mod tests {
 
         let restarted = file.open_plain().await;
         let uplink = Uplink::refusing(&server, HashSet::from([refused]));
-        assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+        assert_eq!(restarted.sync_restoring(&uplink).await.unwrap(), 1);
 
         assert_eq!(uplink.pushed(), vec![pending, lost]);
         assert_eq!(restarted.local.rejected_count().await.unwrap(), 1);
@@ -2607,14 +2626,7 @@ mod tests {
         assert_eq!(restarted.log_ids().await, log);
 
         // It looked once: a replica that is whole stays off the server.
-        assert_eq!(
-            restarted
-                .local
-                .restore_lost(&Unreachable, 50)
-                .await
-                .unwrap(),
-            0
-        );
+        restarted.local.find_lost(&Unreachable, 50).await.unwrap();
         let again = Uplink::refusing(&server, HashSet::from([refused]));
         assert_eq!(restarted.sync(&again).await.unwrap(), 0);
         assert!(again.pushed().is_empty());
@@ -2654,9 +2666,9 @@ mod tests {
             .unwrap();
 
         // No server to ask: none of them even needs the check.
-        let restored = process.local.restore_lost(&Unreachable, 50).await.unwrap();
+        process.local.find_lost(&Unreachable, 50).await.unwrap();
 
-        assert_eq!(restored, 0);
+        assert_eq!(process.unconfirmed_ids().await, vec![]);
         assert_eq!(process.pending_outbox().await, 0);
     }
 
@@ -2667,23 +2679,20 @@ mod tests {
         process
             .create_task("queued with its commit", TaskId::new())
             .await;
-        assert_eq!(
-            process.local.restore_lost(&Unreachable, 50).await.unwrap(),
-            0
-        );
+        process.local.find_lost(&Unreachable, 50).await.unwrap();
 
         let later = ReplicaFile::create().await;
         let process = later.open_plain().await;
         let lost = process
             .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
             .await[0];
-        assert!(process.local.restore_lost(&Unreachable, 50).await.is_err());
+        assert!(process.local.find_lost(&Unreachable, 50).await.is_err());
         assert_eq!(process.pending_outbox().await, 0);
 
         let server = Server::start().await;
         let uplink = Uplink::to(&server);
         assert_eq!(process.sync(&uplink).await.unwrap(), 1);
-        assert_eq!(uplink.pushed(), vec![lost]);
+        assert_eq!(process.unconfirmed_ids().await, vec![lost]);
     }
 
     #[tokio::test]
@@ -2696,10 +2705,101 @@ mod tests {
             .await;
         let emptied = Server::start().await;
 
-        let refused = process.local.restore_lost(&emptied, 50).await;
+        let refused = process.local.find_lost(&emptied, 50).await;
 
         assert!(refused.unwrap_err().to_string().contains("log is empty"));
         assert_eq!(process.pending_outbox().await, 0);
+
+        // The word of the user does not outvote that either.
+        process.local.find_lost(&server, 50).await.unwrap();
+        let refused = process.local.restore_lost(&emptied, 50).await;
+        assert!(refused.unwrap_err().to_string().contains("log is empty"));
+        assert_eq!(process.pending_outbox().await, 0);
+        assert_eq!(process.unconfirmed_ids().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn event_of_the_server_a_replica_left_stays_off_the_next_one() {
+        let first = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&first, &file).await;
+        let incoming = process.log_ids().await[0];
+        assert_eq!(process.pending_outbox().await, 0);
+        drop(process);
+
+        // Past the cursor of the first server, so a catch-up takes its events
+        // and every later sync finds a log that looks like its own.
+        let second = Server::start().await;
+        for title in ["one", "two", "three"] {
+            second.create_task(title).await;
+        }
+        let restarted = file.open_plain().await;
+        for _ in 0..3 {
+            let uplink = Uplink::to(&second);
+            assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+            assert!(uplink.pushed().is_empty());
+        }
+
+        assert_eq!(second.times_logged(incoming).await, 0);
+        assert_eq!(restarted.pending_outbox().await, 0);
+        assert_eq!(restarted.unconfirmed_ids().await, vec![incoming]);
+    }
+
+    #[tokio::test]
+    async fn lost_event_waits_for_the_word_of_the_user() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
+            .await[0];
+        let queued = process
+            .run_like_the_old_binary(new_task("queued", TaskId::new()), 1)
+            .await[0];
+        let log = process.log_ids().await;
+        drop(process);
+
+        // Waiting holds up nothing else, and survives a restart.
+        let restarted = file.open_plain().await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+        assert_eq!(uplink.pushed(), vec![queued]);
+        drop(restarted);
+        let restarted = file.open_plain().await;
+        assert_eq!(restarted.unconfirmed_ids().await, vec![lost]);
+        assert_eq!(server.times_logged(lost).await, 0);
+
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync_restoring(&uplink).await.unwrap(), 1);
+        assert_eq!(uplink.pushed(), vec![lost]);
+
+        let again = Uplink::to(&server);
+        assert_eq!(restarted.sync_restoring(&again).await.unwrap(), 0);
+        assert_eq!(restarted.sync(&again).await.unwrap(), 0);
+        assert!(again.pushed().is_empty());
+        assert_eq!(server.times_logged(lost).await, 1);
+        assert_eq!(restarted.log_ids().await, log);
+    }
+
+    #[tokio::test]
+    async fn event_the_server_has_by_now_needs_no_restore() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", TaskId::new()), 0)
+            .await[0];
+        let uplink = Uplink::to(&server);
+        assert_eq!(process.sync(&uplink).await.unwrap(), 1);
+
+        let event = process.device.store.load_by_id(lost).await.unwrap();
+        uplink.push(event.unwrap()).await.unwrap();
+
+        let later = Uplink::to(&server);
+        assert_eq!(process.sync_restoring(&later).await.unwrap(), 0);
+        assert!(later.pushed().is_empty());
+        assert_eq!(server.times_logged(lost).await, 1);
+        assert_eq!(process.unconfirmed_ids().await, vec![]);
     }
 
     #[tokio::test]
@@ -2742,11 +2842,9 @@ mod tests {
             armed: AtomicBool::new(true),
         };
 
-        assert_eq!(process.local.restore_lost(&source, 50).await.unwrap(), 1);
+        process.local.find_lost(&source, 50).await.unwrap();
 
-        let uplink = Uplink::to(&server);
-        process.local.flush_pending(&uplink, 50).await.unwrap();
-        assert_eq!(uplink.pushed(), vec![lost]);
+        assert_eq!(process.unconfirmed_ids().await, vec![lost]);
     }
 
     #[tokio::test]

@@ -4,7 +4,12 @@ use daruma_core::embed::{Command, CommandBus, EventEnvelope};
 use daruma_domain::Actor;
 use daruma_shared::Result;
 
-use crate::{flush, flush::RemoteEventSink, outbox::Outbox, replica::ReplicaSource};
+use crate::{
+    flush,
+    flush::RemoteEventSink,
+    outbox::{Outbox, UnconfirmedEvent},
+    replica::ReplicaSource,
+};
 
 pub struct LocalExecutor {
     commands: CommandBus,
@@ -30,8 +35,18 @@ impl LocalExecutor {
         Ok(envelopes)
     }
 
-    /// Queue what an older binary left out of the outbox; run it before a
-    /// flush, so a restored event goes out ahead of the ones that followed it.
+    /// Search the log once for what an older binary left out of the outbox.
+    pub async fn find_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<()> {
+        self.outbox.find_lost(remote, limit).await
+    }
+
+    /// Events `find_lost` found, waiting for a decision.
+    pub async fn unconfirmed(&self) -> Result<Vec<UnconfirmedEvent>> {
+        self.outbox.unconfirmed().await
+    }
+
+    /// Queue those events on the user's word; run it before a flush, so a
+    /// restored event goes out ahead of the ones that followed it.
     pub async fn restore_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<usize> {
         self.outbox.restore_lost(remote, limit).await
     }

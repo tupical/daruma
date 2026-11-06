@@ -18,7 +18,7 @@ pub const UNPROJECTED_SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS desktop_unprojected (event_id TEXT PRIMARY KEY)";
 
 /// Every kind the commands of an older binary could log. Newer events are
-/// queued with their commit, so `restore_lost` never needs to grow this.
+/// queued with their commit, so `find_lost` never needs to grow this.
 const OLD_BINARY_KINDS: [&str; 5] = [
     "task_created",
     "task_status_changed",
@@ -26,6 +26,13 @@ const OLD_BINARY_KINDS: [&str; 5] = [
     "task_closed",
     "task_deleted",
 ];
+
+/// An event an older binary may have lost, until someone says it may go out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnconfirmedEvent {
+    pub id: EventId,
+    pub kind: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct OutboxEntry {
@@ -84,8 +91,8 @@ impl Outbox {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
         // The origin of this replica. It outlives the process, so a retried
-        // event keeps its identity. log_checked: 1 once no event an older
-        // binary logged can still be missing from the queue.
+        // event keeps its identity. log_checked: 1 once the log was searched
+        // for what an older binary left out of the queue.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS desktop_device (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -98,6 +105,10 @@ impl Outbox {
         .map_err(|e| CoreError::storage(e.to_string()))?;
         sqlx::query("INSERT OR IGNORE INTO desktop_device (id, device_id) VALUES (1, ?)")
             .bind(DeviceId::new().to_string())
+            .execute(self.db.pool())
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS desktop_unconfirmed (event_id TEXT PRIMARY KEY)")
             .execute(self.db.pool())
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -163,14 +174,16 @@ impl Outbox {
         Ok(())
     }
 
-    /// Queue what an older binary logged and never queued: it committed a
-    /// command first and queued its events afterwards, so a stop or a storage
-    /// error in between left them on this device alone. Succeeds once per
-    /// replica. A lost event and an incoming one can look the same locally, so
-    /// the server log tells them apart: whatever came from the server before
-    /// `local_tip` was read is in the log read after it. Returns how many came
-    /// back.
-    pub async fn restore_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<usize> {
+    /// Search the log, once per replica, for what an older binary logged and
+    /// never queued: it committed a command first and queued its events
+    /// afterwards, so a stop or a storage error in between left them on this
+    /// device alone. An incoming event of a server this replica has left reads
+    /// the same in every column, and the log of the current server says nothing
+    /// about it, so a match only goes on record: [`Outbox::restore_lost`] is the
+    /// way out. What the server already has is delivered or incoming, and
+    /// whatever came from it before `local_tip` was read is in the log read
+    /// after it.
+    pub async fn find_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<()> {
         let pool = self.db.pool();
         let (checked, local_tip, cursor) = sqlx::query_as::<_, (i64, i64, i64)>(
             "SELECT log_checked, (SELECT COALESCE(MAX(seq), 0) FROM events),
@@ -181,34 +194,69 @@ impl Outbox {
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
         if checked != 0 {
-            return Ok(0);
+            return Ok(());
         }
         let mut server_ids = HashSet::new();
         if !lost_candidates(pool, local_tip).await?.is_empty() {
-            server_ids = server_event_ids(remote, limit).await?;
-            if cursor > 0 && server_ids.is_empty() {
-                // An empty log cannot be the one this cursor came from, and
-                // would pass everything incoming off as lost.
-                return Err(CoreError::sync(format!(
-                    "server log is empty but the replica cursor is at {cursor}"
-                )));
-            }
+            server_ids = server_event_ids(remote, limit, cursor).await?;
         }
 
-        let origin_device_id = self.device_id().await?;
         let mut tx = begin_write(pool).await?;
-        let mut restored = 0;
         for event_id in lost_candidates(&mut *tx, local_tip).await? {
             if server_ids.contains(&event_id) {
                 continue;
             }
-            let event = SqliteEventStore::load_by_id_tx(&mut tx, event_id)
+            sqlx::query("INSERT OR IGNORE INTO desktop_unconfirmed (event_id) VALUES (?)")
+                .bind(event_id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
+        sqlx::query("UPDATE desktop_device SET log_checked = 1 WHERE id = 1")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))
+    }
+
+    /// What [`Outbox::find_lost`] left waiting for a decision, in log order.
+    pub async fn unconfirmed(&self) -> Result<Vec<UnconfirmedEvent>> {
+        unconfirmed_on(self.db.pool()).await
+    }
+
+    /// Queue the events on record, on the word of a user who knows this replica
+    /// has only ever synced with this server: nothing local can prove it, and a
+    /// wrong answer publishes another server's events here. Those this server
+    /// has by now stay off the queue. Returns how many were queued.
+    pub async fn restore_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<usize> {
+        let pool = self.db.pool();
+        if self.unconfirmed().await?.is_empty() {
+            return Ok(0);
+        }
+        let (cursor,) = sqlx::query_as::<_, (i64,)>(
+            "SELECT server_seq FROM desktop_replica_state WHERE id = 1",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        let server_ids = server_event_ids(remote, limit, cursor).await?;
+
+        let origin_device_id = self.device_id().await?;
+        let mut tx = begin_write(pool).await?;
+        let mut restored = 0;
+        for unconfirmed in unconfirmed_on(&mut *tx).await? {
+            if server_ids.contains(&unconfirmed.id) {
+                continue;
+            }
+            let event = SqliteEventStore::load_by_id_tx(&mut tx, unconfirmed.id)
                 .await?
-                .ok_or_else(|| CoreError::storage(format!("{event_id} left the log")))?;
+                .ok_or_else(|| CoreError::storage(format!("{} left the log", unconfirmed.id)))?;
             enqueue_next(&mut tx, origin_device_id, event).await?;
             restored += 1;
         }
-        sqlx::query("UPDATE desktop_device SET log_checked = 1 WHERE id = 1")
+        sqlx::query("DELETE FROM desktop_unconfirmed")
             .execute(&mut *tx)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -405,17 +453,48 @@ async fn lost_candidates<'e, E: SqliteExecutor<'e>>(
         .collect()
 }
 
-async fn server_event_ids(remote: &dyn ReplicaSource, limit: u32) -> Result<HashSet<EventId>> {
+async fn unconfirmed_on<'e, E: SqliteExecutor<'e>>(executor: E) -> Result<Vec<UnconfirmedEvent>> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT events.event_id, events.kind FROM desktop_unconfirmed
+         JOIN events ON events.event_id = desktop_unconfirmed.event_id
+         ORDER BY events.seq",
+    )
+    .fetch_all(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+    rows.into_iter()
+        .map(|(id, kind)| {
+            let id = id
+                .parse::<EventId>()
+                .map_err(|e| CoreError::serde(e.to_string()))?;
+            Ok(UnconfirmedEvent { id, kind })
+        })
+        .collect()
+}
+
+async fn server_event_ids(
+    remote: &dyn ReplicaSource,
+    limit: u32,
+    cursor: i64,
+) -> Result<HashSet<EventId>> {
     let mut ids = HashSet::new();
     let mut since = 0;
     loop {
         let page = remote.fetch_events(since, limit).await?;
         let Some(last) = page.last() else {
-            return Ok(ids);
+            break;
         };
         since = last.seq;
         ids.extend(page.iter().map(|event| event.id));
     }
+    if cursor > 0 && ids.is_empty() {
+        // An empty log cannot be the one this cursor came from, and would
+        // pass everything incoming off as lost.
+        return Err(CoreError::sync(format!(
+            "server log is empty but the replica cursor is at {cursor}"
+        )));
+    }
+    Ok(ids)
 }
 
 #[derive(sqlx::FromRow)]

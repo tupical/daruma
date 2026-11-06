@@ -94,7 +94,7 @@ pub async fn delete(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 }
 
 pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
-    let (limit, retry_rejected) = parse_sync_args(args)?;
+    let (limit, retry_rejected, restore_lost) = parse_sync_args(args)?;
     if retry_rejected {
         let requeued = ctx
             .local
@@ -104,12 +104,16 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         println!("requeued {requeued} rejected event(s)");
     }
     let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let restored = ctx
-        .local
-        .restore_lost(&sink, limit)
+    ctx.local
+        .find_lost(&sink, limit)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    if restored > 0 {
+    if restore_lost {
+        let restored = ctx
+            .local
+            .restore_lost(&sink, limit)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         println!("restored {restored} event(s) missing from the outbox");
     }
     let stats = ctx
@@ -135,6 +139,23 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         println!(
             "⚠ {rejected} event(s) rejected by the server (dead-lettered, {} this sync)",
             stats.rejected
+        );
+    }
+    let unconfirmed = ctx
+        .local
+        .unconfirmed()
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if !unconfirmed.is_empty() {
+        println!(
+            "⚠ {} event(s) not sent: an older version may have lost them, or they came from another server",
+            unconfirmed.len()
+        );
+        for event in &unconfirmed {
+            println!("  {} {}", event.id, event.kind);
+        }
+        println!(
+            "  if this replica has only ever synced with this server: daruma sync --restore-lost"
         );
     }
     Ok(())
@@ -164,14 +185,19 @@ pub async fn devices(args: &[String]) -> anyhow::Result<()> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// `[--retry-rejected] [--limit N]` in any order.
-fn parse_sync_args(args: &[String]) -> anyhow::Result<(u32, bool)> {
+/// `[--retry-rejected] [--restore-lost] [--limit N]` in any order.
+fn parse_sync_args(args: &[String]) -> anyhow::Result<(u32, bool, bool)> {
+    let flag = |name: &str| args.iter().any(|a| a == name);
     let rest: Vec<String> = args
         .iter()
-        .filter(|a| *a != "--retry-rejected")
+        .filter(|a| *a != "--retry-rejected" && *a != "--restore-lost")
         .cloned()
         .collect();
-    Ok((parse_limit(&rest)?, rest.len() != args.len()))
+    Ok((
+        parse_limit(&rest)?,
+        flag("--retry-rejected"),
+        flag("--restore-lost"),
+    ))
 }
 
 fn parse_limit(args: &[String]) -> anyhow::Result<u32> {
@@ -187,7 +213,7 @@ fn parse_limit(args: &[String]) -> anyhow::Result<u32> {
         }
         return Ok(limit);
     }
-    anyhow::bail!("usage: daruma sync [--retry-rejected] [--limit N]")
+    anyhow::bail!("usage: daruma sync [--retry-rejected] [--restore-lost] [--limit N]")
 }
 
 fn parse_status(s: &str) -> anyhow::Result<Status> {
@@ -240,14 +266,18 @@ mod tests {
     #[test]
     fn sync_args_take_retry_flag_in_any_order() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_sync_args(&args(&[])).unwrap(), (100, false));
+        assert_eq!(parse_sync_args(&args(&[])).unwrap(), (100, false, false));
         assert_eq!(
             parse_sync_args(&args(&["--retry-rejected"])).unwrap(),
-            (100, true)
+            (100, true, false)
         );
         assert_eq!(
             parse_sync_args(&args(&["--limit", "5", "--retry-rejected"])).unwrap(),
-            (5, true)
+            (5, true, false)
+        );
+        assert_eq!(
+            parse_sync_args(&args(&["--restore-lost", "--limit", "5"])).unwrap(),
+            (5, false, true)
         );
         assert!(parse_sync_args(&args(&["--retry"])).is_err());
     }
