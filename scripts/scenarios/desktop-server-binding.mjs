@@ -45,6 +45,7 @@ const EXPECTED = [
   'override: another server behind the URL is refused before anything moves; the same server at a new address is not',
   'no identity: a server without one, with an error or a path for one gets nothing but the identity request',
   'older replica: refused on any server until the user adopts it, then delivers its queue once, also after a re-pair',
+  'older queue no server has seen (cursor 0): a pair with B sends B nothing, the queue stays in sight, and it reaches A once after A is adopted; written offline on a new replica goes with the first server',
   'interrupted change: paired.json ahead of replicas.json is finished by the next process, a broken replicas.json stops it',
   'old binary: re-pairing sends the queue of A to B and misses part of the history of B (the defect)',
 ];
@@ -469,6 +470,66 @@ async function replicaFromBeforeBindings() {
     && (await a.events(step)).count === log.count);
 }
 
+async function queueNoServerHasSeen() {
+  const step = 'older queue, cursor 0';
+  const old = args['old-desktop'];
+  const device = new Device('older-queue');
+  await device.pair(step, a, old);
+  await device.add(step, 'private queue for A', old);
+  const legacyPath = join(device.dir, 'replica.sqlite');
+  const before = inspect(legacyPath);
+  check('an older replica with a queue and no cursor', before.cursor === 0 && before.pending === 1, before);
+  check('it records no server', !existsSync(device.registry));
+  const beforeA = await a.events(step);
+  const beforeB = await b.events(step);
+
+  await device.pair(step, b);
+  check('pairing elsewhere keeps it in place', (await device.activePath(step)) === legacyPath);
+  const paired = await device.sync(step);
+  check('sync after the pair is refused', paired.status !== 0 && paired.stderr.includes('does not record with which server'), {
+    stdout: paired.stdout,
+    stderr: paired.stderr.slice(0, 300),
+  });
+  const onB = await b.events(step);
+  check('B received nothing', onB.count === beforeB.count && !onB.text.includes('private queue for A'), {
+    before: beforeB.count,
+    after: onB.count,
+  });
+  const kept = inspect(legacyPath);
+  check('the queue is kept', kept.pending === 1 && kept.cursor === 0, kept);
+  check('nothing was recorded for the user', !existsSync(device.registry) || JSON.parse(readFileSync(device.registry, 'utf8')).active === null);
+  const listed = await device.run(step, args.desktop, ['replica']);
+  check('the queue stays in sight', listed.stdout.includes('server not recorded') && listed.stdout.includes('pending=1'), {
+    stdout: listed.stdout,
+  });
+
+  const override = await device.sync(step, { DARUMA_API_URL: b.origin, DARUMA_TOKEN: b.admin });
+  check('the same without a pair, by address', override.status !== 0 && override.stderr.includes('does not record with which server'));
+  check('still nothing on B', (await b.events(step)).count === beforeB.count);
+  check('and nothing on A before the user decides', (await a.events(step)).count === beforeA.count);
+
+  await device.pair(step, a);
+  const adopted = await device.run(step, args.desktop, ['replica', 'adopt']);
+  check('adopted by its own server', adopted.status === 0 && adopted.stdout.includes(a.id), { stdout: adopted.stdout });
+  const delivered = await device.sync(step);
+  const onA = await a.events(step);
+  check('the queue reaches A once', delivered.status === 0 && onA.text.split('private queue for A').length === 2, {
+    stdout: delivered.stdout,
+  });
+  await device.sync(step);
+  check('a retry adds nothing', (await a.events(step)).count === onA.count);
+  check('B never saw it', !(await b.events(step)).text.includes('private queue for A'));
+
+  const fresh = new Device('written-offline');
+  await fresh.add(step, 'written offline on a new replica');
+  const offline = inspect(join(fresh.dir, 'replica.sqlite'));
+  check('a new replica with a queue and no cursor', offline.cursor === 0 && offline.pending === 1, offline);
+  await fresh.pair(step, a);
+  const first = await fresh.sync(step);
+  check('goes with the first server, no adopt asked', first.status === 0
+    && (await a.events(step)).text.includes('written offline on a new replica'), { stdout: first.stdout, stderr: first.stderr.slice(0, 300) });
+}
+
 async function interruptedChange() {
   const step = 'interrupted change';
   const device = new Device('interrupted');
@@ -555,6 +616,7 @@ try {
   await overrides(device);
   await serversWithoutIdentity(device);
   await replicaFromBeforeBindings();
+  await queueNoServerHasSeen();
   await interruptedChange();
   await negativeControl();
 } catch (error) {

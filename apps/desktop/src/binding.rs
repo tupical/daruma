@@ -10,7 +10,9 @@
 //! replaced atomically. `paired.json` says which server the user chose last:
 //! when the two disagree, as after a `pair` stopped halfway, the next open
 //! follows `paired.json`, so a switch is finished by whichever process comes
-//! next. A replica without a recorded server stays put until the user decides.
+//! next. A replica without a recorded server stays put until the user decides,
+//! unless it is known to hold nothing of any server's: then it goes with the
+//! first server.
 
 use std::path::{Path, PathBuf};
 

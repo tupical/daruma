@@ -24,10 +24,13 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
   if it is not this replica's server. This covers `DARUMA_API_URL` pointing
   elsewhere.
 - `daruma replica` lists every replica with its cursor and queue.
-- **After this update, a replica that has already synced stops at the first
-  `sync`**: nothing records which server it belongs to, so a re-paired one cannot
-  be told apart. If it has only ever synced with this server, run
-  `daruma replica adopt`. Otherwise keep it, and use another `DARUMA_DATA_DIR`.
+- **After this update, a replica that already holds data stops at the first
+  `sync`**, even if it never synced and only has a queue: nothing records which
+  server that data is for, so a re-paired one cannot be told apart. If everything
+  in it is this server's, run `daruma replica adopt`. If it belongs to another
+  server, pair with that server and adopt it there, or keep it and use another
+  `DARUMA_DATA_DIR`. A replica created by this version has no such step: what is
+  written on it offline goes with the first server.
 - **`sync` needs a server with this update**: an older one does not report an
   identity, and the device stops rather than guess.
 

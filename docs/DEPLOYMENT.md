@@ -57,10 +57,13 @@ fresh database gets a new one, and devices treat that as another server.
   anything if the server is not this replica's, or does not answer. That includes
   `DARUMA_API_URL` pointing elsewhere, so use another `DARUMA_DATA_DIR` for another
   server without pairing. It also means upgrading the server before the devices.
-- A replica that synced before bindings records no server, so `sync` stops on it
-  whichever server it reaches. If it has only ever synced with this server, run
-  `daruma-desktop replica adopt`. If not, keep it and use another `DARUMA_DATA_DIR`.
-  That word is not checked: adopting another server's replica sends it its queue.
+- A replica that held data before bindings records no server, so `sync` stops on
+  it whichever server it reaches, even if it never synced and only has a queue. If
+  everything in it is this server's, run `daruma-desktop replica adopt`. If it
+  belongs to another server, pair with that server and adopt it there, or keep it
+  and use another `DARUMA_DATA_DIR`. That word is not checked: adopting another
+  server's replica sends it its queue. A replica that started empty on this version
+  needs no adopt: what is written on it offline goes with the first server.
 - A `replicas.json` that cannot be read stops every command rather than opening a
   replica by guess. Delete it only if the data directory holds one replica.
 

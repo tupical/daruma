@@ -127,22 +127,61 @@ impl Outbox {
             .execute(self.db.pool())
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
+        // A row while this replica is known to hold nothing of any server's.
+        // An older binary never left one, so its data stays of unknown origin.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS desktop_no_owner (id INTEGER PRIMARY KEY CHECK (id = 1))",
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
         Ok(())
     }
 
-    /// Whether any server has seen this replica: it read a log, or a log
-    /// answered one of its events. If not, everything here is local and no
-    /// server's yet.
-    pub async fn has_synced(&self) -> Result<bool> {
-        let (synced,) = sqlx::query_as::<_, (bool,)>(
-            "SELECT (SELECT server_seq FROM desktop_replica_state WHERE id = 1) > 0
+    /// An empty replica holds nothing of any server's, so whatever is written
+    /// here from now on is this device's own until a server is recorded.
+    pub async fn note_if_empty(&self) -> Result<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO desktop_no_owner (id)
+             SELECT 1
+             WHERE (SELECT server_seq FROM desktop_replica_state WHERE id = 1) = 0
+               AND NOT EXISTS (SELECT 1 FROM events)
+               AND NOT EXISTS (SELECT 1 FROM tasks)
+               AND NOT EXISTS (SELECT 1 FROM projects)
+               AND NOT EXISTS (SELECT 1 FROM desktop_outbox)
+               AND NOT EXISTS (SELECT 1 FROM desktop_outbox_rejected)",
+        )
+        .execute(self.db.pool())
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// A server was recorded for this replica, so its data is that server's
+    /// even if the record gets lost.
+    pub async fn note_owner(&self) -> Result<()> {
+        sqlx::query("DELETE FROM desktop_no_owner")
+            .execute(self.db.pool())
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Whether this replica may hold something of a server it cannot name: it
+    /// was not empty when first opened by a binary that records servers, it
+    /// read a log, or a log answered one of its events. An older queue with no
+    /// cursor is the first case: no server saw it, yet it was written for one.
+    pub async fn has_unknown_past(&self) -> Result<bool> {
+        let (unknown,) = sqlx::query_as::<_, (bool,)>(
+            "SELECT NOT EXISTS (SELECT 1 FROM desktop_no_owner)
+                 OR (SELECT server_seq FROM desktop_replica_state WHERE id = 1) > 0
                  OR EXISTS (SELECT 1 FROM desktop_outbox WHERE flushed_at IS NOT NULL)
                  OR EXISTS (SELECT 1 FROM desktop_outbox_rejected)",
         )
         .fetch_one(self.db.pool())
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
-        Ok(synced)
+        Ok(unknown)
     }
 
     /// The store local commands must write through.

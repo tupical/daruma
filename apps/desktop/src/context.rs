@@ -116,16 +116,24 @@ impl Context {
 
         let ai = AiConfig::from_env().ok().map(OpenAiClient::new);
 
-        // A first server takes over the default file unless the file already
-        // has a history with some server: then `sync` asks the user.
-        if let (None, Some(server)) = (registry.active(), paired.as_ref()) {
-            let synced = local
-                .has_synced()
+        // A first server takes over the default file unless the file may
+        // already hold something of another server's: then `sync` asks the user.
+        if registry.active().is_none() {
+            local
+                .note_if_empty()
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            if !synced {
+            let unknown = local
+                .has_unknown_past()
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if let (false, Some(server)) = (unknown, paired.as_ref()) {
                 registry.bind_default(server);
                 registry.save(&dir)?;
+                local
+                    .note_owner()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             }
         }
         let server = registry.active().cloned();
@@ -158,13 +166,14 @@ impl Context {
                  gets its own replica and this one stays as it is. Or set DARUMA_DATA_DIR to \
                  another directory for it."
             ),
-            None if self.has_synced().await? => anyhow::bail!(
-                "this replica has synced before, but it does not record with which server, \
-                 and {url} is server {server}. Nothing was sent or fetched. If it has only \
-                 ever synced with this server, run `daruma replica adopt`. If not, set \
-                 DARUMA_DATA_DIR to another directory for this server and keep this one."
+            None if self.has_unknown_past().await? => anyhow::bail!(
+                "this replica holds data from before servers were recorded: it does not \
+                 record with which server, and {url} is server {server}. Nothing was sent or \
+                 fetched. If everything in it is this server's, run `daruma replica adopt`. If \
+                 not, set DARUMA_DATA_DIR to another directory for this server and keep this \
+                 one, or pair with its own server and adopt it there."
             ),
-            None => self.record_default_owner(server),
+            None => self.record_default_owner(server).await,
         }
     }
 
@@ -174,23 +183,27 @@ impl Context {
         if let Some(bound) = &self.server {
             anyhow::bail!("this replica already belongs to server {bound}");
         }
-        self.record_default_owner(server)
+        self.record_default_owner(server).await
     }
 
     /// `self.server` is `None`, so this process opened the default file; it
     /// only stays the right one while nothing else recorded a server.
-    fn record_default_owner(&self, server: &ServerId) -> anyhow::Result<()> {
+    async fn record_default_owner(&self, server: &ServerId) -> anyhow::Result<()> {
         let mut registry = Registry::load(&self.dir)?;
         if let Some(active) = registry.active() {
             anyhow::bail!("another process just selected server {active}; try again");
         }
         registry.bind_default(server);
-        registry.save(&self.dir)
+        registry.save(&self.dir)?;
+        self.local
+            .note_owner()
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
-    async fn has_synced(&self) -> anyhow::Result<bool> {
+    async fn has_unknown_past(&self) -> anyhow::Result<bool> {
         self.local
-            .has_synced()
+            .has_unknown_past()
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
@@ -435,6 +448,131 @@ mod tests {
             "no second owner"
         );
         drop(adopted);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What an older binary leaves: it never noted the replica as ownerless.
+    async fn as_left_by_an_older_binary(ctx: &Context) {
+        sqlx::query("DELETE FROM desktop_no_owner")
+            .execute(ctx.projects.pool())
+            .await
+            .unwrap();
+    }
+
+    async fn pending(ctx: &Context) -> i64 {
+        sqlx::query_as::<_, (i64,)>(crate::outbox::PENDING_COUNT_SQL)
+            .fetch_one(ctx.projects.pool())
+            .await
+            .unwrap()
+            .0
+    }
+
+    #[tokio::test]
+    async fn an_older_queue_no_server_has_seen_waits_for_the_user() {
+        let dir = temp_dir();
+        let legacy = Context::open_in(dir.clone(), None).await.unwrap();
+        add(&legacy, "private queue for a").await;
+        as_left_by_an_older_binary(&legacy).await;
+        assert_eq!(legacy.replica.server_seq().await.unwrap(), 0);
+        refused(
+            legacy.ensure_bound(&server("b"), "https://b").await,
+            "does not record with which server",
+        );
+        drop(legacy);
+
+        // The queue was written for someone, and a cursor of zero hides whom.
+        let paired = Context::open_in(dir.clone(), Some(server("b")))
+            .await
+            .unwrap();
+        assert_eq!(Registry::load(&dir).unwrap().active(), None);
+        refused(
+            paired.ensure_bound(&server("b"), "https://b").await,
+            "does not record with which server",
+        );
+        assert_eq!(Registry::load(&dir).unwrap().active(), None);
+        assert_eq!(pending(&paired).await, 1);
+        assert_eq!(titles(&paired).await, ["private queue for a"]);
+        drop(paired);
+
+        let own = Context::open_in(dir.clone(), Some(server("a")))
+            .await
+            .unwrap();
+        own.adopt(&server("a")).await.unwrap();
+        drop(own);
+        let adopted = Context::open_in(dir.clone(), Some(server("a")))
+            .await
+            .unwrap();
+        adopted
+            .ensure_bound(&server("a"), "https://a")
+            .await
+            .unwrap();
+        assert_eq!(pending(&adopted).await, 1);
+        drop(adopted);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_older_log_outside_the_queue_waits_for_the_user_too() {
+        let dir = temp_dir();
+        let legacy = Context::open_in(dir.clone(), None).await.unwrap();
+        add(&legacy, "logged, never queued").await;
+        as_left_by_an_older_binary(&legacy).await;
+        sqlx::query("DELETE FROM desktop_outbox")
+            .execute(legacy.projects.pool())
+            .await
+            .unwrap();
+        drop(legacy);
+
+        let paired = Context::open_in(dir.clone(), Some(server("b")))
+            .await
+            .unwrap();
+        assert_eq!(Registry::load(&dir).unwrap().active(), None);
+        refused(
+            paired.ensure_bound(&server("b"), "https://b").await,
+            "does not record with which server",
+        );
+        drop(paired);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_empty_replica_of_an_older_binary_goes_with_the_first_server() {
+        let dir = temp_dir();
+        let legacy = Context::open_in(dir.clone(), None).await.unwrap();
+        as_left_by_an_older_binary(&legacy).await;
+        drop(legacy);
+
+        let paired = Context::open_in(dir.clone(), Some(server("a")))
+            .await
+            .unwrap();
+        assert_eq!(Registry::load(&dir).unwrap().active(), Some(&server("a")));
+        paired
+            .ensure_bound(&server("a"), "https://a")
+            .await
+            .unwrap();
+        drop(paired);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_lost_registry_does_not_hand_a_recorded_queue_to_the_next_server() {
+        let dir = temp_dir();
+        let a = Context::open_in(dir.clone(), Some(server("a")))
+            .await
+            .unwrap();
+        add(&a, "for a").await;
+        drop(a);
+        std::fs::remove_file(dir.join("replicas.json")).unwrap();
+
+        let b = Context::open_in(dir.clone(), Some(server("b")))
+            .await
+            .unwrap();
+        assert_eq!(Registry::load(&dir).unwrap().active(), None);
+        refused(
+            b.ensure_bound(&server("b"), "https://b").await,
+            "does not record with which server",
+        );
+        drop(b);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
