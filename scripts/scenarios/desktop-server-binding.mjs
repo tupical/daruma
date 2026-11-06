@@ -215,10 +215,18 @@ class Device {
     });
   }
 
+  /** The server allows five pairs a minute per address: wait out a 429. */
   async pair(step, server, binary = args.desktop) {
-    const ticket = await server.ticket(step);
-    const paired = await this.run(step, binary, ['pair', ticket.pairing_url]);
-    if (paired.status !== 0) throw new Error(`pair ${server.name}: ${paired.stderr}`);
+    const deadline = Date.now() + 90000;
+    for (;;) {
+      const ticket = await server.ticket(step);
+      const paired = await this.run(step, binary, ['pair', ticket.pairing_url]);
+      if (paired.status === 0) break;
+      if (!paired.stderr.includes('HTTP 429') || Date.now() > deadline) {
+        throw new Error(`pair ${server.name}: ${paired.stderr}`);
+      }
+      await sleep(5000);
+    }
     secrets.set(JSON.parse(readFileSync(this.paired, 'utf8')).token, 'device token');
   }
 
