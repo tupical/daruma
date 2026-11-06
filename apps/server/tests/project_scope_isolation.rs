@@ -208,6 +208,7 @@ async fn scoped_writer_cannot_read_or_overwrite_foreign_comments_or_replay_globa
     for path in [
         format!("/v1/tasks/{tb}/comments"),
         "/v1/events".into(),
+        "/v1/events/origin".into(),
         "/v1/events/snapshot".into(),
         "/v1/history".into(),
         "/v1/audit/findings".into(),

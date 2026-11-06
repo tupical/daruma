@@ -42,6 +42,7 @@ pub mod rule_repo;
 pub mod run_note_repo;
 pub mod run_repo;
 pub mod session_repo;
+pub mod server_identity;
 pub mod snapshot_repo;
 pub mod task_complexity_repo;
 pub mod task_repo;

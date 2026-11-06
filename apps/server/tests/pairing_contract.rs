@@ -83,6 +83,14 @@ async fn pair_with_ticket_fingerprint_issues_device_token() {
     assert!(body["access_token"].as_str().is_some_and(|t| !t.is_empty()));
     assert_eq!(body["server_url"], "https://localhost:8443");
 
+    // The identity a device binds its replica to, the same one it reads later.
+    let server_id = body["server_id"].as_str().expect("server_id").to_owned();
+    assert_eq!(server_id.len(), 32);
+    let device_token = body["access_token"].as_str().unwrap();
+    let (status, origin) = json_get(app.router.clone(), device_token, "/v1/events/origin").await;
+    assert_eq!(status, StatusCode::OK, "origin: {origin}");
+    assert_eq!(origin["server_id"], server_id.as_str());
+
     // Single-use: the same token cannot pair a second device.
     let (status, _) = pair(
         &app,

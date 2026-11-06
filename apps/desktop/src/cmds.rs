@@ -6,7 +6,7 @@ use daruma_core::embed::Command;
 use daruma_domain::{Actor, NewTask, Priority, Status};
 use daruma_shared::{DeviceId, TaskId};
 
-use crate::{context::Context, remote::HttpReplicaSink, render};
+use crate::{binding, context, context::Context, remote::HttpReplicaSink, render};
 
 pub async fn list(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     let tasks = if let Some(filter) = args.first() {
@@ -95,6 +95,12 @@ pub async fn delete(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
 
 pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
     let (limit, retry_rejected, restore_lost) = parse_sync_args(args)?;
+    let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let server = sink
+        .server_id()
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    ctx.ensure_bound(&server, sink.base_url()).await?;
     if retry_rejected {
         let requeued = ctx
             .local
@@ -103,7 +109,6 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         println!("requeued {requeued} rejected event(s)");
     }
-    let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
     ctx.local
         .find_lost(&sink, limit)
         .await
@@ -167,6 +172,43 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// `daruma replica`: every replica here and what it still holds, so a queue
+/// parked by a change of server stays in sight. `adopt` records the server of
+/// a replica from before bindings.
+pub async fn replica(args: &[String]) -> anyhow::Result<()> {
+    match args {
+        [] => {
+            let ctx = Context::open().await?;
+            let registry = binding::Registry::load(&context::data_dir())?;
+            for entry in registry.replicas(&context::data_dir())? {
+                let server = entry.server.as_ref().map_or_else(
+                    || "server not recorded".to_owned(),
+                    |server| format!("server {server}"),
+                );
+                let marker = if entry.path == ctx.db_path { '*' } else { ' ' };
+                let state = match binding::replica_summary(&entry.path).await {
+                    Some((cursor, pending)) => format!("server_seq={cursor} pending={pending}"),
+                    None => "no state yet".to_owned(),
+                };
+                println!("{marker} {server}  {state}  {}", entry.path.display());
+            }
+            Ok(())
+        }
+        [cmd] if cmd == "adopt" => {
+            let ctx = Context::open().await?;
+            let sink = HttpReplicaSink::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let server = sink
+                .server_id()
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            ctx.adopt(&server).await?;
+            println!("✓ this replica now belongs to server {server}");
+            Ok(())
+        }
+        _ => anyhow::bail!("usage: daruma replica [adopt]"),
+    }
 }
 
 pub async fn devices(args: &[String]) -> anyhow::Result<()> {

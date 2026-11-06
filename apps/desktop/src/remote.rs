@@ -6,6 +6,7 @@ use daruma_shared::{CoreError, DeviceId, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::binding::ServerId;
 use crate::flush::{PushOutcome, RemoteEventSink};
 use crate::replica::ReplicaSource;
 
@@ -97,6 +98,14 @@ impl HttpReplicaSink {
         }
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn origin_url(&self) -> String {
+        format!("{}/v1/events/origin", self.base_url.trim_end_matches('/'))
+    }
+
     fn replica_url(&self) -> String {
         format!("{}/v1/events/replica", self.base_url.trim_end_matches('/'))
     }
@@ -121,6 +130,27 @@ impl HttpReplicaSink {
             "{}/v1/devices/{id}/revoke",
             self.base_url.trim_end_matches('/')
         )
+    }
+
+    /// Which server answers at this URL. Without an answer there is no telling
+    /// whose log a cursor would read or whose queue would go out.
+    pub async fn server_id(&self) -> Result<ServerId> {
+        let response = self
+            .client
+            .get(self.origin_url())
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| self.transport_error(e))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(CoreError::sync(format!(
+                "{} does not report which server it is, so this replica cannot tell whether \
+                 it belongs there. Nothing was sent or fetched. Upgrade the server.",
+                self.base_url
+            )));
+        }
+        let origin: OriginResponse = json_response(response, "server identity").await?;
+        ServerId::parse(&origin.server_id)
     }
 
     pub async fn list_devices(&self) -> Result<DevicesResponse> {
@@ -258,12 +288,28 @@ async fn json_response<T: serde::de::DeserializeOwned>(
 }
 
 #[derive(Debug, Deserialize)]
+struct OriginResponse {
+    server_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PairedCredentials {
     server_url: String,
     token: String,
     /// Absent in a `paired.json` written before fingerprints were stored.
     #[serde(default)]
     tls_fingerprint: Option<String>,
+    /// Absent in a `paired.json` written before servers had an identity.
+    #[serde(default)]
+    server_id: Option<String>,
+}
+
+/// The server the user last paired with, if it reported its identity.
+pub fn paired_server_id() -> anyhow::Result<Option<ServerId>> {
+    load_paired_credentials()
+        .and_then(|paired| paired.server_id)
+        .map(|id| ServerId::parse(&id).map_err(|e| anyhow::anyhow!("paired.json: {e}")))
+        .transpose()
 }
 
 /// Trust for `base_url`: the pin applies only to the scheme, host and port it
@@ -454,6 +500,7 @@ mod tests {
             server_url: server_url.to_owned(),
             token: "token".to_owned(),
             tls_fingerprint: tls_fingerprint.map(str::to_owned),
+            server_id: None,
         }
     }
 

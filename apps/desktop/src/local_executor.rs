@@ -35,6 +35,11 @@ impl LocalExecutor {
         Ok(envelopes)
     }
 
+    /// Whether any server has seen this replica.
+    pub async fn has_synced(&self) -> Result<bool> {
+        self.outbox.has_synced().await
+    }
+
     /// Search the log once for what an older binary left out of the outbox.
     pub async fn find_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<()> {
         self.outbox.find_lost(remote, limit).await
