@@ -17,6 +17,11 @@ use crate::replica::ReplicaSource;
 pub const UNPROJECTED_SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS desktop_unprojected (event_id TEXT PRIMARY KEY)";
 
+/// Events of a local command the server has not yet put in its order. They
+/// wait for their echo, and nothing can have overtaken a later one through them.
+pub const UNECHOED_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS desktop_unechoed (event_id TEXT PRIMARY KEY)";
+
 /// Every kind the commands of an older binary could log. Newer events are
 /// queued with their commit, so `find_lost` never needs to grow this.
 const OLD_BINARY_KINDS: [&str; 5] = [
@@ -86,10 +91,12 @@ impl Outbox {
         .execute(self.db.pool())
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
-        sqlx::query(UNPROJECTED_SCHEMA)
-            .execute(self.db.pool())
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
+        for schema in [UNPROJECTED_SCHEMA, UNECHOED_SCHEMA] {
+            sqlx::query(schema)
+                .execute(self.db.pool())
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
         // The origin of this replica. It outlives the process, so a retried
         // event keeps its identity. log_checked: 1 once the log was searched
         // for what an older binary left out of the queue.
@@ -380,11 +387,13 @@ impl EventStore for OutboundStore {
         for envelope in envelopes {
             let event = SqliteEventStore::append_tx(&mut tx, envelope).await?;
             enqueue_next(&mut tx, self.origin_device_id, event.clone()).await?;
-            sqlx::query("INSERT INTO desktop_unprojected (event_id) VALUES (?)")
-                .bind(event.id.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| CoreError::storage(e.to_string()))?;
+            for table in ["desktop_unprojected", "desktop_unechoed"] {
+                sqlx::query(&format!("INSERT INTO {table} (event_id) VALUES (?)"))
+                    .bind(event.id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
             persisted.push(event);
         }
         tx.commit()

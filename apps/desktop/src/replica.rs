@@ -5,19 +5,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use daruma_core::embed::{
-    ActivityRepo, CommentRepo, EventEnvelope, EventStore, ProjectRepo, ProjectionFold,
+    ActivityRepo, CommentRepo, Event, EventEnvelope, EventStore, ProjectRepo, ProjectionFold,
     ProjectionSnapshot, Snapshot, SqliteEventStore, TaskRepo,
 };
 use daruma_shared::{CoreError, EventId, Result};
 use sqlx::{Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
-use crate::outbox::UNPROJECTED_SCHEMA;
+use crate::outbox::{UNECHOED_SCHEMA, UNPROJECTED_SCHEMA};
 
 /// Local event-log rows read per round during a rebuild.
 const LOCAL_LOG_PAGE_SIZE: usize = 1000;
 
 /// SQL for whether the rows can be trusted to match the cursor.
-const VERIFIED: &str = "baseline_verified AND projections_verified";
+const VERIFIED: &str = "baseline_verified AND projections_verified AND order_verified";
 
 /// The server side of a catch-up.
 #[async_trait]
@@ -75,19 +75,30 @@ impl Replica {
             .execute(&self.pool)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        sqlx::query(UNPROJECTED_SCHEMA)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
+        for schema in [UNPROJECTED_SCHEMA, UNECHOED_SCHEMA] {
+            sqlx::query(schema)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
         // baseline_verified: 1 once the cursor is known to rest on a replay
         // from seq 0 or on a consistent snapshot. A cursor written before this
         // column existed may rest on a snapshot that missed events.
         // projections_verified: 1 once every event in the local log is known
         // to be projected. A sync that stopped between the append and the
         // projectors used to leave its event behind for good.
-        // The column defaults send both kinds of replica through
+        // order_verified: 1 while the rows follow the server's order of what
+        // the cursor passed. An older binary may have settled on another one.
+        // The column defaults send all three kinds of replica through
         // `rebuild_from_log`.
-        for column in ["baseline_verified", "projections_verified"] {
+        // ordered_local_seq: how far into the local log `apply_remote_event`
+        // has come in server order. See there.
+        for column in [
+            "baseline_verified",
+            "projections_verified",
+            "order_verified",
+            "ordered_local_seq",
+        ] {
             let (present,) = sqlx::query_as::<_, (i64,)>(
                 "SELECT COUNT(*) FROM pragma_table_info('desktop_replica_state') \
                  WHERE name = ?",
@@ -182,7 +193,14 @@ impl Replica {
         }
         let events = remote.fetch_events(since, limit).await?;
         let mut stats = self.apply_remote_events(events).await?;
-        stats.fetched += repaired;
+        // An echo may have found its event out of place. If this fails, the
+        // flag stays and the next sync repairs before anything else.
+        let reordered = if self.baseline_verified().await? {
+            0
+        } else {
+            self.rebuild_from_log(remote, limit).await?
+        };
+        stats.fetched += repaired + reordered;
         Ok(stats)
     }
 
@@ -203,14 +221,15 @@ impl Replica {
             .map_err(|e| CoreError::storage(e.to_string()))
     }
 
-    /// One-time repair for a replica whose rows may not match its cursor: the
-    /// cursor rests on a snapshot which missed events, or on events that
-    /// reached the local log but not the projectors. Those events sit at or
-    /// below the cursor, so no delta can bring them back. Rebuild the
-    /// projections as the server log up to the cursor plus whatever else this
-    /// device has (events still in the outbox or refused by the server, and
-    /// events past the cursor, which the next delta then finds done). Returns
-    /// how many server events were read.
+    /// Repair for a replica whose rows may not match its cursor: the cursor
+    /// rests on a snapshot which missed events, on events that reached the
+    /// local log but not the projectors, or on events applied here in another
+    /// order than on the server. Those events sit at or below the cursor, so
+    /// no delta can bring them back. Rebuild the projections as the server log
+    /// up to the cursor plus whatever else this device has (events still in
+    /// the outbox or refused by the server, and events past the cursor, which
+    /// the next delta then finds done). Returns how many server events were
+    /// read.
     ///
     /// Everything but the activity feed is folded on the side, so a failed
     /// fetch leaves the replica untouched. The feed comes from the local log:
@@ -286,7 +305,17 @@ impl Replica {
             .execute(&mut *tx)
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
-        mark_verified_baseline(&mut *tx, (current.max(0) as u64).max(cursor)).await?;
+        let current = current.max(0) as u64;
+        mark_verified_baseline(&mut *tx, current.max(cursor)).await?;
+        if current > cursor {
+            // Another sync moved the cursor during the fold, so what lies
+            // between went in as local events, in local order. Its checks of
+            // their order just ended with the reset above.
+            sqlx::query("UPDATE desktop_replica_state SET order_verified = 0 WHERE id = 1")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+        }
         tx.commit()
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -396,23 +425,65 @@ impl Replica {
 
     /// Log one server event, run every projector and move the cursor past it,
     /// all in one transaction. An event in the local log has therefore always
-    /// taken full effect, so finding its id means there is nothing left to do,
+    /// taken full effect, so finding its id means nothing is left to apply,
     /// whether it is a retry or the echo of a local command. `false` for those.
+    ///
+    /// Taking effect is not yet being in the right place, though: a local
+    /// event ran before anything that arrived after it, while the server may
+    /// have put those first. `ordered_local_seq` is the highest log position
+    /// passed in server order, so an echo below it was overtaken by what lies
+    /// between. Only the rebuild can put that right, so it is asked for when
+    /// the two events concern one task or project, and everyone else's work
+    /// costs nothing. The flag moves with the cursor, which then cannot hide
+    /// the mismatch.
     async fn apply_remote_event(&self, mut event: EventEnvelope) -> Result<bool> {
         let server_seq = event.seq;
         let mut tx = self.begin_write().await?;
-        let unseen = SqliteEventStore::load_by_id_tx(&mut tx, event.id)
-            .await?
-            .is_none();
-        if unseen {
+        let (cursor, ordered, order_verified) = sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT server_seq, ordered_local_seq, order_verified \
+             FROM desktop_replica_state WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+        let (cursor, ordered) = (cursor.max(0) as u64, ordered.max(0) as u64);
+        let logged = SqliteEventStore::load_by_id_tx(&mut tx, event.id).await?;
+        let unseen = logged.is_none();
+        let local_seq = if let Some(echo) = logged {
+            if server_seq > cursor
+                && order_verified != 0
+                && overtaken(&mut tx, &echo, ordered).await?
+            {
+                sqlx::query("UPDATE desktop_replica_state SET order_verified = 0 WHERE id = 1")
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+            }
+            sqlx::query("DELETE FROM desktop_unechoed WHERE event_id = ?")
+                .bind(echo.id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?;
+            // A retry is already behind the cursor and says nothing new.
+            (server_seq > cursor).then_some(echo.seq)
+        } else {
             event.seq = 0;
             let persisted = SqliteEventStore::append_tx(&mut tx, event).await?;
             self.tasks.apply_event_tx(&mut tx, &persisted).await?;
             self.projects.apply_event_tx(&mut tx, &persisted).await?;
             self.comments.apply_event_tx(&mut tx, &persisted).await?;
             self.activity.apply_event_tx(&mut tx, &persisted).await?;
-        }
+            Some(persisted.seq)
+        };
         advance_server_seq(&mut *tx, server_seq).await?;
+        sqlx::query(
+            "UPDATE desktop_replica_state \
+             SET ordered_local_seq = MAX(ordered_local_seq, ?) WHERE id = 1",
+        )
+        .bind(local_seq.unwrap_or(0) as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -445,13 +516,56 @@ async fn mark_verified_baseline<'e, E: SqliteExecutor<'e>>(
 ) -> Result<()> {
     sqlx::query(
         "UPDATE desktop_replica_state \
-         SET server_seq = ?, baseline_verified = 1, projections_verified = 1 WHERE id = 1",
+         SET server_seq = ?, baseline_verified = 1, projections_verified = 1, \
+             order_verified = 1, ordered_local_seq = 0 WHERE id = 1",
     )
     .bind(server_seq as i64)
     .execute(executor)
     .await
     .map_err(|e| CoreError::storage(e.to_string()))?;
     Ok(())
+}
+
+/// Whether something logged after `echo`, up to `ordered`, concerns the same
+/// task or project and already has its place on the server. Local events still
+/// waiting for their echo sit in that stretch too, the rest of a multi-event
+/// command for one, and are not ahead of anything.
+async fn overtaken(
+    tx: &mut Transaction<'_, Sqlite>,
+    echo: &EventEnvelope,
+    ordered: u64,
+) -> Result<bool> {
+    let mut local_seq = echo.seq;
+    while local_seq < ordered {
+        let page = SqliteEventStore::load_since_tx(tx, local_seq, LOCAL_LOG_PAGE_SIZE).await?;
+        let Some(last) = page.last() else { break };
+        local_seq = last.seq;
+        for event in page
+            .iter()
+            .filter(|e| e.seq <= ordered && same_subject(&echo.payload, &e.payload))
+        {
+            let (waiting,) = sqlx::query_as::<_, (i64,)>(
+                "SELECT COUNT(*) FROM desktop_unechoed WHERE event_id = ?",
+            )
+            .bind(event.id.to_string())
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))?;
+            if waiting == 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Only events on one task or project can change each other's outcome: the
+/// projectors key every row by those.
+fn same_subject(a: &Event, b: &Event) -> bool {
+    fn same<T: PartialEq>(a: Option<T>, b: Option<T>) -> bool {
+        a.is_some() && a == b
+    }
+    same(a.target_task(), b.target_task()) || same(a.target_project(), b.target_project())
 }
 
 /// Fold one page of the local log, skipping what the server already has, and
@@ -484,13 +598,13 @@ async fn row_ids(tx: &mut Transaction<'_, Sqlite>, sql: &str) -> Result<Vec<Stri
 mod tests {
     use super::*;
     use daruma_core::{
-        embed::{Command, CommandBus, Db, Event, EventBus, SnapshotRepo},
+        embed::{Command, CommandBus, Db, EventBus, SnapshotRepo},
         CommandHandler,
     };
     use daruma_domain::{
         Actor, Comment, CommentPatch, NewComment, NewTask, Project, Status, TaskPatch,
     };
-    use daruma_shared::{DeviceId, TaskId};
+    use daruma_shared::{DeviceId, ProjectId, TaskId};
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
@@ -3065,5 +3179,427 @@ mod tests {
         assert_eq!(process.unprojected().await, 0);
         let stats = process.echo_local_events(&server).await;
         assert_eq!((stats.fetched, stats.applied), (1, 0), "only the echo");
+    }
+
+    // ── server order vs the order things happened here ──────────────────────
+
+    fn started(task_id: TaskId) -> Event {
+        Event::TaskStatusChanged {
+            task_id,
+            from: Status::Todo,
+            to: Status::InProgress,
+        }
+    }
+
+    /// A synced device, and a task the server has moved on while the device
+    /// marked it done: the server takes `done` after the unseen change, the
+    /// device applied it before.
+    async fn done_over_an_unseen_change(server: &Server, file: &ReplicaFile) -> (Process, TaskId) {
+        let task = server.create_task("shared").await;
+        let process = synced_device(server, file).await;
+        server.log(started(task)).await;
+        process.complete(task).await;
+        (process, task)
+    }
+
+    impl Process {
+        async fn complete(&self, id: TaskId) {
+            self.local
+                .dispatch(Command::CompleteTask { id, note: None }, Actor::user())
+                .await
+                .unwrap();
+        }
+
+        async fn rename(&self, id: TaskId, title: &str) {
+            let patch = TaskPatch {
+                title: Some(title.into()),
+                ..TaskPatch::default()
+            };
+            self.local
+                .dispatch(Command::UpdateTask { id, patch }, Actor::user())
+                .await
+                .unwrap();
+        }
+
+        async fn title_of(&self, id: TaskId) -> String {
+            self.device.tasks.get(id).await.unwrap().unwrap().title
+        }
+
+        async fn logged_events(&self) -> Vec<EventId> {
+            let log = self.device.store.load_since(0, 10_000).await.unwrap();
+            log.iter().map(|event| event.id).collect()
+        }
+    }
+
+    /// Same rows as a device that only ever saw the server's order, and an
+    /// empty sync changes nothing.
+    async fn assert_settled_on_the_server_order(process: &Process, server: &Server) {
+        let settled = process.device.state().await;
+        let reference = server.full_replay().await;
+        assert_eq!(settled, reference.state().await);
+        // The summaries name bookkeeping fields, which depend on log positions.
+        let history = |versions: Versions| -> Vec<_> {
+            versions
+                .into_iter()
+                .map(|(id, n, kind, _)| (id, n, kind))
+                .collect()
+        };
+        assert_eq!(
+            history(process.device.versions().await),
+            history(reference.versions().await)
+        );
+        let stats = process.device.replica.catch_up(server, 50).await.unwrap();
+        assert_eq!(stats.fetched, 0, "nothing was left for later");
+        assert_eq!(process.device.state().await, settled);
+        assert!(process.device.replica.baseline_verified().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn done_over_an_unseen_change_ends_where_the_server_did() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let (process, task) = done_over_an_unseen_change(&server, &file).await;
+        assert_eq!(process.status_of(task).await, Status::Done);
+
+        let uplink = Uplink::to(&server);
+        assert_eq!(process.sync(&uplink).await.unwrap(), 0);
+
+        assert_eq!(process.status_of(task).await, Status::Done);
+        assert_eq!(
+            server.tasks.get(task).await.unwrap().unwrap().status,
+            Status::Done
+        );
+        assert_settled_on_the_server_order(&process, &server).await;
+        assert_eq!(uplink.pushed().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_change_and_its_echo_may_come_in_any_pages() {
+        for limit in [1, 2, 3, 4] {
+            let server = Server::start().await;
+            let file = ReplicaFile::create().await;
+            let (process, task) = done_over_an_unseen_change(&server, &file).await;
+
+            process
+                .local
+                .flush_pending(&Uplink::to(&server), 50)
+                .await
+                .unwrap();
+            catch_up_fully_in(&process.device, &server, limit).await;
+
+            assert_eq!(process.status_of(task).await, Status::Done, "limit {limit}");
+            assert_settled_on_the_server_order(&process, &server).await;
+        }
+    }
+
+    async fn catch_up_fully_in(device: &Device, server: &Server, limit: u32) {
+        while device.replica.server_seq().await.unwrap() < server.tip().await {
+            device.replica.catch_up(server, limit).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_echoes_change_nothing_and_add_nothing() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let (process, _) = done_over_an_unseen_change(&server, &file).await;
+        process.local_comment_and_sync(&server).await;
+        let logged = process.logged_events().await;
+        let feed = process.device.feed().await;
+        let versions = process.device.versions().await;
+        let settled = process.device.state().await;
+
+        let log = server.store.load_since(0, 10_000).await.unwrap();
+        let stats = process
+            .device
+            .replica
+            .apply_remote_events(log)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.applied, 0);
+        assert_settled_on_the_server_order(&process, &server).await;
+        assert_eq!(process.device.state().await, settled);
+        assert_eq!(process.logged_events().await, logged);
+        assert_eq!(process.device.feed().await, feed);
+        assert_eq!(process.device.versions().await, versions);
+    }
+
+    impl Process {
+        async fn local_comment_and_sync(&self, server: &Server) {
+            let task = self.device.tasks.list_all().await.unwrap()[0].id;
+            self.local
+                .dispatch(
+                    Command::AddComment {
+                        comment: NewComment {
+                            id: None,
+                            task_id: task,
+                            body: "from this device".into(),
+                            parent_id: None,
+                            kind: None,
+                        },
+                    },
+                    Actor::user(),
+                )
+                .await
+                .unwrap();
+            self.sync(&Uplink::to(server)).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn repair_keeps_changes_still_on_their_way() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let (process, task) = done_over_an_unseen_change(&server, &file).await;
+        let uplink = Uplink::to(&server);
+        process.local.flush_pending(&uplink, 50).await.unwrap();
+        process.rename(task, "renamed here").await;
+
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!(process.status_of(task).await, Status::Done);
+        assert_eq!(process.title_of(task).await, "renamed here");
+        assert_eq!(process.pending_outbox().await, 1);
+
+        assert_eq!(process.sync(&uplink).await.unwrap(), 0);
+        assert_eq!(uplink.pushed().len(), 4, "each change went out once");
+        assert_eq!(process.title_of(task).await, "renamed here");
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
+    #[tokio::test]
+    async fn own_events_delivered_out_of_order_settle_on_the_server_order() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let task = server.create_task("shared").await;
+        let process = synced_device(&server, &file).await;
+        process.rename(task, "first").await;
+        let first = process.logged_events().await.pop().unwrap();
+        process.rename(task, "second").await;
+
+        // Refused at first, so "second" reaches the server before it.
+        let refused = Uplink::refusing(&server, HashSet::from([first]));
+        process.flush_and_catch_up(&refused).await.unwrap();
+        process.local.requeue_rejected().await.unwrap();
+        process
+            .flush_and_catch_up(&Uplink::to(&server))
+            .await
+            .unwrap();
+
+        assert_eq!(process.title_of(task).await, "first");
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
+    /// Serves the delta, then nothing more.
+    struct LostAfterDelta<'a> {
+        server: &'a Server,
+        fetches: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ReplicaSource for LostAfterDelta<'_> {
+        async fn fetch_events(&self, since: u64, limit: u32) -> Result<Vec<EventEnvelope>> {
+            if self.fetches.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err(CoreError::sync("connection lost".to_string()));
+            }
+            self.server.fetch_events(since, limit).await
+        }
+
+        async fn fetch_snapshot(&self) -> Result<Option<Snapshot>> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn repair_lost_with_the_connection_is_finished_after_a_restart() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let (process, task) = done_over_an_unseen_change(&server, &file).await;
+        let uplink = Uplink::to(&server);
+        process.local.flush_pending(&uplink, 50).await.unwrap();
+        let source = LostAfterDelta {
+            server: &server,
+            fetches: Default::default(),
+        };
+
+        let stopped = process.device.replica.catch_up(&source, 50).await;
+
+        assert!(stopped.is_err());
+        assert_eq!(
+            process.device.replica.server_seq().await.unwrap(),
+            server.tip().await,
+            "the cursor is past the echo, and only the flag remembers"
+        );
+        drop(process);
+        let process = file.open_plain().await;
+        assert_eq!(process.sync(&uplink).await.unwrap(), 0);
+        assert_eq!(process.status_of(task).await, Status::Done);
+        assert_eq!(uplink.pushed().len(), 3);
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
+    #[tokio::test]
+    async fn work_on_other_tasks_does_not_cost_a_rebuild() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let other = server.create_task("someone else's").await;
+        let mine = server.create_task("mine").await;
+        let process = synced_device(&server, &file).await;
+        server.log(started(other)).await;
+        process.complete(mine).await;
+        process
+            .local
+            .flush_pending(&Uplink::to(&server), 50)
+            .await
+            .unwrap();
+
+        let stats = process.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!((stats.fetched, stats.applied), (4, 1), "the delta alone");
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
+    #[tokio::test]
+    async fn several_changes_here_and_a_change_elsewhere_cost_no_rebuild() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let other = server.create_task("someone else's").await;
+        let mine = server.create_task("mine").await;
+        let process = synced_device(&server, &file).await;
+        server.log(started(other)).await;
+        process.rename(mine, "once").await;
+        process.rename(mine, "twice").await;
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+        process
+            .local
+            .flush_pending(&Uplink::to(&server), 50)
+            .await
+            .unwrap();
+
+        let stats = process.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!((stats.fetched, stats.applied), (2, 0), "the echoes alone");
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
+    #[test]
+    fn events_share_a_subject_through_their_task_or_project() {
+        let (task, project) = (TaskId::new(), ProjectId::new());
+        let in_project = |id| {
+            let mut task = NewTask::new("t");
+            task.id = Some(id);
+            task.project_id = Some(project);
+            Event::TaskCreated { task }
+        };
+        let deleted = Event::ProjectDeleted {
+            project_id: project,
+        };
+        assert!(same_subject(&started(task), &rename(task, "r")));
+        assert!(!same_subject(&started(task), &started(TaskId::new())));
+        assert!(same_subject(&in_project(task), &deleted));
+        assert!(!same_subject(&started(task), &deleted));
+        let anonymous = Event::TaskCreated {
+            task: NewTask::new("t"),
+        };
+        assert!(!same_subject(&anonymous, &anonymous));
+    }
+
+    /// Apply a delta the way the old binary did: an echo is simply skipped.
+    async fn catch_up_like_the_old_binary(device: &Device, server: &Server) {
+        let since = device.replica.server_seq().await.unwrap();
+        for mut event in server.fetch_events(since, 1000).await.unwrap() {
+            if device.store.load_by_id(event.id).await.unwrap().is_none() {
+                event.seq = 0;
+                let env = device.store.append(event).await.unwrap();
+                device.tasks.apply_event(&env).await.unwrap();
+                device.projects.apply_event(&env).await.unwrap();
+                device.comments.apply_event(&env).await.unwrap();
+                device.replica.activity.apply_event(&env).await.unwrap();
+            }
+        }
+        advance_server_seq(&device.pool, server.tip().await)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn replica_settled_on_the_wrong_order_is_repaired_behind_its_cursor() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let (process, task) = done_over_an_unseen_change(&server, &file).await;
+        let uplink = Uplink::to(&server);
+        process.local.flush_pending(&uplink, 50).await.unwrap();
+        catch_up_like_the_old_binary(&process.device, &server).await;
+        assert_eq!(process.status_of(task).await, Status::InProgress);
+        let stale = process.device.replica.server_seq().await.unwrap();
+        process.rename(task, "still on its way").await;
+        for column in ["order_verified", "ordered_local_seq"] {
+            sqlx::query(&format!(
+                "ALTER TABLE desktop_replica_state DROP COLUMN {column}"
+            ))
+            .execute(&process.device.pool)
+            .await
+            .unwrap();
+        }
+        drop(process);
+
+        let process = file.open_plain().await;
+        assert_eq!(process.device.replica.server_seq().await.unwrap(), stale);
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!(process.status_of(task).await, Status::Done);
+        assert_eq!(process.title_of(task).await, "still on its way");
+        assert_eq!(process.pending_outbox().await, 1);
+        assert_eq!(process.sync(&uplink).await.unwrap(), 0);
+        assert_eq!(uplink.pushed().len(), 4);
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
+    #[tokio::test]
+    async fn events_passed_during_the_repair_get_it_again() {
+        let server = Arc::new(Server::start().await);
+        let file = ReplicaFile::create().await;
+        let first = server.create_task("first").await;
+        let second = server.create_task("second").await;
+        let delta = Arc::new(Mutex::new(Vec::new()));
+        let hook = {
+            let other = file.open_plain().await;
+            let delta = delta.clone();
+            Box::pin(async move {
+                let events = std::mem::take(&mut *delta.lock().await);
+                other
+                    .device
+                    .replica
+                    .apply_remote_events(events)
+                    .await
+                    .unwrap();
+            })
+        };
+        let process = file.open_hooked(hook).await;
+        process.device.replica.catch_up(&*server, 50).await.unwrap();
+
+        server.log(started(first)).await;
+        process.complete(first).await;
+        process.complete(second).await;
+        let uplink = Uplink::to(&server);
+        process.local.flush_pending(&uplink, 3).await.unwrap();
+        let cursor = server.tip().await;
+        server.log(started(second)).await;
+        process.local.flush_pending(&uplink, 3).await.unwrap();
+        *delta.lock().await = server.fetch_events(cursor, 50).await.unwrap();
+
+        // Stops on the first task's echo, repairs, and meanwhile another sync
+        // of this device passes the second task's.
+        process.device.replica.catch_up(&*server, 4).await.unwrap();
+        assert_eq!(process.status_of(second).await, Status::InProgress);
+        assert_eq!(
+            process.device.replica.server_seq().await.unwrap(),
+            server.tip().await
+        );
+
+        process.device.replica.catch_up(&*server, 50).await.unwrap();
+        assert_eq!(process.status_of(second).await, Status::Done);
+        assert_settled_on_the_server_order(&process, &server).await;
     }
 }
