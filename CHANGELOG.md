@@ -26,10 +26,13 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
   local user, with no origin, no queue entry and no copy in the server log.
   These stay on the device: an incoming event from a server the replica has left
   reads exactly the same, so sending them on its own could publish that server's
-  data to this one. Every `sync` lists them and delivers everything else;
-  `sync --restore-lost` sends them in log order, and is for a replica that has
-  only ever synced with this server. Work that went out before that keeps its
-  place on the server. Events still in the outbox or refused by the server stay
+  data to this one. Every `sync` lists them and delivers everything else, but
+  later changes of the same tasks wait behind them and `sync` counts those too:
+  a server that gets a change of a task it has not seen drops it, and the
+  create that comes later starts the task over. `sync --restore-lost` sends them
+  all in log order, and is for a replica that has only ever synced with this
+  server. A change the older binary itself delivered ahead of a lost event is on
+  the server already and keeps its place. Events still in the outbox or refused by the server stay
   as they are. The search reads the full server log once on a device that has
   anything to check, and the first sync fails if that read does.
 

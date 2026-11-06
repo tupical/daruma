@@ -198,6 +198,8 @@ const EXPECTED = [
   'an event the server accepted before the device could record it reaches the server once, under one identity',
   'a replica that moves to a second server, with no local command behind it, sends that server nothing, whether the move is its first sync on the new binary or the old binary made it, and however many syncs follow; the sync exits 0 and names the event it held back',
   'events the old binary logged and never queued stay on the device at a plain sync, which says so and delivers everything else; sync --restore-lost sends them once and in log order; incoming, delivered, pending and refused events keep their state',
+  'a change of a task whose create the old binary lost stays behind that create: plain syncs send nothing of that task and say how much waits, sync --restore-lost sends the create first, and the device and a fresh replica both end with the task done',
+  'work on a task of the server a replica left stays on the device, and the sync says it waits',
   'later syncs and restarts add nothing to either log',
 ];
 
@@ -470,6 +472,16 @@ async function movedReplica(template) {
     add(direct, args.desktop, work);
     check('moved: new work still goes out', direct.sync('moved', args.desktop).status === 0
       && (await second.log()).some((event) => event.payload.task?.title === work));
+
+    const logged = (await second.log()).length;
+    const firstServerTask = taskId(direct, 'incoming, reads like a local command');
+    check('moved: a task of the first server can be finished', done(direct, args.desktop, firstServerTask).status === 0);
+    const waiting = direct.sync('moved', args.desktop);
+    check('moved: that work stays on the device', waiting.status === 0 && (await second.log()).length === logged, {
+      added: (await second.log()).slice(logged).map((event) => event.payload.type),
+    });
+    check('moved: the sync says it waits', /3 queued event\(s\) of the same tasks wait/.test(waiting.stdout), { stdout: waiting.stdout.slice(0, 400) });
+    check('moved: it stays in the queue', pendingCount(direct) === 3, { pending: pendingCount(direct) });
   } finally {
     await second.stop();
   }
@@ -570,6 +582,53 @@ async function upgradedDevice(reference, template) {
   )[0]?.status === 'done', { event: left?.id });
 }
 
+async function finishedAfterLoss() {
+  const old = args['old-desktop'];
+  const title = 'lost by the old binary, then finished';
+  const device = new Device('finished-after-loss', adminToken);
+  check('finished after loss: old binary syncs', device.settle('finished', old));
+
+  stopWrites(device, 'desktop_outbox');
+  const lost = add(device, old, title);
+  letWrites(device);
+  check('finished after loss: the old binary loses the create', lost.status !== 0, { exit: lost.status });
+  const id = taskId(device, title);
+  check('finished after loss: the old binary finishes the task', done(device, old, id).status === 0);
+  check('finished after loss: the device holds done and three pending events', pendingCount(device) === 3
+    && device.query('SELECT status FROM tasks WHERE id = ?', id)[0].status === 'done', { pending: pendingCount(device) });
+
+  const bareTask = id.replace(/^tsk_/, '');
+  const ofTask = (log) => log.filter((event) => [id, bareTask].includes(event.payload.task_id) || event.payload.task?.id === bareTask);
+
+  for (const round of [1, 2]) {
+    const plain = device.sync('finished', args.desktop);
+    check(`finished after loss: plain sync ${round} succeeds`, plain.status === 0, { exit: plain.status });
+    check(`finished after loss: plain sync ${round} says what waits`, /1 event\(s\) not sent/.test(plain.stdout)
+      && /3 queued event\(s\) of the same tasks wait/.test(plain.stdout), { stdout: plain.stdout.slice(0, 400) });
+    const sent = ofTask(await serverLog('finished'));
+    check(`finished after loss: plain sync ${round} sends nothing of the task`, sent.length === 0, {
+      sent: sent.map((event) => event.payload.type),
+    });
+  }
+
+  const restore = device.sync('finished', args.desktop, '--restore-lost');
+  check('finished after loss: the explicit sync succeeds', restore.status === 0 && /restored 1 event/.test(restore.stdout), { stdout: restore.stdout.slice(0, 200) });
+  const log = await serverLog('finished');
+  const order = ofTask(log).map((event) => event.payload.type);
+  check('finished after loss: the server has the create first', JSON.stringify(order)
+    === JSON.stringify(['task_created', 'task_status_changed', 'task_completed', 'task_closed']), { order });
+  check('finished after loss: nothing is left in the queue', pendingCount(device) === 0, { pending: pendingCount(device) });
+
+  check('finished after loss: device settles', device.settle('finished', args.desktop));
+  check('finished after loss: later syncs add nothing', (await serverLog('finished')).length === log.length);
+
+  const fresh = new Device('fresh-after-loss', adminToken);
+  check('finished after loss: a fresh replica settles', fresh.settle('finished', args.desktop));
+  const statuses = [device, fresh].map((replica) => replica.query('SELECT status FROM tasks WHERE id = ?', id)[0]?.status);
+  check('finished after loss: done on the device and on a fresh replica', statuses.every((status) => status === 'done'), { statuses });
+  compare('finished after loss', device, fresh);
+}
+
 async function scenario(admin) {
   adminToken = admin;
   const template = await seedTitles(admin);
@@ -583,6 +642,7 @@ async function scenario(admin) {
   await killedCommands(reference);
   await unrecordedAccept(reference);
   await upgradedDevice(reference, template);
+  await finishedAfterLoss();
 }
 
 const server = spawn(args.server, [], {
