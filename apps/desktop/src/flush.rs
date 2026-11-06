@@ -38,7 +38,7 @@ pub async fn flush_pending(
     sink: &dyn RemoteEventSink,
     limit: u32,
 ) -> Result<FlushStats> {
-    let pending = outbox.pending(limit).await?;
+    let pending = outbox.sendable(limit).await?;
     let (mut flushed, mut rejected) = (0usize, 0usize);
     for entry in &pending {
         match sink.push(entry.envelope.clone()).await? {
@@ -109,6 +109,7 @@ mod tests {
     #[tokio::test]
     async fn flushes_in_origin_order_and_marks_after_success() {
         let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
         let outbox = Outbox::new(db);
         outbox.ensure_schema().await.unwrap();
         let device = DeviceId::new();
@@ -131,6 +132,7 @@ mod tests {
     #[tokio::test]
     async fn failed_push_leaves_event_pending() {
         let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
         let outbox = Outbox::new(db);
         outbox.ensure_schema().await.unwrap();
         let device = DeviceId::new();
@@ -149,6 +151,7 @@ mod tests {
     #[tokio::test]
     async fn rejected_event_is_dead_lettered_and_queue_moves_on() {
         let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
         let outbox = Outbox::new(db);
         outbox.ensure_schema().await.unwrap();
         let device = DeviceId::new();

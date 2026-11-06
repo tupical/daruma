@@ -2,12 +2,12 @@
 
 #![allow(dead_code)] // Wired into local_executor/reconnect flush in the next Phase 2 block.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use daruma_core::embed::{Db, EventEnvelope, EventStore, SqliteEventStore};
 use daruma_domain::Actor;
-use daruma_shared::{CoreError, DeviceId, EventId, Result};
+use daruma_shared::{CoreError, DeviceId, EventId, Result, TaskId};
 use sqlx::{Sqlite, SqliteExecutor, SqlitePool, Transaction};
 
 use crate::replica::ReplicaSource;
@@ -160,6 +160,48 @@ impl Outbox {
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
         rows.into_iter().map(OutboxEntry::try_from).collect()
+    }
+
+    /// Pending events that may go out now. What follows a held event of the
+    /// same task stays behind it: a server that takes a change of a task it has
+    /// never seen drops it, and the create that comes later starts the task over.
+    pub async fn sendable(&self, limit: u32) -> Result<Vec<OutboxEntry>> {
+        let held = self.held_tasks().await?;
+        if held.is_empty() {
+            return self.pending(limit).await;
+        }
+        let pending = self.pending(u32::MAX).await?;
+        Ok(pending
+            .into_iter()
+            .filter(|entry| !waits_for_held(&held, entry))
+            .take(limit.max(1) as usize)
+            .collect())
+    }
+
+    /// How many pending events wait behind a held one.
+    pub async fn held_back(&self) -> Result<usize> {
+        let held = self.held_tasks().await?;
+        let pending = self.pending(u32::MAX).await?;
+        Ok(pending
+            .iter()
+            .filter(|entry| waits_for_held(&held, entry))
+            .count())
+    }
+
+    /// Where the first held event of each task sits in the log.
+    async fn held_tasks(&self) -> Result<HashMap<TaskId, u64>> {
+        let store = SqliteEventStore::new(self.db.pool().clone());
+        let mut held = HashMap::new();
+        for unconfirmed in self.unconfirmed().await? {
+            let event = store
+                .load_by_id(unconfirmed.id)
+                .await?
+                .ok_or_else(|| CoreError::storage(format!("{} left the log", unconfirmed.id)))?;
+            if let Some(task) = event.payload.target_task() {
+                held.entry(task).or_insert(event.seq);
+            }
+        }
+        Ok(held)
     }
 
     /// The command that wrote these events got past its projectors.
@@ -417,6 +459,12 @@ async fn enqueue_next(
             "outbox already holds {origin_device_id} seq {origin_seq}"
         )))
     }
+}
+
+fn waits_for_held(held: &HashMap<TaskId, u64>, entry: &OutboxEntry) -> bool {
+    let task = entry.envelope.payload.target_task();
+    task.and_then(|task| held.get(&task))
+        .is_some_and(|first| entry.envelope.seq > *first)
 }
 
 /// Log events up to `local_tip` no queue entry covers that a command of this

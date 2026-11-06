@@ -154,6 +154,14 @@ pub async fn sync(ctx: &Context, args: &[String]) -> anyhow::Result<()> {
         for event in &unconfirmed {
             println!("  {} {}", event.id, event.kind);
         }
+        let held_back = ctx
+            .local
+            .held_back()
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        if held_back > 0 {
+            println!("  {held_back} queued event(s) of the same tasks wait behind them");
+        }
         println!(
             "  if this replica has only ever synced with this server: daruma sync --restore-lost"
         );

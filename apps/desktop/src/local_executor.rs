@@ -45,6 +45,11 @@ impl LocalExecutor {
         self.outbox.unconfirmed().await
     }
 
+    /// Queued events that wait behind those.
+    pub async fn held_back(&self) -> Result<usize> {
+        self.outbox.held_back().await
+    }
+
     /// Queue those events on the user's word; run it before a flush, so a
     /// restored event goes out ahead of the ones that followed it.
     pub async fn restore_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<usize> {

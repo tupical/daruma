@@ -298,7 +298,9 @@ mod tests {
 
     async fn outbox_with(events: u64) -> crate::outbox::Outbox {
         use daruma_core::embed::{Db, Event};
-        let outbox = crate::outbox::Outbox::new(Db::memory().await.unwrap());
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let outbox = crate::outbox::Outbox::new(db);
         outbox.ensure_schema().await.unwrap();
         let device = DeviceId::new();
         for seq in 1..=events {

@@ -2782,6 +2782,185 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sync_before_the_restore_sends_nothing_ahead_of_a_lost_create() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let id = TaskId::new();
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", id), 0)
+            .await;
+        let completion = process.run_like_the_old_binary(complete(id), 3).await;
+        drop(process);
+
+        // Neither the sync that finds it nor one after a restart lets them by.
+        let restarted = file.open_plain().await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+        drop(restarted);
+        let restarted = file.open_plain().await;
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+        assert!(uplink.pushed().is_empty());
+        assert_eq!(restarted.pending_outbox().await, 3);
+        assert_eq!(restarted.local.held_back().await.unwrap(), 3);
+
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync_restoring(&uplink).await.unwrap(), 1);
+        assert_eq!(uplink.pushed(), [lost, completion].concat());
+        assert_eq!(restarted.local.held_back().await.unwrap(), 0);
+
+        for _ in 0..2 {
+            let again = Uplink::to(&server);
+            assert_eq!(restarted.sync(&again).await.unwrap(), 0);
+            assert!(again.pushed().is_empty());
+        }
+        assert_eq!(restarted.status_of(id).await, Status::Done);
+        let on_server = server.tasks.get(id).await.unwrap().unwrap();
+        assert_eq!(on_server.status, Status::Done);
+        assert_eq!(
+            restarted.device.state().await,
+            server.full_replay().await.state().await
+        );
+    }
+
+    #[tokio::test]
+    async fn only_what_follows_a_lost_event_waits_for_it() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let id = TaskId::new();
+        let created = process
+            .run_like_the_old_binary(new_task("partly lost", id), 1)
+            .await;
+        let completion = process.run_like_the_old_binary(complete(id), 1).await;
+        drop(process);
+
+        let restarted = file.open_plain().await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 2);
+        assert_eq!(uplink.pushed(), vec![created[0], completion[0]]);
+
+        // A command of the new binary lines up behind the lost events too.
+        let deleted = restarted
+            .local
+            .dispatch(Command::DeleteTask { id }, Actor::user())
+            .await
+            .unwrap();
+        let deleted: Vec<_> = deleted.iter().map(|event| event.id).collect();
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 2);
+        assert!(uplink.pushed().is_empty());
+
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync_restoring(&uplink).await.unwrap(), 2);
+        assert_eq!(uplink.pushed(), [&completion[1..], &deleted].concat());
+        assert_eq!(
+            restarted.device.state().await,
+            server.full_replay().await.state().await
+        );
+    }
+
+    #[tokio::test]
+    async fn first_lost_event_of_a_task_decides_what_waits() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let id = TaskId::new();
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", id), 0)
+            .await;
+        let completion = process.run_like_the_old_binary(complete(id), 3).await;
+        let deleted = process
+            .run_like_the_old_binary(Command::DeleteTask { id }, 0)
+            .await;
+        drop(process);
+
+        let restarted = file.open_plain().await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 2);
+        assert!(uplink.pushed().is_empty());
+
+        assert_eq!(restarted.sync_restoring(&uplink).await.unwrap(), 2);
+        assert_eq!(uplink.pushed(), [lost, completion, deleted].concat());
+    }
+
+    #[tokio::test]
+    async fn events_left_behind_do_not_use_up_the_flush_limit() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let id = TaskId::new();
+        process
+            .run_like_the_old_binary(new_task("lost", id), 0)
+            .await;
+        process.run_like_the_old_binary(complete(id), 3).await;
+        let free = process
+            .run_like_the_old_binary(new_task("queued", TaskId::new()), 1)
+            .await;
+
+        process.local.find_lost(&server, 50).await.unwrap();
+        let uplink = Uplink::to(&server);
+        process.local.flush_pending(&uplink, 1).await.unwrap();
+
+        assert_eq!(uplink.pushed(), free);
+    }
+
+    #[tokio::test]
+    async fn work_on_a_task_of_the_server_a_replica_left_stays_off_the_next_one() {
+        let first = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&first, &file).await;
+        let incoming = process.log_ids().await[0];
+        let event = process.device.store.load_by_id(incoming).await.unwrap();
+        let task = event.unwrap().payload.target_task().unwrap();
+        drop(process);
+
+        let second = Server::start().await;
+        second.create_task("on the second server").await;
+        let restarted = file.open_plain().await;
+        restarted
+            .local
+            .dispatch(complete(task), Actor::user())
+            .await
+            .unwrap();
+        let free = TaskId::new();
+        restarted.create_task("made here", free).await;
+
+        let uplink = Uplink::to(&second);
+        assert_eq!(restarted.sync(&uplink).await.unwrap(), 1);
+
+        assert_eq!(uplink.pushed().len(), 1);
+        assert!(second.tasks.get(free).await.unwrap().is_some());
+        assert!(second.tasks.get(task).await.unwrap().is_none());
+        assert_eq!(second.times_logged(incoming).await, 0);
+        assert_eq!(restarted.local.held_back().await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn event_the_server_has_by_now_lets_what_followed_it_go() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let process = synced_device(&server, &file).await;
+        let id = TaskId::new();
+        let lost = process
+            .run_like_the_old_binary(new_task("lost", id), 0)
+            .await;
+        let completion = process.run_like_the_old_binary(complete(id), 3).await;
+        let uplink = Uplink::to(&server);
+        assert_eq!(process.sync(&uplink).await.unwrap(), 1);
+        assert!(uplink.pushed().is_empty());
+
+        let event = process.device.store.load_by_id(lost[0]).await.unwrap();
+        uplink.push(event.unwrap()).await.unwrap();
+
+        let later = Uplink::to(&server);
+        assert_eq!(process.sync_restoring(&later).await.unwrap(), 0);
+        assert_eq!(later.pushed(), completion);
+        let on_server = server.tasks.get(id).await.unwrap().unwrap();
+        assert_eq!(on_server.status, Status::Done);
+    }
+
+    #[tokio::test]
     async fn event_the_server_has_by_now_needs_no_restore() {
         let server = Server::start().await;
         let file = ReplicaFile::create().await;
