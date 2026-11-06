@@ -2,7 +2,7 @@
 // Real-binary scenario for what a replica belongs to: one daruma-desktop data
 // directory moves between two live daruma-servers through real `pair` and `sync`,
 // meets an address override, servers that cannot name themselves, a replica from
-// before bindings and a switch stopped halfway.
+// before bindings, one with only a queue, and a switch stopped halfway.
 //
 //   GIT_SHA=$(git rev-parse HEAD) cargo build -p daruma-server -p daruma-desktop
 //   node scripts/scenarios/desktop-server-binding.mjs \
@@ -11,7 +11,8 @@
 //     --old-desktop /path/to/daruma-desktop-before-the-fix --out /tmp/trace.jsonl
 //
 // Writes one JSON object per line and exits 1 if any check failed. The old binary
-// serves the replica from before bindings and the negative control at the end.
+// serves the replica from before bindings and the negative control at the end, so
+// it has to be one that already trusts a paired server over TLS.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
