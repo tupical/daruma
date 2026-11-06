@@ -1,44 +1,59 @@
 //! Optimistic local command execution backed by the offline outbox.
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
-
 use daruma_core::embed::{Command, CommandBus, EventEnvelope};
 use daruma_domain::Actor;
-use daruma_shared::{DeviceId, Result};
+use daruma_shared::Result;
 
-use crate::{flush, flush::RemoteEventSink, outbox::Outbox};
+use crate::{
+    flush,
+    flush::RemoteEventSink,
+    outbox::{Outbox, UnconfirmedEvent},
+    replica::ReplicaSource,
+};
 
 pub struct LocalExecutor {
     commands: CommandBus,
     outbox: Outbox,
-    origin_device_id: DeviceId,
-    next_origin_seq: Arc<AtomicU64>,
 }
 
 impl LocalExecutor {
-    pub async fn new(commands: CommandBus, outbox: Outbox) -> Result<Self> {
-        let origin_device_id = DeviceId::new();
-        let next_origin_seq = outbox.next_origin_seq(origin_device_id).await?;
-        Ok(Self {
-            commands,
-            outbox,
-            origin_device_id,
-            next_origin_seq: Arc::new(AtomicU64::new(next_origin_seq)),
-        })
+    /// `commands` must write through [`Outbox::outbound_store`]: that is what
+    /// queues the events of a command.
+    pub fn new(commands: CommandBus, outbox: Outbox) -> Self {
+        Self { commands, outbox }
     }
 
+    /// An error from the commit leaves nothing behind. One from the projectors
+    /// leaves the command committed and queued, and the next sync redoes the
+    /// rows.
     pub async fn dispatch(&self, cmd: Command, actor: Actor) -> Result<Vec<EventEnvelope>> {
         let envelopes = self.commands.dispatch(cmd, actor).await?;
-        for envelope in &envelopes {
-            let origin_seq = self.next_origin_seq.fetch_add(1, Ordering::SeqCst);
-            self.outbox
-                .enqueue(self.origin_device_id, origin_seq, envelope.clone())
-                .await?;
+        // The command is done either way: at worst a sync redoes the rows.
+        if let Err(error) = self.outbox.mark_projected(&envelopes).await {
+            tracing::warn!(%error, "could not record that a command was projected");
         }
         Ok(envelopes)
+    }
+
+    /// Search the log once for what an older binary left out of the outbox.
+    pub async fn find_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<()> {
+        self.outbox.find_lost(remote, limit).await
+    }
+
+    /// Events `find_lost` found, waiting for a decision.
+    pub async fn unconfirmed(&self) -> Result<Vec<UnconfirmedEvent>> {
+        self.outbox.unconfirmed().await
+    }
+
+    /// Queued events that wait behind those.
+    pub async fn held_back(&self) -> Result<usize> {
+        self.outbox.held_back().await
+    }
+
+    /// Queue those events on the user's word; run it before a flush, so a
+    /// restored event goes out ahead of the ones that followed it.
+    pub async fn restore_lost(&self, remote: &dyn ReplicaSource, limit: u32) -> Result<usize> {
+        self.outbox.restore_lost(remote, limit).await
     }
 
     pub async fn flush_pending(
@@ -69,7 +84,7 @@ impl LocalExecutor {
 mod tests {
     use super::*;
     use daruma_core::{
-        embed::{ActivityRepo, CommentRepo, Db, EventBus, SqliteEventStore, TaskRepo},
+        embed::{ActivityRepo, CommentRepo, Db, EventBus, TaskRepo},
         CommandHandler,
     };
     use daruma_domain::NewTask;
@@ -80,23 +95,22 @@ mod tests {
         let db = Db::memory().await.unwrap();
         db.migrate().await.unwrap();
         let pool = db.pool().clone();
-        let store = Arc::new(SqliteEventStore::new(pool.clone()));
         let tasks = Arc::new(TaskRepo::new(pool.clone()));
         let projects = Arc::new(daruma_core::embed::ProjectRepo::new(pool.clone()));
         let comments = Arc::new(CommentRepo::new(pool.clone()));
         let activity = Arc::new(ActivityRepo::new(pool));
         let bus = EventBus::new(16);
+        let outbox = Outbox::new(db);
+        outbox.ensure_schema().await.unwrap();
         let commands = CommandBus::new(Arc::new(CommandHandler::new(
-            store,
+            Arc::new(outbox.outbound_store().await.unwrap()),
             tasks.clone(),
             projects,
             comments,
             activity,
             bus,
         )));
-        let outbox = Outbox::new(db);
-        outbox.ensure_schema().await.unwrap();
-        let executor = LocalExecutor::new(commands, outbox).await.unwrap();
+        let executor = LocalExecutor::new(commands, outbox);
 
         let events = executor
             .dispatch(
