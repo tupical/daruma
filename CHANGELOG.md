@@ -6,6 +6,29 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### Local changes no longer miss the server after a failed write
+
+- `daruma-desktop` committed a command first and queued its events for the
+  server afterwards. A crash or a storage error in between left the change on
+  the device with nothing to carry it out, and a command of several events
+  could queue only some of them: `sync` reported nothing and the server and
+  other devices never saw it. An event and its queue entry now commit in one
+  transaction, so a failed write takes the whole command back and reports it,
+  and a stopped process leaves every logged event queued.
+- A command stopped between that commit and its projectors is on its way to the
+  server, and the next `sync` rebuilds the device's rows so it shows up there
+  too, as it did for an interrupted sync.
+- Events go out in the order of the local log, under an origin the replica keeps
+  across restarts instead of a new one per process, so a retry keeps its
+  identity. The server already takes a retried event once.
+- A replica upgraded from an older binary looks for such events once, at its
+  next `sync`: anything of the kinds desktop commands make, from the anonymous
+  local user, with no origin, no queue entry and no copy in the server log, goes
+  out in log order. `sync` prints how many came back. Events still in the outbox
+  or refused by the server stay as they are. This reads the full server log once
+  on a device that has anything to check, and the first sync fails if that read
+  does.
+
 ### A sync stopped halfway no longer loses events on the device
 
 - `daruma-desktop sync` logged an incoming event first and ran the projectors

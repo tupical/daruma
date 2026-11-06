@@ -2626,6 +2626,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_passes_over_what_no_local_command_can_have_made() {
+        let file = ReplicaFile::create().await;
+        let process = file.open_plain().await;
+        let task = |actor: Actor| {
+            EventEnvelope::new(
+                actor,
+                Event::TaskCreated {
+                    task: NewTask::new("not from this device"),
+                },
+            )
+        };
+        let mut other_device = task(Actor::user());
+        other_device.origin_device_id = Some(DeviceId::new());
+        other_device.origin_seq = 1;
+        let other_kind = EventEnvelope::new(
+            Actor::user(),
+            Event::ProjectCreated {
+                project: Project::new("not a command of the desktop", None),
+            },
+        );
+        process
+            .device
+            .replica
+            .apply_remote_events(vec![other_device, task(Actor::agent("bot")), other_kind])
+            .await
+            .unwrap();
+
+        // No server to ask: none of them even needs the check.
+        let restored = process.local.restore_lost(&Unreachable, 50).await.unwrap();
+
+        assert_eq!(restored, 0);
+        assert_eq!(process.pending_outbox().await, 0);
+    }
+
+    #[tokio::test]
     async fn restore_needs_the_server_only_when_something_may_be_lost() {
         let file = ReplicaFile::create().await;
         let process = file.open_plain().await;
