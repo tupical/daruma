@@ -6,6 +6,20 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### A desktop change no longer loses to an older change from elsewhere
+
+- `daruma-desktop` applies a command at once, and `sync` skipped its echo as
+  already done, wherever the server had placed it. When another client changed
+  the same task in the meantime, the older change landed on top of the newer
+  one here while the server kept the right result: a task done on the device
+  fell back to in progress, with the server still showing done, and later syncs
+  never fixed it. An echo that finds such a change ahead of it now rebuilds the
+  device's rows in the server's order, keeping what has not been delivered yet.
+- That rebuild reads the server log, so it runs only when both events concern
+  the same task or project. Work on other tasks costs a sync nothing.
+- A replica that already settled on the wrong order cannot be told apart from a
+  healthy one, so the first `sync` after this update rebuilds every replica once.
+
 ### A paired desktop keeps trusting its server
 
 - `daruma-desktop pair` verified the server's self-signed certificate and then
