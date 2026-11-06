@@ -156,7 +156,9 @@ impl CertBundle {
             .with_single_cert(vec![cert_der], private_key)
             .context("build rustls ServerConfig")?;
 
-        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        // Only what the listener serves: a client offered h2 here would pick it
+        // and fail on the HTTP/1.1 connection behind it.
+        server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
         Ok(TlsConfig {
             server_config: std::sync::Arc::new(server_config),
@@ -209,6 +211,19 @@ mod tests {
             .unwrap();
         assert_eq!(bundle1.fingerprint, bundle2.fingerprint);
         assert_eq!(bundle1.fingerprint.len(), 64); // SHA-256 hex
+    }
+
+    #[tokio::test]
+    async fn tls_config_offers_only_what_the_listener_serves() {
+        let tmp = TempDir::new().unwrap();
+        let bundle = CertBundle::load_or_generate(tmp.path(), "localhost")
+            .await
+            .unwrap();
+        let config = bundle.into_tls_config().unwrap();
+        assert_eq!(
+            config.server_config.alpn_protocols,
+            vec![b"http/1.1".to_vec()]
+        );
     }
 
     #[test]

@@ -24,6 +24,25 @@ mismatch), and sends `POST /v1/devices/pair` with `token` and the observed
 The pairing connection must therefore reach Daruma's own TLS listener: a proxy
 that terminates TLS with another certificate breaks pairing.
 
+`paired.json` in `DARUMA_DATA_DIR` keeps the verified fingerprint with the
+server URL (`https://HOST:PORT` from the ticket), and `sync` and `devices` use it
+for that scheme, host and port from then on, so no CA setup is needed for the
+self-signed certificate.
+
+- A certificate that differs from the pin ends the handshake before the bearer
+  token is sent; the error shows the expected and the received fingerprint.
+- Replacing the certificate (for example, removing `<data_dir>/tls`) needs a new
+  ticket and `daruma-desktop pair` on each device, after checking the new
+  fingerprint as shown under "Public". Nothing re-trusts a server on its
+  own, and that applies to a certificate from a public CA served on the pairing
+  port too.
+- `DARUMA_API_URL` with another scheme, host or port does not carry the pin: that
+  URL gets the system's trust store. The paired token is still used unless
+  `DARUMA_TOKEN` is set, so point the override only at the same server.
+- A `paired.json` from before this keeps the system's trust store and has no
+  pin. If the system does not trust the server, `sync` says so; run `pair` with a
+  new ticket to add the pin.
+
 ## LAN Only
 
 Use this when all devices are on the same trusted network.

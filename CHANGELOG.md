@@ -6,6 +6,23 @@ For the current pre-release history in Russian, see [CHANGELOG.ru.md](CHANGELOG.
 
 ## Unreleased
 
+### A paired desktop keeps trusting its server
+
+- `daruma-desktop pair` verified the server's self-signed certificate and then
+  forgot it, so `sync` and `devices` failed on TLS on any system that did not
+  trust that certificate separately. `paired.json` now keeps the verified
+  fingerprint with the server URL, and those commands use it for that scheme,
+  host and port.
+- A certificate that differs from the pin ends the handshake before the bearer
+  token is sent, and the error shows both fingerprints. A replaced certificate
+  needs a new ticket and `pair` on each device.
+- `DARUMA_API_URL` pointing elsewhere gets the system's trust store, not the pin,
+  and a pinned connection does not follow redirects. A `paired.json` from before
+  this keeps the system's trust store; if that refuses the server, `sync` says to
+  run `pair` again.
+- The server's TLS port no longer offers HTTP/2, which it never served: a client
+  that trusted the certificate through its system store picked HTTP/2 and failed.
+
 ### Local changes no longer miss the server after a failed write
 
 - `daruma-desktop` committed a command first and queued its events for the
