@@ -3483,6 +3483,56 @@ mod tests {
         assert_settled_on_the_server_order(&process, &server).await;
     }
 
+    #[tokio::test]
+    async fn retried_echo_was_not_overtaken_by_what_came_after_it() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let task = server.create_task("shared").await;
+        let process = synced_device(&server, &file).await;
+        process.rename(task, "here").await;
+        process.sync(&Uplink::to(&server)).await.unwrap();
+        server.log(rename(task, "there")).await;
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+
+        let log = server.store.load_since(0, 10_000).await.unwrap();
+        process
+            .device
+            .replica
+            .apply_remote_events(log)
+            .await
+            .unwrap();
+
+        assert!(process.device.replica.baseline_verified().await.unwrap());
+        assert_eq!(process.title_of(task).await, "there");
+    }
+
+    #[tokio::test]
+    async fn echo_in_the_place_the_repair_gave_it_costs_no_second_repair() {
+        let server = Server::start().await;
+        let file = ReplicaFile::create().await;
+        let task = server.create_task("shared").await;
+        let process = synced_device(&server, &file).await;
+        process.rename(task, "here").await;
+        server.log(rename(task, "there")).await;
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+        sqlx::query("UPDATE desktop_replica_state SET projections_verified = 0")
+            .execute(&process.device.pool)
+            .await
+            .unwrap();
+        process.device.replica.catch_up(&server, 50).await.unwrap();
+        assert_eq!(process.title_of(task).await, "here", "on top of the log");
+
+        process
+            .local
+            .flush_pending(&Uplink::to(&server), 50)
+            .await
+            .unwrap();
+        let stats = process.device.replica.catch_up(&server, 50).await.unwrap();
+
+        assert_eq!((stats.fetched, stats.applied), (1, 0), "the echo alone");
+        assert_settled_on_the_server_order(&process, &server).await;
+    }
+
     #[test]
     fn events_share_a_subject_through_their_task_or_project() {
         let (task, project) = (TaskId::new(), ProjectId::new());
