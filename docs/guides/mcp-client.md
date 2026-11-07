@@ -153,16 +153,20 @@ Supported launch modes:
   there is no default project. Calls that need a project must pass `project_id`,
   `project_scope`, or `scope_path`; `daruma_workspace_info` returns every
   known repo scope and the inference error.
-- When `daruma_list` is called without a resolvable project, it does not
-  fall back to listing tasks from every project. It returns a compact
+- When `daruma_list` or `daruma_plan_list` (without `source`) is called
+  without a resolvable project, it does not fall back to listing every
+  project's tasks or plans. It returns a compact
   `needs_project_selection` response with project ids/titles/slugs. Ask the
   user which project to use and bind it with the repository's absolute root
   path, e.g.
   `daruma_project_use {"project_id": "<id>", "scope_path": "/home/you/projects/daruma"}`
-  (its `next_tool` carries the same two arguments). Then retry `daruma_list`
+  (its `next_tool` carries the same two arguments). Then retry the same tool
   with that `scope_path` or `project_id`. The binding is persisted
   server-side, but a parent folder or a hosted session still has no default
   project, so later calls keep passing `scope_path` or `project_id`.
+- An explicit `project_id: "all"` is the opt-in cross-project listing: it
+  spans every project the token may read, drops foreign projects before
+  pagination, and keeps the `status`, `limit` and `cursor` filters.
 - `status` is optional on the list tools: `daruma_list` defaults to `active`,
   `daruma_plan_list` to `draft,active`. There is no `ready`/`blocked` task
   status — ready plan tasks come from `daruma_plan_progress` /
