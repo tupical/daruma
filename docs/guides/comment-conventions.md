@@ -72,15 +72,37 @@ Rerun of `cargo test -p daruma-storage claim_ttl` on the unchanged tree passed.
 **Recall:** `daruma_search` filter `comments.body LIKE 'flap:%'`. No schema
 migration — prefix is the contract; no `CommentKind` for it.
 
-## Body prefix: `branch:` (planned)
+## Body prefix: `branch:`
 
-**Purpose:** tie a task or comment to a git branch for branch-scoped work.
+**Purpose:** tie a task to a git branch for branch-scoped work by leaving a
+comment on it.
 
-**Format:** `branch: <branch-name>` optionally followed by free text.
+**Format:** `branch: <branch-name>` — one space after the colon — optionally
+followed by free text.
 
-Example: `branch: feat/plan-progress\nStarted MCP tool + REST endpoint.`
+```text
+branch: feature/mcp-search active work
+```
 
-Depends on a `daruma_search` branch filter (not implemented yet). Documented here so agents adopt the prefix early.
+**Recall:** `daruma_search` (REST `GET /v1/search`) with the query
+`branch: <prefix>`; the space after the colon is optional in the query. It
+returns only comments whose body starts with `branch: <prefix>`, newest first,
+each hit carrying its `task_id`; task and plan scopes are skipped for this
+query, and `project_id` still narrows it. The match is a prefix match on the
+branch name: `branch: feature/` finds every `feature/…` branch, and
+`branch: feature/a` also finds `feature/ab`. `%` and `_` in the name are
+literal. A bare `branch:` with no name is an ordinary text search.
+
+```text
+GET /v1/search?query=branch:%20feature/mcp-search&scope=comments&project_id=<id>
+```
+
+finds `branch: feature/mcp-search active work` and skips
+`branch: other active work`.
+
+This searches comment bodies only — it does not filter tasks or plans by their
+`git_context`. No schema migration — prefix is the contract; no `CommentKind`
+for it.
 
 ## Related
 
