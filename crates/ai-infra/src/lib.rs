@@ -35,6 +35,7 @@ pub mod prompts;
 pub mod provider;
 pub mod tools;
 pub mod untrusted;
+pub mod usage;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
 
@@ -44,3 +45,4 @@ pub use error::AiError;
 pub use prompts::{render_variant, PromptFile};
 pub use provider::AiProvider;
 pub use untrusted::wrap_untrusted;
+pub use usage::{capture_usage, TokenUsage};

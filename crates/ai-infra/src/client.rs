@@ -196,6 +196,10 @@ impl OpenAiClient {
         }
 
         let json: Value = resp.json().await?;
+        // Before parsing: a reply cut by the token limit is still billed.
+        if let Some(usage) = crate::usage::reply_usage(&json) {
+            crate::usage::report(usage);
+        }
         if self.config.api_protocol == ApiProtocol::AnthropicMessages {
             if let Some(usage) = anthropic_usage(&json) {
                 info!(
@@ -306,6 +310,9 @@ impl OpenAiClient {
         let jsonl = resp.text().await?;
         let results = parse_anthropic_batch_results(&jsonl, reqs.len())?;
         for message in results.iter().flatten() {
+            if let Some(usage) = crate::usage::reply_usage(message) {
+                crate::usage::report(usage);
+            }
             if let Some(usage) = anthropic_usage(message) {
                 info!(
                     model = %self.config.model,
@@ -1088,6 +1095,35 @@ mod tests {
             sent["messages"],
             json!([{"role": "user", "content": "per-call"}]),
             "{sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_text_cut_by_max_tokens_still_reports_its_usage() {
+        use crate::AiProvider;
+
+        let (addr, server) = one_shot_anthropic_stub(json!({
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "stop_reason": "max_tokens",
+            "content": [{"type": "text", "text": "Сводка обрывается на полусло"}],
+            "usage": {"input_tokens": 900, "cache_read_input_tokens": 100, "output_tokens": 256}
+        }));
+        let (reply, usage) =
+            crate::capture_usage(anthropic_stub_client(addr).generate_text("digest".into())).await;
+        server.join().unwrap();
+
+        assert!(
+            matches!(&reply, Err(error) if error.to_string().contains("max_tokens")),
+            "{reply:?}"
+        );
+        assert_eq!(
+            usage,
+            Some(crate::TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 256,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 100,
+            })
         );
     }
 
