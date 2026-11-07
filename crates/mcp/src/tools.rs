@@ -1851,7 +1851,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             match resolve_project_filter(client, &args, true, false, true).await? {
                 ProjectFilter::All => {}
                 ProjectFilter::None => {
-                    return project_selection_response(client, status.trim()).await;
+                    return project_selection_response(client, "daruma_list", status.trim()).await;
                 }
                 ProjectFilter::Project(pid) => params.push(("project_id", urlencode(&pid))),
             }
@@ -2422,8 +2422,17 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if view == "detail" {
                 params.push(("source_chain", "true".into()));
             }
+            // A source spans projects on its own; without one the server needs
+            // a project or an explicit `all`.
+            let has_source = args.get("source").and_then(Value::as_str).is_some();
             match resolve_project_filter(client, &args, true, false, true).await? {
-                ProjectFilter::All | ProjectFilter::None => {}
+                ProjectFilter::All if has_source => {}
+                ProjectFilter::All => params.push(("project_id", "all".to_string())),
+                ProjectFilter::None if has_source => {}
+                ProjectFilter::None => {
+                    return project_selection_response(client, "daruma_plan_list", status.trim())
+                        .await;
+                }
                 ProjectFilter::Project(pid) => {
                     params.push(("project_id", urlencode(&pid)));
                 }
@@ -5447,6 +5456,7 @@ fn resolve_named_scope(view: &workspace::ScopeView, scope: &str) -> anyhow::Resu
 
 async fn project_selection_response(
     client: &ApiClient,
+    tool: &str,
     requested_status: &str,
 ) -> anyhow::Result<Value> {
     let projects = client.get_json("/v1/projects").await?;
@@ -5466,16 +5476,21 @@ async fn project_selection_response(
         .unwrap_or_default();
     let mut projects = Value::Array(projects);
     mark_possible_duplicates(&mut projects);
+    let rows = if tool == "daruma_plan_list" {
+        "plan"
+    } else {
+        "task"
+    };
     Ok(json!({
         "needs_project_selection": true,
-        "reason": "No default Daruma project is resolved for this MCP workspace. To avoid a token-heavy all-project task listing, choose a project first.",
+        "reason": format!("No default Daruma project is resolved for this MCP workspace. To avoid a token-heavy all-project {rows} listing, choose a project first."),
         "requested_status": requested_status,
         "projects": projects,
         // `scope_path` is always absolute: a hosted session has no workspace
         // key to resolve a relative one against, and a parent folder with
         // several bound repos cannot pick the scope by itself — exactly the
         // situations that land here.
-        "next_step": "Suggested flow: the user picks a project; daruma_project_use binds it with that project_id and the absolute path of the repository root as scope_path. daruma_list is then retried with the same status and the same absolute scope_path (or that project_id); later calls pass one of them too, since a hosted or parent-folder session has no default project to fall back on.",
+        "next_step": format!("Suggested flow: the user picks a project; daruma_project_use binds it with that project_id and the absolute path of the repository root as scope_path. {tool} is then retried with the same status and the same absolute scope_path (or that project_id); later calls pass one of them too, since a hosted or parent-folder session has no default project to fall back on."),
         "next_tool": {
             "name": "daruma_project_use",
             "arguments": {

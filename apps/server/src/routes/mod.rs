@@ -6289,6 +6289,8 @@ async fn list_task_plans(
 
 #[derive(Deserialize, Default)]
 struct ListPlansQuery {
+    /// Project id, or `all` for every project the token may read. Required
+    /// unless `source` is given.
     project_id: Option<String>,
     /// **Required.** Single status, comma-separated list, or `all`.
     status: Option<String>,
@@ -6366,16 +6368,24 @@ async fn list_plans(
 
     let status_filter = parse_plan_status_filter(q.status.as_deref())?;
 
-    let mut plans = match (q.project_id.as_deref(), q.source.as_deref()) {
+    // `project_id=all` spans every project; like a source without
+    // `project_id`, the token-scope filter below drops foreign plans before
+    // pagination.
+    let all_projects = q.project_id.as_deref() == Some("all");
+    let project_id = match q.project_id.as_deref() {
+        None | Some("all") => None,
+        Some(pid) => {
+            let project_id = parse_id(pid, "project id")?;
+            require_project_scope(&auth, Some(project_id))?;
+            Some(project_id)
+        }
+    };
+    let mut plans = match (project_id, q.source.as_deref()) {
         // ADR-0009: the node anywhere in the chain, filtered in SQL; without
         // `project_id` it spans projects.
-        (pid, Some(source)) => {
+        (project_id, Some(source)) => {
             let source = daruma_domain::normalize_source_ref(source)
                 .map_err(|e| ApiError::from(CoreError::validation(e)))?;
-            let project_id = pid.map(|pid| parse_id(pid, "project id")).transpose()?;
-            if project_id.is_some() {
-                require_project_scope(&auth, project_id)?;
-            }
             let mut found = state
                 .plans
                 .list_by_source(project_id, &source)
@@ -6386,18 +6396,21 @@ async fn list_plans(
             }
             found
         }
-        (Some(pid), None) => {
-            let project_id = parse_id(pid, "project id")?;
-            require_project_scope(&auth, Some(project_id))?;
-            state
-                .plans
-                .list_by_project(project_id, status_filter.as_deref())
-                .await
-                .map_err(ApiError::from)?
+        (Some(project_id), None) => state
+            .plans
+            .list_by_project(project_id, status_filter.as_deref())
+            .await
+            .map_err(ApiError::from)?,
+        (None, None) if all_projects => {
+            let mut found = state.plans.list_all(None).await.map_err(ApiError::from)?;
+            if let Some(statuses) = &status_filter {
+                found.retain(|p| statuses.contains(&p.status));
+            }
+            found
         }
         (None, None) => {
             return Err(ApiError::from(CoreError::validation(
-                "project_id is required",
+                "project_id is required (a project id, or `all` for every readable project)",
             )))
         }
     };
