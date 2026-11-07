@@ -171,7 +171,7 @@ async fn list_tools_default_status_when_omitted() {
     );
     assert_eq!(
         path_of("daruma_plan_list", json!({"project_id": "all"})).await,
-        "/v1/plans?status=draft%2Cactive"
+        "/v1/plans?status=draft%2Cactive&project_id=all"
     );
     // An explicit status still wins.
     assert_eq!(
