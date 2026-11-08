@@ -2540,6 +2540,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_0065_keeps_existing_claims_alive_and_unbound() {
+        let db = Db::memory().await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE agent_claims (\
+                 agent_id TEXT NOT NULL, task_id TEXT NOT NULL, \
+                 acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, \
+                 run_id TEXT, claim_id TEXT NOT NULL UNIQUE, \
+                 PRIMARY KEY (agent_id, task_id));",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let (agent, task, claim) = (AgentId::new(), TaskId::new(), ClaimId::new());
+        sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at, claim_id) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(agent.to_string())
+        .bind(task.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind((Utc::now() + Duration::minutes(5)).to_rfc3339())
+        .bind(claim.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!("../migrations/0065_claim_session.sql"))
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let repo = AgentClaimRepo::new(db.pool().clone());
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!((active.agent_id, active.claim_id), (agent, claim));
+        assert_eq!(active.session_id, None);
+    }
+
+    #[tokio::test]
     async fn migration_0054_preserves_live_claims_and_backfills_unique_generations() {
         let db = Db::memory().await.unwrap();
         let pool = db.pool();
