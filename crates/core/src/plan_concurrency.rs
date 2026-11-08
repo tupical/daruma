@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use daruma_domain::{PlanStatus, Status};
-use daruma_shared::{time, AgentId, CoreError, PlanId, Result, RunId, TaskId, Timestamp};
+use daruma_shared::{
+    time, AgentId, AgentSessionId, CoreError, PlanId, Result, RunId, TaskId, Timestamp,
+};
 use daruma_storage::{AgentClaimRepo, RelationRepo, TaskRepo};
 
 use crate::relation_enforcement::list_active_blockers;
@@ -43,7 +45,9 @@ pub struct NextTask {
 /// 5. Skip tasks with an active cross-task `Blocks` blocker (same
 ///    semantics as `can_start`) — without this, two agents can grab
 ///    tasks that block each other.
-/// 6. Skip tasks already claimed by a *different* agent (claim-aware).
+/// 6. Skip tasks already claimed by a *different* agent (claim-aware), and,
+///    when the caller names a session, tasks held by the same agent's other
+///    live session.
 /// 7. Return the first survivor + (optionally) compute `claim_expires_at`.
 pub struct NextTaskResolver<'a> {
     pub plans: &'a dyn PlanRepository,
@@ -59,9 +63,21 @@ impl NextTaskResolver<'_> {
     pub async fn next(
         &self,
         plan_id: PlanId,
+        run_id: RunId,
+        agent_id: AgentId,
+        claim_ttl: Option<Duration>,
+    ) -> Result<Option<NextTask>> {
+        self.next_for_session(plan_id, run_id, agent_id, claim_ttl, None)
+            .await
+    }
+
+    pub async fn next_for_session(
+        &self,
+        plan_id: PlanId,
         _run_id: RunId,
         agent_id: AgentId,
         claim_ttl: Option<Duration>,
+        session_id: Option<AgentSessionId>,
     ) -> Result<Option<NextTask>> {
         // 1. Plan must be Active
         let plan = self
@@ -127,6 +143,15 @@ impl NextTaskResolver<'_> {
                 .is_some()
             {
                 continue;
+            }
+            if let Some(session_id) = session_id {
+                if self
+                    .claims
+                    .is_claimed_by_sibling_session(pt.task_id, agent_id, session_id)
+                    .await?
+                {
+                    continue;
+                }
             }
 
             // 7. Found candidate — compute optional claim expiry

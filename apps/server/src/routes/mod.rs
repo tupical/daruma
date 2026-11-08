@@ -46,7 +46,7 @@ use daruma_core::{
     Command,
 };
 use daruma_domain::{
-    slugify_title, Actor, AgentSessionPlanStep, AnchorMismatch, ArtifactRelationKind,
+    slugify_title, Actor, AgentSession, AgentSessionPlanStep, AnchorMismatch, ArtifactRelationKind,
     ArtifactStatus, CommentKind, CommentPatch, ComplexityHint, Document, DocumentKind, DraftPatch,
     NewArtifact, NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus, RoleArtifactStatus,
     RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState, Verb,
@@ -57,7 +57,8 @@ use daruma_mcp::{
     dispatch_request_with_profile as dispatch_mcp_request, ApiClient, JsonRpcRequest,
 };
 use daruma_shared::{
-    AgentId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId, RunId, TaskId,
+    AgentId, AgentSessionId, ArtifactId, CommentId, CoreError, DeviceId, PlanId, ProjectId, RuleId,
+    RunId, TaskId,
 };
 use daruma_storage::{ActiveClaim, RecordedClaimOutcome, ReserveOutcome};
 use daruma_webhooks::{NewWebhook, WebhookPatch, WebhookStore};
@@ -852,15 +853,42 @@ async fn get_task(
         .map_err(ApiError::from)?;
     let mut response =
         serde_json::to_value(t).map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
-    response["current_claim"] = requester_claim_projection(current_claim, auth.agent_id);
+    response["current_claim"] = requester_claim_projection(&state, current_claim, auth.agent_id)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(response))
 }
 
-fn requester_claim_projection(claim: Option<ActiveClaim>, requester: AgentId) -> Value {
-    let Some(claim) = claim else {
-        return Value::Null;
-    };
+/// What a viewer may learn about the chat holding a claim. Only the session
+/// the claim itself names is resolved; `transcript_path` and `workspace_path`
+/// are local to the client and stay out.
+fn claim_session_projection(session: &AgentSession) -> Value {
+    let git = session.metadata.get("git_work_context");
+    let git_field = |key: &str| git.and_then(|context| context.get(key)).cloned();
     json!({
+        "id": session.id,
+        "client": session.metadata.get("client"),
+        "chat_id": session.metadata.get("chat_id"),
+        "ended_at": session.ended_at,
+        "branch_ref": git_field("branch_ref"),
+        "worktree_path": git_field("worktree_path"),
+        "merge_request_id": git_field("merge_request_id"),
+    })
+}
+
+async fn requester_claim_projection(
+    state: &AppState,
+    claim: Option<ActiveClaim>,
+    requester: AgentId,
+) -> Result<Value, CoreError> {
+    let Some(claim) = claim else {
+        return Ok(Value::Null);
+    };
+    let session = match claim.session_id {
+        Some(session_id) => state.sessions.get(session_id).await?,
+        None => None,
+    };
+    Ok(json!({
         "agent_id": claim.agent_id,
         "task_id": claim.task_id,
         "acquired_at": claim.acquired_at,
@@ -868,7 +896,9 @@ fn requester_claim_projection(claim: Option<ActiveClaim>, requester: AgentId) ->
         "run_id": claim.run_id,
         "claim_id": claim.claim_id,
         "is_mine": claim.agent_id == requester,
-    })
+        "session_id": claim.session_id,
+        "session": session.as_ref().map(claim_session_projection),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -6252,7 +6282,9 @@ async fn get_can_start(
         .is_some_and(|claim| claim.agent_id != auth.agent_id);
     let mut response = serde_json::to_value(readiness)
         .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
-    response["current_claim"] = requester_claim_projection(current_claim, auth.agent_id);
+    response["current_claim"] = requester_claim_projection(&state, current_claim, auth.agent_id)
+        .await
+        .map_err(ApiError::from)?;
     if claimed_by_other {
         response["ready"] = json!(false);
         response["reason"] = json!("claimed_by_other");
@@ -6742,6 +6774,7 @@ struct NextTaskQuery {
 struct DrainNextBody {
     run_id: Option<RunId>,
     claim_ttl_secs: Option<u32>,
+    session_id: Option<AgentSessionId>,
 }
 
 async fn get_next_task(
@@ -6864,6 +6897,7 @@ async fn drain_one_plan(
     plan_id: PlanId,
     run_id: RunId,
     ttl_secs: u32,
+    session_id: Option<AgentSessionId>,
 ) -> Result<Option<serde_json::Value>, ApiError> {
     let ttl = std::time::Duration::from_secs(ttl_secs as u64);
 
@@ -6887,7 +6921,7 @@ async fn drain_one_plan(
 
     for _ in 0..max_attempts {
         let Some(next) = resolver
-            .next(plan_id, run_id, auth.agent_id, Some(ttl))
+            .next_for_session(plan_id, run_id, auth.agent_id, Some(ttl), session_id)
             .await
             .map_err(ApiError::from)?
         else {
@@ -6905,6 +6939,7 @@ async fn drain_one_plan(
                 plan_id,
                 next.task_id,
                 chrono::Duration::seconds(ttl_secs as i64),
+                session_id,
             )
             .await
             .map_err(ApiError::from)?
@@ -7065,7 +7100,8 @@ async fn drain_next_task(
     };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
-    let task = match drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs).await {
+    let task = match drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs, body.session_id).await
+    {
         Ok(Some(task)) => task,
         Ok(None) => {
             if implicit_run {
@@ -7198,7 +7234,7 @@ async fn project_ready_drain(
             Some(_) => continue,
             None => (start_drain_run(&state, &auth, plan.id).await?, true),
         };
-        match drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs).await {
+        match drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs, body.session_id).await {
             Ok(Some(task)) => {
                 let warning =
                     drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;
@@ -8048,6 +8084,8 @@ struct AcquireClaimBody {
     _agent_id: Option<AgentId>,
     task_id: TaskId,
     ttl_secs: u32,
+    #[serde(default)]
+    session_id: Option<AgentSessionId>,
 }
 
 #[derive(Deserialize)]
@@ -8118,6 +8156,7 @@ async fn acquire_claim(
             auth.agent_id,
             body.task_id,
             chrono::Duration::seconds(body.ttl_secs as i64),
+            body.session_id,
         )
         .await
         .map_err(ApiError::from)?

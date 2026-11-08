@@ -17,6 +17,8 @@ use serde_json::{json, Value};
 // ADR-0016 names the check environment keys in the evidence `payload`
 // description (task 01a07af1-…-23e760cf0f5b), paid for by shorter sibling
 // prose in the same schema: 26,998 bytes. Limit unchanged.
+// `session_id` on the claim tools (task 01a057ce-ba17-7dd3-b562-0c98f6f9844b) is
+// paid for by shorter drain/session_start prose. Limit unchanged.
 const MAX_DEFAULT_TOOLS_LIST_BYTES: usize = 27_000;
 
 struct ToolSize {

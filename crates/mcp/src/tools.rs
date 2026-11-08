@@ -664,7 +664,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
-            "Atomically pick the next eligible plan task and claim it exclusively for this session's agent. Omit run_id unless continuing a run from daruma_run_start; the server then opens a run, returns its run_id with the task (close it with daruma_run_complete after the handoff, or daruma_run_abort), and aborts it itself when no task is handed out. Concurrent callers get distinct tasks; null when no unclaimed ready task remains. Loop to drain a plan across agents.",
+            "Atomically claim the next eligible plan task. Omit run_id unless continuing a run from daruma_run_start; the server then opens a run, returns its run_id with the task (close it with daruma_run_complete after the handoff, or daruma_run_abort), and aborts it when no task is handed out. Concurrent callers get distinct tasks; null when none is ready. Loop to drain a plan across agents.",
             with_id_alias(schema_plan_drain_next(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Write,
         ),
@@ -1011,7 +1011,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_session_start",
             "Start agent session",
-            "Start a new agent session. Pass `metadata` with client/model/chat_id/transcript_path so work can be traced back to the IDE chat. `agent_id` defaults to `daruma_workspace_info.mcp_agent_id`.",
+            "Start an agent session; pass its id as session_id when claiming. `metadata` traces work back to the IDE chat.",
             schema_session_start(),
             Dom::Sessions, F, X, Ann::Write,
         ),
@@ -1571,6 +1571,12 @@ async fn claim_after_materialize(
     }
     let not_claimed =
         |reason: String| json!({"outcome": "not_claimed", "reason": reason, "plan_id": plan_id});
+    if let Some(claim) = claim.as_object() {
+        if let Err(err) = forward_claim_session(claim, &mut body) {
+            result["claim"] = not_claimed(err.to_string());
+            return result;
+        }
+    }
     result["claim"] = match client
         .post_json(&format!("/v1/plans/{plan_id}/drain-next"), body)
         .await
@@ -2555,6 +2561,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(ttl) = args.get("claim_ttl_secs").and_then(|v| v.as_u64()) {
                 body["claim_ttl_secs"] = json!(ttl);
             }
+            forward_claim_session(&args, &mut body)?;
             client
                 .post_json(&format!("/v1/plans/{plan_id}/drain-next"), body)
                 .await
@@ -2751,6 +2758,7 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             if let Some(agent_id) = optional_agent_id(&args) {
                 body["agent_id"] = json!(agent_id);
             }
+            forward_claim_session(&args, &mut body)?;
             client.post_json("/v1/claims", body).await
         }
         "daruma_release" => {
@@ -3915,7 +3923,7 @@ fn schema_plan_materialize() -> Value {
             },
             "claim": {
                 "type":"object",
-                "description":"{ttl_secs, run_id}: also claim the next ready task. Not atomic; see result `claim.outcome`."
+                "description":"{ttl_secs, run_id, session_id}: also claim the next ready task, not atomically; see `claim.outcome`."
             },
             "scope": {
                 "type":"string",
@@ -4534,7 +4542,8 @@ fn schema_plan_drain_next() -> Value {
         "properties": {
             "plan_id": {"type":"string","description":"Plan id"},
             "run_id": {"type":"string","format":"uuid","description":"Run UUID; omit for a server-generated id."},
-            "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL seconds; default 300."}
+            "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL seconds; default 300."},
+            "session_id": {"type":"string"}
         },
         "required":["plan_id"]
     })
@@ -4730,7 +4739,8 @@ fn schema_claim() -> Value {
         "properties": {
             "agent_id": {"type":"string","format":"uuid","description":"Default: token's agent."},
             "task_id":  {"type":"string"},
-            "ttl_secs": {"type":"integer","minimum":1,"maximum":86400}
+            "ttl_secs": {"type":"integer","minimum":1,"maximum":86400},
+            "session_id": {"type":"string"}
         },
         "required":["task_id"]
     })
@@ -6554,6 +6564,15 @@ fn resolve_artifact_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<S
 
 fn resolve_relation_id(args: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
     resolve_id(args, IdKind::Relation, key)
+}
+
+/// Optional `session_id` of a claim. Exact key only: `id` on these tools is
+/// the plan or task, not the session.
+fn forward_claim_session(args: &Map<String, Value>, body: &mut Value) -> anyhow::Result<()> {
+    if args.get("session_id").is_some_and(|value| !value.is_null()) {
+        body["session_id"] = json!(resolve_exact_id(args, IdKind::Session, "session_id")?);
+    }
+    Ok(())
 }
 
 /// The `kind` id under exactly `key`, for a tool that takes two ids of one

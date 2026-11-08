@@ -151,3 +151,22 @@ pointer for humans/tools outside Daruma.
 | `daruma_session_get` | Fetch session by id |
 | `daruma_session_list` | List sessions for `agent_id` (default `mcp_agent_id`) |
 | `daruma_session_end` | Close session |
+
+## Binding a claim to its session
+
+Parallel chats of one agent share `agent_id`, so a claim cannot be traced to a
+chat by "the agent's latest session". Pass the id returned by
+`daruma_session_start` as `session_id` to `daruma_claim`,
+`daruma_plan_drain_next` or `daruma_plan_materialize.claim`.
+
+- The session must be a live session of the claiming agent, or the claim is
+  refused and leaves no trace.
+- `current_claim` then carries `session_id` and `session` (`client`, `chat_id`,
+  `branch_ref`, `worktree_path`, `merge_request_id`, `ended_at`). Client-local
+  `transcript_path` and `workspace_path` are never returned.
+- Renewing a claim without `session_id` keeps the binding; a claim that never
+  named a session reads `session_id: null`, and nothing is inferred.
+- A drain that names a session skips tasks held by the agent's other live
+  session. An explicit `daruma_claim` may still take such a task over.
+- `daruma_session_start` is in the `full` profile; a client on the `default`
+  profile has no session id to pass, and its claims stay unbound.

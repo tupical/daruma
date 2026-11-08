@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use daruma_domain::Actor;
 use daruma_events::EventEnvelope;
-use daruma_shared::{AgentId, PlanId, Result, RunId, TaskId};
+use daruma_shared::{AgentId, AgentSessionId, PlanId, Result, RunId, TaskId};
 use daruma_storage::RecordedClaimOutcome;
 
 use crate::{lifecycle_gate::DispatchOutcome, Command, CommandHandler};
@@ -79,9 +79,18 @@ impl CommandBus {
         plan_id: PlanId,
         task_id: TaskId,
         ttl: chrono::Duration,
+        session_id: Option<AgentSessionId>,
     ) -> Result<RecordedClaimOutcome> {
         self.handler
-            .try_acquire_claim_for_run(actor, owner_agent_id, run_id, plan_id, task_id, ttl)
+            .try_acquire_claim_for_run(
+                actor,
+                owner_agent_id,
+                run_id,
+                plan_id,
+                task_id,
+                ttl,
+                session_id,
+            )
             .await
     }
 }

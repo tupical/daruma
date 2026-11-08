@@ -4,7 +4,9 @@ use crate::{event_store::append_on, parse_ts};
 use chrono::{Duration, Utc};
 use daruma_domain::Actor;
 use daruma_events::{Event, EventEnvelope};
-use daruma_shared::{AgentId, ClaimId, CoreError, ProjectId, Result, RunId, TaskId, Timestamp};
+use daruma_shared::{
+    AgentId, AgentSessionId, ClaimId, CoreError, ProjectId, Result, RunId, TaskId, Timestamp,
+};
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use std::future::Future;
@@ -19,6 +21,8 @@ pub struct ActiveClaim {
     pub expires_at: Timestamp,
     pub run_id: Option<RunId>,
     pub claim_id: ClaimId,
+    /// Session the claim was taken in; `None` when the caller named none.
+    pub session_id: Option<AgentSessionId>,
 }
 
 /// Outcome of an atomic [`AgentClaimRepo::try_acquire`] attempt.
@@ -103,7 +107,7 @@ impl AgentClaimRepo {
     pub async fn get_active_for_task(&self, task_id: TaskId) -> Result<Option<ActiveClaim>> {
         let now = Utc::now().to_rfc3339();
         let row = sqlx::query(
-            "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id \
+            "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id, session_id \
              FROM agent_claims WHERE task_id = ? AND expires_at >= ? \
              ORDER BY expires_at DESC LIMIT 1",
         )
@@ -114,6 +118,20 @@ impl AgentClaimRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         row.as_ref().map(row_to_active_claim).transpose()
+    }
+
+    /// Whether `task_id` is held by a live claim of `agent_id` taken in another
+    /// session that has not ended. Parallel chats of one agent share `agent_id`,
+    /// so a drain naming its session must not be handed a sibling's task.
+    pub async fn is_claimed_by_sibling_session(
+        &self,
+        task_id: TaskId,
+        agent_id: AgentId,
+        session_id: AgentSessionId,
+    ) -> Result<bool> {
+        sibling_session_claim_expiry(&self.pool, task_id, agent_id, session_id)
+            .await
+            .map(|expiry| expiry.is_some())
     }
 
     /// Return the agent holding a live claim on `task_id` that is **not**
@@ -184,7 +202,7 @@ impl AgentClaimRepo {
         let rows = match &project_id {
             Some(p) => {
                 sqlx::query(
-                    "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id FROM agent_claims \
+                    "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id, session_id FROM agent_claims \
                      WHERE expires_at >= ? AND EXISTS ( \
                          SELECT 1 FROM tasks \
                          WHERE tasks.id = agent_claims.task_id AND tasks.project_id = ?) \
@@ -197,7 +215,7 @@ impl AgentClaimRepo {
             }
             None => {
                 sqlx::query(
-                    "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id FROM agent_claims \
+                    "SELECT agent_id, task_id, acquired_at, expires_at, run_id, claim_id, session_id FROM agent_claims \
                      WHERE expires_at >= ? ORDER BY acquired_at",
                 )
                 .bind(&now)
@@ -220,20 +238,22 @@ impl AgentClaimRepo {
         task_id: TaskId,
         claim_id: ClaimId,
         expires_at: Timestamp,
+        session_id: Option<AgentSessionId>,
     ) -> Result<()> {
         let now = Utc::now();
         let now_s = now.to_rfc3339();
         let expires_s = expires_at.to_rfc3339();
         sqlx::query(
             "INSERT INTO agent_claims \
-             (agent_id, task_id, acquired_at, expires_at, claim_id) \
-             SELECT ?, ?, ?, ?, ? \
+             (agent_id, task_id, acquired_at, expires_at, claim_id, session_id) \
+             SELECT ?, ?, ?, ?, ?, ? \
              WHERE ? > ? AND NOT EXISTS ( \
                  SELECT 1 FROM agent_claims \
                  WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
              ) \
              ON CONFLICT(agent_id, task_id) DO UPDATE SET \
-                 acquired_at = excluded.acquired_at, expires_at = excluded.expires_at \
+                 acquired_at = excluded.acquired_at, expires_at = excluded.expires_at, \
+                 session_id = COALESCE(excluded.session_id, agent_claims.session_id) \
              WHERE agent_claims.claim_id = excluded.claim_id",
         )
         .bind(agent_id.to_string())
@@ -241,6 +261,7 @@ impl AgentClaimRepo {
         .bind(&now_s)
         .bind(&expires_s)
         .bind(claim_id.to_string())
+        .bind(session_id.map(|id| id.to_string()))
         .bind(&expires_s)
         .bind(&now_s)
         .bind(task_id.to_string())
@@ -390,8 +411,31 @@ impl AgentClaimRepo {
         claim_id: ClaimId,
         expires_at: Timestamp,
     ) -> Result<RecordedClaimOutcome> {
-        self.try_acquire_bound_recorded(actor, agent_id, task_id, claim_id, expires_at, None)
+        self.try_acquire_bound_recorded(actor, agent_id, task_id, claim_id, expires_at, None, None)
             .await
+    }
+
+    /// [`Self::try_acquire_recorded`] on behalf of a named agent session. The
+    /// session is checked by the same transaction as the claim CAS.
+    pub async fn try_acquire_in_session_recorded(
+        &self,
+        actor: Actor,
+        agent_id: AgentId,
+        task_id: TaskId,
+        ttl: Duration,
+        session_id: Option<AgentSessionId>,
+    ) -> Result<RecordedClaimOutcome> {
+        let expires_at = Utc::now() + ttl;
+        self.try_acquire_bound_recorded(
+            actor,
+            agent_id,
+            task_id,
+            ClaimId::new(),
+            expires_at,
+            None,
+            session_id,
+        )
+        .await
     }
 
     /// Acquire a claim for an authenticated active run. Run existence, plan,
@@ -405,6 +449,7 @@ impl AgentClaimRepo {
         task_id: TaskId,
         claim_id: ClaimId,
         expires_at: Timestamp,
+        session_id: Option<AgentSessionId>,
     ) -> Result<RecordedClaimOutcome> {
         self.try_acquire_bound_recorded(
             actor,
@@ -413,6 +458,7 @@ impl AgentClaimRepo {
             claim_id,
             expires_at,
             Some((run_id, plan_id)),
+            session_id,
         )
         .await
     }
@@ -461,6 +507,7 @@ impl AgentClaimRepo {
         claim_id: ClaimId,
         expires_at: Timestamp,
         run: Option<(RunId, daruma_shared::PlanId)>,
+        session_id: Option<AgentSessionId>,
     ) -> Result<RecordedClaimOutcome> {
         let now_s = Utc::now().to_rfc3339();
         let expires_s = expires_at.to_rfc3339();
@@ -502,10 +549,26 @@ impl AgentClaimRepo {
             }
         }
 
+        if let Some(session_id) = session_id {
+            validate_claim_session(&mut tx, session_id, agent_id).await?;
+            // Only a drain picks its task; an explicit claim names the task it
+            // means to take over from the agent's other chat.
+            if run.is_some() {
+                let sibling_expiry =
+                    sibling_session_claim_expiry(&mut *tx, task_id, agent_id, session_id).await?;
+                if let Some(expires_at) = sibling_expiry {
+                    return Ok(RecordedClaimOutcome::Busy {
+                        holder: agent_id,
+                        expires_at,
+                    });
+                }
+            }
+        }
+
         let changed = sqlx::query(
             "INSERT INTO agent_claims \
-                (agent_id, task_id, acquired_at, expires_at, run_id, claim_id) \
-             SELECT ?, ?, ?, ?, ?, ? \
+                (agent_id, task_id, acquired_at, expires_at, run_id, claim_id, session_id) \
+             SELECT ?, ?, ?, ?, ?, ?, ? \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM agent_claims \
                  WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
@@ -518,6 +581,11 @@ impl AgentClaimRepo {
                      THEN agent_claims.run_id \
                      ELSE excluded.run_id \
                  END, \
+                 session_id  = CASE \
+                     WHEN agent_claims.expires_at >= ? AND excluded.session_id IS NULL \
+                     THEN agent_claims.session_id \
+                     ELSE excluded.session_id \
+                 END, \
                  claim_id    = excluded.claim_id",
         )
         .bind(agent_id.to_string())
@@ -526,9 +594,11 @@ impl AgentClaimRepo {
         .bind(&expires_s)
         .bind(run_id.as_deref())
         .bind(claim_id.to_string())
+        .bind(session_id.map(|id| id.to_string()))
         .bind(task_id.to_string())
         .bind(&now_s)
         .bind(agent_id.to_string())
+        .bind(&now_s)
         .bind(&now_s)
         .execute(&mut *tx)
         .await
@@ -544,6 +614,7 @@ impl AgentClaimRepo {
                         task_id,
                         claim_id: Some(claim_id),
                         expires_at,
+                        session_id,
                     },
                 ),
             )
@@ -1153,8 +1224,9 @@ impl AgentClaimRepo {
                 task_id,
                 claim_id: Some(claim_id),
                 expires_at,
+                session_id,
             } => {
-                self.acquire_until(*agent_id, *task_id, *claim_id, *expires_at)
+                self.acquire_until(*agent_id, *task_id, *claim_id, *expires_at, *session_id)
                     .await
             }
             Event::AgentClaimed { claim_id: None, .. } => Ok(()),
@@ -1350,6 +1422,60 @@ fn validated_run_plan_id(
     Ok(plan_id)
 }
 
+async fn sibling_session_claim_expiry<'e, E>(
+    executor: E,
+    task_id: TaskId,
+    agent_id: AgentId,
+    session_id: AgentSessionId,
+) -> Result<Option<Timestamp>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let expires_at: Option<String> = sqlx::query_scalar(
+        "SELECT c.expires_at FROM agent_claims c \
+         JOIN agent_sessions s ON s.id = c.session_id \
+         WHERE c.task_id = ? AND c.agent_id = ? AND c.expires_at >= ? \
+           AND c.session_id <> ? AND s.ended_at IS NULL \
+         LIMIT 1",
+    )
+    .bind(task_id.to_string())
+    .bind(agent_id.to_string())
+    .bind(Utc::now().to_rfc3339())
+    .bind(session_id.to_string())
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| CoreError::storage(e.to_string()))?;
+    expires_at.as_deref().map(parse_ts).transpose()
+}
+
+/// A claim may name only a live session of the agent taking it: an agent's
+/// chats must not be attributable to another agent's or a finished session.
+async fn validate_claim_session(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session_id: AgentSessionId,
+    agent_id: AgentId,
+) -> Result<()> {
+    let row = sqlx::query("SELECT agent_id, ended_at FROM agent_sessions WHERE id = ?")
+        .bind(session_id.to_string())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| CoreError::storage(e.to_string()))?
+        .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+    let owner: String = row
+        .try_get("agent_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    if owner != agent_id.to_string() {
+        return Err(CoreError::conflict("session belongs to a different agent"));
+    }
+    let ended_at: Option<String> = row
+        .try_get("ended_at")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
+    if ended_at.is_some() {
+        return Err(CoreError::conflict("session has already ended"));
+    }
+    Ok(())
+}
+
 fn row_to_active_claim(r: &sqlx::sqlite::SqliteRow) -> Result<ActiveClaim> {
     let agent_id: String = r
         .try_get("agent_id")
@@ -1369,6 +1495,9 @@ fn row_to_active_claim(r: &sqlx::sqlite::SqliteRow) -> Result<ActiveClaim> {
     let claim_id: String = r
         .try_get("claim_id")
         .map_err(|e| CoreError::storage(e.to_string()))?;
+    let session_id: Option<String> = r
+        .try_get("session_id")
+        .map_err(|e| CoreError::storage(e.to_string()))?;
     Ok(ActiveClaim {
         agent_id: agent_id
             .parse::<AgentId>()
@@ -1387,6 +1516,12 @@ fn row_to_active_claim(r: &sqlx::sqlite::SqliteRow) -> Result<ActiveClaim> {
         claim_id: claim_id
             .parse::<ClaimId>()
             .map_err(|e| CoreError::serde(e.to_string()))?,
+        session_id: session_id
+            .map(|id| {
+                id.parse::<AgentSessionId>()
+                    .map_err(|e| CoreError::serde(e.to_string()))
+            })
+            .transpose()?,
     })
 }
 
@@ -1414,6 +1549,220 @@ mod tests {
             .bind(id.to_string()).bind(Utc::now().to_rfc3339()).bind(Utc::now().to_rfc3339())
             .execute(db.pool()).await.unwrap();
         id
+    }
+
+    async fn seed_session(db: &Db, agent_id: AgentId, ended: bool) -> AgentSessionId {
+        let id = AgentSessionId::new();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO agent_sessions (id, agent_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(agent_id.to_string())
+        .bind(&now)
+        .bind(ended.then_some(&now))
+        .execute(db.pool())
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn claim_in_session(
+        repo: &AgentClaimRepo,
+        agent_id: AgentId,
+        task_id: TaskId,
+        session_id: Option<AgentSessionId>,
+    ) -> Result<RecordedClaimOutcome> {
+        repo.try_acquire_in_session_recorded(
+            Actor::user(),
+            agent_id,
+            task_id,
+            Duration::seconds(60),
+            session_id,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn claim_records_the_named_session() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        let session = seed_session(&db, agent, false).await;
+        // A later session of the same agent must not take the binding over.
+        let _latest = seed_session(&db, agent, false).await;
+
+        let outcome = claim_in_session(&repo, agent, task, Some(session))
+            .await
+            .unwrap();
+        let RecordedClaimOutcome::Acquired { event, .. } = outcome else {
+            panic!("expected acquired claim");
+        };
+        assert!(matches!(
+            event.payload,
+            Event::AgentClaimed { session_id: Some(s), .. } if s == session
+        ));
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(active.session_id, Some(session));
+    }
+
+    #[tokio::test]
+    async fn claim_without_session_stays_unbound() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        seed_session(&db, agent, false).await;
+
+        claim_in_session(&repo, agent, task, None).await.unwrap();
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(active.session_id, None, "the owner is never inferred");
+    }
+
+    #[tokio::test]
+    async fn renewal_keeps_the_session_and_a_named_one_replaces_it() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        let first = seed_session(&db, agent, false).await;
+        let second = seed_session(&db, agent, false).await;
+
+        claim_in_session(&repo, agent, task, Some(first))
+            .await
+            .unwrap();
+        claim_in_session(&repo, agent, task, None).await.unwrap();
+        let renewed = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(renewed.session_id, Some(first));
+
+        claim_in_session(&repo, agent, task, Some(second))
+            .await
+            .unwrap();
+        let moved = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(moved.session_id, Some(second));
+    }
+
+    #[tokio::test]
+    async fn expired_claim_taken_again_does_not_inherit_its_session() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        let session = seed_session(&db, agent, false).await;
+        claim_in_session(&repo, agent, task, Some(session))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agent_claims SET expires_at = ? WHERE task_id = ?")
+            .bind((Utc::now() - Duration::seconds(5)).to_rfc3339())
+            .bind(task.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        claim_in_session(&repo, agent, task, None).await.unwrap();
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(active.session_id, None);
+    }
+
+    #[tokio::test]
+    async fn claim_refuses_foreign_unknown_and_ended_sessions() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        let foreign = seed_session(&db, AgentId::new(), false).await;
+        let ended = seed_session(&db, agent, true).await;
+
+        for (session, expected) in [
+            (foreign, "different agent"),
+            (AgentSessionId::new(), "session"),
+            (ended, "already ended"),
+        ] {
+            let err = claim_in_session(&repo, agent, task, Some(session))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+        assert!(repo.get_active_for_task(task).await.unwrap().is_none());
+    }
+
+    async fn seed_owned_run(db: &Db, agent_id: AgentId) -> (RunId, daruma_shared::PlanId) {
+        let (run_id, plan_id) = (RunId::new(), daruma_shared::PlanId::new());
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO plans (id, project_id, title, status, owner_json, created_at, updated_at) \
+             VALUES (?, 'p', 'plan', 'active', '{}', ?, ?)",
+        )
+        .bind(plan_id.to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        insert_active_run(db, run_id, plan_id, agent_id).await;
+        sqlx::query("INSERT INTO run_claim_owners (run_id, agent_id) VALUES (?, ?)")
+            .bind(run_id.to_string())
+            .bind(agent_id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        (run_id, plan_id)
+    }
+
+    #[tokio::test]
+    async fn drain_cas_leaves_a_task_of_a_live_sibling_session() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        let first = seed_session(&db, agent, false).await;
+        let second = seed_session(&db, agent, false).await;
+        let (run_id, plan_id) = seed_owned_run(&db, agent).await;
+        claim_in_session(&repo, agent, task, Some(first))
+            .await
+            .unwrap();
+
+        let drain = |session| {
+            repo.try_acquire_for_run_recorded(
+                Actor::user(),
+                agent,
+                run_id,
+                plan_id,
+                task,
+                ClaimId::new(),
+                Utc::now() + Duration::seconds(60),
+                Some(session),
+            )
+        };
+        assert!(matches!(
+            drain(second).await.unwrap(),
+            RecordedClaimOutcome::Busy { holder, .. } if holder == agent
+        ));
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(active.session_id, Some(first), "the sibling keeps its task");
+
+        sqlx::query("UPDATE agent_sessions SET ended_at = ? WHERE id = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind(first.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        assert!(matches!(
+            drain(second).await.unwrap(),
+            RecordedClaimOutcome::Acquired { .. }
+        ));
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(active.session_id, Some(second));
+    }
+
+    #[tokio::test]
+    async fn replaying_a_claim_event_restores_its_session() {
+        let (db, repo) = make_repo().await;
+        let (agent, task) = (AgentId::new(), seed_claim_task(&db).await);
+        let session = seed_session(&db, agent, false).await;
+        let event = EventEnvelope::new(
+            Actor::user(),
+            Event::AgentClaimed {
+                agent_id: agent,
+                task_id: task,
+                claim_id: Some(ClaimId::new()),
+                expires_at: Utc::now() + Duration::seconds(60),
+                session_id: Some(session),
+            },
+        );
+
+        repo.apply_event(&event).await.unwrap();
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!(active.session_id, Some(session));
     }
 
     #[tokio::test]
@@ -1989,7 +2338,7 @@ mod tests {
         let stale_id = ClaimId::new();
         let stale_expiry = Utc::now() + Duration::seconds(60);
 
-        repo.acquire_until(agent_id, task_id, stale_id, stale_expiry)
+        repo.acquire_until(agent_id, task_id, stale_id, stale_expiry, None)
             .await
             .unwrap();
         let current_id = match repo
@@ -2001,7 +2350,7 @@ mod tests {
             other => panic!("expected acquired, got {other:?}"),
         };
 
-        repo.acquire_until(agent_id, task_id, stale_id, stale_expiry)
+        repo.acquire_until(agent_id, task_id, stale_id, stale_expiry, None)
             .await
             .unwrap();
         let persisted: String = sqlx::query_scalar(
@@ -2023,15 +2372,27 @@ mod tests {
         let task_id = TaskId::new();
         let stale_id = ClaimId::new();
 
-        repo.acquire_until(first, task_id, stale_id, Utc::now() - Duration::seconds(1))
-            .await
-            .unwrap();
+        repo.acquire_until(
+            first,
+            task_id,
+            stale_id,
+            Utc::now() - Duration::seconds(1),
+            None,
+        )
+        .await
+        .unwrap();
         repo.try_acquire(second, task_id, Duration::seconds(60))
             .await
             .unwrap();
-        repo.acquire_until(first, task_id, stale_id, Utc::now() + Duration::seconds(60))
-            .await
-            .unwrap();
+        repo.acquire_until(
+            first,
+            task_id,
+            stale_id,
+            Utc::now() + Duration::seconds(60),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             repo.get_agents_claiming_task(task_id).await.unwrap(),
@@ -2176,6 +2537,44 @@ mod tests {
 
         // Still claimed.
         assert!(repo.is_claimed(task_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn migration_0065_keeps_existing_claims_alive_and_unbound() {
+        let db = Db::memory().await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE agent_claims (\
+                 agent_id TEXT NOT NULL, task_id TEXT NOT NULL, \
+                 acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, \
+                 run_id TEXT, claim_id TEXT NOT NULL UNIQUE, \
+                 PRIMARY KEY (agent_id, task_id));",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let (agent, task, claim) = (AgentId::new(), TaskId::new(), ClaimId::new());
+        sqlx::query(
+            "INSERT INTO agent_claims (agent_id, task_id, acquired_at, expires_at, claim_id) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(agent.to_string())
+        .bind(task.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind((Utc::now() + Duration::minutes(5)).to_rfc3339())
+        .bind(claim.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!("../migrations/0065_claim_session.sql"))
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let repo = AgentClaimRepo::new(db.pool().clone());
+        let active = repo.get_active_for_task(task).await.unwrap().unwrap();
+        assert_eq!((active.agent_id, active.claim_id), (agent, claim));
+        assert_eq!(active.session_id, None);
     }
 
     #[tokio::test]
