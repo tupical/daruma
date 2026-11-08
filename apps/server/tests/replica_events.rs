@@ -91,6 +91,7 @@ async fn replica_rejects_run_claim_and_terminal_injection_before_persisting_any_
             task_id,
             claim_id: Some(ClaimId::new()),
             expires_at: now + chrono::Duration::minutes(5),
+            session_id: None,
         },
         Event::RunFailed {
             run_id,

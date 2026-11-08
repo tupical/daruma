@@ -149,7 +149,7 @@ async fn mine_keeps_own_tasks_and_own_events_only() {
     let expires_at = Utc::now() + chrono::Duration::seconds(300);
     app.state
         .claims
-        .acquire_until(token_agent, claimed, claim_id, expires_at)
+        .acquire_until(token_agent, claimed, claim_id, expires_at, None)
         .await
         .unwrap();
     app.state
@@ -161,6 +161,7 @@ async fn mine_keeps_own_tasks_and_own_events_only() {
                 task_id: claimed,
                 claim_id: Some(claim_id),
                 expires_at,
+                session_id: None,
             },
         ))
         .await

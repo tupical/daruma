@@ -315,6 +315,7 @@ impl CommandHandler {
         agent_id: AgentId,
         task_id: TaskId,
         ttl: chrono::Duration,
+        session_id: Option<AgentSessionId>,
     ) -> Result<RecordedClaimOutcome> {
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
@@ -322,7 +323,7 @@ impl CommandHandler {
             .as_ref()
             .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
         let outcome = claims
-            .try_acquire_recorded(actor, agent_id, task_id, ttl)
+            .try_acquire_in_session_recorded(actor, agent_id, task_id, ttl, session_id)
             .await?;
         if let RecordedClaimOutcome::Acquired { event, .. } = &outcome {
             self.publish_recorded_claim_events(std::slice::from_ref(event))
@@ -385,6 +386,7 @@ impl CommandHandler {
         plan_id: PlanId,
         task_id: TaskId,
         ttl: chrono::Duration,
+        session_id: Option<AgentSessionId>,
     ) -> Result<RecordedClaimOutcome> {
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
@@ -400,6 +402,7 @@ impl CommandHandler {
                 task_id,
                 ClaimId::new(),
                 time::now() + ttl,
+                session_id,
             )
             .await?;
         if let RecordedClaimOutcome::Acquired { event, .. } = &outcome {
@@ -3486,6 +3489,7 @@ impl CommandHandler {
                 task_id,
                 claim_id: Some(claim_id),
                 expires_at,
+                session_id: None,
             }]),
 
             Command::ReleaseClaim { agent_id, task_id } => Ok(vec![Event::AgentReleased {
@@ -6118,6 +6122,7 @@ mod tests {
                 agent_id,
                 task_id,
                 chrono::Duration::seconds(60),
+                None,
             )
             .await
             .unwrap();
@@ -6206,6 +6211,7 @@ mod tests {
                 agent_id,
                 task_id,
                 chrono::Duration::seconds(60),
+                None,
             )
             .await
             .unwrap()

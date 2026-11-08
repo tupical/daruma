@@ -422,6 +422,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claim_id: Option<ClaimId>,
         expires_at: Timestamp,
+        /// Agent session (chat) the claim was taken in, when the caller named it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<AgentSessionId>,
     },
 
     /// An agent released its claim on a task (or the claim expired).
@@ -1802,6 +1805,7 @@ mod tests {
                 task_id: TaskId::new(),
                 claim_id: Some(ClaimId::new()),
                 expires_at: time::now(),
+                session_id: Some(AgentSessionId::new()),
             },
             "agent_claimed",
         );
@@ -2048,6 +2052,7 @@ mod tests {
                 task_id,
                 claim_id: Some(ClaimId::new()),
                 expires_at: time::now(),
+                session_id: None,
             },
             Event::AgentReleased {
                 agent_id: AgentId::new(),
