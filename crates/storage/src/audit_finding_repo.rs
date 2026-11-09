@@ -436,15 +436,16 @@ mod tests {
         let repo = repo().await;
         let project = ProjectId::new();
         let mut finding = sample(project, None, "attention.test");
-        let task = FindingRef::Task("task-1".into());
-        let run = FindingRef::Run("run-1".into());
+        let task = FindingRef::Task(uuid::Uuid::now_v7());
+        let run_id = uuid::Uuid::now_v7();
+        let run = FindingRef::Run(run_id);
         finding.entity.refs = vec![task.clone(), run.clone(), task.clone()];
         let id = repo.upsert(&finding).await.unwrap();
         finding.entity.refs = vec![run, task];
         assert_eq!(repo.upsert(&finding).await.unwrap(), id);
         assert_eq!(repo.get(id).await.unwrap().unwrap().entity.refs.len(), 2);
 
-        finding.entity.refs = vec![FindingRef::Knowledge("run-1".into())];
+        finding.entity.refs = vec![FindingRef::Knowledge(run_id)];
         assert_ne!(repo.upsert(&finding).await.unwrap(), id);
         finding.project_id = Some(ProjectId::new());
         assert_ne!(repo.upsert(&finding).await.unwrap(), id);

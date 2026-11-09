@@ -117,14 +117,14 @@ impl FindingSource {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum FindingRef {
-    Plan(String),
-    Task(String),
-    Document(String),
-    Artifact(String),
-    Run(String),
-    Knowledge(String),
-    Decision(String),
-    Incident(String),
+    Plan(uuid::Uuid),
+    Task(uuid::Uuid),
+    Document(uuid::Uuid),
+    Artifact(uuid::Uuid),
+    Run(uuid::Uuid),
+    Knowledge(uuid::Uuid),
+    Decision(uuid::Uuid),
+    Incident(uuid::Uuid),
 }
 
 /// The entity a finding is about. Any subset of refs may be set; all `None`
