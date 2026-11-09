@@ -23,7 +23,7 @@
 
 use crate::parse_ts;
 use daruma_domain::{
-    ActorRef, AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus,
+    ActorRef, AuditFinding, FindingEntity, FindingRef, FindingSeverity, FindingSource, FindingStatus,
     NewFinding,
 };
 use daruma_shared::{time, AuditFindingId, CoreError, Result, Timestamp};
@@ -59,6 +59,17 @@ impl AuditFindingRepo {
     pub async fn upsert(&self, new: &NewFinding) -> Result<AuditFindingId> {
         let now = time::now();
         let mut refs = new.entity.refs.clone();
+        if !refs.is_empty() {
+            let legacy = [
+                new.entity.plan_id.map(|id| FindingRef::Plan(id.as_uuid())),
+                new.entity.task_id.map(|id| FindingRef::Task(id.as_uuid())),
+                new.entity.document_id.map(|id| FindingRef::Document(id.as_uuid())),
+                new.entity.artifact_id.map(|id| FindingRef::Artifact(id.as_uuid())),
+            ];
+            if legacy.into_iter().flatten().any(|reference| !refs.contains(&reference)) {
+                return Err(CoreError::storage("legacy finding reference is absent from typed references"));
+            }
+        }
         refs.sort();
         refs.dedup();
         let refs = serde_json::to_string(&refs).map_err(|e| CoreError::storage(e.to_string()))?;
@@ -459,6 +470,17 @@ mod tests {
         assert_ne!(repo.upsert(&finding).await.unwrap(), id);
         finding.project_id = Some(ProjectId::new());
         assert!(repo.upsert(&finding).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn typed_refs_must_include_legacy_projection() {
+        let repo = repo().await;
+        let task = TaskId::new();
+        let mut finding = sample(ProjectId::new(), Some(task), "attention.test");
+        finding.entity.refs = vec![FindingRef::Run(uuid::Uuid::now_v7())];
+        assert!(repo.upsert(&finding).await.is_err());
+        finding.entity.refs.push(FindingRef::Task(task.as_uuid()));
+        assert!(repo.upsert(&finding).await.is_ok());
     }
 
     #[tokio::test]
