@@ -64,25 +64,35 @@ impl AuditFindingRepo {
         let refs = serde_json::to_string(&refs).map_err(|e| CoreError::storage(e.to_string()))?;
         // Look up the existing row on the dedup key (NULLs coalesced to '' to
         // match migration 0041's unique index).
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM audit_findings \
-             WHERE COALESCE(project_id, '') = ? AND check_key = ? \
-               AND COALESCE(plan_id, '') = ? AND COALESCE(task_id, '') = ? \
-               AND COALESCE(document_id, '') = ? AND COALESCE(artifact_id, '') = ? \
-               AND refs = ?",
-        )
-        .bind(entity_key(&new.project_id))
-        .bind(&new.check_key)
-        .bind(entity_key(&new.entity.plan_id))
-        .bind(entity_key(&new.entity.task_id))
-        .bind(entity_key(&new.entity.document_id))
-        .bind(entity_key(&new.entity.artifact_id))
-        .bind(&refs)
-        .fetch_optional(&self.pool)
-        .await
+        let existing: Option<(String, Option<String>)> = if refs == "[]" {
+            sqlx::query_as(
+                "SELECT id, project_id FROM audit_findings \
+                 WHERE COALESCE(project_id, '') = ? AND check_key = ? \
+                   AND COALESCE(plan_id, '') = ? AND COALESCE(task_id, '') = ? \
+                   AND COALESCE(document_id, '') = ? AND COALESCE(artifact_id, '') = ? \
+                   AND refs = '[]'",
+            )
+            .bind(entity_key(&new.project_id))
+            .bind(&new.check_key)
+            .bind(entity_key(&new.entity.plan_id))
+            .bind(entity_key(&new.entity.task_id))
+            .bind(entity_key(&new.entity.document_id))
+            .bind(entity_key(&new.entity.artifact_id))
+            .fetch_optional(&self.pool)
+            .await
+        } else {
+            sqlx::query_as("SELECT id, project_id FROM audit_findings WHERE check_key = ? AND refs = ?")
+                .bind(&new.check_key)
+                .bind(&refs)
+                .fetch_optional(&self.pool)
+                .await
+        }
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
-        if let Some((id_str,)) = existing {
+        if let Some((id_str, stored_project)) = existing {
+            if stored_project != new.project_id.map(|id| id.to_string()) {
+                return Err(CoreError::storage("finding references have a different project scope"));
+            }
             // Repeat sighting: refresh mutable fields and bump last_seen. Only a
             // resolved row re-opens (the problem is back); open / acknowledged /
             // muted keep the status — and their NULL resolved metadata — so an
@@ -448,7 +458,7 @@ mod tests {
         finding.entity.refs = vec![FindingRef::Knowledge(run_id)];
         assert_ne!(repo.upsert(&finding).await.unwrap(), id);
         finding.project_id = Some(ProjectId::new());
-        assert_ne!(repo.upsert(&finding).await.unwrap(), id);
+        assert!(repo.upsert(&finding).await.is_err());
     }
 
     #[tokio::test]
@@ -467,6 +477,10 @@ mod tests {
             .await
             .unwrap();
         sqlx::raw_sql(include_str!("../migrations/0066_audit_finding_refs.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0067_audit_ref_identity.sql"))
             .execute(&pool)
             .await
             .unwrap();
