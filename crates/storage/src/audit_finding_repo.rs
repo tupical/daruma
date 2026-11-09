@@ -451,6 +451,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refs_migration_preserves_existing_finding_and_decision() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0041_audit_findings.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0061_audit_findings_workspace_scope.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO audit_findings (id, project_id, check_key, category, severity, title, status, first_seen_at, last_seen_at) VALUES ('old', 'project', 'check', 'category', 'warn', 'title', 'muted', '2026-01-01', '2026-01-02')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0066_audit_finding_refs.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let row: (String, String, String) = sqlx::query_as("SELECT id, status, refs FROM audit_findings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row, ("old".into(), "muted".into(), "[]".into()));
+    }
+
+    #[tokio::test]
     async fn distinct_entities_are_distinct_findings() {
         let repo = repo().await;
         let project = ProjectId::new();
