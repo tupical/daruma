@@ -15,7 +15,7 @@ use crate::protocol::{
 };
 use crate::tools::{call_tool_in_profile, tool_definitions_for, ToolProfile};
 
-const INSTRUCTIONS: &str = "daruma is the single source of truth for this workspace's tasks and plans. Intake is plan-only (no direct task creation): decided work → daruma_plan_materialize; raw ideas → the idea pipeline, see Routing. Status follows writes: claim or intent/progress comment → in_progress; outcome comment → in_review; daruma_complete → done. Never persist tasks or plans in markdown, TODO or local plan files. Use daruma_list status=active to see open work. Id arguments: `id` and the kind's own name (`task_id`, `plan_id`, `run_id`, …) are interchangeable. Scope: pass `scope_path` (absolute repo path) on the first call; bind a repo once via daruma_project_use {project_id, scope_path}.";
+const INSTRUCTIONS: &str = "daruma is the source of truth for tasks and plans. Intake is plan-only: decided work → daruma_plan_materialize; raw ideas → the idea pipeline, see Routing. Status follows writes: claim/intent/progress comment → in_progress; outcome comment → in_review; daruma_complete → done. Never persist tasks or plans in markdown, TODO or local files. Arguments: `id` = `<kind>_id`. Goal across repos = one plan: starting a task, daruma_update its git_context.repo; order by daruma_link blocks. Scope: absolute repo `scope_path` on the first call; daruma_project_use {project_id, scope_path} once a component has its own repo and release, never before. Split it? Owner decision card: blocker comment `decision-card: v1`.";
 
 /// Dispatch a single JSON-RPC request using the profile resolved from
 /// `DARUMA_MCP_PROFILE` (unset → `default`). Returns `Ok(None)` for

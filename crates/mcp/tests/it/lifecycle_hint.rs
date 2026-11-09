@@ -306,6 +306,28 @@ async fn initialize_without_a_server_keeps_the_static_rules() {
     assert!(result.get("_meta").is_none());
 }
 
+/// ADR-0013 §3: planning by component needs no new tool, only these rules, so
+/// each one names the existing call that carries it out.
+#[tokio::test]
+async fn initialize_states_the_component_planning_rules() {
+    let client = ApiClient::new("http://127.0.0.1:1", "test-token");
+    let response = dispatch_request_with_profile(&client, ToolProfile::Default, initialize())
+        .await
+        .unwrap();
+    let result = response.result.unwrap();
+    let text = result["instructions"].as_str().unwrap();
+    for rule in [
+        "Goal across repos = one plan",
+        "starting a task, daruma_update its git_context.repo",
+        "order by daruma_link blocks",
+        "daruma_project_use {project_id, scope_path} once a component has its own repo and release, never before",
+        "Owner decision card: blocker comment `decision-card: v1`",
+    ] {
+        assert!(text.contains(rule), "missing rule: {rule}");
+    }
+    assert!(text.chars().count() <= daruma_mcp::MAX_INSTRUCTIONS_CHARS);
+}
+
 #[tokio::test]
 async fn initialize_past_the_lookup_ceiling_keeps_the_static_rules() {
     let stub = Stub {
