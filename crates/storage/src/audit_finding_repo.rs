@@ -58,13 +58,18 @@ impl AuditFindingRepo {
     /// metadata cleared (the problem came back). Returns the row's id either way.
     pub async fn upsert(&self, new: &NewFinding) -> Result<AuditFindingId> {
         let now = time::now();
+        let mut refs = new.entity.refs.clone();
+        refs.sort();
+        refs.dedup();
+        let refs = serde_json::to_string(&refs).map_err(|e| CoreError::storage(e.to_string()))?;
         // Look up the existing row on the dedup key (NULLs coalesced to '' to
         // match migration 0041's unique index).
         let existing: Option<(String,)> = sqlx::query_as(
             "SELECT id FROM audit_findings \
              WHERE COALESCE(project_id, '') = ? AND check_key = ? \
                AND COALESCE(plan_id, '') = ? AND COALESCE(task_id, '') = ? \
-               AND COALESCE(document_id, '') = ? AND COALESCE(artifact_id, '') = ?",
+               AND COALESCE(document_id, '') = ? AND COALESCE(artifact_id, '') = ? \
+               AND refs = ?",
         )
         .bind(entity_key(&new.project_id))
         .bind(&new.check_key)
@@ -72,6 +77,7 @@ impl AuditFindingRepo {
         .bind(entity_key(&new.entity.task_id))
         .bind(entity_key(&new.entity.document_id))
         .bind(entity_key(&new.entity.artifact_id))
+        .bind(&refs)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -111,10 +117,10 @@ impl AuditFindingRepo {
         let id = AuditFindingId::new();
         sqlx::query(
             "INSERT INTO audit_findings \
-             (id, project_id, plan_id, task_id, document_id, artifact_id, \
+             (id, project_id, plan_id, task_id, document_id, artifact_id, refs, \
               check_key, category, severity, title, detail, remediation, source, status, \
               first_seen_at, last_seen_at, resolved_by, resolved_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL, NULL)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL, NULL)",
         )
         .bind(id.to_string())
         .bind(new.project_id.map(|i| i.to_string()))
@@ -122,6 +128,7 @@ impl AuditFindingRepo {
         .bind(new.entity.task_id.map(|i| i.to_string()))
         .bind(new.entity.document_id.map(|i| i.to_string()))
         .bind(new.entity.artifact_id.map(|i| i.to_string()))
+        .bind(&refs)
         .bind(&new.check_key)
         .bind(&new.category)
         .bind(new.severity.as_str())
@@ -301,7 +308,7 @@ fn entity_key<T: std::fmt::Display>(id: &Option<T>) -> String {
 
 fn select_sql(tail: &str) -> String {
     format!(
-        "SELECT id, project_id, plan_id, task_id, document_id, artifact_id, \
+        "SELECT id, project_id, plan_id, task_id, document_id, artifact_id, refs, \
          check_key, category, severity, title, detail, remediation, source, status, \
          first_seen_at, last_seen_at, resolved_by, resolved_at \
          FROM audit_findings {tail}"
@@ -323,6 +330,8 @@ fn row_to_finding(row: &sqlx::sqlite::SqliteRow) -> Result<AuditFinding> {
             task_id: parse_opt_id(row, "task_id")?,
             document_id: parse_opt_id(row, "document_id")?,
             artifact_id: parse_opt_id(row, "artifact_id")?,
+            refs: serde_json::from_str(&row.try_get::<String, _>("refs").map_err(map_err)?)
+                .map_err(|e| CoreError::storage(e.to_string()))?,
         },
         check_key: row.try_get("check_key").map_err(map_err)?,
         category: row.try_get("category").map_err(map_err)?,
@@ -418,6 +427,27 @@ mod tests {
         let got = repo.get(id1).await.unwrap().unwrap();
         assert!(got.last_seen_at >= got.first_seen_at);
         assert_eq!(got.status, FindingStatus::Open);
+    }
+
+    #[tokio::test]
+    async fn typed_refs_are_deduplicated_independently_of_order() {
+        use daruma_domain::FindingRef;
+
+        let repo = repo().await;
+        let project = ProjectId::new();
+        let mut finding = sample(project, None, "attention.test");
+        let task = FindingRef::Task("task-1".into());
+        let run = FindingRef::Run("run-1".into());
+        finding.entity.refs = vec![task.clone(), run.clone(), task.clone()];
+        let id = repo.upsert(&finding).await.unwrap();
+        finding.entity.refs = vec![run, task];
+        assert_eq!(repo.upsert(&finding).await.unwrap(), id);
+        assert_eq!(repo.get(id).await.unwrap().unwrap().entity.refs.len(), 2);
+
+        finding.entity.refs = vec![FindingRef::Knowledge("run-1".into())];
+        assert_ne!(repo.upsert(&finding).await.unwrap(), id);
+        finding.project_id = Some(ProjectId::new());
+        assert_ne!(repo.upsert(&finding).await.unwrap(), id);
     }
 
     #[tokio::test]

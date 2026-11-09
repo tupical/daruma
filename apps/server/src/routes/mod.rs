@@ -3496,6 +3496,7 @@ async fn record_audit_finding(
             task_id: parse_opt_id(&f.task_id, "task id")?,
             document_id: parse_opt_id(&f.document_id, "document id")?,
             artifact_id: parse_opt_id(&f.artifact_id, "artifact id")?,
+            refs: Vec::new(),
         },
         check_key: f.check_key,
         category: f.category,

@@ -34,7 +34,7 @@ pub use artifact::{
     RoleArtifactStatus,
 };
 pub use audit_finding::{
-    AuditFinding, FindingEntity, FindingSeverity, FindingSource, FindingStatus, NewFinding,
+    AuditFinding, FindingEntity, FindingRef, FindingSeverity, FindingSource, FindingStatus, NewFinding,
 };
 pub use comment::{Comment, CommentKind, CommentPatch, NewComment, TransitionComment};
 pub use complexity::{ComplexityHint, TaskBrief};

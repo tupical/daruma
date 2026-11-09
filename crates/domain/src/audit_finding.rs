@@ -113,6 +113,20 @@ impl FindingSource {
     }
 }
 
+/// A source reference for findings involving multiple objects of the same kind.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum FindingRef {
+    Plan(String),
+    Task(String),
+    Document(String),
+    Artifact(String),
+    Run(String),
+    Knowledge(String),
+    Decision(String),
+    Incident(String),
+}
+
 /// The entity a finding is about. Any subset of refs may be set; all `None`
 /// means a project-level finding. Carried as its own struct so the dedup key in
 /// the repo and the optional bindings stay together.
@@ -126,6 +140,8 @@ pub struct FindingEntity {
     pub document_id: Option<DocumentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_id: Option<ArtifactId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<FindingRef>,
 }
 
 /// A persisted audit finding (mutable: upserted by check key, auto-resolvable).
