@@ -2586,8 +2586,16 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_can_start" => {
             let task_id = resolve_task_id(&args, "task_id")?;
+            let query = if args.get("session_id").is_some_and(|v| !v.is_null()) {
+                format!(
+                    "?session_id={}",
+                    urlencode(&resolve_exact_id(&args, IdKind::Session, "session_id")?)
+                )
+            } else {
+                String::new()
+            };
             client
-                .get_json(&format!("/v1/tasks/{task_id}/can_start"))
+                .get_json(&format!("/v1/tasks/{task_id}/can_start{query}"))
                 .await
         }
 
@@ -3148,8 +3156,16 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         // ── Project-wide ready pool ──────────────────────────────────────
         "daruma_ready" => {
             let project_id = required_string(&args, "project_id")?;
+            let session = if args.get("session_id").is_some_and(|v| !v.is_null()) {
+                format!(
+                    "&session_id={}",
+                    urlencode(&resolve_exact_id(&args, IdKind::Session, "session_id")?)
+                )
+            } else {
+                String::new()
+            };
             client
-                .get_json(&format!("/v1/ready?project_id={project_id}"))
+                .get_json(&format!("/v1/ready?project_id={project_id}{session}"))
                 .await
         }
         "daruma_ready_drain" => {
@@ -4572,7 +4588,8 @@ fn schema_can_start() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "task_id": {"type":"string","description":"Task checked for blockers and lifecycle rules."}
+            "task_id": {"type":"string","description":"Task checked for blockers and lifecycle rules."},
+            "session_id": {"type":"string","description":"Session used for sibling-claim exclusion in selection candidates."}
         },
         "required":["task_id"]
     })
@@ -5100,7 +5117,8 @@ fn schema_ready() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "project_id": {"type":"string", "description":"Project to list the ready pool for."}
+            "project_id": {"type":"string", "description":"Project to list the ready pool for."},
+            "session_id": {"type":"string", "description":"Session used for sibling-claim exclusion in selection candidates."}
         },
         "required":["project_id"]
     })

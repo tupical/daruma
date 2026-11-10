@@ -463,3 +463,26 @@ async fn plan_progress_forwards_session_context() {
         .unwrap();
     assert!(definition.input_schema["properties"]["session_id"].is_object());
 }
+
+#[tokio::test]
+async fn selection_surfaces_forward_session_context() {
+    for (tool, args, expected) in [
+        (
+            "daruma_can_start",
+            json!({"task_id":"tsk_1", "session_id":"ags_1"}),
+            "/v1/tasks/tsk_1/can_start?session_id=ags_1",
+        ),
+        (
+            "daruma_ready",
+            json!({"project_id":"prj_1", "session_id":"ags_1"}),
+            "/v1/ready?project_id=prj_1&session_id=ags_1",
+        ),
+    ] {
+        assert_eq!(path_of(tool, args).await, expected);
+        let definition = tool_definitions()
+            .into_iter()
+            .find(|t| t.name == tool)
+            .unwrap();
+        assert!(definition.input_schema["properties"]["session_id"].is_object());
+    }
+}

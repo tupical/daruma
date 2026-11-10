@@ -323,6 +323,9 @@ async fn selection_explanation_distinguishes_transition_and_graph_preview_withou
     .await;
     assert_eq!(start["transition_allowed"], true);
     assert_eq!(start["content_policy"], "not_evaluated");
+    assert_eq!(start["plan_membership"][0]["plan_id"], json!(plan_id));
+    assert_eq!(start["plan_membership"][0]["selection_candidate"], json!(a));
+    assert_eq!(start["selection_context"]["rules"], "not_consulted");
     let (_, blocked) = json_get(
         app.router.clone(),
         &app.admin_token,
@@ -338,6 +341,8 @@ async fn selection_explanation_distinguishes_transition_and_graph_preview_withou
     )
     .await;
     assert_eq!(ready["semantics"], "graph_preview");
+    assert_eq!(ready["selection_candidates"][0]["task_id"], json!(a));
+    assert_eq!(ready["selection_context"]["rules"], "not_consulted");
     assert_eq!(ready["content_policy"], "not_evaluated");
     let (_, progress) = json_get(
         app.router.clone(),
@@ -348,6 +353,12 @@ async fn selection_explanation_distinguishes_transition_and_graph_preview_withou
     assert_eq!(progress["selection_candidate"], json!(a));
     assert_eq!(progress["next_ready"], json!(a));
     assert_eq!(progress["content_policy"], "not_evaluated");
+    assert_eq!(progress["selection_context"]["rules"], "not_consulted");
+    assert_eq!(progress["selection_observation"]["examined"], 1);
+    assert_eq!(
+        progress["selection_observation"]["stopped_at_candidate"],
+        true
+    );
     let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
         .fetch_one(&app.pool)
         .await
@@ -433,12 +444,34 @@ async fn selection_explanation_respects_resolver_session_context() {
         "progress: {progress}"
     );
     assert_eq!(progress["next_ready"], json!(expected));
+    assert_eq!(progress["selection_context"]["session_id"], json!(session));
+    assert_eq!(progress["selection_context"]["agent_id"], json!(app.admin_agent_id));
+    assert_eq!(progress["selection_observation"]["sibling_claim"], 1);
+    assert_eq!(progress["selection_observation"]["dependencies"], 1);
+    assert_eq!(progress["selection_observation"]["examined"], 3);
+    let (_, ready) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!(
+            "/v1/ready?project_id={}&session_id={session}",
+            app.state
+                .plans
+                .get(plan_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .project_id
+        ),
+    )
+    .await;
+    assert_eq!(ready["selection_candidates"][0]["task_id"], json!(c));
     let (_, start) = json_get(
         app.router.clone(),
         &app.admin_token,
-        &format!("/v1/tasks/{a}/can_start"),
+        &format!("/v1/tasks/{a}/can_start?session_id={session}"),
     )
     .await;
+    assert_eq!(start["plan_membership"][0]["selection_candidate"], json!(c));
     assert_eq!(start["transition_scope"], "lifecycle_rules_only");
 }
 
@@ -575,4 +608,161 @@ async fn selection_explanation_matches_resolver_across_plan_states() {
         .await
         .unwrap();
     assert_candidate(&app, &resolver, plan_id, None).await;
+}
+
+#[tokio::test]
+async fn selection_explanation_denies_invisible_blocker_without_leak_or_writes() {
+    use daruma_auth::{Capabilities, Capability, ProjectFilter};
+    let app = test_app().await;
+    let (project, _, a, _, _) = seed_plan(&app.state.commands).await;
+    let env = app
+        .state
+        .commands
+        .dispatch(
+            Command::CreateProject {
+                title: "Private".into(),
+                description: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let private = match &env[0].payload {
+        Event::ProjectCreated { project } => project.id,
+        _ => unreachable!(),
+    };
+    let hidden = TaskId::new();
+    let mut task = NewTask::new("secret blocker");
+    task.id = Some(hidden);
+    task.project_id = Some(private);
+    task.status = Some(Status::Todo);
+    app.state
+        .commands
+        .dispatch(Command::CreateTask { task }, Actor::user())
+        .await
+        .unwrap();
+    app.state
+        .commands
+        .dispatch(
+            Command::LinkTasks {
+                from: hidden,
+                to: a,
+                kind: RelationKind::Blocks,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let caps = Capabilities::from(
+        [
+            Capability::TaskRead,
+            Capability::ProjectRead,
+            Capability::PlanRead,
+        ]
+        .into_iter(),
+    );
+    let (token, _) = common::mint_pat(
+        &app.auth_store(),
+        caps,
+        ProjectFilter::Only {
+            projects: vec![project],
+        },
+    )
+    .await;
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_claims")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let (status, body) = json_get(
+        app.router.clone(),
+        &token,
+        &format!("/v1/tasks/{a}/can_start"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let text = body.to_string();
+    assert!(
+        !text.contains(&hidden.to_string()) && !text.contains("secret blocker"),
+        "{text}"
+    );
+    assert_eq!(
+        before,
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        claims,
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_claims")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn selection_explanation_reports_real_rule_without_skipping_candidate() {
+    let app = common::TestAppBuilder::default()
+        .rule_engine_gate()
+        .build()
+        .await;
+    let (project, plan, a, _, _) = seed_plan(&app.state.commands).await;
+    app.state
+        .commands
+        .dispatch(
+            Command::SetPlanStatus {
+                plan_id: plan,
+                status: daruma_domain::PlanStatus::Active,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let rule = json!({"rule": {"rule_key":"owner-before-start", "title":"Owner required", "scope":{"kind":"project","id":project}, "trigger":"task.before_start", "requirement":{"type":"owner_required"}, "mode":"required"}});
+    let (status, body) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/rules",
+        &rule.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, progress) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/plans/{plan}/progress"),
+    )
+    .await;
+    let (_, ready) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/ready?project_id={project}"),
+    )
+    .await;
+    let (_, start) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks/{a}/can_start"),
+    )
+    .await;
+    assert_eq!(progress["selection_candidate"], json!(a));
+    assert_eq!(ready["selection_candidates"][0]["task_id"], json!(a));
+    assert_eq!(start["plan_membership"][0]["selection_candidate"], json!(a));
+    assert_eq!(start["selection_context"]["rules"], "not_consulted");
+    assert_eq!(start["transition_allowed"], false, "{start}");
+    let (status, body) = json_post(
+        app.router.clone(),
+        &app.admin_token,
+        "/v1/commands",
+        &json!({"command":{"type":"set_status","id":a,"status":"in_progress"}}).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
 }

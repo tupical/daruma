@@ -29,6 +29,20 @@ pub struct NextTask {
     pub claim_expires_at: Option<Timestamp>,
 }
 
+/// Counters describe only the prefix visited in this resolver invocation.
+#[derive(Default, serde::Serialize)]
+pub struct SelectionObservation {
+    pub examined: u32,
+    pub missing: u32,
+    pub terminal_or_inbox: u32,
+    pub dependencies: u32,
+    pub relations: u32,
+    pub other_claim: u32,
+    pub sibling_claim: u32,
+    pub stopped_at_candidate: bool,
+    pub plan_active: bool,
+}
+
 // ── NextTaskResolver ──────────────────────────────────────────────────────────
 
 /// Stateless resolver: given a plan and optional claim TTL, returns the first
@@ -79,6 +93,22 @@ impl NextTaskResolver<'_> {
         claim_ttl: Option<Duration>,
         session_id: Option<AgentSessionId>,
     ) -> Result<Option<NextTask>> {
+        Ok(self
+            .observe_for_session(plan_id, _run_id, agent_id, claim_ttl, session_id)
+            .await?
+            .0)
+    }
+
+    /// The candidate and explanation are produced by the same resolver pass.
+    pub async fn observe_for_session(
+        &self,
+        plan_id: PlanId,
+        _run_id: RunId,
+        agent_id: AgentId,
+        claim_ttl: Option<Duration>,
+        session_id: Option<AgentSessionId>,
+    ) -> Result<(Option<NextTask>, SelectionObservation)> {
+        let mut observation = SelectionObservation::default();
         // 1. Plan must be Active
         let plan = self
             .plans
@@ -87,23 +117,29 @@ impl NextTaskResolver<'_> {
             .ok_or_else(|| CoreError::not_found(format!("plan {plan_id}")))?;
 
         if plan.status != PlanStatus::Active {
-            return Ok(None);
+            return Ok((None, observation));
         }
+        observation.plan_active = true;
 
         // 2. Ordered task list
         let plan_tasks = self.plans.list_plan_tasks_ordered(plan_id).await?;
 
         // 3+4. Filter
         for pt in &plan_tasks {
+            observation.examined += 1;
             // Task must exist
             let task = match self.tasks.get(pt.task_id).await? {
                 Some(t) => t,
-                None => continue,
+                None => {
+                    observation.missing += 1;
+                    continue;
+                }
             };
 
             // Terminal tasks must never be offered for execution, and inbox
             // tasks still wait for the owner's triage — skip both.
             if task.status.is_terminal() || task.status == Status::Inbox {
+                observation.terminal_or_inbox += 1;
                 continue;
             }
 
@@ -119,6 +155,7 @@ impl NextTaskResolver<'_> {
                 }
             }
             if !deps_ok {
+                observation.dependencies += 1;
                 continue;
             }
 
@@ -130,6 +167,7 @@ impl NextTaskResolver<'_> {
                     .await?
                     .is_empty()
                 {
+                    observation.relations += 1;
                     continue;
                 }
             }
@@ -142,6 +180,7 @@ impl NextTaskResolver<'_> {
                 .await?
                 .is_some()
             {
+                observation.other_claim += 1;
                 continue;
             }
             if let Some(session_id) = session_id {
@@ -150,6 +189,7 @@ impl NextTaskResolver<'_> {
                     .is_claimed_by_sibling_session(pt.task_id, agent_id, session_id)
                     .await?
                 {
+                    observation.sibling_claim += 1;
                     continue;
                 }
             }
@@ -160,14 +200,18 @@ impl NextTaskResolver<'_> {
                 time::now() + chrono::Duration::seconds(secs)
             });
 
-            return Ok(Some(NextTask {
-                task_id: pt.task_id,
-                position: pt.position,
-                claim_expires_at,
-            }));
+            observation.stopped_at_candidate = true;
+            return Ok((
+                Some(NextTask {
+                    task_id: pt.task_id,
+                    position: pt.position,
+                    claim_expires_at,
+                }),
+                observation,
+            ));
         }
 
-        Ok(None)
+        Ok((None, observation))
     }
 }
 

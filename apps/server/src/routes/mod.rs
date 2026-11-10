@@ -6217,26 +6217,21 @@ async fn get_plan_progress(
         claims: state.claims.as_ref(),
         relations: Some(state.relations.as_ref()),
     };
-    if let Some(next) = resolver
-        .next_for_session(
-            plan_id,
-            RunId::new(),
-            auth.agent_id,
-            None,
-            query
-                .session_id
-                .map(|id| parse_id(id, "session id"))
-                .transpose()?,
-        )
+    let session_id = query
+        .session_id
+        .map(|id| parse_id(id, "session id"))
+        .transpose()?;
+    let (candidate, observation) = resolver
+        .observe_for_session(plan_id, RunId::new(), auth.agent_id, None, session_id)
         .await
-        .map_err(ApiError::from)?
-    {
-        summary.next_ready = Some(next.task_id);
-    }
+        .map_err(ApiError::from)?;
+    summary.next_ready = candidate.map(|next| next.task_id);
 
     let mut response = serde_json::to_value(&summary)
         .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
     response["selection_candidate"] = json!(summary.next_ready);
+    response["selection_context"] = selection_context(auth.agent_id, session_id);
+    response["selection_observation"] = json!(observation);
     response["content_policy"] = json!("not_evaluated");
     response["snapshot_consistency"] = json!("not_atomic");
     Ok(Json(response))
@@ -6272,10 +6267,15 @@ async fn get_plan_fanout(
     Ok(Json(waves))
 }
 
+fn selection_context(agent_id: AgentId, session_id: Option<AgentSessionId>) -> serde_json::Value {
+    json!({"agent_id": agent_id, "session_id": session_id, "rules": "not_consulted", "consistency": "resolver_observation_non_atomic"})
+}
+
 async fn get_can_start(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Path(id_str): Path<String>,
+    Query(query): Query<PlanProgressQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
@@ -6308,8 +6308,47 @@ async fn get_can_start(
     let claimed_by_other = current_claim
         .as_ref()
         .is_some_and(|claim| claim.agent_id != auth.agent_id);
+    let session_id = query
+        .session_id
+        .map(|id| parse_id(id, "session id"))
+        .transpose()?;
+    let resolver = NextTaskResolver {
+        plans: state.plans.as_ref() as &dyn PlanRepository,
+        tasks: state.tasks.as_ref(),
+        claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
+    };
+    let mut membership = Vec::new();
+    let mut excluded = false;
+    for plan in state
+        .plans
+        .list_plans_for_task(task_id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        match project_scope::plan(&state, &auth, plan.id).await {
+            Ok(()) => {}
+            Err(ApiError(CoreError::Forbidden(_))) => {
+                excluded = true;
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+        let (candidate, observation) = resolver
+            .observe_for_session(plan.id, RunId::new(), auth.agent_id, None, session_id)
+            .await
+            .map_err(ApiError::from)?;
+        membership.push(json!({"plan_id": plan.id, "title": plan.title, "status": plan.status, "selection_candidate": candidate.map(|next| next.task_id), "selection_observation": observation}));
+    }
     let mut response = serde_json::to_value(readiness)
         .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    response["plan_membership"] = json!(membership);
+    response["membership_scope"] = json!(if excluded {
+        "visible_only_exclusions_present"
+    } else {
+        "visible_plans_checked"
+    });
+    response["selection_context"] = selection_context(auth.agent_id, session_id);
     response["transition_allowed"] = json!(transition_allowed);
     response["transition_scope"] = json!("lifecycle_rules_only");
     response["content_policy"] = json!("not_evaluated");
@@ -7160,6 +7199,7 @@ async fn drain_next_task(
 #[derive(Deserialize)]
 struct ProjectReadyQuery {
     project_id: String,
+    session_id: Option<String>,
 }
 
 /// `GET /v1/ready?project_id=` — the project-wide ready pool: tasks across all
@@ -7180,9 +7220,32 @@ async fn project_ready(
         .await
         .map_err(ApiError::from)?;
 
+    let session_id = q
+        .session_id
+        .map(|id| parse_id(id, "session id"))
+        .transpose()?;
+    let resolver = NextTaskResolver {
+        plans: state.plans.as_ref() as &dyn PlanRepository,
+        tasks: state.tasks.as_ref(),
+        claims: state.claims.as_ref(),
+        relations: Some(state.relations.as_ref()),
+    };
+    let mut candidates = Vec::new();
+    let mut excluded = false;
     let mut ready = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for plan in &plans {
+        match project_scope::plan(&state, &auth, plan.id).await {
+            Ok(()) => {
+                let (candidate, observation) = resolver
+                    .observe_for_session(plan.id, RunId::new(), auth.agent_id, None, session_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                candidates.push(json!({"plan_id": plan.id, "task_id": candidate.map(|next| next.task_id), "selection_observation": observation}));
+            }
+            Err(ApiError(CoreError::Forbidden(_))) => excluded = true,
+            Err(err) => return Err(err),
+        }
         let waves =
             plan_readiness::plan_fanout(&state.plans, &state.tasks, &state.relations, plan.id)
                 .await
@@ -7215,6 +7278,9 @@ async fn project_ready(
 
     Ok(Json(serde_json::json!({
         "ready": ready,
+        "selection_candidates": candidates,
+        "selection_scope": if excluded { "visible_only_exclusions_present" } else { "visible_plans_checked" },
+        "selection_context": selection_context(auth.agent_id, session_id),
         "semantics": "graph_preview",
         "content_policy": "not_evaluated",
         "snapshot_consistency": "not_atomic"
