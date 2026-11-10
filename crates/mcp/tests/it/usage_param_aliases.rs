@@ -446,3 +446,20 @@ async fn key_tool_schemas_advertise_the_accepted_id_alias() {
         );
     }
 }
+
+#[tokio::test]
+async fn plan_progress_forwards_session_context() {
+    assert_eq!(
+        path_of(
+            "daruma_plan_progress",
+            json!({"plan_id": "pln_1", "session_id": "ags_1"})
+        )
+        .await,
+        "/v1/plans/pln_1/progress?session_id=ags_1"
+    );
+    let definition = tool_definitions()
+        .into_iter()
+        .find(|t| t.name == "daruma_plan_progress")
+        .unwrap();
+    assert!(definition.input_schema["properties"]["session_id"].is_object());
+}

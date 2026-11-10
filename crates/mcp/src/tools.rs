@@ -658,7 +658,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             "daruma_plan_progress",
             "Plan progress snapshot",
             "Executor snapshot for a plan: task counts by status plus the next ready task id (when the plan is Active). Alias of `plan_id`: `id`.",
-            with_id_alias(schema_with_id("plan_id"), "plan_id", "id"),
+            with_id_alias(schema_plan_progress(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Read,
         ),
         tool(
@@ -2548,8 +2548,16 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
         }
         "daruma_plan_progress" => {
             let plan_id = resolve_plan_id(&args, "plan_id")?;
+            let query = if args.get("session_id").is_some_and(|v| !v.is_null()) {
+                format!(
+                    "?session_id={}",
+                    urlencode(&resolve_exact_id(&args, IdKind::Session, "session_id")?)
+                )
+            } else {
+                String::new()
+            };
             client
-                .get_json(&format!("/v1/plans/{plan_id}/progress"))
+                .get_json(&format!("/v1/plans/{plan_id}/progress{query}"))
                 .await
         }
         "daruma_plan_drain_next" => {
@@ -4536,6 +4544,17 @@ fn schema_plan_next_task() -> Value {
     })
 }
 
+fn schema_plan_progress() -> Value {
+    json!({
+        "type":"object",
+        "properties": {
+            "plan_id": {"type":"string", "description":"Plan id"},
+            "session_id": {"type":"string", "description":"Session used for sibling-claim exclusion"}
+        },
+        "required":["plan_id"]
+    })
+}
+
 fn schema_plan_drain_next() -> Value {
     json!({
         "type":"object",
@@ -6170,6 +6189,12 @@ fn plan_progress_view(plan_resp: Value, graph: Value) -> Value {
     let mut view = json!({
         "plan": plan,
         "progress": progress,
+        "active_count": active.len(),
+        "blocked_count": blocked.len(),
+        "next_count": next.len(),
+        "counts_scope": "plan_graph_nodes",
+        "next_semantics": "graph_preview",
+        "content_policy": "not_evaluated",
         "active": active.into_iter().take(5).collect::<Vec<_>>(),
         "blocked": blocked.into_iter().take(5).collect::<Vec<_>>(),
         "next": next.into_iter().take(5).collect::<Vec<_>>(),
@@ -7566,6 +7591,21 @@ mod tests {
         // title is preserved in full; description is what got cut.
         assert_eq!(out["title"].as_str().unwrap().len(), 2000);
         assert!(out["description"].as_str().unwrap().len() < 2000);
+    }
+
+    #[test]
+    fn selection_explanation_legacy_next_has_preview_counts() {
+        let nodes: Vec<Value> = (0..7).map(|i| json!({"task_id": format!("t{i}"), "position": i, "title": "T", "status": "todo", "depends_on": []})).collect();
+        let view = plan_progress_view(
+            json!({"plan": {"id": "p"}}),
+            json!({"nodes": nodes, "edges": []}),
+        );
+        assert_eq!(view["next"].as_array().unwrap().len(), 5);
+        assert_eq!(view["next"][0]["task_id"], "t0");
+        assert_eq!(view["next_count"], 7);
+        assert_eq!(view["next_semantics"], "graph_preview");
+        assert_eq!(view["counts_scope"], "plan_graph_nodes");
+        assert_eq!(view["content_policy"], "not_evaluated");
     }
 
     #[test]
