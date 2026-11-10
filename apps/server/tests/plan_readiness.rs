@@ -441,3 +441,131 @@ async fn selection_explanation_respects_resolver_session_context() {
     .await;
     assert_eq!(start["transition_scope"], "lifecycle_rules_only");
 }
+
+#[tokio::test]
+async fn selection_explanation_matches_resolver_across_plan_states() {
+    use daruma_core::{repos::PlanRepository, NextTaskResolver};
+    use daruma_shared::{AgentId, RunId};
+    let app = test_app().await;
+    let (_, plan_id, a, b, c) = seed_plan(&app.state.commands).await;
+    let actor = Actor::user();
+    app.state
+        .commands
+        .dispatch(
+            Command::SetPlanStatus {
+                plan_id,
+                status: daruma_domain::PlanStatus::Active,
+                force: false,
+                override_reason: None,
+            },
+            actor.clone(),
+        )
+        .await
+        .unwrap();
+    let resolver = NextTaskResolver {
+        plans: app.state.plans.as_ref() as &dyn PlanRepository,
+        tasks: &app.state.tasks,
+        claims: &app.state.claims,
+        relations: Some(&app.state.relations),
+    };
+    async fn assert_candidate(
+        app: &common::TestApp,
+        resolver: &NextTaskResolver<'_>,
+        plan_id: PlanId,
+        expected: Option<TaskId>,
+    ) {
+        let resolved = resolver
+            .next_for_session(plan_id, RunId::new(), app.admin_agent_id, None, None)
+            .await
+            .unwrap()
+            .map(|v| v.task_id);
+        assert_eq!(resolved, expected);
+        let (status, progress) = json_get(
+            app.router.clone(),
+            &app.admin_token,
+            &format!("/v1/plans/{plan_id}/progress"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(progress["selection_candidate"], json!(expected));
+    }
+    assert_candidate(&app, &resolver, plan_id, Some(a)).await;
+    app.state
+        .commands
+        .dispatch(
+            Command::SetStatus {
+                id: a,
+                status: Status::Inbox,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            actor.clone(),
+        )
+        .await
+        .unwrap();
+    assert_candidate(&app, &resolver, plan_id, Some(c)).await;
+    app.state
+        .claims
+        .try_acquire_in_session_recorded(
+            actor.clone(),
+            AgentId::new(),
+            c,
+            chrono::Duration::minutes(5),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_candidate(&app, &resolver, plan_id, None).await;
+    app.state
+        .commands
+        .dispatch(
+            Command::SetStatus {
+                id: a,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            actor.clone(),
+        )
+        .await
+        .unwrap();
+    app.state
+        .commands
+        .dispatch(
+            Command::SetStatus {
+                id: c,
+                status: Status::Done,
+                force: false,
+                override_reason: None,
+                comment: None,
+            },
+            actor.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(app
+        .state
+        .relations
+        .list_by_task(b)
+        .await
+        .unwrap()
+        .iter()
+        .any(|r| r.kind == RelationKind::WasBlocking));
+    assert_candidate(&app, &resolver, plan_id, Some(b)).await;
+    app.state
+        .commands
+        .dispatch(
+            Command::SetPlanStatus {
+                plan_id,
+                status: daruma_domain::PlanStatus::Abandoned,
+                force: false,
+                override_reason: None,
+            },
+            actor,
+        )
+        .await
+        .unwrap();
+    assert_candidate(&app, &resolver, plan_id, None).await;
+}
