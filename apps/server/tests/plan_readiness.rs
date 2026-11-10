@@ -554,6 +554,13 @@ async fn selection_explanation_matches_resolver_across_plan_states() {
         .iter()
         .any(|r| r.kind == RelationKind::WasBlocking));
     assert_candidate(&app, &resolver, plan_id, Some(b)).await;
+    // Archiving projects the plan to abandoned, which the resolver skips.
+    app.state
+        .commands
+        .dispatch(Command::ArchivePlan { id: plan_id }, actor.clone())
+        .await
+        .unwrap();
+    assert_candidate(&app, &resolver, plan_id, None).await;
     app.state
         .commands
         .dispatch(

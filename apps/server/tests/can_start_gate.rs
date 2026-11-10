@@ -81,6 +81,8 @@ async fn can_start_route_reports_the_gate_that_would_block_the_transition() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "can_start: {readiness}");
+    assert_eq!(readiness["transition_allowed"], json!(false));
+    assert_eq!(readiness["transition_scope"], json!("lifecycle_rules_only"));
     assert_eq!(
         readiness["ready"],
         json!(false),
@@ -128,6 +130,7 @@ async fn can_start_route_without_a_gate_is_ready_and_omits_rule_fields() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "can_start: {readiness}");
+    assert_eq!(readiness["transition_allowed"], json!(true));
     assert_eq!(readiness["ready"], json!(true));
     assert_eq!(readiness["reason"], json!("ready"));
     assert!(
