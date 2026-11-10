@@ -6189,10 +6189,16 @@ fn plan_url_slug(plan: &Plan) -> String {
     format!("{}-{}", slugify_title(&plan.title), plan.id.as_uuid())
 }
 
+#[derive(Deserialize, Default)]
+struct PlanProgressQuery {
+    session_id: Option<String>,
+}
+
 async fn get_plan_progress(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Path(id_str): Path<String>,
+    Query(query): Query<PlanProgressQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::PlanRead)
         .map_err(ApiError::from_missing_cap)?;
@@ -6212,14 +6218,28 @@ async fn get_plan_progress(
         relations: Some(state.relations.as_ref()),
     };
     if let Some(next) = resolver
-        .next(plan_id, RunId::new(), auth.agent_id, None)
+        .next_for_session(
+            plan_id,
+            RunId::new(),
+            auth.agent_id,
+            None,
+            query
+                .session_id
+                .map(|id| parse_id(id, "session id"))
+                .transpose()?,
+        )
         .await
         .map_err(ApiError::from)?
     {
         summary.next_ready = Some(next.task_id);
     }
 
-    Ok(Json(summary))
+    let mut response = serde_json::to_value(&summary)
+        .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    response["selection_candidate"] = json!(summary.next_ready);
+    response["content_policy"] = json!("not_evaluated");
+    response["snapshot_consistency"] = json!("not_atomic");
+    Ok(Json(response))
 }
 
 async fn get_plan_graph(
@@ -6272,6 +6292,14 @@ async fn get_can_start(
     let readiness = plan_readiness::can_start(&state.tasks, &state.relations, gate, task_id)
         .await
         .map_err(ApiError::from)?;
+    // Relation blockers are a readiness policy, not a start-transition gate.
+    // Terminal tasks can emit additional reopen events, which this preflight
+    // does not evaluate, so do not claim a transition result for them.
+    let transition_allowed = if readiness.reason == "terminal_task" {
+        None
+    } else {
+        Some(readiness.rule_blockers.is_empty())
+    };
     let current_claim = state
         .claims
         .get_active_for_task(task_id)
@@ -6282,6 +6310,9 @@ async fn get_can_start(
         .is_some_and(|claim| claim.agent_id != auth.agent_id);
     let mut response = serde_json::to_value(readiness)
         .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
+    response["transition_allowed"] = json!(transition_allowed);
+    response["transition_scope"] = json!("lifecycle_rules_only");
+    response["content_policy"] = json!("not_evaluated");
     response["current_claim"] = requester_claim_projection(&state, current_claim, auth.agent_id)
         .await
         .map_err(ApiError::from)?;
@@ -7182,7 +7213,12 @@ async fn project_ready(
         }
     }
 
-    Ok(Json(serde_json::json!({ "ready": ready })))
+    Ok(Json(serde_json::json!({
+        "ready": ready,
+        "semantics": "graph_preview",
+        "content_policy": "not_evaluated",
+        "snapshot_consistency": "not_atomic"
+    })))
 }
 
 /// `POST /v1/ready/drain?project_id=` — atomically claim the next ready task

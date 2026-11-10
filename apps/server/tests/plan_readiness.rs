@@ -289,3 +289,155 @@ async fn graph_fanout_and_can_start_respect_depends_on_and_blocks() {
     assert_eq!(can_start["ready"], true);
     assert_eq!(can_start["blockers"], json!([]));
 }
+
+#[tokio::test]
+async fn selection_explanation_distinguishes_transition_and_graph_preview_without_writes() {
+    let app = test_app().await;
+    let (project_id, plan_id, a, b, _) = seed_plan(&app.state.commands).await;
+    app.state
+        .commands
+        .dispatch(
+            Command::SetPlanStatus {
+                plan_id,
+                status: daruma_domain::PlanStatus::Active,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let claims_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_claims")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let (_, start) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks/{a}/can_start"),
+    )
+    .await;
+    assert_eq!(start["transition_allowed"], true);
+    assert_eq!(start["content_policy"], "not_evaluated");
+    let (_, blocked) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks/{b}/can_start"),
+    )
+    .await;
+    assert_eq!(blocked["ready"], false);
+    assert_eq!(blocked["transition_allowed"], true);
+    let (_, ready) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/ready?project_id={project_id}"),
+    )
+    .await;
+    assert_eq!(ready["semantics"], "graph_preview");
+    assert_eq!(ready["content_policy"], "not_evaluated");
+    let (_, progress) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/plans/{plan_id}/progress"),
+    )
+    .await;
+    assert_eq!(progress["selection_candidate"], json!(a));
+    assert_eq!(progress["next_ready"], json!(a));
+    assert_eq!(progress["content_policy"], "not_evaluated");
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+    let claims_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_claims")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(claims_before, claims_after);
+}
+
+#[tokio::test]
+async fn selection_explanation_respects_resolver_session_context() {
+    use daruma_core::{repos::PlanRepository, NextTaskResolver};
+    use daruma_shared::{AgentSessionId, RunId};
+    let app = test_app().await;
+    let (_, plan_id, a, _, c) = seed_plan(&app.state.commands).await;
+    app.state
+        .commands
+        .dispatch(
+            Command::SetPlanStatus {
+                plan_id,
+                status: daruma_domain::PlanStatus::Active,
+                force: false,
+                override_reason: None,
+            },
+            Actor::user(),
+        )
+        .await
+        .unwrap();
+    let sibling = AgentSessionId::new();
+    let session = AgentSessionId::new();
+    let now = chrono::Utc::now().to_rfc3339();
+    for id in [sibling, session] {
+        sqlx::query("INSERT INTO agent_sessions (id, agent_id, started_at) VALUES (?, ?, ?)")
+            .bind(id.to_string())
+            .bind(app.admin_agent_id.to_string())
+            .bind(&now)
+            .execute(&app.pool)
+            .await
+            .unwrap();
+    }
+    app.state
+        .claims
+        .try_acquire_in_session_recorded(
+            Actor::user(),
+            app.admin_agent_id,
+            a,
+            chrono::Duration::minutes(5),
+            Some(sibling),
+        )
+        .await
+        .unwrap();
+    let resolver = NextTaskResolver {
+        plans: app.state.plans.as_ref() as &dyn PlanRepository,
+        tasks: &app.state.tasks,
+        claims: &app.state.claims,
+        relations: Some(&app.state.relations),
+    };
+    let expected = resolver
+        .next_for_session(
+            plan_id,
+            RunId::new(),
+            app.admin_agent_id,
+            None,
+            Some(session),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .task_id;
+    assert_eq!(expected, c);
+    let (_, progress) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/plans/{plan_id}/progress?session_id={session}"),
+    )
+    .await;
+    assert_eq!(
+        progress["selection_candidate"],
+        json!(expected),
+        "progress: {progress}"
+    );
+    assert_eq!(progress["next_ready"], json!(expected));
+    let (_, start) = json_get(
+        app.router.clone(),
+        &app.admin_token,
+        &format!("/v1/tasks/{a}/can_start"),
+    )
+    .await;
+    assert_eq!(start["transition_scope"], "lifecycle_rules_only");
+}
