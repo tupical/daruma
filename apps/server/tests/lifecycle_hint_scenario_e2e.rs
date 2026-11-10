@@ -131,7 +131,7 @@ async fn corporate_game_mutations_lead_to_the_next_step() {
     let (text, line) = executor.initialize("executor").await;
     assert_eq!(line, None);
     assert!(text.contains(
-        "claim or intent/progress comment → in_progress; outcome comment → in_review; daruma_complete → done"
+        "claim/intent/progress comment → in_progress; outcome comment → in_review; daruma_complete → done"
     ));
 
     // 2. The HR lead decides the quarter's work.
