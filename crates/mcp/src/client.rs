@@ -18,6 +18,8 @@ pub struct ApiClient {
     token: String,
     /// Logical workspace scope sent as `X-Daruma-Workspace-Id`.
     workspace_id: Option<String>,
+    /// Non-secret request selector, never the authenticated runtime identity.
+    logical_agent_id: Option<uuid::Uuid>,
     http: reqwest::Client,
     /// Stable per-session agent id so every command this MCP process dispatches
     /// can be grouped under a single `Actor::Agent`. Generated once when the
@@ -65,6 +67,7 @@ impl ApiClient {
             base: base.into(),
             token: token.into(),
             workspace_id: None,
+            logical_agent_id: None,
             http: reqwest::Client::new(),
             agent_id: fresh_agent_id(),
             agent_id_is_authenticated: false,
@@ -74,6 +77,10 @@ impl ApiClient {
         }
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
     /// Attach a logical workspace UUID.
     pub fn with_workspace_id(mut self, workspace_id: impl Into<String>) -> Self {
         let id = workspace_id.into();
@@ -81,6 +88,16 @@ impl ApiClient {
             self.workspace_id = Some(id);
         }
         self
+    }
+
+    /// Select a user-owned logical label without changing runtime authority.
+    pub fn with_logical_agent_id(mut self, id: uuid::Uuid) -> Self {
+        self.logical_agent_id = Some(id);
+        self
+    }
+
+    pub fn logical_agent_id(&self) -> Option<uuid::Uuid> {
+        self.logical_agent_id
     }
 
     /// Name the MCP client this session serves; blank names are ignored.
@@ -112,6 +129,7 @@ impl ApiClient {
             base: base.into(),
             token: token.into(),
             workspace_id: None,
+            logical_agent_id: None,
             http,
             agent_id: fresh_agent_id(),
             agent_id_is_authenticated: false,
@@ -271,6 +289,9 @@ impl ApiClient {
             .header("X-Daruma-Plugin-Contract", "1");
         if let Some(client) = &self.client_name {
             builder = builder.header("X-Daruma-Client", client.as_str());
+        }
+        if let Some(id) = self.logical_agent_id {
+            builder = builder.header(crate::logical_identity::HEADER, id.to_string());
         }
         match &self.workspace_id {
             Some(id) => builder.header("X-Daruma-Workspace-Id", id.as_str()),

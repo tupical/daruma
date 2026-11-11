@@ -27,5 +27,6 @@ clap = { version = "4.5", features = ["derive", "env"] }
 comfy-table = "7"
 
 [dev-dependencies]
+axum = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 serde_json = { workspace = true }

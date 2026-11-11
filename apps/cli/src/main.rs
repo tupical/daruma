@@ -234,7 +234,15 @@ async fn main() -> anyhow::Result<()> {
     let http = reqwest::Client::builder()
         .user_agent(format!("daruma-cli/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
-    let client = ApiClient::with_http(base.clone(), token.clone(), http);
+    let mut client = ApiClient::with_http(base.clone(), token.clone(), http);
+    if let Some(id) = workspace_id_from_env().or_else(|| {
+        daruma_mcp::credentials::resolve_from_agent_dir()
+            .filter(|stored| stored.token == token)
+            .and_then(|stored| stored.workspace_id)
+    }) {
+        client = client.with_workspace_id(id);
+    }
+    let client = bind_logical_identity(client).await?;
 
     match cli.cmd.expect("None subcommand handled above") {
         Cmd::Install { .. } => unreachable!("install exits before HTTP client setup"), // all fields covered by `..`
@@ -310,6 +318,9 @@ async fn run_mcp_stdio(
         client = client.with_workspace_id(workspace_id);
     }
 
+    // Fail closed BEFORE migration, initialize, or any initial open-task read.
+    let client = bind_logical_identity(client).await?;
+
     // One-time move of file-based scope bindings to the server (0046).
     match daruma_mcp::workspace::migrate_workspaces_file(&client).await {
         Ok(0) => {}
@@ -324,6 +335,22 @@ async fn run_mcp_stdio(
 
     tracing::info!(profile = profile.as_str(), "daruma mcp ready on stdio");
     run_stdio_with_profile(client, profile).await
+}
+
+/// Bootstrap is explicit opt-in; legacy/native HTTP hosts remain unchanged.
+async fn bind_logical_identity(client: ApiClient) -> anyhow::Result<ApiClient> {
+    let binding = std::env::var("DARUMA_LOGICAL_BINDING").ok();
+    let reuse = std::env::var("DARUMA_LOGICAL_AGENT_ID").ok();
+    let Some(binding) = binding else {
+        anyhow::ensure!(reuse.is_none(), "incomplete logical setup: reuse requires DARUMA_LOGICAL_BINDING");
+        return Ok(client);
+    };
+    let reuse = reuse.map(|value| value.parse::<uuid::Uuid>()).transpose()
+        .context("incomplete logical setup: invalid selected logical UUID")?;
+    let name = std::env::var("DARUMA_LOGICAL_NAME").unwrap_or_else(|_| binding.clone());
+    daruma_mcp::logical_identity::bind(
+        client, &daruma_mcp::paths::agent_dir().join("logical-identities"), &binding, &name, reuse,
+    ).await
 }
 
 /// Server connection the stdio MCP server talks to.

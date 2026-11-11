@@ -20,6 +20,7 @@
 
 pub mod client;
 pub mod credentials;
+pub mod logical_identity;
 pub mod open_tasks;
 pub mod paths;
 pub mod prompts;
