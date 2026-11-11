@@ -342,15 +342,25 @@ async fn bind_logical_identity(client: ApiClient) -> anyhow::Result<ApiClient> {
     let binding = std::env::var("DARUMA_LOGICAL_BINDING").ok();
     let reuse = std::env::var("DARUMA_LOGICAL_AGENT_ID").ok();
     let Some(binding) = binding else {
-        anyhow::ensure!(reuse.is_none(), "incomplete logical setup: reuse requires DARUMA_LOGICAL_BINDING");
+        anyhow::ensure!(
+            reuse.is_none(),
+            "incomplete logical setup: reuse requires DARUMA_LOGICAL_BINDING"
+        );
         return Ok(client);
     };
-    let reuse = reuse.map(|value| value.parse::<uuid::Uuid>()).transpose()
+    let reuse = reuse
+        .map(|value| value.parse::<uuid::Uuid>())
+        .transpose()
         .context("incomplete logical setup: invalid selected logical UUID")?;
     let name = std::env::var("DARUMA_LOGICAL_NAME").unwrap_or_else(|_| binding.clone());
     daruma_mcp::logical_identity::bind(
-        client, &daruma_mcp::paths::agent_dir().join("logical-identities"), &binding, &name, reuse,
-    ).await
+        client,
+        &daruma_mcp::paths::agent_dir().join("logical-identities"),
+        &binding,
+        &name,
+        reuse,
+    )
+    .await
 }
 
 /// Server connection the stdio MCP server talks to.
