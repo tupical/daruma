@@ -72,8 +72,8 @@ where
 
     let result = sqlx::query(
         "INSERT INTO events \
-         (event_id, occurred_at, kind, actor_json, payload_json, origin_device_id, origin_seq) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         (event_id, occurred_at, kind, actor_json, payload_json, origin_device_id, origin_seq, logical_agent_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(event_id)
     .bind(occurred_at)
@@ -82,6 +82,7 @@ where
     .bind(payload_json)
     .bind(origin_device_id)
     .bind(envelope.origin_seq as i64)
+    .bind(&envelope.logical_agent_id)
     .execute(executor)
     .await
     .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -133,8 +134,7 @@ impl EventStore for SqliteEventStore {
             });
         }
 
-        // 7 bind params per row; chunk ≤ 3 000 rows keeps us under
-        // SQLITE_MAX_VARIABLE_NUMBER (32 766 ÷ 7 = 4 680 max).
+        // 8 bind params per row; chunk ≤ 3 000 stays under SQLite's 32 766.
         // Each chunk becomes a single  INSERT … VALUES (…),(…),…  statement,
         // avoiding the per-statement parse/plan overhead of the old row-at-a-time
         // loop.  SQLite assigns consecutive rowids within a single INSERT on a
@@ -167,7 +167,7 @@ impl EventStore for SqliteEventStore {
             // the builder's lifetime to `chunk`, blocking the subsequent move.
             let mut builder = QueryBuilder::<sqlx::Sqlite>::new(
                 "INSERT INTO events \
-                 (event_id, occurred_at, kind, actor_json, payload_json, origin_device_id, origin_seq) ",
+                 (event_id, occurred_at, kind, actor_json, payload_json, origin_device_id, origin_seq, logical_agent_id) ",
             );
             builder.push_values(chunk.iter(), |mut b, e| {
                 b.push_bind(e.event_id.clone())
@@ -176,7 +176,8 @@ impl EventStore for SqliteEventStore {
                     .push_bind(e.actor_json.clone())
                     .push_bind(e.payload_json.clone())
                     .push_bind(e.origin_device_id.clone())
-                    .push_bind(e.origin_seq as i64);
+                    .push_bind(e.origin_seq as i64)
+                    .push_bind(e.env.logical_agent_id.clone());
             });
 
             match builder.build().execute(&mut *conn).await {
@@ -240,7 +241,7 @@ async fn load_by_id_on<'e, E: SqliteExecutor<'e>>(
 ) -> Result<Option<EventEnvelope>> {
     let row = sqlx::query(
         "SELECT seq, event_id, occurred_at, actor_json, payload_json, \
-         origin_device_id, origin_seq \
+         origin_device_id, origin_seq, logical_agent_id \
          FROM events WHERE event_id = ? LIMIT 1",
     )
     .bind(id.to_string())
@@ -258,7 +259,7 @@ async fn load_since_on<'e, E: SqliteExecutor<'e>>(
 ) -> Result<Vec<EventEnvelope>> {
     let rows = sqlx::query(
         "SELECT seq, event_id, occurred_at, actor_json, payload_json, \
-         origin_device_id, origin_seq \
+         origin_device_id, origin_seq, logical_agent_id \
          FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
     )
     .bind(since_seq as i64)
@@ -309,6 +310,9 @@ fn parse_row(row: &sqlx::sqlite::SqliteRow) -> Result<EventEnvelope> {
         seq: seq as u64,
         occurred_at,
         actor,
+        logical_agent_id: row
+            .try_get("logical_agent_id")
+            .map_err(|e| CoreError::storage(e.to_string()))?,
         origin_device_id: origin_device_id_s
             .map(|id| id.parse::<DeviceId>())
             .transpose()
@@ -328,6 +332,44 @@ mod tests {
     use daruma_events::event::{OperationalEventType, OperationalMetric, OperationalOutcome};
     use daruma_events::Event;
     use daruma_shared::DeviceId;
+
+    #[tokio::test]
+    async fn logical_attribution_survives_single_batch_and_transactional_append() {
+        let db = Db::memory().await.unwrap();
+        db.migrate().await.unwrap();
+        let store = SqliteEventStore::new(db.pool().clone());
+        let original = "00000000-0000-4000-8000-000000000001";
+        let make = || {
+            let env = EventEnvelope::new(
+                Actor::user(),
+                Event::TaskCreated {
+                    task: NewTask::new("original actor"),
+                },
+            );
+            let mut raw = serde_json::to_value(env).unwrap();
+            raw["logical_agent_id"] = serde_json::json!(original);
+            serde_json::from_value::<EventEnvelope>(raw).unwrap()
+        };
+        let one = store.append(make()).await.unwrap();
+        store.append_batch(vec![make()]).await.unwrap();
+        let mut tx = db.pool().begin().await.unwrap();
+        let three = SqliteEventStore::append_tx(&mut tx, make()).await.unwrap();
+        tx.commit().await.unwrap();
+        let events = store.load_since(0, 10).await.unwrap();
+        assert_eq!(events.len(), 3);
+        for event in events {
+            assert_eq!(
+                serde_json::to_value(&event).unwrap()["logical_agent_id"],
+                original
+            );
+            assert_eq!(event.actor, one.actor);
+        }
+        let reloaded = store.load_by_id(three.id).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(reloaded).unwrap()["logical_agent_id"],
+            original
+        );
+    }
 
     #[tokio::test]
     async fn round_trip_append_load_since() {
