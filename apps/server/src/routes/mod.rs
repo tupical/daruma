@@ -4110,9 +4110,9 @@ async fn mcp_http(
         client = client.with_client_name(name);
     }
     if let Some(value) = header_string(&headers, daruma_mcp::logical_identity::HEADER) {
-        let id = value.parse::<uuid::Uuid>().map_err(|_| {
-            ApiError::from(CoreError::validation("invalid logical agent selector"))
-        })?;
+        let id = value
+            .parse::<uuid::Uuid>()
+            .map_err(|_| ApiError::from(CoreError::validation("invalid logical agent selector")))?;
         // Cloud validates ownership before entering OSS. Standalone OSS treats
         // this solely as untrusted attribution, never a claim/auth principal.
         client = client.with_logical_agent_id(id);
