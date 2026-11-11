@@ -73,6 +73,12 @@ async fn handle_initialize(client: &ApiClient) -> Value {
     if !open.is_empty() {
         result["_meta"] = json!({ OPEN_TASKS_META_KEY: open_tasks_to_meta(&open) });
     }
+    if let Some(id) = client.logical_agent_id() {
+        if result.get("_meta").is_none() {
+            result["_meta"] = json!({});
+        }
+        result["_meta"]["daruma/logical_agent_id"] = json!(id);
+    }
     result
 }
 
