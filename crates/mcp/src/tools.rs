@@ -361,7 +361,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_can_start",
             "Check task readiness",
-            "Check whether a task is ready to start. Reports blocking tasks (`blockers`), lifecycle rules that would refuse the transition (`rule_blockers`) and advisory ones (`rule_warnings`). `ready: true` = `daruma_set_status in_progress` passes the rule gate.",
+            "Check task blockers and lifecycle rules. `ready` includes both; `rule_warnings` are advisory. `session_id` excludes sibling claims from selection.",
             schema_can_start(),
             Dom::Tasks, D, X, Ann::Read,
         ),
@@ -4565,7 +4565,7 @@ fn schema_plan_progress() -> Value {
         "type":"object",
         "properties": {
             "plan_id": {"type":"string", "description":"Plan id"},
-            "session_id": {"type":"string", "description":"Session used for sibling-claim exclusion"}
+            "session_id": {"type":"string"}
         },
         "required":["plan_id"]
     })
@@ -4589,7 +4589,7 @@ fn schema_can_start() -> Value {
         "type":"object",
         "properties": {
             "task_id": {"type":"string","description":"Task checked for blockers and lifecycle rules."},
-            "session_id": {"type":"string","description":"Session used for sibling-claim exclusion in selection candidates."}
+            "session_id": {"type":"string"}
         },
         "required":["task_id"]
     })
@@ -5118,7 +5118,7 @@ fn schema_ready() -> Value {
         "type":"object",
         "properties": {
             "project_id": {"type":"string", "description":"Project to list the ready pool for."},
-            "session_id": {"type":"string", "description":"Session used for sibling-claim exclusion in selection candidates."}
+            "session_id": {"type":"string"}
         },
         "required":["project_id"]
     })
