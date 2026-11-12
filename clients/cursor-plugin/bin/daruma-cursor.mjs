@@ -84,6 +84,9 @@ Usage:
         --rules-dir DIR     → where to drop .cursor/rules + .omc/AGENTS.md
                               (relative paths resolve from home for --global,
                               cwd for --project).
+        --command CMD       → use this stdio command; relative paths resolve
+                              from the current directory, names use PATH.
+                              Missing commands are kept, not replaced.
         --no-rules          → skip .cursor/rules/ install.
         --commands          → also install local .cursor/commands/ copies.
         --no-omc-guard      → skip .omc/AGENTS.md guard.

@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
   detectDaruma,
+  formatReport,
   probeMcpAuth,
   resolveDoctorTarget,
   serverOriginFromMcpUrl,
@@ -194,6 +195,28 @@ test("detectDaruma is not ready when the configured token is rejected", async ()
       assert.equal(report.auth.status, "token rejected");
       assert.equal(report.mcpReady, false);
       assert.match(report.mcpHint, /auth: token rejected/);
+    });
+  });
+});
+
+test("doctor checks the configured bare command on PATH without substituting daruma", async () => {
+  await withServer(async (origin) => {
+    await withIsolatedEnv(async ({ home, project }) => {
+      const bin = join(home, ".local", "bin");
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(bin, "daruma"), "#!/bin/sh\necho 1.0\n");
+      await chmod(join(bin, "daruma"), 0o755);
+      process.env.PATH = bin;
+      const entry = { type: "stdio", command: "daruma", args: ["mcp"], env: { DARUMA_API_URL: origin, DARUMA_TOKEN: GOOD_TOKEN } };
+      await writeMcpJson(project, entry);
+      const available = await detectDaruma({ projectDir: project });
+      assert.equal(available.mcpReady, true);
+      assert.match(formatReport({ cursor: { name: "cursor", installed: true }, daruma: available }), /mcp command: daruma\n/);
+      entry.command = "missing-custom";
+      await writeMcpJson(project, entry);
+      const missing = await detectDaruma({ projectDir: project });
+      assert.equal(missing.mcpReady, false);
+      assert.match(formatReport({ cursor: { name: "cursor", installed: true }, daruma: missing }), /mcp command: missing-custom \(MISSING\)/);
     });
   });
 });

@@ -6,7 +6,7 @@
 
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_COMMAND = "daruma";
@@ -73,12 +73,18 @@ export async function resolveMcpCommand({
   cwd = process.cwd(),
   env = process.env,
 } = {}) {
-  const requested = command?.trim() || DEFAULT_COMMAND;
-  if (isAbsolute(requested)) {
-    if (await isExecutable(requested)) {
-      return { command: requested, resolved: true, source: "explicit-absolute" };
+  const requested = command?.trim();
+  if (requested) {
+    if (!isAbsolute(requested) && !requested.includes("/") && !requested.includes("\\")) {
+      for (const dir of (env.PATH ?? "").split(delimiter)) {
+        if (await isExecutable(resolve(cwd, dir, requested))) {
+          return { command: requested, resolved: true, source: "path" };
+        }
+      }
+      return { command: requested, resolved: false, source: "name-only" };
     }
-    return { command: requested, resolved: false, source: "explicit-missing" };
+    const path = resolve(cwd, requested);
+    return { command: path, resolved: await isExecutable(path), source: "explicit-path" };
   }
 
   for (const candidate of candidateMcpCommandPaths({ cwd, env })) {
@@ -88,5 +94,5 @@ export async function resolveMcpCommand({
     }
   }
 
-  return { command: requested, resolved: false, source: "name-only" };
+  return { command: DEFAULT_COMMAND, resolved: false, source: "name-only" };
 }

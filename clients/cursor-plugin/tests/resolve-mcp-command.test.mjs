@@ -26,7 +26,7 @@ test("resolveMcpCommand keeps explicit absolute executable", async () => {
     const resolved = await resolveMcpCommand({ command: bin, cwd: dir });
     assert.equal(resolved.command, bin);
     assert.equal(resolved.resolved, true);
-    assert.equal(resolved.source, "explicit-absolute");
+    assert.equal(resolved.source, "explicit-path");
   });
 });
 

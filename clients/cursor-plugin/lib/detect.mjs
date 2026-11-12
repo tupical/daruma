@@ -342,7 +342,7 @@ export async function detectDaruma({ projectDir, remote } = {}) {
   const resolvedCommand = isHttpEntry
     ? { command: null, resolved: true, source: "http" }
     : await resolveMcpCommand({ command: configuredCommand ?? "daruma" });
-  const commandReady = isHttpEntry || resolvedCommand.resolved || mcpCli.ok;
+  const commandReady = isHttpEntry || resolvedCommand.resolved || (!configuredCommand && mcpCli.ok);
   const mcpReady = registered && http.ok && commandReady && auth.ok;
 
   return {
