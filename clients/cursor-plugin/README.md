@@ -109,7 +109,7 @@ Copy [`cursor/mcp.example.json`](./cursor/mcp.example.json) into
 | ---------------------------- | -------------------------- | ----------------------------------------------------------- |
 | `--global` / `--project DIR` | `--global`                 | Picks which `mcp.json` to write.                            |
 | `--transport http\|stdio`    | `http`                     | Cursor defaults to hosted HTTP MCP.                         |
-| `--command CMD`              | `daruma` (runs `daruma mcp`) | Forces stdio fallback and overrides the binary path.       |
+| `--command CMD`              | `daruma` (runs `daruma mcp`) | Selects the stdio command. Relative paths resolve from the current directory; bare names use PATH. Missing commands are kept, not replaced.       |
 | `--base-url URL`             | `https://daruma.mcpbox.ru` (cloud) | HTTP MCP origin. Pass a self-host origin (e.g. `http://localhost:8080`) to point elsewhere. |
 | `--token T`                  | (none)                     | Adds an Authorization header for self-host scoped tokens (cloud uses OAuth). |
 | `--name NAME`                | `daruma`                | Rename the server entry (if you run multiple instances).    |

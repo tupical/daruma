@@ -85,7 +85,7 @@ export function defaultDarumaHttpConfig({ apiUrl, remote, token = null, workspac
  * after login, `resolveMcpEnvFromCredentials` fills URL, token, workspace id.
  */
 export async function defaultDarumaStdioConfig({
-  command = "daruma",
+  command,
   args = [],
   apiUrl,
   token = null,
