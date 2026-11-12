@@ -6217,10 +6217,7 @@ async fn get_plan_progress(
         claims: state.claims.as_ref(),
         relations: Some(state.relations.as_ref()),
     };
-    let session_id = query
-        .session_id
-        .map(|id| parse_id(id, "session id"))
-        .transpose()?;
+    let session_id = selection_session(&state, &auth, query.session_id).await?;
     let (candidate, observation) = resolver
         .observe_for_session(plan_id, RunId::new(), auth.agent_id, None, session_id)
         .await
@@ -6267,6 +6264,22 @@ async fn get_plan_fanout(
     Ok(Json(waves))
 }
 
+async fn selection_session(
+    state: &AppState,
+    auth: &AuthContext,
+    raw: Option<String>,
+) -> Result<Option<AgentSessionId>, ApiError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let id = parse_id(raw, "session id")?;
+    let session = state.sessions.get(id).await.map_err(ApiError::from)?;
+    if !session
+        .is_some_and(|session| session.agent_id == auth.agent_id && session.ended_at.is_none())
+    {
+        return Err(ApiError::from(CoreError::validation("invalid session")));
+    }
+    Ok(Some(id))
+}
+
 fn selection_context(agent_id: AgentId, session_id: Option<AgentSessionId>) -> serde_json::Value {
     json!({"agent_id": agent_id, "session_id": session_id, "rules": "not_consulted", "consistency": "resolver_observation_non_atomic"})
 }
@@ -6308,10 +6321,7 @@ async fn get_can_start(
     let claimed_by_other = current_claim
         .as_ref()
         .is_some_and(|claim| claim.agent_id != auth.agent_id);
-    let session_id = query
-        .session_id
-        .map(|id| parse_id(id, "session id"))
-        .transpose()?;
+    let session_id = selection_session(&state, &auth, query.session_id).await?;
     let resolver = NextTaskResolver {
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
@@ -6319,19 +6329,19 @@ async fn get_can_start(
         relations: Some(state.relations.as_ref()),
     };
     let mut membership = Vec::new();
-    let mut excluded = false;
-    for plan in state
-        .plans
-        .list_plans_for_task(task_id)
-        .await
-        .map_err(ApiError::from)?
-    {
+    let can_read_plans = auth.require(Capability::PlanRead).is_ok();
+    for plan in if can_read_plans {
+        state
+            .plans
+            .list_plans_for_task(task_id)
+            .await
+            .map_err(ApiError::from)?
+    } else {
+        Vec::new()
+    } {
         match project_scope::plan(&state, &auth, plan.id).await {
             Ok(()) => {}
-            Err(ApiError(CoreError::Forbidden(_))) => {
-                excluded = true;
-                continue;
-            }
+            Err(ApiError(CoreError::Forbidden(_))) => continue,
             Err(err) => return Err(err),
         }
         let (candidate, observation) = resolver
@@ -6343,10 +6353,10 @@ async fn get_can_start(
     let mut response = serde_json::to_value(readiness)
         .map_err(|err| ApiError::from(CoreError::serde(err.to_string())))?;
     response["plan_membership"] = json!(membership);
-    response["membership_scope"] = json!(if excluded {
-        "visible_only_exclusions_present"
+    response["membership_scope"] = json!(if can_read_plans {
+        "visible_plans"
     } else {
-        "visible_plans_checked"
+        "unavailable"
     });
     response["selection_context"] = selection_context(auth.agent_id, session_id);
     response["transition_allowed"] = json!(transition_allowed);
@@ -7220,10 +7230,7 @@ async fn project_ready(
         .await
         .map_err(ApiError::from)?;
 
-    let session_id = q
-        .session_id
-        .map(|id| parse_id(id, "session id"))
-        .transpose()?;
+    let session_id = selection_session(&state, &auth, q.session_id).await?;
     let resolver = NextTaskResolver {
         plans: state.plans.as_ref() as &dyn PlanRepository,
         tasks: state.tasks.as_ref(),
@@ -7231,7 +7238,6 @@ async fn project_ready(
         relations: Some(state.relations.as_ref()),
     };
     let mut candidates = Vec::new();
-    let mut excluded = false;
     let mut ready = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for plan in &plans {
@@ -7243,7 +7249,7 @@ async fn project_ready(
                     .map_err(ApiError::from)?;
                 candidates.push(json!({"plan_id": plan.id, "task_id": candidate.map(|next| next.task_id), "selection_observation": observation}));
             }
-            Err(ApiError(CoreError::Forbidden(_))) => excluded = true,
+            Err(ApiError(CoreError::Forbidden(_))) => continue,
             Err(err) => return Err(err),
         }
         let waves =
@@ -7279,7 +7285,7 @@ async fn project_ready(
     Ok(Json(serde_json::json!({
         "ready": ready,
         "selection_candidates": candidates,
-        "selection_scope": if excluded { "visible_only_exclusions_present" } else { "visible_plans_checked" },
+        "selection_scope": "visible_plans",
         "selection_context": selection_context(auth.agent_id, session_id),
         "semantics": "graph_preview",
         "content_policy": "not_evaluated",

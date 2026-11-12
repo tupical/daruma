@@ -445,7 +445,10 @@ async fn selection_explanation_respects_resolver_session_context() {
     );
     assert_eq!(progress["next_ready"], json!(expected));
     assert_eq!(progress["selection_context"]["session_id"], json!(session));
-    assert_eq!(progress["selection_context"]["agent_id"], json!(app.admin_agent_id));
+    assert_eq!(
+        progress["selection_context"]["agent_id"],
+        json!(app.admin_agent_id)
+    );
     assert_eq!(progress["selection_observation"]["sibling_claim"], 1);
     assert_eq!(progress["selection_observation"]["dependencies"], 1);
     assert_eq!(progress["selection_observation"]["examined"], 3);
@@ -765,4 +768,52 @@ async fn selection_explanation_reports_real_rule_without_skipping_candidate() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+#[tokio::test]
+async fn selection_explanation_requires_own_live_session_and_plan_read() {
+    use daruma_auth::{Capabilities, Capability, ProjectFilter};
+    use daruma_shared::{AgentId, AgentSessionId};
+    let app = test_app().await;
+    let (project, plan, task, _, _) = seed_plan(&app.state.commands).await;
+    let now = chrono::Utc::now().to_rfc3339();
+    let foreign = AgentSessionId::new();
+    let ended = AgentSessionId::new();
+    for (id, agent, end) in [
+        (foreign, AgentId::new(), None),
+        (ended, app.admin_agent_id, Some(&now)),
+    ] {
+        sqlx::query(
+            "INSERT INTO agent_sessions (id, agent_id, started_at, ended_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(agent.to_string())
+        .bind(&now)
+        .bind(end)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+    for id in [foreign, ended, AgentSessionId::new()] {
+        for path in [
+            format!("/v1/plans/{plan}/progress?session_id={id}"),
+            format!("/v1/ready?project_id={project}&session_id={id}"),
+            format!("/v1/tasks/{task}/can_start?session_id={id}"),
+        ] {
+            let (status, body) = json_get(app.router.clone(), &app.admin_token, &path).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        }
+    }
+    let caps = Capabilities::from([Capability::TaskRead, Capability::ProjectRead].into_iter());
+    let (token, _) = common::mint_pat(&app.auth_store(), caps, ProjectFilter::All).await;
+    let (status, body) = json_get(
+        app.router.clone(),
+        &token,
+        &format!("/v1/tasks/{task}/can_start"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["membership_scope"], "unavailable");
+    assert_eq!(body["plan_membership"], json!([]));
+    assert!(!body.to_string().contains(&plan.to_string()));
 }
