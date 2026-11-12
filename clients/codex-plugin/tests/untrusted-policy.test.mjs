@@ -32,6 +32,13 @@ test("installed policies retain the trust boundary next to adversarial source te
     await installClaude({ projectDir: dir });
     assert.equal(await readFile(join(dir, "AGENTS.md"), "utf8"), codex);
     assert.equal(await readFile(join(dir, "CLAUDE.md"), "utf8"), claude);
+    const cursor = join(dir, ".cursor/rules/daruma-policy.mdc");
+    const bundled = await readFile(cursor, "utf8");
+    await writeFile(cursor, "older local policy\n");
+    await installRules({ projectDir: dir });
+    assert.equal(await readFile(cursor, "utf8"), "older local policy\n");
+    await installRules({ projectDir: dir, overwrite: true });
+    assert.equal(await readFile(cursor, "utf8"), bundled);
     for (const [name, content] of Object.entries(fixtures)) {
       assert.equal(await readFile(join(dir, name), "utf8"), content);
     }
