@@ -297,7 +297,7 @@ pub struct ProjectRow {
 pub struct TaskRow {
     #[serde(default, deserialize_with = "selected_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<daruma_shared::TaskId>,
-    #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "selected_nullable_id", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<daruma_shared::ProjectId>>,
     #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -313,7 +313,7 @@ pub struct TaskRow {
     pub updated_at: Option<daruma_shared::Timestamp>,
     #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
     pub assignee: Option<Option<uuid::Uuid>>,
-    #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "selected_nullable_id", skip_serializing_if = "Option::is_none")]
     pub revision: Option<Option<daruma_shared::EventId>>,
     #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
     pub plans: Option<Vec<PlanRow>>,
@@ -338,6 +338,13 @@ fn selected_id<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where D: serde::Deserializer<'de>, T: std::str::FromStr, T::Err: std::fmt::Display {
     let value = String::deserialize(deserializer)?;
     value.parse().map(Some).map_err(serde::de::Error::custom)
+}
+
+fn selected_nullable_id<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where D: serde::Deserializer<'de>, T: std::str::FromStr, T::Err: std::fmt::Display {
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| value.parse().map_err(serde::de::Error::custom))
+        .transpose().map(Some)
 }
 
 fn selected<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

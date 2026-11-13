@@ -25,4 +25,5 @@ fn non_nullable_selected_fields_reject_null() {
 #[test]
 fn projection_accepts_daruma_formatted_ids() {
     assert!(serde_json::from_str::<ProjectRow>(r#"{"id":"prj_00000000-0000-0000-0000-000000000001"}"#).is_ok());
+    assert!(serde_json::from_str::<TaskRow>(r#"{"project_id":"prj_00000000-0000-0000-0000-000000000001"}"#).is_ok());
 }
