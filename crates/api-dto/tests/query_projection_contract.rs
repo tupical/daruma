@@ -27,3 +27,9 @@ fn projection_accepts_daruma_formatted_ids() {
     assert!(serde_json::from_str::<ProjectRow>(r#"{"id":"prj_00000000-0000-0000-0000-000000000001"}"#).is_ok());
     assert!(serde_json::from_str::<TaskRow>(r#"{"project_id":"prj_00000000-0000-0000-0000-000000000001"}"#).is_ok());
 }
+
+#[test]
+fn has_more_requires_a_continuation_cursor() {
+    let response = r#"{"query_contract":"daruma_query_v1","resource":"projects","semantics_version":"task_start_v1","query_hash":"test","items":[],"next_cursor":null,"has_more":true,"complete":true,"evaluated_at":"2026-01-01T00:00:00Z","consistency":"request_snapshot"}"#;
+    assert!(serde_json::from_str::<QueryResponse<ProjectRow>>(response).is_err());
+}
