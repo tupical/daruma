@@ -3496,6 +3496,7 @@ impl CommandHandler {
                 agent_id,
                 task_id,
                 claim_id: None,
+                holder_logical_agent_id: None,
             }]),
 
             // ── Work-lease commands ───────────────────────────────────────────
@@ -6183,6 +6184,7 @@ mod tests {
                 agent_id: a,
                 task_id: t,
                 claim_id: Some(generation),
+                ..
             } if a == agent_id && t == task_id && generation == claim_id
         ));
     }
@@ -6240,6 +6242,7 @@ mod tests {
                 agent_id: a,
                 task_id: t,
                 claim_id: Some(generation),
+                ..
             } if a == agent_id && t == task_id && generation == claim_id
         )));
         assert!(handler

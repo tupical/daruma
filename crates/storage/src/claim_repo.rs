@@ -565,10 +565,20 @@ impl AgentClaimRepo {
             }
         }
 
+        let claim_event = EventEnvelope::new(
+            actor,
+            Event::AgentClaimed {
+                agent_id,
+                task_id,
+                claim_id: Some(claim_id),
+                expires_at,
+                session_id,
+            },
+        );
         let changed = sqlx::query(
             "INSERT INTO agent_claims \
-                (agent_id, task_id, acquired_at, expires_at, run_id, claim_id, session_id) \
-             SELECT ?, ?, ?, ?, ?, ?, ? \
+                (agent_id, task_id, acquired_at, expires_at, run_id, claim_id, session_id, holder_logical_agent_id) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ? \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM agent_claims \
                  WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
@@ -586,7 +596,8 @@ impl AgentClaimRepo {
                      THEN agent_claims.session_id \
                      ELSE excluded.session_id \
                  END, \
-                 claim_id    = excluded.claim_id",
+                 claim_id    = excluded.claim_id, \
+                 holder_logical_agent_id = excluded.holder_logical_agent_id",
         )
         .bind(agent_id.to_string())
         .bind(task_id.to_string())
@@ -595,6 +606,7 @@ impl AgentClaimRepo {
         .bind(run_id.as_deref())
         .bind(claim_id.to_string())
         .bind(session_id.map(|id| id.to_string()))
+        .bind(&claim_event.logical_agent_id)
         .bind(task_id.to_string())
         .bind(&now_s)
         .bind(agent_id.to_string())
@@ -605,20 +617,7 @@ impl AgentClaimRepo {
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
         if changed.rows_affected() == 1 {
-            let event = append_on(
-                &mut *tx,
-                EventEnvelope::new(
-                    actor,
-                    Event::AgentClaimed {
-                        agent_id,
-                        task_id,
-                        claim_id: Some(claim_id),
-                        expires_at,
-                        session_id,
-                    },
-                ),
-            )
-            .await?;
+            let event = append_on(&mut *tx, claim_event).await?;
             tx.commit()
                 .await
                 .map_err(|e| CoreError::storage(e.to_string()))?;
@@ -788,7 +787,7 @@ impl AgentClaimRepo {
         }
 
         let claims = if owner.is_some() {
-            sqlx::query("SELECT agent_id, task_id, claim_id FROM agent_claims WHERE run_id = ?")
+            sqlx::query("SELECT agent_id, task_id, claim_id, holder_logical_agent_id FROM agent_claims WHERE run_id = ?")
                 .bind(run_id.to_string())
                 .fetch_all(&mut *tx)
                 .await
@@ -803,7 +802,7 @@ impl AgentClaimRepo {
                 .try_get::<String, _>("started_at")
                 .map_err(|e| CoreError::storage(e.to_string()))?;
             sqlx::query(
-                "SELECT agent_id, task_id, claim_id FROM agent_claims ac \
+                "SELECT agent_id, task_id, claim_id, holder_logical_agent_id FROM agent_claims ac \
                  WHERE ac.run_id = ? OR ( \
                      ac.run_id IS NULL AND ac.agent_id = ? AND ac.acquired_at >= ? AND EXISTS ( \
                          SELECT 1 FROM run_steps rs WHERE rs.run_id = ? \
@@ -831,6 +830,9 @@ impl AgentClaimRepo {
             let claim_id = row
                 .try_get::<String, _>("claim_id")
                 .map_err(|e| CoreError::storage(e.to_string()))?;
+            let row_holder: Option<String> = row
+                .try_get("holder_logical_agent_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
             let deleted = sqlx::query(
                 "DELETE FROM agent_claims \
                  WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
@@ -842,7 +844,7 @@ impl AgentClaimRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
             if deleted.rows_affected() == 1 {
-                released.push((agent_id, task_id, claim_id));
+                released.push((agent_id, task_id, claim_id, row_holder));
             }
         }
 
@@ -856,7 +858,7 @@ impl AgentClaimRepo {
         for envelope in envelopes {
             persisted.push(append_on(&mut *tx, envelope).await?);
         }
-        for (agent_id, task_id, claim_id) in released {
+        for (agent_id, task_id, claim_id, row_holder) in released {
             persisted.push(
                 append_on(
                     &mut *tx,
@@ -874,6 +876,7 @@ impl AgentClaimRepo {
                                     .parse()
                                     .map_err(|e| CoreError::serde(format!("{e}")))?,
                             ),
+                            holder_logical_agent_id: row_holder,
                         },
                     ),
                 )
@@ -968,7 +971,7 @@ impl AgentClaimRepo {
                 .try_get::<String, _>("id")
                 .map_err(|e| CoreError::storage(e.to_string()))?;
             let claims = sqlx::query(
-                "SELECT agent_id, task_id, claim_id FROM agent_claims WHERE run_id = ?",
+                "SELECT agent_id, task_id, claim_id, holder_logical_agent_id FROM agent_claims WHERE run_id = ?",
             )
             .bind(&run_id)
             .fetch_all(&mut *tx)
@@ -997,6 +1000,9 @@ impl AgentClaimRepo {
                 let claim_id = claim
                     .try_get::<String, _>("claim_id")
                     .map_err(|e| CoreError::storage(e.to_string()))?;
+                let row_holder: Option<String> = claim
+                    .try_get("holder_logical_agent_id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
                 let deleted = sqlx::query(
                     "DELETE FROM agent_claims \
                      WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
@@ -1008,7 +1014,7 @@ impl AgentClaimRepo {
                 .await
                 .map_err(|e| CoreError::storage(e.to_string()))?;
                 if deleted.rows_affected() == 1 {
-                    released.push((agent_id, task_id, claim_id));
+                    released.push((agent_id, task_id, claim_id, row_holder));
                 }
             }
             sqlx::query("DELETE FROM run_claim_owners WHERE run_id = ?")
@@ -1022,7 +1028,7 @@ impl AgentClaimRepo {
         for envelope in envelopes {
             persisted.push(append_on(&mut *tx, envelope).await?);
         }
-        for (agent_id, task_id, claim_id) in released {
+        for (agent_id, task_id, claim_id, row_holder) in released {
             persisted.push(
                 append_on(
                     &mut *tx,
@@ -1040,6 +1046,7 @@ impl AgentClaimRepo {
                                     .parse()
                                     .map_err(|e| CoreError::serde(format!("{e}")))?,
                             ),
+                            holder_logical_agent_id: row_holder,
                         },
                     ),
                 )
@@ -1093,7 +1100,7 @@ impl AgentClaimRepo {
                 .map_err(|e| CoreError::storage(e.to_string()))?;
 
             let claims =
-                sqlx::query("SELECT agent_id, claim_id FROM agent_claims WHERE task_id = ?")
+                sqlx::query("SELECT agent_id, claim_id, holder_logical_agent_id FROM agent_claims WHERE task_id = ?")
                     .bind(task_id.to_string())
                     .fetch_all(&mut *tx)
                     .await
@@ -1104,6 +1111,9 @@ impl AgentClaimRepo {
                     .map_err(|e| CoreError::storage(e.to_string()))?;
                 let claim_id = claim
                     .try_get::<String, _>("claim_id")
+                    .map_err(|e| CoreError::storage(e.to_string()))?;
+                let row_holder: Option<String> = claim
+                    .try_get("holder_logical_agent_id")
                     .map_err(|e| CoreError::storage(e.to_string()))?;
                 let deleted = sqlx::query(
                     "DELETE FROM agent_claims \
@@ -1116,7 +1126,7 @@ impl AgentClaimRepo {
                 .await
                 .map_err(|e| CoreError::storage(e.to_string()))?;
                 if deleted.rows_affected() == 1 {
-                    released.push((agent_id, task_id, claim_id));
+                    released.push((agent_id, task_id, claim_id, row_holder));
                 }
             }
         }
@@ -1125,7 +1135,7 @@ impl AgentClaimRepo {
         for envelope in envelopes {
             persisted.push(append_on(&mut *tx, envelope).await?);
         }
-        for (agent_id, task_id, claim_id) in released {
+        for (agent_id, task_id, claim_id, row_holder) in released {
             persisted.push(
                 append_on(
                     &mut *tx,
@@ -1141,6 +1151,7 @@ impl AgentClaimRepo {
                                     .parse()
                                     .map_err(|e| CoreError::serde(format!("{e}")))?,
                             ),
+                            holder_logical_agent_id: row_holder,
                         },
                     ),
                 )
@@ -1180,21 +1191,24 @@ impl AgentClaimRepo {
             .await
             .map_err(|e| CoreError::storage(e.to_string()))?;
         let deleted = sqlx::query(
-            "DELETE FROM agent_claims WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
+            "DELETE FROM agent_claims WHERE agent_id = ? AND task_id = ? AND claim_id = ? RETURNING holder_logical_agent_id",
         )
         .bind(agent_id.to_string())
         .bind(task_id.to_string())
         .bind(claim_id.to_string())
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
-        if deleted.rows_affected() == 0 {
+        let Some(deleted) = deleted else {
             tx.commit()
                 .await
                 .map_err(|e| CoreError::storage(e.to_string()))?;
             return Ok(None);
-        }
+        };
+        let holder_logical_agent_id: Option<String> = deleted
+            .try_get("holder_logical_agent_id")
+            .map_err(|e| CoreError::storage(e.to_string()))?;
 
         let event = append_on(
             &mut *tx,
@@ -1204,6 +1218,7 @@ impl AgentClaimRepo {
                     agent_id,
                     task_id,
                     claim_id: Some(claim_id),
+                    holder_logical_agent_id,
                 },
             ),
         )
@@ -1234,6 +1249,7 @@ impl AgentClaimRepo {
                 agent_id,
                 task_id,
                 claim_id: Some(claim_id),
+                ..
             } => {
                 sqlx::query(
                     "DELETE FROM agent_claims WHERE agent_id = ? AND task_id = ? AND claim_id = ?",
@@ -1250,6 +1266,7 @@ impl AgentClaimRepo {
                 agent_id,
                 task_id,
                 claim_id: None,
+                ..
             } => self.release(*agent_id, *task_id).await,
             // Task lifecycle cleanup is already generation-conditional and
             // atomic with event persistence. Replaying delayed close/reopen/
@@ -1319,7 +1336,7 @@ impl AgentClaimRepo {
     {
         let now = Utc::now().to_rfc3339();
         let rows = sqlx::query(
-            "SELECT agent_id, task_id, claim_id FROM agent_claims WHERE expires_at < ?",
+            "SELECT agent_id, task_id, claim_id, holder_logical_agent_id FROM agent_claims WHERE expires_at < ?",
         )
         .bind(&now)
         .fetch_all(&self.pool)
@@ -1349,6 +1366,9 @@ impl AgentClaimRepo {
                 .map_err(|e| CoreError::storage(e.to_string()))?
                 .parse::<ClaimId>()
                 .map_err(|e| CoreError::serde(e.to_string()))?;
+            let row_holder: Option<String> = row
+                .try_get("holder_logical_agent_id")
+                .map_err(|e| CoreError::storage(e.to_string()))?;
             let deleted = sqlx::query(
                 "DELETE FROM agent_claims \
                  WHERE agent_id = ? AND task_id = ? AND claim_id = ? AND expires_at < ?",
@@ -1370,6 +1390,7 @@ impl AgentClaimRepo {
                                 agent_id,
                                 task_id,
                                 claim_id: Some(claim_id),
+                                holder_logical_agent_id: row_holder,
                             },
                         ),
                     )
@@ -1901,6 +1922,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn released_generation_retains_holder_separate_from_releaser() {
+        let (db, repo) = make_repo().await;
+        let agent = AgentId::new();
+        let task = seed_claim_task(&db).await;
+        let claim = daruma_events::envelope::scope_logical_agent(Some("holder".into()), async {
+            repo.try_acquire_recorded(Actor::user(), agent, task, Duration::seconds(60))
+                .await
+                .unwrap()
+        })
+        .await;
+        let claim_id = match claim {
+            RecordedClaimOutcome::Acquired { claim_id, .. } => claim_id,
+            other => panic!("expected acquired claim, got {other:?}"),
+        };
+        let release =
+            daruma_events::envelope::scope_logical_agent(Some("releaser".into()), async {
+                repo.release_recorded(Actor::user(), agent, task, claim_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            })
+            .await;
+        let wire = serde_json::to_value(release).unwrap();
+        assert_eq!(wire["logical_agent_id"], "releaser");
+        assert_eq!(wire["payload"]["holder_logical_agent_id"], "holder");
+    }
+
+    #[tokio::test]
     async fn failed_release_audit_preserves_exact_claim_and_emits_nothing() {
         let (db, repo) = make_repo().await;
         let agent_id = AgentId::new();
@@ -2036,6 +2085,7 @@ mod tests {
                 agent_id: a,
                 task_id: t,
                 claim_id: Some(generation),
+                ..
             } if a == agent_id && t == task_id && generation == claim_id
         ));
         assert_eq!(

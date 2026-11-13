@@ -433,6 +433,8 @@ pub enum Event {
         task_id: TaskId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claim_id: Option<ClaimId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holder_logical_agent_id: Option<String>,
     },
 
     /// An agent reserved one or more file/path leases for a task.
@@ -1830,6 +1832,7 @@ mod tests {
                 agent_id: AgentId::new(),
                 task_id: TaskId::new(),
                 claim_id: Some(ClaimId::new()),
+                holder_logical_agent_id: None,
             },
             "agent_released",
         );
@@ -2058,6 +2061,7 @@ mod tests {
                 agent_id: AgentId::new(),
                 task_id,
                 claim_id: Some(ClaimId::new()),
+                holder_logical_agent_id: None,
             },
             Event::PlanModifiedByHuman {
                 plan_id,
