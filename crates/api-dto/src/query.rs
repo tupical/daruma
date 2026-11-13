@@ -13,6 +13,8 @@ pub struct QueryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub select: Option<Vec<SelectField>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Include>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<Vec<Sort>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u16>,
@@ -28,6 +30,7 @@ struct RawQueryRequest {
     scope: Scope,
     #[serde(default)] filter: Option<Expression>,
     #[serde(default)] select: Option<Vec<SelectField>>,
+    #[serde(default)] include: Option<Include>,
     #[serde(default)] sort: Option<Vec<Sort>>,
     #[serde(default)] limit: Option<u16>,
     #[serde(default)] cursor: Option<String>,
@@ -46,8 +49,17 @@ impl TryFrom<RawQueryRequest> for QueryRequest {
             || raw.sort.as_ref().is_some_and(|keys| keys.is_empty() || keys.len() > 2)
             || raw.cursor.as_ref().is_some_and(String::is_empty)
         { return Err("invalid query scope or bounds"); }
+        if let Some(include) = &raw.include {
+            if (include.plans.is_some() && raw.resource != Resource::Tasks)
+                || (include.tasks.is_some() && raw.resource != Resource::Projects)
+                || (include.plans.is_none() && include.tasks.is_none())
+                || include.plans.as_ref().is_some_and(|p| p.select.is_empty() || p.select.len() > 8)
+                || include.tasks.as_ref().is_some_and(|t| t.select.is_empty() || t.select.len() > 16
+                    || t.sort.is_empty() || t.sort.len() > 2 || !(1..=200).contains(&t.limit))
+            { return Err("invalid related projection"); }
+        }
         Ok(Self { query_version: raw.query_version, resource: raw.resource, scope: raw.scope,
-            filter: raw.filter, select: raw.select, sort: raw.sort, limit: raw.limit, cursor: raw.cursor })
+            filter: raw.filter, select: raw.select, include: raw.include, sort: raw.sort, limit: raw.limit, cursor: raw.cursor })
     }
 }
 
@@ -163,6 +175,24 @@ pub enum FilterField {
 pub struct Sort { pub field: SortField, pub direction: Direction }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Include {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plans: Option<PlanProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<TaskProjection>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanProjection { pub select: Vec<PlanField> }
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanField { Id, ProjectId, Title, Status, ArchivedAt }
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskProjection { pub select: Vec<SelectField>, pub sort: Vec<Sort>, pub limit: u16 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectField { Id, ProjectId, Title, Description, Status, Priority, CreatedAt, UpdatedAt, Assignee, Revision }
 
@@ -180,6 +210,14 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn per_project_latest_is_a_nested_bounded_projection() {
+        let query = r#"{"query_version":1,"resource":"projects","scope":{"all_visible":true},"select":["id","title"],"include":{"tasks":{"select":["created_at"],"sort":[{"field":"created_at","direction":"desc"},{"field":"id","direction":"asc"}],"limit":1}}}"#;
+        let parsed: QueryRequest = serde_json::from_str(query).unwrap();
+        assert_eq!(parsed.include.unwrap().tasks.unwrap().limit, 1);
+        let invalid = query.replace("\"projects\"", "\"tasks\"");
+        assert!(serde_json::from_str::<QueryRequest>(&invalid).is_err());
     }
     #[test]
     fn rejects_invalid_scope_and_request_bounds() {
