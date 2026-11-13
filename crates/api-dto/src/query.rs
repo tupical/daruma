@@ -275,6 +275,70 @@ pub enum SemanticsVersion { #[serde(rename = "task_start_v1")] TaskStartV1 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub enum QueryConsistency { #[serde(rename = "request_snapshot")] RequestSnapshot }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<daruma_shared::ProjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<daruma_shared::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<daruma_shared::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Vec<TaskRow>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<daruma_shared::TaskId>,
+    #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Option<daruma_shared::ProjectId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<daruma_domain::task::Status>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<daruma_domain::task::Priority>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<daruma_shared::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<daruma_shared::Timestamp>,
+    #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<Option<uuid::Uuid>>,
+    #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
+    pub revision: Option<Option<daruma_shared::EventId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plans: Option<Vec<PlanRow>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<daruma_shared::PlanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<daruma_shared::ProjectId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<daruma_domain::plan::PlanStatus>,
+    #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<Option<daruma_shared::Timestamp>>,
+}
+
+fn selected_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where D: serde::Deserializer<'de>, T: Deserialize<'de> {
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
