@@ -205,7 +205,9 @@ async fn bootstrap_separates_account_and_workspace_and_reuses_on_switch_back() {
         )
     }
     async fn register(headers: HeaderMap, Json(_body): Json<Value>) -> Json<Value> {
-        let id = if headers["authorization"] == "Bearer account-a" {
+        let id = if headers["x-daruma-workspace-id"] == "44444444-4444-4444-8444-444444444444" {
+            "44444444-4444-4444-8444-444444444444"
+        } else if headers["authorization"] == "Bearer account-a" {
             "11111111-1111-4111-8111-111111111111"
         } else {
             "22222222-2222-4222-8222-222222222222"
@@ -230,9 +232,50 @@ async fn bootstrap_separates_account_and_workspace_and_reuses_on_switch_back() {
         .await
         .unwrap();
     let other = bind(b, &root, "builder", "Builder", None).await.unwrap();
+    let elsewhere = bind(
+        a.clone()
+            .with_workspace_id("44444444-4444-4444-8444-444444444444"),
+        &root,
+        "builder",
+        "Builder",
+        None,
+    )
+    .await
+    .unwrap();
     let again = bind(a, &root, "builder", "Builder", None).await.unwrap();
     assert_ne!(first.logical_agent_id(), other.logical_agent_id());
+    assert_ne!(first.logical_agent_id(), elsewhere.logical_agent_id());
     assert_eq!(first.logical_agent_id(), again.logical_agent_id());
+    std::fs::remove_dir_all(root).unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn concurrent_bootstrap_reuses_one_registration() {
+    let seen = Arc::new(Mutex::new(0usize));
+    let app = Router::new()
+        .route("/v1/mcp", post(scope))
+        .route(
+            "/v1/cloud/agents",
+            post(|State(seen): State<Arc<Mutex<usize>>>| async move {
+                *seen.lock().unwrap() += 1;
+                Json(json!({"id":"11111111-1111-4111-8111-111111111111"}))
+            }),
+        )
+        .route(
+            "/v1/cloud/agents/{id}",
+            get(|| async { Json(json!({"id":"11111111-1111-4111-8111-111111111111"})) }),
+        )
+        .with_state(seen.clone());
+    let (url, server) = start_fixture(app).await;
+    let root = std::env::temp_dir().join(format!("logical-concurrent-{}", uuid::Uuid::new_v4()));
+    let client = ApiClient::new(&url, "credential");
+    let (a, b) = tokio::join!(
+        bind(client.clone(), &root, "builder", "Builder", None),
+        bind(client, &root, "builder", "Builder", None)
+    );
+    assert_eq!(a.unwrap().logical_agent_id(), b.unwrap().logical_agent_id());
+    assert_eq!(*seen.lock().unwrap(), 1);
     std::fs::remove_dir_all(root).unwrap();
     server.abort();
 }
