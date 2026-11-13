@@ -240,20 +240,34 @@ impl AgentClaimRepo {
         expires_at: Timestamp,
         session_id: Option<AgentSessionId>,
     ) -> Result<()> {
+        self.acquire_until_with_holder(agent_id, task_id, claim_id, expires_at, session_id, None)
+            .await
+    }
+
+    async fn acquire_until_with_holder(
+        &self,
+        agent_id: AgentId,
+        task_id: TaskId,
+        claim_id: ClaimId,
+        expires_at: Timestamp,
+        session_id: Option<AgentSessionId>,
+        holder: Option<&str>,
+    ) -> Result<()> {
         let now = Utc::now();
         let now_s = now.to_rfc3339();
         let expires_s = expires_at.to_rfc3339();
         sqlx::query(
             "INSERT INTO agent_claims \
-             (agent_id, task_id, acquired_at, expires_at, claim_id, session_id) \
-             SELECT ?, ?, ?, ?, ?, ? \
+             (agent_id, task_id, acquired_at, expires_at, claim_id, session_id, holder_logical_agent_id) \
+             SELECT ?, ?, ?, ?, ?, ?, ? \
              WHERE ? > ? AND NOT EXISTS ( \
                  SELECT 1 FROM agent_claims \
                  WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
              ) \
              ON CONFLICT(agent_id, task_id) DO UPDATE SET \
                  acquired_at = excluded.acquired_at, expires_at = excluded.expires_at, \
-                 session_id = COALESCE(excluded.session_id, agent_claims.session_id) \
+                 session_id = COALESCE(excluded.session_id, agent_claims.session_id), \
+                 holder_logical_agent_id = excluded.holder_logical_agent_id \
              WHERE agent_claims.claim_id = excluded.claim_id",
         )
         .bind(agent_id.to_string())
@@ -262,6 +276,7 @@ impl AgentClaimRepo {
         .bind(&expires_s)
         .bind(claim_id.to_string())
         .bind(session_id.map(|id| id.to_string()))
+        .bind(holder)
         .bind(&expires_s)
         .bind(&now_s)
         .bind(task_id.to_string())
@@ -1241,8 +1256,15 @@ impl AgentClaimRepo {
                 expires_at,
                 session_id,
             } => {
-                self.acquire_until(*agent_id, *task_id, *claim_id, *expires_at, *session_id)
-                    .await
+                self.acquire_until_with_holder(
+                    *agent_id,
+                    *task_id,
+                    *claim_id,
+                    *expires_at,
+                    *session_id,
+                    env.logical_agent_id.as_deref(),
+                )
+                .await
             }
             Event::AgentClaimed { claim_id: None, .. } => Ok(()),
             Event::AgentReleased {
@@ -1947,6 +1969,54 @@ mod tests {
         let wire = serde_json::to_value(release).unwrap();
         assert_eq!(wire["logical_agent_id"], "releaser");
         assert_eq!(wire["payload"]["holder_logical_agent_id"], "holder");
+    }
+
+    #[tokio::test]
+    async fn released_generation_replay_and_expiry_keep_holder_or_unknown() {
+        let (db, repo) = make_repo().await;
+        let agent = AgentId::new();
+        let task = seed_claim_task(&db).await;
+        let claim_id = ClaimId::new();
+        let mut event = EventEnvelope::new(
+            Actor::user(),
+            Event::AgentClaimed {
+                agent_id: agent,
+                task_id: task,
+                claim_id: Some(claim_id),
+                expires_at: Utc::now() + Duration::seconds(60),
+                session_id: None,
+            },
+        );
+        event.logical_agent_id = Some("holder".into());
+        repo.apply_event(&event).await.unwrap();
+        sqlx::query("UPDATE agent_claims SET expires_at = ? WHERE task_id = ?")
+            .bind((Utc::now() - Duration::seconds(60)).to_rfc3339())
+            .bind(task.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let events = daruma_events::envelope::scope_logical_agent(
+            Some("sweeper".into()),
+            repo.sweep_expired_recorded(Actor::user()),
+        )
+        .await
+        .unwrap();
+        let wire = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(wire["logical_agent_id"], "sweeper");
+        assert_eq!(wire["payload"]["holder_logical_agent_id"], "holder");
+
+        event.logical_agent_id = None;
+        repo.apply_event(&event).await.unwrap();
+        let release = daruma_events::envelope::scope_logical_agent(
+            Some("admin".into()),
+            repo.release_recorded(Actor::user(), agent, task, claim_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let wire = serde_json::to_value(release).unwrap();
+        assert_eq!(wire["logical_agent_id"], "admin");
+        assert!(wire["payload"].get("holder_logical_agent_id").is_none());
     }
 
     #[tokio::test]
