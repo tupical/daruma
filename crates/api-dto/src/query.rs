@@ -57,7 +57,12 @@ where D: serde::Deserializer<'de> {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(try_from = "RawLeaf")]
-pub struct Leaf { pub field: FilterField, pub op: Operator, pub value: Option<serde_json::Value> }
+pub struct Leaf {
+    pub field: FilterField,
+    pub op: Operator,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,6 +157,13 @@ mod tests {
             r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"sort":[{"field":"invented","direction":"asc"}]}"#,
         ] { assert!(serde_json::from_str::<QueryRequest>(query).is_err()); }
         assert!(serde_json::from_str::<QueryRequest>(r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"select":["id","title"],"sort":[{"field":"created_at","direction":"desc"}]}"#).is_ok());
+    }
+    #[test]
+    fn null_predicate_round_trips_without_value() {
+        let leaf: Leaf = serde_json::from_str(r#"{"field":"project_id","op":"is_null"}"#).unwrap();
+        let encoded = serde_json::to_string(&leaf).unwrap();
+        assert!(!encoded.contains("value"));
+        assert_eq!(serde_json::from_str::<Leaf>(&encoded).unwrap(), leaf);
     }
     #[test]
     fn validates_field_operator_and_value_together() {
