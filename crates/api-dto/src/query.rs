@@ -278,7 +278,7 @@ pub enum QueryConsistency { #[serde(rename = "request_snapshot")] RequestSnapsho
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRow {
-    #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "selected_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<daruma_shared::ProjectId>,
     #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -295,7 +295,7 @@ pub struct ProjectRow {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRow {
-    #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "selected_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<daruma_shared::TaskId>,
     #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<daruma_shared::ProjectId>>,
@@ -322,9 +322,9 @@ pub struct TaskRow {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanRow {
-    #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "selected_id", skip_serializing_if = "Option::is_none")]
     pub id: Option<daruma_shared::PlanId>,
-    #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "selected_id", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<daruma_shared::ProjectId>,
     #[serde(default, deserialize_with = "selected", skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -332,6 +332,12 @@ pub struct PlanRow {
     pub status: Option<daruma_domain::plan::PlanStatus>,
     #[serde(default, deserialize_with = "selected_nullable", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Option<daruma_shared::Timestamp>>,
+}
+
+fn selected_id<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where D: serde::Deserializer<'de>, T: std::str::FromStr, T::Err: std::fmt::Display {
+    let value = String::deserialize(deserializer)?;
+    value.parse().map(Some).map_err(serde::de::Error::custom)
 }
 
 fn selected<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

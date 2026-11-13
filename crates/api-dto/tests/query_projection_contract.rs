@@ -21,3 +21,8 @@ fn selected_null_is_distinct_from_an_unselected_field() {
 fn non_nullable_selected_fields_reject_null() {
     assert!(serde_json::from_str::<TaskRow>(r#"{"title":null}"#).is_err());
 }
+
+#[test]
+fn projection_accepts_daruma_formatted_ids() {
+    assert!(serde_json::from_str::<ProjectRow>(r#"{"id":"prj_00000000-0000-0000-0000-000000000001"}"#).is_ok());
+}
