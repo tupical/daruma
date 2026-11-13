@@ -61,7 +61,17 @@ pub struct Leaf { pub field: FilterField, pub op: Operator, pub value: Option<se
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawLeaf { field: FilterField, op: Operator, value: Option<serde_json::Value> }
+struct RawLeaf {
+    field: FilterField,
+    op: Operator,
+    #[serde(default, deserialize_with = "present_value")]
+    value: Option<serde_json::Value>,
+}
+
+fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where D: serde::Deserializer<'de> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
 
 impl TryFrom<RawLeaf> for Leaf {
     type Error = &'static str;
@@ -137,6 +147,7 @@ mod tests {
             r#"{"field":"id","op":"eq","value":"not-an-id"}"#,
             r#"{"field":"assignee","op":"eq","value":{"self":false}}"#,
             r#"{"field":"project_id","op":"is_null","value":true}"#,
+            r#"{"field":"project_id","op":"is_null","value":null}"#,
         ] { assert!(serde_json::from_str::<Leaf>(invalid).is_err(), "{invalid}"); }
         for valid in [
             r#"{"field":"status","op":"in","value":["todo","done"]}"#,
