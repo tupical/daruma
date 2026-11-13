@@ -14,6 +14,7 @@
 pub mod command;
 pub mod mutation;
 pub mod plans;
+pub mod query;
 pub mod ws;
 
 // Flat re-exports for convenience.
