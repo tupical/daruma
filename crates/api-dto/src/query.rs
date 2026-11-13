@@ -42,10 +42,17 @@ pub enum Scope { ProjectIds(Vec<String>), Inbox(bool), AllVisible(bool) }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Expression {
-    And { and: Vec<Expression> },
-    Or { or: Vec<Expression> },
+    And { #[serde(deserialize_with = "non_empty")] and: Vec<Expression> },
+    Or { #[serde(deserialize_with = "non_empty")] or: Vec<Expression> },
     Not { not: Box<Expression> },
     Leaf(Leaf),
+}
+
+fn non_empty<'de, D>(deserializer: D) -> Result<Vec<Expression>, D::Error>
+where D: serde::Deserializer<'de> {
+    let values = Vec::<Expression>::deserialize(deserializer)?;
+    if values.is_empty() { return Err(serde::de::Error::custom("expression list must not be empty")); }
+    Ok(values)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -100,6 +107,13 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn rejects_empty_boolean_groups() {
+        for input in [r#"{"and":[]}"#, r#"{"or":[]}"#] {
+            assert!(serde_json::from_str::<Expression>(input).is_err());
+        }
+        assert!(serde_json::from_str::<Expression>(r#"{"and":[{"field":"claim.active","op":"eq","value":true}]}"#).is_ok());
     }
     #[test]
     fn rejects_expression_with_multiple_variants_or_extra_keys() {
