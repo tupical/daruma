@@ -81,6 +81,11 @@ pub enum Direction { Asc, Desc }
 mod tests {
     use super::*;
     #[test]
+    fn rejects_invalid_operator_for_boolean_field() {
+        let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
+        assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
     fn rejects_unknown_operator() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"status","op":"invented","value":"todo"}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
