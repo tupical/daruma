@@ -252,9 +252,40 @@ pub enum SortField { Id, CreatedAt, Priority }
 #[serde(rename_all = "snake_case")]
 pub enum Direction { Asc, Desc }
 
+/// A complete page evaluated against one request snapshot; it is not a cross-page snapshot.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct QueryResponse<T> {
+    pub query_contract: QueryContract,
+    pub resource: Resource,
+    pub semantics_version: SemanticsVersion,
+    pub query_hash: String,
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub complete: bool,
+    pub evaluated_at: daruma_shared::Timestamp,
+    pub consistency: QueryConsistency,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub enum QueryContract { #[serde(rename = "daruma_query_v1")] V1 }
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub enum SemanticsVersion { #[serde(rename = "task_start_v1")] TaskStartV1 }
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub enum QueryConsistency { #[serde(rename = "request_snapshot")] RequestSnapshot }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn response_requires_known_contract_and_consistency() {
+        let input = r#"{"query_contract":"daruma_query_v1","resource":"tasks","semantics_version":"task_start_v1","query_hash":"abc","items":[],"next_cursor":null,"has_more":false,"complete":true,"evaluated_at":"2026-01-01T00:00:00Z","consistency":"request_snapshot"}"#;
+        let page: QueryResponse<serde_json::Value> = serde_json::from_str(input).unwrap();
+        assert_eq!(serde_json::from_str::<QueryResponse<serde_json::Value>>(&serde_json::to_string(&page).unwrap()).unwrap(), page);
+        assert!(serde_json::from_str::<QueryResponse<serde_json::Value>>(&input.replace("request_snapshot", "eventual")).is_err());
+        assert!(serde_json::from_str::<QueryResponse<serde_json::Value>>(&input.replace("daruma_query_v1", "daruma_query_v2")).is_err());
+    }
     #[test]
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
