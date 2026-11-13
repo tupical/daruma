@@ -138,7 +138,31 @@ struct RawLeaf {
 
 fn present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
 where D: serde::Deserializer<'de> {
-    serde_json::Value::deserialize(deserializer).map(Some)
+    struct ValueVisitor;
+    impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+        type Value = serde_json::Value;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { f.write_str("a query value") }
+        fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> { Ok(v.into()) }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> { Ok(v.into()) }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> { Ok(v.into()) }
+        fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> { serde_json::Number::from_f64(v).map(Into::into).ok_or_else(|| E::custom("invalid number")) }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> { Ok(v.into()) }
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> { Ok(v.into()) }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> { Ok(serde_json::Value::Null) }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element()? { values.push(value); }
+            Ok(serde_json::Value::Array(values))
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut values = serde_json::Map::new();
+            while let Some((key, value)) = map.next_entry::<String, serde_json::Value>()? {
+                if values.insert(key, value).is_some() { return Err(serde::de::Error::custom("duplicate query value key")); }
+            }
+            Ok(serde_json::Value::Object(values))
+        }
+    }
+    deserializer.deserialize_any(ValueVisitor).map(Some)
 }
 
 impl TryFrom<RawLeaf> for Leaf {
@@ -230,6 +254,11 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn rejects_duplicate_keys_in_assignee_selector() {
+        let input = r#"{"field":"assignee","op":"eq","value":{"self":false,"self":true}}"#;
+        assert!(serde_json::from_str::<Leaf>(input).is_err());
     }
     #[test]
     fn rejects_expression_budget_overflow() {
