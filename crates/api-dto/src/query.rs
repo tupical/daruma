@@ -50,7 +50,11 @@ pub enum Expression {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct Leaf { pub field: FilterField, pub op: String, pub value: Option<serde_json::Value> }
+pub struct Leaf { pub field: FilterField, pub op: Operator, pub value: Option<serde_json::Value> }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Operator { Eq, In, IsNull, Lt, Lte, Gt, Gte }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub enum FilterField {
@@ -76,6 +80,11 @@ pub enum Direction { Asc, Desc }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_unknown_operator() {
+        let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"status","op":"invented","value":"todo"}}"#;
+        assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
     #[test]
     fn rejects_unknown_filter_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"invented","op":"eq","value":true}}"#;
