@@ -11,7 +11,7 @@ pub struct QueryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Expression>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub select: Option<Vec<String>>,
+    pub select: Option<Vec<SelectField>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<Vec<Sort>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,7 +124,15 @@ pub enum FilterField {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct Sort { pub field: String, pub direction: Direction }
+pub struct Sort { pub field: SortField, pub direction: Direction }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectField { Id, ProjectId, Title, Description, Status, Priority, CreatedAt, UpdatedAt, Assignee, Revision }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField { Id, CreatedAt, Priority }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction { Asc, Desc }
@@ -136,6 +144,14 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn rejects_unknown_select_and_sort_fields() {
+        for query in [
+            r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"select":["invented"]}"#,
+            r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"sort":[{"field":"invented","direction":"asc"}]}"#,
+        ] { assert!(serde_json::from_str::<QueryRequest>(query).is_err()); }
+        assert!(serde_json::from_str::<QueryRequest>(r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"select":["id","title"],"sort":[{"field":"created_at","direction":"desc"}]}"#).is_ok());
     }
     #[test]
     fn validates_field_operator_and_value_together() {
