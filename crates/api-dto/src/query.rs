@@ -268,6 +268,11 @@ mod tests {
         assert!(serde_json::from_str::<QueryRequest>(&request).is_err());
     }
     #[test]
+    fn rejects_duplicate_filter_fields() {
+        let query = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"status","field":"priority","op":"eq","value":"p1"}}"#;
+        assert!(serde_json::from_str::<QueryRequest>(query).is_err());
+    }
+    #[test]
     fn rejects_task_only_projection_on_projects() {
         let input = r#"{"query_version":1,"resource":"projects","scope":{"all_visible":true},"select":["assignee"]}"#;
         assert!(serde_json::from_str::<QueryRequest>(input).is_err());
