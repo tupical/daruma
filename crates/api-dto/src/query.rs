@@ -49,6 +49,10 @@ impl TryFrom<RawQueryRequest> for QueryRequest {
             || raw.sort.as_ref().is_some_and(|keys| keys.is_empty() || keys.len() > 2)
             || raw.cursor.as_ref().is_some_and(String::is_empty)
         { return Err("invalid query scope or bounds"); }
+        if let Some(expr) = &raw.filter {
+            let (mut nodes, mut leaves) = (0, 0);
+            if !expr.within_budget(1, &mut nodes, &mut leaves) { return Err("query too complex"); }
+        }
         if let Some(include) = &raw.include {
             if (include.plans.is_some() && raw.resource != Resource::Tasks)
                 || (include.tasks.is_some() && raw.resource != Resource::Projects)
@@ -89,6 +93,22 @@ pub enum Expression {
     Or { #[serde(deserialize_with = "non_empty")] or: Vec<Expression> },
     Not { not: Box<Expression> },
     Leaf(Leaf),
+}
+
+impl Expression {
+    fn within_budget(&self, depth: usize, nodes: &mut usize, leaves: &mut usize) -> bool {
+        *nodes += 1;
+        if depth > 6 || *nodes > 128 { return false; }
+        match self {
+            Expression::And { and } | Expression::Or { or: and } =>
+                and.len() <= 16 && and.iter().all(|expr| expr.within_budget(depth + 1, nodes, leaves)),
+            Expression::Not { not } => not.within_budget(depth + 1, nodes, leaves),
+            Expression::Leaf(leaf) => {
+                *leaves += 1;
+                *leaves <= 64 && !matches!(&leaf.value, Some(serde_json::Value::Array(values)) if values.len() > 100)
+            }
+        }
+    }
 }
 
 fn non_empty<'de, D>(deserializer: D) -> Result<Vec<Expression>, D::Error>
@@ -210,6 +230,17 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn rejects_expression_budget_overflow() {
+        let leaf = serde_json::json!({"field":"claim.active","op":"eq","value":true});
+        let query = |filter| serde_json::json!({"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":filter}).to_string();
+        assert!(serde_json::from_str::<QueryRequest>(&query(serde_json::json!({"and":vec![leaf.clone(); 16]}))).is_ok());
+        assert!(serde_json::from_str::<QueryRequest>(&query(serde_json::json!({"and":vec![leaf.clone(); 17]}))).is_err());
+        let mut deep = leaf;
+        for _ in 0..6 { deep = serde_json::json!({"not":deep}); }
+        assert!(serde_json::from_str::<QueryRequest>(&query(deep)).is_err());
+        assert!(serde_json::from_str::<QueryRequest>(&query(serde_json::json!({"field":"status","op":"in","value":vec!["todo"; 101]}))).is_err());
     }
     #[test]
     fn per_project_latest_is_a_nested_bounded_projection() {
