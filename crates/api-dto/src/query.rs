@@ -40,7 +40,7 @@ pub enum Resource { Tasks, Projects }
 pub enum Scope { ProjectIds(Vec<String>), Inbox(bool), AllVisible(bool) }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum Expression {
     And { and: Vec<Expression> },
     Or { or: Vec<Expression> },
@@ -100,6 +100,16 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn rejects_expression_with_multiple_variants_or_extra_keys() {
+        for filter in [
+            r#"{"and":[],"not":{"field":"claim.active","op":"eq","value":true}}"#,
+            r#"{"not":{"field":"claim.active","op":"eq","value":true},"extra":1}"#,
+            r#"{"field":"claim.active","op":"eq","value":true,"extra":1}"#,
+        ] {
+            assert!(serde_json::from_str::<Expression>(filter).is_err(), "{filter}");
+        }
     }
     #[test]
     fn accepts_boolean_eq_and_rejects_non_boolean_values() {
