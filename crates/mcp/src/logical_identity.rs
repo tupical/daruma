@@ -4,6 +4,7 @@ use crate::ApiClient;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -68,7 +69,41 @@ pub async fn bind(
             "incomplete logical setup: binding name must be 1-64 ASCII letters, digits, '-' or '_'"
         );
     }
-    fs::create_dir_all(root)
+    let response = client
+        .post_json(
+            "/v1/mcp",
+            json!({
+                "jsonrpc": "2.0", "id": "logical-scope", "method": "tools/call",
+                "params": {"name": "daruma_workspace_info", "arguments": {}}
+            }),
+        )
+        .await
+        .context("incomplete logical setup: cannot resolve authenticated scope")?;
+    let scope: serde_json::Value = serde_json::from_str(
+        response
+            .pointer("/result/content/0/text")
+            .and_then(|v| v.as_str())
+            .context("incomplete logical setup: missing scope")?,
+    )?;
+    let account: Uuid = scope
+        .pointer("/account/id")
+        .and_then(|v| v.as_str())
+        .context("incomplete logical setup: missing account ID")?
+        .parse()?;
+    let workspace: Uuid = scope
+        .pointer("/workspace/id")
+        .and_then(|v| v.as_str())
+        .context("incomplete logical setup: missing workspace ID")?
+        .parse()?;
+    let server_hash = format!(
+        "{:x}",
+        Sha256::digest(client.base_url().trim_end_matches('/').as_bytes())
+    );
+    let root = root
+        .join(server_hash)
+        .join(workspace.to_string())
+        .join(account.to_string());
+    fs::create_dir_all(&root)
         .context("incomplete logical setup: cannot create identity directory")?;
     let path = root.join(format!("{binding_name}.json"));
     let lock_path = root.join(format!("{binding_name}.lock"));
