@@ -16,3 +16,8 @@ fn selected_null_is_distinct_from_an_unselected_field() {
     assert_eq!(row.revision, None);
     assert_eq!(serde_json::to_value(row).unwrap(), serde_json::json!({"project_id":null,"assignee":null}));
 }
+
+#[test]
+fn non_nullable_selected_fields_reject_null() {
+    assert!(serde_json::from_str::<TaskRow>(r#"{"title":null}"#).is_err());
+}
