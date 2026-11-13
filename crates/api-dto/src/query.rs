@@ -49,6 +49,11 @@ impl TryFrom<RawQueryRequest> for QueryRequest {
             || raw.sort.as_ref().is_some_and(|keys| keys.is_empty() || keys.len() > 2)
             || raw.cursor.as_ref().is_some_and(String::is_empty)
         { return Err("invalid query scope or bounds"); }
+        if raw.resource == Resource::Projects && (
+            raw.filter.is_some()
+            || raw.select.as_ref().is_some_and(|fields| fields.iter().any(|field| !matches!(field, SelectField::Id | SelectField::Title | SelectField::Description | SelectField::CreatedAt | SelectField::UpdatedAt)))
+            || raw.sort.as_ref().is_some_and(|keys| keys.iter().any(|key| key.field == SortField::Priority))
+        ) { return Err("unsupported project field"); }
         if let Some(expr) = &raw.filter {
             let (mut nodes, mut leaves) = (0, 0);
             if !expr.within_budget(1, &mut nodes, &mut leaves) { return Err("query too complex"); }
@@ -261,6 +266,11 @@ mod tests {
         assert!(serde_json::from_str::<Leaf>(input).is_err());
         let request = format!(r#"{{"query_version":1,"resource":"tasks","scope":{{"all_visible":true}},"filter":{input}}}"#);
         assert!(serde_json::from_str::<QueryRequest>(&request).is_err());
+    }
+    #[test]
+    fn rejects_task_only_projection_on_projects() {
+        let input = r#"{"query_version":1,"resource":"projects","scope":{"all_visible":true},"select":["assignee"]}"#;
+        assert!(serde_json::from_str::<QueryRequest>(input).is_err());
     }
     #[test]
     fn rejects_expression_budget_overflow() {
