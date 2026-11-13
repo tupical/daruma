@@ -66,11 +66,30 @@ struct RawLeaf { field: FilterField, op: Operator, value: Option<serde_json::Val
 impl TryFrom<RawLeaf> for Leaf {
     type Error = &'static str;
     fn try_from(raw: RawLeaf) -> Result<Self, Self::Error> {
-        if matches!(raw.field, FilterField::ClaimActive | FilterField::DependenciesNone | FilterField::DependenciesSatisfied | FilterField::ReadinessUnblocked)
-            && (raw.op != Operator::Eq || !matches!(raw.value, Some(serde_json::Value::Bool(_))))
-        {
-            return Err("boolean predicates require eq and a boolean value");
-        }
+        let valid_scalar = |value: &serde_json::Value| -> bool {
+            match raw.field {
+                FilterField::Id => value.as_str().is_some_and(|v| v.parse::<daruma_shared::TaskId>().is_ok()),
+                FilterField::ProjectId => value.as_str().is_some_and(|v| v.parse::<daruma_shared::ProjectId>().is_ok()),
+                FilterField::Status => serde_json::from_value::<daruma_domain::task::Status>(value.clone()).is_ok(),
+                FilterField::Priority => serde_json::from_value::<daruma_domain::task::Priority>(value.clone()).is_ok(),
+                FilterField::CreatedAt => serde_json::from_value::<daruma_shared::Timestamp>(value.clone()).is_ok(),
+                FilterField::Assignee => {
+                    let Some(object) = value.as_object() else { return false };
+                    object.len() == 1 && (object.get("self") == Some(&serde_json::Value::Bool(true))
+                        || object.get("logical_agent_id").and_then(|v| v.as_str()).is_some_and(|v| uuid::Uuid::parse_str(v).is_ok()))
+                }
+                FilterField::ClaimActive | FilterField::DependenciesNone | FilterField::DependenciesSatisfied | FilterField::ReadinessUnblocked => value.is_boolean(),
+            }
+        };
+        let valid = match (&raw.field, &raw.op, &raw.value) {
+            (FilterField::ProjectId | FilterField::Assignee, Operator::IsNull, None) => true,
+            (FilterField::Id | FilterField::ProjectId | FilterField::Status | FilterField::Priority, Operator::In, Some(serde_json::Value::Array(values))) =>
+                !values.is_empty() && values.iter().all(valid_scalar),
+            (FilterField::CreatedAt, Operator::Eq | Operator::Lt | Operator::Lte | Operator::Gt | Operator::Gte, Some(value)) => valid_scalar(value),
+            (_, Operator::Eq, Some(value)) => valid_scalar(value),
+            _ => false,
+        };
+        if !valid { return Err("invalid field, operator or value combination"); }
         Ok(Self { field: raw.field, op: raw.op, value: raw.value })
     }
 }
@@ -107,6 +126,24 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn validates_field_operator_and_value_together() {
+        for invalid in [
+            r#"{"field":"status","op":"lt","value":"todo"}"#,
+            r#"{"field":"status","op":"eq","value":"active"}"#,
+            r#"{"field":"status","op":"in","value":[]}"#,
+            r#"{"field":"priority","op":"eq","value":"p4"}"#,
+            r#"{"field":"id","op":"eq","value":"not-an-id"}"#,
+            r#"{"field":"assignee","op":"eq","value":{"self":false}}"#,
+            r#"{"field":"project_id","op":"is_null","value":true}"#,
+        ] { assert!(serde_json::from_str::<Leaf>(invalid).is_err(), "{invalid}"); }
+        for valid in [
+            r#"{"field":"status","op":"in","value":["todo","done"]}"#,
+            r#"{"field":"assignee","op":"eq","value":{"self":true}}"#,
+            r#"{"field":"project_id","op":"is_null"}"#,
+            r#"{"field":"created_at","op":"gt","value":"2026-01-01T00:00:00Z"}"#,
+        ] { assert!(serde_json::from_str::<Leaf>(valid).is_ok(), "{valid}"); }
     }
     #[test]
     fn rejects_empty_boolean_groups() {
