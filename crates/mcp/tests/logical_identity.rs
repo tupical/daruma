@@ -6,7 +6,21 @@ use axum::{
 };
 use daruma_mcp::{logical_identity::bind, ApiClient};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
+
+async fn scope() -> Json<Value> {
+    Json(json!({"result":{"content":[{"text":json!({
+        "account":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+        "workspace":{"id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+    }).to_string()}]}}))
+}
+
+fn scope_root(root: &std::path::Path, url: &str) -> std::path::PathBuf {
+    root.join(format!("{:x}", Sha256::digest(url.as_bytes())))
+        .join("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        .join("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+}
 
 async fn start_fixture(app: Router) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -19,6 +33,7 @@ async fn start_fixture(app: Router) -> (String, tokio::task::JoinHandle<()>) {
 async fn lost_response_keeps_retry_key_and_explicit_reuse_never_registers() {
     let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
     let app = Router::new()
+        .route("/v1/mcp", post(scope))
         .route(
             "/v1/cloud/agents",
             post(
@@ -50,7 +65,7 @@ async fn lost_response_keeps_retry_key_and_explicit_reuse_never_registers() {
     assert!(bind(client.clone(), &root, "builder", "Builder", None)
         .await
         .is_err());
-    let saved = std::fs::read_to_string(root.join("builder.json")).unwrap();
+    let saved = std::fs::read_to_string(scope_root(&root, &url).join("builder.json")).unwrap();
     let saved: Value = serde_json::from_str(&saved).unwrap();
     assert!(saved["binding_id"].is_string());
     assert!(saved["logical_agent_id"].is_null());
@@ -78,16 +93,18 @@ async fn lost_response_keeps_retry_key_and_explicit_reuse_never_registers() {
 #[tokio::test]
 async fn corrupt_state_and_unwritable_parent_fail_before_http() {
     let root = std::env::temp_dir().join(format!("logical-corrupt-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("builder.json"), "partial-json").unwrap();
-    let client = ApiClient::new("http://127.0.0.1:1", "credential");
+    let (url, server) = start_fixture(Router::new().route("/v1/mcp", post(scope))).await;
+    let scoped = scope_root(&root, &url);
+    std::fs::create_dir_all(&scoped).unwrap();
+    std::fs::write(scoped.join("builder.json"), "partial-json").unwrap();
+    let client = ApiClient::new(&url, "credential");
     let error = bind(client.clone(), &root, "builder", "Builder", None)
         .await
         .err()
         .unwrap();
     assert!(error.to_string().contains("invalid identity state"));
     assert_eq!(
-        std::fs::read_to_string(root.join("builder.json")).unwrap(),
+        std::fs::read_to_string(scoped.join("builder.json")).unwrap(),
         "partial-json"
     );
     let blocked = root.join("file-not-directory");
@@ -100,12 +117,14 @@ async fn corrupt_state_and_unwritable_parent_fail_before_http() {
         .to_string()
         .contains("cannot create identity directory"));
     std::fs::remove_dir_all(root).unwrap();
+    server.abort();
 }
 
 #[tokio::test]
 async fn binding_persists_before_registration_and_propagates_without_rekeying_runtime() {
     let state = Arc::new(Mutex::new(Vec::<Value>::new()));
     let app = Router::new()
+        .route("/v1/mcp", post(scope))
         .route("/v1/cloud/agents", post(|State(s): State<Arc<Mutex<Vec<Value>>>>, Json(v): Json<Value>| async move {
             s.lock().unwrap().push(v.clone());
             Json(json!({"id": "00000000-0000-4000-8000-000000000001", "name": "Builder"}))
@@ -154,7 +173,9 @@ async fn binding_persists_before_registration_and_propagates_without_rekeying_ru
         1,
         "restart verifies saved ID rather than recreating"
     );
-    let files: Vec<_> = std::fs::read_dir(&root).unwrap().collect();
+    let files: Vec<_> = std::fs::read_dir(scope_root(&root, &url))
+        .unwrap()
+        .collect();
     assert_eq!(
         files.len(),
         1,
