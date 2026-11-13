@@ -259,6 +259,8 @@ mod tests {
     fn rejects_duplicate_keys_in_assignee_selector() {
         let input = r#"{"field":"assignee","op":"eq","value":{"self":false,"self":true}}"#;
         assert!(serde_json::from_str::<Leaf>(input).is_err());
+        let request = format!(r#"{{"query_version":1,"resource":"tasks","scope":{{"all_visible":true}},"filter":{input}}}"#);
+        assert!(serde_json::from_str::<QueryRequest>(&request).is_err());
     }
     #[test]
     fn rejects_expression_budget_overflow() {
