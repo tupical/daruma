@@ -337,17 +337,9 @@ async fn run_mcp_stdio(
     run_stdio_with_profile(client, profile).await
 }
 
-/// Bootstrap is explicit opt-in; legacy/native HTTP hosts remain unchanged.
 async fn bind_logical_identity(client: ApiClient) -> anyhow::Result<ApiClient> {
-    let binding = std::env::var("DARUMA_LOGICAL_BINDING").ok();
+    let binding = std::env::var("DARUMA_LOGICAL_BINDING").unwrap_or_else(|_| "cli".into());
     let reuse = std::env::var("DARUMA_LOGICAL_AGENT_ID").ok();
-    let Some(binding) = binding else {
-        anyhow::ensure!(
-            reuse.is_none(),
-            "incomplete logical setup: reuse requires DARUMA_LOGICAL_BINDING"
-        );
-        return Ok(client);
-    };
     let reuse = reuse
         .map(|value| value.parse::<uuid::Uuid>())
         .transpose()
