@@ -49,8 +49,24 @@ pub enum Expression {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawLeaf")]
 pub struct Leaf { pub field: FilterField, pub op: Operator, pub value: Option<serde_json::Value> }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLeaf { field: FilterField, op: Operator, value: Option<serde_json::Value> }
+
+impl TryFrom<RawLeaf> for Leaf {
+    type Error = &'static str;
+    fn try_from(raw: RawLeaf) -> Result<Self, Self::Error> {
+        if matches!(raw.field, FilterField::ClaimActive | FilterField::DependenciesNone | FilterField::DependenciesSatisfied | FilterField::ReadinessUnblocked)
+            && (raw.op != Operator::Eq || !matches!(raw.value, Some(serde_json::Value::Bool(_))))
+        {
+            return Err("boolean predicates require eq and a boolean value");
+        }
+        Ok(Self { field: raw.field, op: raw.op, value: raw.value })
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +100,17 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn accepts_boolean_eq_and_rejects_non_boolean_values() {
+        for value in ["true", "false"] {
+            let request = format!(r#"{{"field":"dependencies.none","op":"eq","value":{value}}}"#);
+            assert!(serde_json::from_str::<Leaf>(&request).is_ok());
+        }
+        for value in ["null", "1", "\"true\""] {
+            let request = format!(r#"{{"field":"dependencies.none","op":"eq","value":{value}}}"#);
+            assert!(serde_json::from_str::<Leaf>(&request).is_err());
+        }
     }
     #[test]
     fn rejects_unknown_operator() {
