@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version and resource are explicit so older servers cannot silently ignore a query.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawQueryRequest")]
 pub struct QueryRequest {
     pub query_version: QueryVersion,
     pub resource: Resource,
@@ -18,6 +18,37 @@ pub struct QueryRequest {
     pub limit: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawQueryRequest {
+    query_version: QueryVersion,
+    resource: Resource,
+    scope: Scope,
+    #[serde(default)] filter: Option<Expression>,
+    #[serde(default)] select: Option<Vec<SelectField>>,
+    #[serde(default)] sort: Option<Vec<Sort>>,
+    #[serde(default)] limit: Option<u16>,
+    #[serde(default)] cursor: Option<String>,
+}
+
+impl TryFrom<RawQueryRequest> for QueryRequest {
+    type Error = &'static str;
+    fn try_from(raw: RawQueryRequest) -> Result<Self, Self::Error> {
+        let scope_valid = match &raw.scope {
+            Scope::Inbox(v) | Scope::AllVisible(v) => *v,
+            Scope::ProjectIds(ids) => !ids.is_empty() && ids.len() <= 100
+                && ids.iter().all(|id| id.parse::<daruma_shared::ProjectId>().is_ok()),
+        };
+        if !scope_valid || raw.limit.is_some_and(|n| !(1..=200).contains(&n))
+            || raw.select.as_ref().is_some_and(|fields| fields.is_empty() || fields.len() > 16)
+            || raw.sort.as_ref().is_some_and(|keys| keys.is_empty() || keys.len() > 2)
+            || raw.cursor.as_ref().is_some_and(String::is_empty)
+        { return Err("invalid query scope or bounds"); }
+        Ok(Self { query_version: raw.query_version, resource: raw.resource, scope: raw.scope,
+            filter: raw.filter, select: raw.select, sort: raw.sort, limit: raw.limit, cursor: raw.cursor })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -149,6 +180,15 @@ mod tests {
     fn rejects_invalid_operator_for_boolean_field() {
         let request = r#"{"query_version":1,"resource":"tasks","scope":{"all_visible":true},"filter":{"field":"claim.active","op":"lt","value":true}}"#;
         assert!(serde_json::from_str::<QueryRequest>(request).is_err());
+    }
+    #[test]
+    fn rejects_invalid_scope_and_request_bounds() {
+        for fragment in [r#""scope":{"all_visible":false}"#, r#""scope":{"project_ids":[]}"#,
+            r#""scope":{"project_ids":["bad"]}"#, r#""scope":{"inbox":true},"limit":0"#,
+            r#""scope":{"inbox":true},"limit":201"#, r#""scope":{"inbox":true},"cursor":"""#] {
+            let query = format!(r#"{{"query_version":1,"resource":"tasks",{fragment}}}"#);
+            assert!(serde_json::from_str::<QueryRequest>(&query).is_err(), "{query}");
+        }
     }
     #[test]
     fn rejects_unknown_select_and_sort_fields() {
