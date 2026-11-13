@@ -165,3 +165,53 @@ async fn binding_persists_before_registration_and_propagates_without_rekeying_ru
     std::fs::remove_dir_all(root).unwrap();
     server.abort();
 }
+
+#[tokio::test]
+async fn bootstrap_separates_account_and_workspace_and_reuses_on_switch_back() {
+    async fn workspace(headers: HeaderMap) -> Json<Value> {
+        let account = if headers["authorization"] == "Bearer account-a" {
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        } else {
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        };
+        let workspace = headers
+            .get("x-daruma-workspace-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        Json(
+            json!({"result":{"content":[{"text":json!({"account":{"id":account},"workspace":{"id":workspace}}).to_string()}]}}),
+        )
+    }
+    async fn register(headers: HeaderMap, Json(_body): Json<Value>) -> Json<Value> {
+        let id = if headers["authorization"] == "Bearer account-a" {
+            "11111111-1111-4111-8111-111111111111"
+        } else {
+            "22222222-2222-4222-8222-222222222222"
+        };
+        Json(json!({"id":id}))
+    }
+    async fn get_agent(axum::extract::Path(id): axum::extract::Path<String>) -> Json<Value> {
+        Json(json!({"id":id}))
+    }
+    let (url, server) = start_fixture(
+        Router::new()
+            .route("/v1/mcp", post(workspace))
+            .route("/v1/cloud/agents", post(register))
+            .route("/v1/cloud/agents/{id}", get(get_agent)),
+    )
+    .await;
+    let root = std::env::temp_dir().join(format!("logical-switch-{}", uuid::Uuid::new_v4()));
+    let workspace = "33333333-3333-4333-8333-333333333333";
+    let a = ApiClient::new(&url, "account-a").with_workspace_id(workspace);
+    let b = ApiClient::new(&url, "account-b").with_workspace_id(workspace);
+    let first = bind(a.clone(), &root, "builder", "Builder", None)
+        .await
+        .unwrap();
+    let other = bind(b, &root, "builder", "Builder", None).await.unwrap();
+    let again = bind(a, &root, "builder", "Builder", None).await.unwrap();
+    assert_ne!(first.logical_agent_id(), other.logical_agent_id());
+    assert_eq!(first.logical_agent_id(), again.logical_agent_id());
+    std::fs::remove_dir_all(root).unwrap();
+    server.abort();
+}
