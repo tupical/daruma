@@ -497,6 +497,16 @@ impl CommandHandler {
         // ponytail: атомарность авто-parent держится на одном экземпляре handler; в облаке handler на запрос → гонка может дать два корня, дальше детерминированно выбирается ранний (created_at,id). Межпроцессный лок/UNIQUE — если это станет проблемой.
         // ponytail: то же для цепочки источников (ADR-0009): два handler-а могут одновременно связать один узел с разными upstream — проекция COALESCE оставит первую связь, а проигравший получит не ту цепочку без сигнала (warning/409 не будет). Лечится тем же межпроцессным локом.
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
+        if let (Command::ReleaseClaim { agent_id, task_id }, Some(claims)) = (&cmd, &self.claims) {
+            let current = claims.get_active_for_task(*task_id).await?;
+            let event = match current.filter(|claim| claim.agent_id == *agent_id) {
+                Some(claim) => claims.release_recorded(actor, *agent_id, *task_id, claim.claim_id).await?,
+                None => None,
+            };
+            let events: Vec<_> = event.into_iter().collect();
+            self.publish_recorded_claim_events(&events).await?;
+            return Ok(DispatchOutcome { events, warnings: vec![] });
+        }
         if self
             .is_completed_run_retry(&cmd, authenticated_agent_id)
             .await?
