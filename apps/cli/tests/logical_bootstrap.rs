@@ -18,7 +18,7 @@ async fn real_stdio_adapter_binds_before_initialize_reads() {
         trace.lock().unwrap().push((path.clone(), logical));
         Json(match path.as_str() {
             "/v1/cloud/agents" => json!({"id": "00000000-0000-4000-8000-000000000001"}),
-            "/v1/mcp" => json!({"result": {"content": [{"text": "{\"mcp_agent_id\":\"00000000-0000-4000-8000-000000000099\"}"}]}}),
+            "/v1/mcp" => json!({"result": {"content": [{"text": json!({"mcp_agent_id":"00000000-0000-4000-8000-000000000099", "account":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, "workspace":{"id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}}).to_string()}]}}),
             "/v1/claims" => json!({"claims": []}),
             p if p.starts_with("/v1/cloud/agents/") => json!({"id": "00000000-0000-4000-8000-000000000001"}),
             _ => json!({}),
@@ -35,8 +35,9 @@ async fn real_stdio_adapter_binds_before_initialize_reads() {
                 let mut child = Command::new(env!("CARGO_BIN_EXE_daruma"))
                     .args(["--api-url", &base, "--token", "test-credential", "mcp"])
                     .env("DARUMA_AGENT_DIR", &local)
-                    .env("DARUMA_LOGICAL_BINDING", "builder")
-                    .env("DARUMA_LOGICAL_NAME", "Builder")
+                    .env_remove("DARUMA_LOGICAL_BINDING")
+                    .env_remove("DARUMA_LOGICAL_NAME")
+                    .env_remove("DARUMA_LOGICAL_AGENT_ID")
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
@@ -71,7 +72,7 @@ async fn real_stdio_adapter_binds_before_initialize_reads() {
     }
     let calls = trace.lock().unwrap();
     assert_eq!(
-        calls[0].0, "/v1/cloud/agents",
+        calls[0].0, "/v1/mcp",
         "bootstrap must precede identity/claim/task lookup: {calls:?}"
     );
     assert!(calls.iter().any(|(p, _)| p == "/v1/claims"));
@@ -84,7 +85,7 @@ async fn real_stdio_adapter_binds_before_initialize_reads() {
     );
     for (path, id) in calls
         .iter()
-        .filter(|(p, _)| !p.starts_with("/v1/cloud/agents"))
+        .filter(|(p, _)| p != "/v1/mcp" && !p.starts_with("/v1/cloud/agents"))
     {
         assert_eq!(
             id.as_deref(),
