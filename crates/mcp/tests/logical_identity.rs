@@ -16,6 +16,36 @@ async fn scope() -> Json<Value> {
     }).to_string()}]}}))
 }
 
+#[tokio::test]
+async fn old_gateway_does_not_reuse_legacy_binding_or_register_anonymously() {
+    let registrations = Arc::new(Mutex::new(0usize));
+    let app = Router::new()
+        .route("/v1/mcp", post(|| async {
+            Json(json!({"result":{"content":[{"text":json!({
+                "account":{"email":"old@example.test"},"workspace":{"slug":"old"}
+            }).to_string()}]}}))
+        }))
+        .route("/v1/cloud/agents", post(|State(count): State<Arc<Mutex<usize>>>| async move {
+            *count.lock().unwrap() += 1;
+            Json(json!({"id":uuid::Uuid::new_v4()}))
+        }))
+        .with_state(registrations.clone());
+    let (url, server) = start_fixture(app).await;
+    let root = std::env::temp_dir().join(format!("logical-legacy-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let legacy = root.join("builder.json");
+    let saved = json!({"version":1,"server":url,"binding_id":uuid::Uuid::new_v4(),"logical_agent_id":uuid::Uuid::new_v4()}).to_string();
+    std::fs::write(&legacy, &saved).unwrap();
+    let error = bind(ApiClient::new(&url, "credential"), &root, "builder", "Builder", None)
+        .await.err().unwrap();
+    assert!(error.to_string().contains("missing account ID"));
+    assert_eq!(*registrations.lock().unwrap(), 0);
+    assert_eq!(std::fs::read_to_string(legacy).unwrap(), saved);
+    std::fs::remove_dir_all(root).unwrap();
+    server.abort();
+    let _ = server.await;
+}
+
 fn scope_root(root: &std::path::Path, url: &str) -> std::path::PathBuf {
     root.join(format!("{:x}", Sha256::digest(url.as_bytes())))
         .join("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
