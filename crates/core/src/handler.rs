@@ -6127,16 +6127,20 @@ mod tests {
             ref other => panic!("expected task_created, got {other:?}"),
         };
 
-        let claim = handler
-            .try_acquire_claim(
+        let holder = uuid::Uuid::new_v4().to_string();
+        let releaser = uuid::Uuid::new_v4().to_string();
+        let claim = daruma_events::envelope::scope_logical_agent(
+            Some(holder.clone()),
+            handler.try_acquire_claim(
                 Actor::user(),
                 agent_id,
                 task_id,
                 chrono::Duration::seconds(60),
                 None,
-            )
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         let (claim_id, claim_event) = match claim {
             RecordedClaimOutcome::Acquired {
                 claim_id, event, ..
@@ -6183,19 +6187,26 @@ mod tests {
             "a stale generation cannot release the live claim"
         );
 
-        let release_event = handler
-            .release_claim(Actor::user(), agent_id, task_id, claim_id)
-            .await
-            .unwrap()
-            .expect("matching generation releases");
+        let release_event = daruma_events::envelope::scope_logical_agent(
+            Some(releaser.clone()),
+            handler.release_claim(Actor::user(), agent_id, task_id, claim_id),
+        )
+        .await
+        .unwrap()
+        .expect("matching generation releases");
+        assert_eq!(
+            release_event.logical_agent_id.as_deref(),
+            Some(releaser.as_str())
+        );
         assert!(matches!(
             release_event.payload,
             Event::AgentReleased {
                 agent_id: a,
                 task_id: t,
                 claim_id: Some(generation),
+                holder_logical_agent_id: Some(ref saved_holder),
                 ..
-            } if a == agent_id && t == task_id && generation == claim_id
+            } if a == agent_id && t == task_id && generation == claim_id && saved_holder == &holder
         ));
     }
 

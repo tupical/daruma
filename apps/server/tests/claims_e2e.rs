@@ -403,6 +403,55 @@ async fn foreign_release_is_forbidden_and_preserves_the_claim_generation() {
     assert_eq!(task["current_claim"]["claim_id"], generation);
 }
 
+// Hosted gateway supplies these scopes after authentication; this exercises the OSS HTTP route.
+#[tokio::test]
+async fn admin_http_delete_preserves_release_holder_and_initiator() {
+    let h = test_app().await;
+    let task_id = create_task(&h.router, &h.admin_token).await;
+    let caps: Capabilities = [Capability::TaskRead, Capability::RunWrite].into();
+    let (owner_token, owner_id) = mint_pat(&h.auth_store(), caps, ProjectFilter::All).await;
+    let holder = uuid::Uuid::new_v4().to_string();
+    let releaser = uuid::Uuid::new_v4().to_string();
+    let body = json!({"agent_id": owner_id, "task_id": task_id, "ttl_secs": 60}).to_string();
+    let (status, acquired) = daruma_events::envelope::scope_logical_agent(
+        Some(holder.clone()),
+        post_json(&h.router, &owner_token, "/v1/claims", &body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "acquire: {acquired}");
+    let claim_id = acquired["data"]["claim_id"]
+        .as_str()
+        .unwrap()
+        .parse::<daruma_shared::ClaimId>()
+        .unwrap();
+    let (status, response) = daruma_events::envelope::scope_logical_agent(
+        Some(releaser.clone()),
+        post_json(
+            &h.router,
+            &h.admin_token,
+            "/v1/commands",
+            &json!({"command": {"type": "delete_task", "id": task_id}}).to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin delete: {response}");
+    assert_no_claim(&h, &task_id).await;
+    let events = h.state.store.load_since(0, 100).await.unwrap();
+    let release = events
+        .iter()
+        .find(|event| {
+            matches!(event.payload,
+                Event::AgentReleased { claim_id: Some(id), .. } if id == claim_id
+            )
+        })
+        .expect("release event for exact generation");
+    assert_eq!(release.logical_agent_id.as_deref(), Some(releaser.as_str()));
+    assert!(matches!(&release.payload, Event::AgentReleased {
+        holder_logical_agent_id: Some(saved), ..
+    } if saved == &holder));
+    println!("TRACE task={task_id} claim={claim_id} release_event={} holder={holder} releaser={releaser}", release.id);
+}
+
 #[tokio::test]
 async fn delete_task_releases_claim_generation_and_leaves_no_ghost() {
     let h = test_app().await;
