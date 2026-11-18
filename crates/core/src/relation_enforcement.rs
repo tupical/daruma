@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use daruma_domain::{RelationKind, Status};
 use daruma_shared::{CoreError, Result, TaskId};
 use daruma_storage::{RelationRepo, TaskRepo};
+use sqlx::SqliteConnection;
 
 /// Maximum DFS depth before aborting with `relation_graph_too_deep`.
 const MAX_DEPTH: usize = 1000;
@@ -68,10 +69,26 @@ pub async fn list_active_blockers(
     tasks: &TaskRepo,
     task_id: TaskId,
 ) -> Result<Vec<TaskId>> {
-    let blockers = repo.list_blockers(task_id).await?;
+    list_active_blockers_in(repo, tasks, task_id, None).await
+}
+
+pub(crate) async fn list_active_blockers_in(
+    repo: &RelationRepo,
+    tasks: &TaskRepo,
+    task_id: TaskId,
+    mut conn: Option<&mut SqliteConnection>,
+) -> Result<Vec<TaskId>> {
+    let blockers = match conn.as_deref_mut() {
+        Some(conn) => RelationRepo::list_blockers_on(conn, task_id).await?,
+        None => repo.list_blockers(task_id).await?,
+    };
     let mut active = Vec::new();
     for rel in blockers {
-        if let Some(task) = tasks.get(rel.from).await? {
+        let task = match conn.as_deref_mut() {
+            Some(conn) => TaskRepo::get_on(conn, rel.from).await?,
+            None => tasks.get(rel.from).await?,
+        };
+        if let Some(task) = task {
             if task.status != Status::Done {
                 active.push(rel.from);
             }

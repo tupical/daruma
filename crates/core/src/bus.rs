@@ -7,10 +7,13 @@ use std::sync::Arc;
 
 use daruma_domain::Actor;
 use daruma_events::EventEnvelope;
-use daruma_shared::{AgentId, AgentSessionId, PlanId, Result, RunId, TaskId};
+use daruma_shared::{AgentId, AgentSessionId, PlanId, Result, RunId};
 use daruma_storage::RecordedClaimOutcome;
 
-use crate::{lifecycle_gate::DispatchOutcome, Command, CommandHandler};
+use crate::{
+    lifecycle_gate::DispatchOutcome, plan_concurrency::DrainCandidate, Command, CommandHandler,
+    NextTask,
+};
 
 /// Entry point for every command in the system.
 ///
@@ -77,17 +80,17 @@ impl CommandBus {
         owner_agent_id: AgentId,
         run_id: RunId,
         plan_id: PlanId,
-        task_id: TaskId,
+        candidate: DrainCandidate<'_>,
         ttl: chrono::Duration,
         session_id: Option<AgentSessionId>,
-    ) -> Result<RecordedClaimOutcome> {
+    ) -> Result<(NextTask, RecordedClaimOutcome)> {
         self.handler
             .try_acquire_claim_for_run(
                 actor,
                 owner_agent_id,
                 run_id,
                 plan_id,
-                task_id,
+                candidate,
                 ttl,
                 session_id,
             )

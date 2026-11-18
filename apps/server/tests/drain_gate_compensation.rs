@@ -168,7 +168,7 @@ async fn blocked_drain_releases_claim_for_other_agents() {
         &h.router,
         &tok_a,
         &format!("/v1/plans/{plan_id}/drain-next"),
-        "{}",
+        &format!(r#"{{"expected_task_id":"{task_id}"}}"#),
     )
     .await;
     assert_eq!(

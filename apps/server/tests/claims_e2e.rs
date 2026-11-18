@@ -1059,7 +1059,7 @@ async fn drain_rejects_missing_wrong_plan_inactive_plan_and_terminal_runs_withou
         &h.router,
         &owner_token,
         &format!("/v1/plans/{wrong_plan}/drain-next"),
-        &format!(r#"{{"run_id":"{}"}}"#, other_run.as_uuid()),
+        &json!({"run_id": other_run, "expected_task_id": wrong_task}).to_string(),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);

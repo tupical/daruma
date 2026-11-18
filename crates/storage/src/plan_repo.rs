@@ -23,13 +23,20 @@ impl PlanRepo {
     // ── plan queries ─────────────────────────────────────────────────────────
 
     pub async fn get(&self, id: PlanId) -> Result<Option<Plan>> {
+        Self::get_on(&self.pool, id).await
+    }
+
+    pub async fn get_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
+        id: PlanId,
+    ) -> Result<Option<Plan>> {
         let row = sqlx::query(
             "SELECT id, project_id, parent_plan_id, title, description, goal, \
              success_criteria_json, status, owner_json, created_at, updated_at, archived_at, source_brief, source_ref \
              FROM plans WHERE id = ?",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
@@ -364,12 +371,19 @@ impl PlanRepo {
     // ── plan_tasks queries ───────────────────────────────────────────────────
 
     pub async fn list_tasks_ordered(&self, plan_id: PlanId) -> Result<Vec<PlanTask>> {
+        Self::list_tasks_ordered_on(&self.pool, plan_id).await
+    }
+
+    pub async fn list_tasks_ordered_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
+        plan_id: PlanId,
+    ) -> Result<Vec<PlanTask>> {
         let rows = sqlx::query(
             "SELECT plan_id, task_id, position, depends_on_json \
              FROM plan_tasks WHERE plan_id = ? ORDER BY position ASC",
         )
         .bind(plan_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(executor)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 

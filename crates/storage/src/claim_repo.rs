@@ -8,7 +8,7 @@ use daruma_shared::{
     AgentId, AgentSessionId, ClaimId, CoreError, ProjectId, Result, RunId, TaskId, Timestamp,
 };
 use serde::Serialize;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::future::Future;
 
 /// A live task claim (agent → task lock) as surfaced by the Agent Operations
@@ -129,7 +129,24 @@ impl AgentClaimRepo {
         agent_id: AgentId,
         session_id: AgentSessionId,
     ) -> Result<bool> {
-        sibling_session_claim_expiry(&self.pool, task_id, agent_id, session_id)
+        Self::is_claimed_by_sibling_session_on(
+            &self.pool,
+            task_id,
+            agent_id,
+            session_id,
+            Utc::now(),
+        )
+        .await
+    }
+
+    pub async fn is_claimed_by_sibling_session_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
+        task_id: TaskId,
+        agent_id: AgentId,
+        session_id: AgentSessionId,
+        now: Timestamp,
+    ) -> Result<bool> {
+        sibling_session_claim_expiry(executor, task_id, agent_id, session_id, now)
             .await
             .map(|expiry| expiry.is_some())
     }
@@ -142,16 +159,24 @@ impl AgentClaimRepo {
         task_id: TaskId,
         agent_id: AgentId,
     ) -> Result<Option<AgentId>> {
-        let now = Utc::now().to_rfc3339();
+        Self::is_claimed_by_other_on(&self.pool, task_id, agent_id, Utc::now()).await
+    }
+
+    pub async fn is_claimed_by_other_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
+        task_id: TaskId,
+        agent_id: AgentId,
+        now: Timestamp,
+    ) -> Result<Option<AgentId>> {
         let row = sqlx::query(
             "SELECT agent_id FROM agent_claims \
              WHERE task_id = ? AND expires_at >= ? AND agent_id <> ? \
              ORDER BY expires_at DESC LIMIT 1",
         )
         .bind(task_id.to_string())
-        .bind(&now)
+        .bind(now.to_rfc3339())
         .bind(agent_id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 
@@ -411,8 +436,10 @@ impl AgentClaimRepo {
         claim_id: ClaimId,
         expires_at: Timestamp,
     ) -> Result<RecordedClaimOutcome> {
-        self.try_acquire_bound_recorded(actor, agent_id, task_id, claim_id, expires_at, None, None)
-            .await
+        self.try_acquire_bound_recorded(
+            actor, agent_id, task_id, claim_id, expires_at, None, None, None,
+        )
+        .await
     }
 
     /// [`Self::try_acquire_recorded`] on behalf of a named agent session. The
@@ -434,8 +461,18 @@ impl AgentClaimRepo {
             expires_at,
             None,
             session_id,
+            None,
         )
         .await
+    }
+
+    /// Reserve the SQLite writer before resolving an expected plan head.
+    /// All resolver reads and the recorded acquire must use this transaction.
+    pub async fn begin_guarded_drain(&self) -> Result<Transaction<'static, Sqlite>> {
+        self.pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| CoreError::storage(e.to_string()))
     }
 
     /// Acquire a claim for an authenticated active run. Run existence, plan,
@@ -450,6 +487,7 @@ impl AgentClaimRepo {
         claim_id: ClaimId,
         expires_at: Timestamp,
         session_id: Option<AgentSessionId>,
+        tx: Option<Transaction<'static, Sqlite>>,
     ) -> Result<RecordedClaimOutcome> {
         self.try_acquire_bound_recorded(
             actor,
@@ -459,6 +497,7 @@ impl AgentClaimRepo {
             expires_at,
             Some((run_id, plan_id)),
             session_id,
+            tx,
         )
         .await
     }
@@ -508,16 +547,21 @@ impl AgentClaimRepo {
         expires_at: Timestamp,
         run: Option<(RunId, daruma_shared::PlanId)>,
         session_id: Option<AgentSessionId>,
+        tx: Option<Transaction<'static, Sqlite>>,
     ) -> Result<RecordedClaimOutcome> {
-        let now_s = Utc::now().to_rfc3339();
+        let now = Utc::now();
+        let now_s = now.to_rfc3339();
         let expires_s = expires_at.to_rfc3339();
         let run_id = run.map(|(run_id, _)| run_id.to_string());
         let plan_id = run.map(|(_, plan_id)| plan_id.to_string());
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| CoreError::storage(e.to_string()))?;
+        let mut tx = match tx {
+            Some(tx) => tx,
+            None => self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| CoreError::storage(e.to_string()))?,
+        };
 
         let status: Option<String> = sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?")
             .bind(task_id.to_string())
@@ -555,7 +599,8 @@ impl AgentClaimRepo {
             // means to take over from the agent's other chat.
             if run.is_some() {
                 let sibling_expiry =
-                    sibling_session_claim_expiry(&mut *tx, task_id, agent_id, session_id).await?;
+                    sibling_session_claim_expiry(&mut *tx, task_id, agent_id, session_id, now)
+                        .await?;
                 if let Some(expires_at) = sibling_expiry {
                     return Ok(RecordedClaimOutcome::Busy {
                         holder: agent_id,
@@ -1427,6 +1472,7 @@ async fn sibling_session_claim_expiry<'e, E>(
     task_id: TaskId,
     agent_id: AgentId,
     session_id: AgentSessionId,
+    now: Timestamp,
 ) -> Result<Option<Timestamp>>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -1440,7 +1486,7 @@ where
     )
     .bind(task_id.to_string())
     .bind(agent_id.to_string())
-    .bind(Utc::now().to_rfc3339())
+    .bind(now.to_rfc3339())
     .bind(session_id.to_string())
     .fetch_optional(executor)
     .await
@@ -1721,6 +1767,7 @@ mod tests {
                 ClaimId::new(),
                 Utc::now() + Duration::seconds(60),
                 Some(session),
+                None,
             )
         };
         assert!(matches!(

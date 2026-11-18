@@ -20,7 +20,9 @@ use daruma_storage::{
 };
 
 use crate::{
-    plan_concurrency::detect_parent_cycle,
+    plan_concurrency::{
+        detect_parent_cycle, selection_changed, DrainCandidate, NextTask, NextTaskResolver,
+    },
     relation_enforcement,
     repos::{ExternalRefRepository, PlanRepository, RunRepository, SessionRepository},
     search::{index_items_for_event, SearchProvider},
@@ -384,32 +386,60 @@ impl CommandHandler {
         owner_agent_id: AgentId,
         run_id: RunId,
         plan_id: PlanId,
-        task_id: TaskId,
+        candidate: DrainCandidate<'_>,
         ttl: chrono::Duration,
         session_id: Option<AgentSessionId>,
-    ) -> Result<RecordedClaimOutcome> {
+    ) -> Result<(NextTask, RecordedClaimOutcome)> {
         let _plan_run_guard = self.plan_run_lifecycle.lock().await;
         let claims = self
             .claims
             .as_ref()
             .ok_or_else(|| CoreError::storage("claim repository not configured"))?;
+        let guarded = matches!(candidate, DrainCandidate::Expected(_));
+        let (next, tx) = match candidate {
+            DrainCandidate::Resolved(next) => (next, None),
+            DrainCandidate::Expected(expected) => {
+                let resolver =
+                    NextTaskResolver {
+                        plans: self
+                            .plans
+                            .as_deref()
+                            .ok_or_else(|| CoreError::storage("plan repository not configured"))?,
+                        tasks: &self.tasks,
+                        claims,
+                        relations: Some(self.relations.as_deref().ok_or_else(|| {
+                            CoreError::storage("relation repository not configured")
+                        })?),
+                    };
+                let mut tx = claims.begin_guarded_drain().await?;
+                let next = resolver
+                    .expected_on(&mut tx, plan_id, owner_agent_id, session_id, expected)
+                    .await?;
+                (next, Some(tx))
+            }
+        };
         let outcome = claims
             .try_acquire_for_run_recorded(
                 actor,
                 owner_agent_id,
                 run_id,
                 plan_id,
-                task_id,
+                next.task_id,
                 ClaimId::new(),
                 time::now() + ttl,
                 session_id,
+                tx,
             )
             .await?;
-        if let RecordedClaimOutcome::Acquired { event, .. } = &outcome {
-            self.publish_recorded_claim_events(std::slice::from_ref(event))
-                .await?;
+        match &outcome {
+            RecordedClaimOutcome::Acquired { event, .. } => {
+                self.publish_recorded_claim_events(std::slice::from_ref(event))
+                    .await?;
+            }
+            RecordedClaimOutcome::Busy { .. } if guarded => return Err(selection_changed()),
+            RecordedClaimOutcome::Busy { .. } => {}
         }
-        Ok(outcome)
+        Ok((next, outcome))
     }
 
     /// Like [`Self::handle`], but also returns lifecycle-gate warnings so
