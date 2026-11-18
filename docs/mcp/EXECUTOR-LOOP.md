@@ -1,3 +1,13 @@
+---
+title: "Executor loop (MCP)"
+audience: "operator"
+intent: "how-to"
+owner: "Daruma maintainers"
+status: "active"
+source_of_truth: "docs/mcp/EXECUTOR-LOOP.md"
+last_verified: "2026-11-18"
+---
+
 # Executor loop (MCP)
 
 Canonical agent loop for draining a plan without a human in the loop. Stateless server: the agent drives iteration via MCP tools.
