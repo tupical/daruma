@@ -19,7 +19,7 @@ Canonical agent loop for draining a plan without a human in the loop. Stateless 
   An omitted-`run_id` drain that hands out no task (null or error) aborts the run it opened itself; one that hands out a task returns that `run_id` — keep it, and after the task's handoff close it with `daruma_run_complete` (or `daruma_run_abort`), otherwise it holds the plan open (`plan_close_blocked_by_run` names it).
 - Workspace default project set (`daruma_project_use`) when tasks are project-scoped.
 
-Pass `expected_task_id` to `daruma_plan_drain_next` when acting on a previously observed plan head. The server checks the current first eligible task in the same transaction that records the claim. If the head changed or no task is eligible, it returns `selection_changed` and claims nothing. Refresh readiness before trying again. This option applies to a single plan. Calls that omit it retain the ordinary next-task behavior.
+Pass `expected_task_id` to `daruma_plan_drain_next` when acting on a previously observed plan head. Use the task's UUID with or without the `tsk_` prefix. The server checks the current first eligible task in the same transaction that records the claim. If the head changed or no task is eligible, it returns `selection_changed` and claims nothing. Refresh readiness before trying again. This option applies to a single plan. Calls that omit it retain the ordinary next-task behavior.
 
 ## Loop
 

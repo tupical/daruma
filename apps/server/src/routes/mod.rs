@@ -6863,7 +6863,18 @@ struct DrainNextBody {
     run_id: Option<RunId>,
     claim_ttl_secs: Option<u32>,
     session_id: Option<AgentSessionId>,
+    #[serde(default, deserialize_with = "deserialize_expected_task_id")]
     expected_task_id: Option<TaskId>,
+}
+
+fn deserialize_expected_task_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<TaskId>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(serde::de::Error::custom)
 }
 
 async fn get_next_task(

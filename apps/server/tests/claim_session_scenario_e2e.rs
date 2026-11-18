@@ -319,6 +319,33 @@ async fn corporate_game_expected_drain_keeps_plan_order() {
     assert_eq!(progress["next_ready"], *brackets, "{progress}");
     println!("TRACE tournament plan {plan_id}: observed {brackets}");
 
+    let display_id = brackets.parse::<TaskId>().unwrap().to_string();
+    let task = organiser
+        .tool("daruma_get", json!({"id": display_id}))
+        .await;
+    assert_eq!(task["id"], *brackets, "{task}");
+    let prefixed = colleague
+        .tool(
+            drain,
+            json!({"plan_id": plan_id, "expected_task_id": display_id}),
+        )
+        .await;
+    assert_eq!(prefixed["task_id"], *brackets, "{prefixed}");
+    println!("TRACE prefixed expected {display_id}: {prefixed}");
+    organiser
+        .tool(
+            "daruma_run_abort",
+            json!({"run_id": prefixed["run_id"], "reason": "test cleanup"}),
+        )
+        .await;
+    assert!(app.state.claims.list_active(None).await.unwrap().is_empty());
+    organiser
+        .tool(
+            "daruma_set_status",
+            json!({"id": brackets, "status": "todo"}),
+        )
+        .await;
+
     // Each change between preview and drain must leave every task unclaimed.
     let expect_changed = |phase: &'static str, expected: &str, opens_run: bool| {
         let args = json!({"plan_id": plan_id, "expected_task_id": expected});
