@@ -664,7 +664,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_plan_drain_next",
             "Claim next plan task",
-            "Atomically claim the next eligible plan task. Omit run_id unless continuing a run from daruma_run_start; the server then opens a run, returns its run_id with the task (close it with daruma_run_complete after the handoff, or daruma_run_abort), and aborts it when no task is handed out. Concurrent callers get distinct tasks; null when none is ready. Loop to drain a plan across agents.",
+            "Claim the next eligible plan task. With expected_task_id, selection_changed means no claim. Omit run_id to open a run; keep the returned id for daruma_run_complete or daruma_run_abort. An empty or refused drain aborts its own run. Without an expectation, concurrent callers get distinct tasks or null when none is ready.",
             with_id_alias(schema_plan_drain_next(), "plan_id", "id"),
             Dom::Plans, D, E, Ann::Write,
         ),
@@ -2568,6 +2568,13 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
             }
             if let Some(ttl) = args.get("claim_ttl_secs").and_then(|v| v.as_u64()) {
                 body["claim_ttl_secs"] = json!(ttl);
+            }
+            if args
+                .get("expected_task_id")
+                .is_some_and(|value| !value.is_null())
+            {
+                body["expected_task_id"] =
+                    json!(resolve_exact_id(&args, IdKind::Task, "expected_task_id")?);
             }
             forward_claim_session(&args, &mut body)?;
             client
@@ -4578,6 +4585,7 @@ fn schema_plan_drain_next() -> Value {
             "plan_id": {"type":"string","description":"Plan id"},
             "run_id": {"type":"string","format":"uuid","description":"Run UUID; omit for a server-generated id."},
             "claim_ttl_secs": {"type":"integer","minimum":1,"description":"Claim TTL seconds; default 300."},
+            "expected_task_id": {"type":"string"},
             "session_id": {"type":"string"}
         },
         "required":["plan_id"]

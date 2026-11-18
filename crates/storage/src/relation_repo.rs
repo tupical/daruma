@@ -167,6 +167,13 @@ impl RelationRepo {
     /// Use this to check whether a task has active blockers before allowing
     /// it to transition to Done.
     pub async fn list_blockers(&self, task_id: TaskId) -> Result<Vec<Relation>> {
+        Self::list_blockers_on(&self.pool, task_id).await
+    }
+
+    pub async fn list_blockers_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
+        task_id: TaskId,
+    ) -> Result<Vec<Relation>> {
         let rows = sqlx::query(
             "SELECT id, from_task, to_task, kind, created_at, actor_json \
              FROM task_relations \
@@ -174,7 +181,7 @@ impl RelationRepo {
              ORDER BY created_at ASC",
         )
         .bind(task_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(executor)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 

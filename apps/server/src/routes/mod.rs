@@ -39,7 +39,7 @@ use daruma_auth::{
     TokenScope, TokenStore,
 };
 use daruma_core::{
-    plan_concurrency::NextTaskResolver,
+    plan_concurrency::{selection_changed, DrainCandidate, ExpectedTask, NextTaskResolver},
     plan_readiness, plan_ready_to_close,
     repos::{ExternalRefRepository, PlanRepository},
     search::{FtsSearchProvider, SearchProvider, SearchQuery as CoreSearchQuery, SearchScope},
@@ -6863,6 +6863,18 @@ struct DrainNextBody {
     run_id: Option<RunId>,
     claim_ttl_secs: Option<u32>,
     session_id: Option<AgentSessionId>,
+    #[serde(default, deserialize_with = "deserialize_expected_task_id")]
+    expected_task_id: Option<TaskId>,
+}
+
+fn deserialize_expected_task_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<TaskId>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(serde::de::Error::custom)
 }
 
 async fn get_next_task(
@@ -6986,19 +6998,24 @@ async fn drain_one_plan(
     run_id: RunId,
     ttl_secs: u32,
     session_id: Option<AgentSessionId>,
+    expected_task_id: Option<TaskId>,
 ) -> Result<Option<serde_json::Value>, ApiError> {
     let ttl = std::time::Duration::from_secs(ttl_secs as u64);
 
     // Bound retries by the plan's task count: each Busy means a competing agent
     // just claimed that candidate, and the claim-aware resolver will skip it on
     // the next pass — so at most one full sweep of the plan is ever needed.
-    let max_attempts = state
-        .plans
-        .list_tasks_ordered(plan_id)
-        .await
-        .map_err(ApiError::from)?
-        .len()
-        .max(1);
+    let max_attempts = if expected_task_id.is_some() {
+        1
+    } else {
+        state
+            .plans
+            .list_tasks_ordered(plan_id)
+            .await
+            .map_err(ApiError::from)?
+            .len()
+            .max(1)
+    };
 
     let resolver = NextTaskResolver {
         plans: state.plans.as_ref() as &dyn PlanRepository,
@@ -7008,30 +7025,40 @@ async fn drain_one_plan(
     };
 
     for _ in 0..max_attempts {
-        let Some(next) = resolver
-            .next_for_session(plan_id, run_id, auth.agent_id, Some(ttl), session_id)
-            .await
-            .map_err(ApiError::from)?
-        else {
-            return Ok(None);
+        let candidate = match expected_task_id {
+            Some(id) => DrainCandidate::Expected(ExpectedTask {
+                id,
+                allowed_projects: match &auth.scope.projects {
+                    ProjectFilter::All => None,
+                    ProjectFilter::Only { projects } => Some(projects),
+                },
+            }),
+            None => {
+                let Some(next) = resolver
+                    .next_for_session(plan_id, run_id, auth.agent_id, Some(ttl), session_id)
+                    .await
+                    .map_err(ApiError::from)?
+                else {
+                    return Ok(None);
+                };
+                DrainCandidate::Resolved(next)
+            }
         };
 
-        // Atomic compare-and-set: if a competitor grabbed it between resolve and
-        // here, retry; the resolver excludes their claim on the next iteration.
-        let (expires_at, claim_id, claim_event) = match state
+        let (next, outcome) = state
             .commands
             .try_acquire_claim_for_run(
                 actor_from(auth, None),
                 auth.agent_id,
                 run_id,
                 plan_id,
-                next.task_id,
+                candidate,
                 chrono::Duration::seconds(ttl_secs as i64),
                 session_id,
             )
             .await
-            .map_err(ApiError::from)?
-        {
+            .map_err(ApiError::from)?;
+        let (expires_at, claim_id, claim_event) = match outcome {
             RecordedClaimOutcome::Busy { .. } => continue,
             RecordedClaimOutcome::Acquired {
                 expires_at,
@@ -7184,11 +7211,29 @@ async fn drain_next_task(
                 .map_err(ApiError::from)?;
             (run_id, false)
         }
-        None => (start_drain_run(&state, &auth, plan_id).await?, true),
+        None => {
+            let run = start_drain_run(&state, &auth, plan_id).await;
+            // A plan that stopped accepting runs cannot have a claimable head.
+            if body.expected_task_id.is_some()
+                && matches!(&run, Err(ApiError(CoreError::Validation(message))) if message == "plan must be Active to start a run")
+            {
+                return Err(ApiError::from(selection_changed()));
+            }
+            (run?, true)
+        }
     };
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
 
-    let task = match drain_one_plan(&state, &auth, plan_id, run_id, ttl_secs, body.session_id).await
+    let task = match drain_one_plan(
+        &state,
+        &auth,
+        plan_id,
+        run_id,
+        ttl_secs,
+        body.session_id,
+        body.expected_task_id,
+    )
+    .await
     {
         Ok(Some(task)) => task,
         Ok(None) => {
@@ -7314,6 +7359,11 @@ async fn project_ready_drain(
         .map_err(ApiError::from_missing_cap)?;
     auth.require(Capability::RunWrite)
         .map_err(ApiError::from_missing_cap)?;
+    if body.expected_task_id.is_some() {
+        return Err(ApiError::from(CoreError::validation(
+            "expected_task_id requires a plan drain",
+        )));
+    }
     let project_id = parse_id(q.project_id, "project id")?;
     require_project_scope(&auth, Some(project_id))?;
     let ttl_secs = body.claim_ttl_secs.unwrap_or(300);
@@ -7350,7 +7400,17 @@ async fn project_ready_drain(
             Some(_) => continue,
             None => (start_drain_run(&state, &auth, plan.id).await?, true),
         };
-        match drain_one_plan(&state, &auth, plan.id, run_id, ttl_secs, body.session_id).await {
+        match drain_one_plan(
+            &state,
+            &auth,
+            plan.id,
+            run_id,
+            ttl_secs,
+            body.session_id,
+            None,
+        )
+        .await
+        {
             Ok(Some(task)) => {
                 let warning =
                     drain_open_tasks_warning(&state, &auth, Some(project_id), &task).await?;

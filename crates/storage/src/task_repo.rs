@@ -165,6 +165,13 @@ impl TaskRepo {
     }
 
     pub async fn get(&self, id: TaskId) -> Result<Option<Task>> {
+        Self::get_on(&self.pool, id).await
+    }
+
+    pub async fn get_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
+        id: TaskId,
+    ) -> Result<Option<Task>> {
         let row = sqlx::query(
             "SELECT id, project_id, title, description, status, priority, \
              due_at, created_at, updated_at, started_at, completed_at, \
@@ -173,7 +180,7 @@ impl TaskRepo {
              FROM tasks WHERE id = ?",
         )
         .bind(id.to_string())
-        .fetch_optional(&self.pool)
+        .fetch_optional(executor)
         .await
         .map_err(|e| CoreError::storage(e.to_string()))?;
 

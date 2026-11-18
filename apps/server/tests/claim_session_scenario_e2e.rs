@@ -261,3 +261,298 @@ async fn corporate_game_claims_stay_with_their_own_chats() {
     assert!(ended.contains("already ended"), "{ended}");
     assert_eq!(organiser.claim_of(hall).await, Value::Null);
 }
+
+#[tokio::test]
+async fn corporate_game_expected_drain_keeps_plan_order() {
+    use daruma_domain::RunStatus;
+    use daruma_shared::{PlanId, RunId, TaskId};
+
+    let app = TestAppBuilder::default().rule_engine_gate().build().await;
+    let addr = spawn_server(&app).await;
+    let organiser = Mcp {
+        http: reqwest::Client::new(),
+        url: format!("http://{addr}/v1/mcp?profile=full"),
+        token: app.admin_token.clone(),
+    };
+    let project = organiser
+        .tool(
+            "daruma_project_create",
+            json!({"title": "Корпоративная игра"}),
+        )
+        .await;
+    let pid = project["project_id"].as_str().unwrap();
+    let plan = organiser
+        .tool("daruma_plan_materialize", json!({
+            "plan": {"title": "Подготовка турнира", "project_id": pid, "source": {"label": "планёрка HR"}},
+            "tasks": [{"title": "Сетка турнира"}, {"title": "Призы турнира"}, {"title": "Правила турнира"}]
+        }))
+        .await;
+    let plan_id: PlanId = plan["plan"]["id"]
+        .as_str()
+        .or_else(|| plan["plan_id"].as_str())
+        .unwrap_or_else(|| panic!("plan id in {plan}"))
+        .parse()
+        .unwrap();
+    let tasks = task_ids(&plan);
+    let [brackets, prizes, rules] = tasks.as_slice() else {
+        panic!("{tasks:?}")
+    };
+    for task in &tasks {
+        organiser
+            .tool("daruma_set_status", json!({"id": task, "status": "todo"}))
+            .await;
+    }
+    let caps: Capabilities = [Capability::PlanRead, Capability::RunWrite].into();
+    let project_filter = ProjectFilter::Only {
+        projects: vec![pid.parse().unwrap()],
+    };
+    let (colleague_token, _) = mint_pat(&app.auth_store(), caps, project_filter).await;
+    let colleague = Mcp {
+        http: organiser.http.clone(),
+        url: organiser.url.clone(),
+        token: colleague_token,
+    };
+    let drain = "daruma_plan_drain_next";
+    let progress = organiser
+        .tool("daruma_plan_progress", json!({"plan_id": plan_id}))
+        .await;
+    assert_eq!(progress["next_ready"], *brackets, "{progress}");
+    println!("TRACE tournament plan {plan_id}: observed {brackets}");
+
+    let display_id = brackets.parse::<TaskId>().unwrap().to_string();
+    let task = organiser
+        .tool("daruma_get", json!({"id": display_id}))
+        .await;
+    assert_eq!(task["id"], *brackets, "{task}");
+    let prefixed = colleague
+        .tool(
+            drain,
+            json!({"plan_id": plan_id, "expected_task_id": display_id}),
+        )
+        .await;
+    assert_eq!(prefixed["task_id"], *brackets, "{prefixed}");
+    println!("TRACE prefixed expected {display_id}: {prefixed}");
+    organiser
+        .tool(
+            "daruma_run_abort",
+            json!({"run_id": prefixed["run_id"], "reason": "test cleanup"}),
+        )
+        .await;
+    assert!(app.state.claims.list_active(None).await.unwrap().is_empty());
+    organiser
+        .tool(
+            "daruma_set_status",
+            json!({"id": brackets, "status": "todo"}),
+        )
+        .await;
+
+    // Each change between preview and drain must leave every task unclaimed.
+    let expect_changed = |phase: &'static str, expected: &str, opens_run: bool| {
+        let args = json!({"plan_id": plan_id, "expected_task_id": expected});
+        let app = &app;
+        let organiser = &organiser;
+        async move {
+            let before = app.state.runs.list_by_plan(plan_id).await.unwrap();
+            let err = organiser.refused(drain, args).await;
+            assert!(err.contains("selection_changed"), "{phase}: {err}");
+            assert!(
+                app.state.claims.list_active(None).await.unwrap().is_empty(),
+                "{phase}"
+            );
+            let runs = app.state.runs.list_by_plan(plan_id).await.unwrap();
+            assert!(
+                runs.iter().all(|run| run.status == RunStatus::Aborted),
+                "{phase}: {runs:?}"
+            );
+            let new_runs: Vec<_> = runs
+                .iter()
+                .filter(|run| !before.iter().any(|old| old.id == run.id))
+                .map(|run| run.id)
+                .collect();
+            assert_eq!(
+                new_runs.len(),
+                usize::from(opens_run),
+                "{phase}: {new_runs:?}"
+            );
+            println!("TRACE {phase} refused; new aborted runs: {new_runs:?}");
+        }
+    };
+    expect_changed("out of order", prizes, true).await;
+    organiser
+        .tool(
+            "daruma_plan_reorder",
+            json!({"plan_id": plan_id, "order": [prizes, brackets, rules]}),
+        )
+        .await;
+    expect_changed("reordered", brackets, true).await;
+    organiser
+        .tool(
+            "daruma_plan_reorder",
+            json!({"plan_id": plan_id, "order": tasks}),
+        )
+        .await;
+
+    organiser
+        .tool(
+            "daruma_plan_remove_task",
+            json!({"plan_id": plan_id, "task_id": brackets}),
+        )
+        .await;
+    expect_changed("membership removed", brackets, true).await;
+    organiser
+        .tool(
+            "daruma_plan_add_task",
+            json!({
+                "plan_id": plan_id, "task_id": brackets, "position": 0, "depends_on": [rules]
+            }),
+        )
+        .await;
+    expect_changed("pending prerequisite", brackets, true).await;
+    organiser
+        .tool(
+            "daruma_plan_remove_task",
+            json!({"plan_id": plan_id, "task_id": brackets}),
+        )
+        .await;
+    organiser
+        .tool(
+            "daruma_plan_add_task",
+            json!({"plan_id": plan_id, "task_id": brackets, "position": 0}),
+        )
+        .await;
+
+    let relation = organiser
+        .tool(
+            "daruma_link",
+            json!({"from": rules, "to": brackets, "kind": "blocks"}),
+        )
+        .await;
+    expect_changed("active Blocks", brackets, true).await;
+    organiser
+        .tool(
+            "daruma_unlink",
+            json!({"relation_id": relation["data"]["relation_id"]}),
+        )
+        .await;
+
+    let ended = organiser
+        .chat("tournament-ended", "feature/tournament")
+        .await;
+    organiser
+        .tool("daruma_session_end", json!({"id": ended}))
+        .await;
+    let err = organiser
+        .refused(
+            drain,
+            json!({
+                "plan_id": plan_id, "expected_task_id": brackets, "session_id": ended
+            }),
+        )
+        .await;
+    assert!(err.contains("already ended"), "{err}");
+    assert!(app.state.claims.list_active(None).await.unwrap().is_empty());
+    assert!(app
+        .state
+        .runs
+        .list_active_for_plan(plan_id)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let supplied = organiser
+        .tool("daruma_run_start", json!({"plan_id": plan_id}))
+        .await;
+    let run: RunId = serde_json::from_value(supplied["data"]["run_id"].clone()).unwrap();
+    let err = colleague
+        .refused(
+            drain,
+            json!({
+                "plan_id": plan_id, "run_id": run, "expected_task_id": brackets
+            }),
+        )
+        .await;
+    assert!(err.contains("authenticated owner"), "{err}");
+    let err = organiser
+        .refused(
+            drain,
+            json!({
+                "plan_id": plan_id, "run_id": run, "expected_task_id": prizes
+            }),
+        )
+        .await;
+    assert!(err.contains("selection_changed"), "{err}");
+    assert_eq!(
+        app.state.runs.get(run).await.unwrap().unwrap().status,
+        RunStatus::Active
+    );
+    assert!(app.state.claims.list_active(None).await.unwrap().is_empty());
+    println!("TRACE rejected supplied run {run} stays active");
+
+    // Two workers target the same observed head. Only one wins and the loser
+    // cannot fall through to prizes even though it is ready.
+    let (owner, other) = tokio::join!(
+        organiser.call(
+            drain,
+            json!({"plan_id": plan_id, "run_id": run, "expected_task_id": brackets})
+        ),
+        colleague.call(
+            drain,
+            json!({"plan_id": plan_id, "expected_task_id": brackets})
+        ),
+    );
+    let (winner, loser, unclaimed_worker) = if owner["isError"] == true {
+        (&other, &owner, &organiser)
+    } else {
+        (&owner, &other, &colleague)
+    };
+    let won: Value = serde_json::from_str(winner["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(won["task_id"], *brackets, "{won}");
+    assert_eq!(loser["isError"], true, "{loser}");
+    assert!(loser.to_string().contains("selection_changed"), "{loser}");
+    let claims = app.state.claims.list_active(None).await.unwrap();
+    assert_eq!(claims.len(), 1, "{claims:?}");
+    assert_eq!(claims[0].task_id, brackets.parse::<TaskId>().unwrap());
+    let winning_run: RunId = serde_json::from_value(won["run_id"].clone()).unwrap();
+    let active = app.state.runs.list_active_for_plan(plan_id).await.unwrap();
+    assert_eq!(
+        active.len(),
+        if winning_run == run { 1 } else { 2 },
+        "{active:?}"
+    );
+    assert!(
+        active
+            .iter()
+            .all(|active| [run, winning_run].contains(&active.id)),
+        "{active:?}"
+    );
+    assert_eq!(
+        organiser.tool("daruma_get", json!({"id": prizes})).await["status"],
+        "todo"
+    );
+    println!("TRACE concurrent winner: {won}; concurrent loser: {loser}");
+
+    let legacy = unclaimed_worker
+        .tool(drain, json!({"plan_id": plan_id}))
+        .await;
+    assert_eq!(legacy["task_id"], *prizes, "{legacy}");
+    println!("TRACE legacy drain: {legacy}");
+    for active in app.state.runs.list_active_for_plan(plan_id).await.unwrap() {
+        organiser
+            .tool(
+                "daruma_run_abort",
+                json!({"run_id": active.id, "reason": "test cleanup"}),
+            )
+            .await;
+    }
+    organiser
+        .tool(
+            "daruma_set_status",
+            json!({"id": brackets, "status": "cancelled"}),
+        )
+        .await;
+    expect_changed("terminal status", brackets, true).await;
+    organiser
+        .tool("daruma_plan_archive", json!({"id": plan_id}))
+        .await;
+    expect_changed("archived plan", rules, false).await;
+}

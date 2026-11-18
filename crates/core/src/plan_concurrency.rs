@@ -6,13 +6,14 @@
 
 use std::time::Duration;
 
-use daruma_domain::{PlanStatus, Status};
+use daruma_domain::{PlanStatus, Status, Task};
 use daruma_shared::{
-    time, AgentId, AgentSessionId, CoreError, PlanId, Result, RunId, TaskId, Timestamp,
+    time, AgentId, AgentSessionId, CoreError, PlanId, ProjectId, Result, RunId, TaskId, Timestamp,
 };
-use daruma_storage::{AgentClaimRepo, RelationRepo, TaskRepo};
+use daruma_storage::{AgentClaimRepo, PlanRepo, RelationRepo, TaskRepo};
+use sqlx::SqliteConnection;
 
-use crate::relation_enforcement::list_active_blockers;
+use crate::relation_enforcement::list_active_blockers_in;
 use crate::repos::PlanRepository;
 
 /// Maximum allowed nesting depth for `parent_plan_id` chains (§3.1 §9).
@@ -73,6 +74,25 @@ pub struct NextTaskResolver<'a> {
     pub relations: Option<&'a RelationRepo>,
 }
 
+/// The task the caller observed and its authenticated project scope.
+#[derive(Clone, Copy)]
+pub struct ExpectedTask<'a> {
+    pub id: TaskId,
+    pub allowed_projects: Option<&'a [ProjectId]>,
+}
+
+pub enum DrainCandidate<'a> {
+    Resolved(NextTask),
+    Expected(ExpectedTask<'a>),
+}
+
+pub fn selection_changed() -> CoreError {
+    CoreError::coded_conflict(
+        "selection_changed",
+        "The expected task is no longer next. Refresh plan readiness.",
+    )
+}
+
 impl NextTaskResolver<'_> {
     pub async fn next(
         &self,
@@ -108,33 +128,85 @@ impl NextTaskResolver<'_> {
         claim_ttl: Option<Duration>,
         session_id: Option<AgentSessionId>,
     ) -> Result<(Option<NextTask>, SelectionObservation)> {
+        self.observe(plan_id, agent_id, claim_ttl, session_id, None)
+            .await
+    }
+
+    pub(crate) async fn expected_on(
+        &self,
+        conn: &mut SqliteConnection,
+        plan_id: PlanId,
+        agent_id: AgentId,
+        session_id: Option<AgentSessionId>,
+        expected: ExpectedTask<'_>,
+    ) -> Result<NextTask> {
+        let (next, _) = self
+            .observe(plan_id, agent_id, None, session_id, Some((conn, expected)))
+            .await?;
+        next.filter(|next| next.task_id == expected.id)
+            .ok_or_else(selection_changed)
+    }
+
+    async fn observe(
+        &self,
+        plan_id: PlanId,
+        agent_id: AgentId,
+        claim_ttl: Option<Duration>,
+        session_id: Option<AgentSessionId>,
+        guarded: Option<(&mut SqliteConnection, ExpectedTask<'_>)>,
+    ) -> Result<(Option<NextTask>, SelectionObservation)> {
+        let (mut conn, expected) = match guarded {
+            Some((conn, expected)) => (Some(conn), Some(expected)),
+            None => (None, None),
+        };
+        let allowed_projects = expected.and_then(|expected| expected.allowed_projects);
+        let require_scope = |project_id: Option<ProjectId>| {
+            if allowed_projects
+                .is_some_and(|projects| !project_id.is_some_and(|id| projects.contains(&id)))
+            {
+                Err(CoreError::forbidden("project access denied"))
+            } else {
+                Ok(())
+            }
+        };
+        let now = time::now();
         let mut observation = SelectionObservation::default();
         // 1. Plan must be Active
-        let plan = self
-            .plans
-            .get(plan_id)
-            .await?
-            .ok_or_else(|| CoreError::not_found(format!("plan {plan_id}")))?;
+        let plan = match conn.as_deref_mut() {
+            Some(conn) => PlanRepo::get_on(conn, plan_id)
+                .await?
+                .ok_or_else(selection_changed)?,
+            None => self
+                .plans
+                .get(plan_id)
+                .await?
+                .ok_or_else(|| CoreError::not_found(format!("plan {plan_id}")))?,
+        };
+        require_scope(Some(plan.project_id))?;
 
-        if plan.status != PlanStatus::Active {
+        if plan.status != PlanStatus::Active || (expected.is_some() && plan.archived_at.is_some()) {
             return Ok((None, observation));
         }
         observation.plan_active = true;
 
         // 2. Ordered task list
-        let plan_tasks = self.plans.list_plan_tasks_ordered(plan_id).await?;
+        let plan_tasks = match conn.as_deref_mut() {
+            Some(conn) => PlanRepo::list_tasks_ordered_on(conn, plan_id).await?,
+            None => self.plans.list_plan_tasks_ordered(plan_id).await?,
+        };
 
         // 3+4. Filter
         for pt in &plan_tasks {
             observation.examined += 1;
             // Task must exist
-            let task = match self.tasks.get(pt.task_id).await? {
+            let task = match self.task_in(pt.task_id, conn.as_deref_mut()).await? {
                 Some(t) => t,
                 None => {
                     observation.missing += 1;
                     continue;
                 }
             };
+            require_scope(task.project_id)?;
 
             // Terminal tasks must never be offered for execution, and inbox
             // tasks still wait for the owner's triage — skip both.
@@ -146,8 +218,8 @@ impl NextTaskResolver<'_> {
             // All dependencies must be Done
             let mut deps_ok = true;
             for dep_id in &pt.depends_on {
-                match self.tasks.get(*dep_id).await? {
-                    Some(dep) if dep.status == Status::Done => {}
+                match self.task_in(*dep_id, conn.as_deref_mut()).await? {
+                    Some(dep) if dep.status == Status::Done => require_scope(dep.project_id)?,
                     _ => {
                         deps_ok = false;
                         break;
@@ -163,7 +235,7 @@ impl NextTaskResolver<'_> {
             //    can_start): a candidate with a live blocker is not ready,
             //    even when its plan-level depends_on list is clear.
             if let Some(relations) = self.relations {
-                if !list_active_blockers(relations, self.tasks, pt.task_id)
+                if !list_active_blockers_in(relations, self.tasks, pt.task_id, conn.as_deref_mut())
                     .await?
                     .is_empty()
                 {
@@ -174,21 +246,35 @@ impl NextTaskResolver<'_> {
 
             // 6. Skip tasks already claimed by a different agent so concurrent
             //    resolvers don't all return the same task.
-            if self
-                .claims
-                .is_claimed_by_other(pt.task_id, agent_id)
-                .await?
-                .is_some()
-            {
+            let other_claim = match conn.as_deref_mut() {
+                Some(conn) => {
+                    AgentClaimRepo::is_claimed_by_other_on(conn, pt.task_id, agent_id, now).await?
+                }
+                None => {
+                    self.claims
+                        .is_claimed_by_other(pt.task_id, agent_id)
+                        .await?
+                }
+            };
+            if other_claim.is_some() {
                 observation.other_claim += 1;
                 continue;
             }
             if let Some(session_id) = session_id {
-                if self
-                    .claims
-                    .is_claimed_by_sibling_session(pt.task_id, agent_id, session_id)
-                    .await?
-                {
+                let sibling_claim = match conn.as_deref_mut() {
+                    Some(conn) => {
+                        AgentClaimRepo::is_claimed_by_sibling_session_on(
+                            conn, pt.task_id, agent_id, session_id, now,
+                        )
+                        .await?
+                    }
+                    None => {
+                        self.claims
+                            .is_claimed_by_sibling_session(pt.task_id, agent_id, session_id)
+                            .await?
+                    }
+                };
+                if sibling_claim {
                     observation.sibling_claim += 1;
                     continue;
                 }
@@ -212,6 +298,17 @@ impl NextTaskResolver<'_> {
         }
 
         Ok((None, observation))
+    }
+
+    async fn task_in(
+        &self,
+        id: TaskId,
+        conn: Option<&mut SqliteConnection>,
+    ) -> Result<Option<Task>> {
+        match conn {
+            Some(conn) => TaskRepo::get_on(conn, id).await,
+            None => self.tasks.get(id).await,
+        }
     }
 }
 
