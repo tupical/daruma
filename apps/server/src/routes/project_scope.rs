@@ -313,7 +313,7 @@ async fn task_scope(
     Ok(())
 }
 
-async fn plan(state: &AppState, auth: &AuthContext, id: PlanId) -> Result<(), ApiError> {
+pub(super) async fn plan(state: &AppState, auth: &AuthContext, id: PlanId) -> Result<(), ApiError> {
     let p = state
         .plans
         .get(id)

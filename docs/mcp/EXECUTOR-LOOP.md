@@ -274,6 +274,24 @@ This projection creates no `consensus.md` or other local state file and does
 not guess associations to other AgentSessions sharing an agent id.
 
 
+## Selection explanations
+
+`daruma_plan_progress`, `daruma_ready`, and `daruma_can_start` accept an
+optional `session_id` for the resolver's sibling-claim check. Progress returns
+the resolver candidate in `selection_candidate` and `next_ready`; ready retains
+its graph-preview list and adds one selection candidate per visible plan.
+Can-start includes compact visible plan membership and each plan's candidate.
+The resolver does not consult lifecycle rules: a candidate may still be denied
+by a start transition. `transition_allowed` covers the lifecycle rule preflight,
+while graph readiness and the candidate are separate observations.
+
+The resolver reads repositories sequentially, and progress, graph and rule
+preflight use additional reads. They are not an atomic snapshot and can change
+before a subsequent command. Candidate observations cover only the ordered
+prefix examined by the resolver; a found candidate stops the scan. Scope guards
+can deny a read involving an inaccessible blocker. No count of inaccessible
+blockers or complete ACL coverage is implied. Content policy is not evaluated.
+
 ## Terminal tasks and atomic claims
 
 `next-task`, plan fanout and project ready/drain exclude `done` and `cancelled`
