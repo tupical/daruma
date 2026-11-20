@@ -46,11 +46,12 @@ use daruma_core::{
     Command,
 };
 use daruma_domain::{
-    slugify_title, Actor, AgentSession, AgentSessionPlanStep, AnchorMismatch, ArtifactRelationKind,
-    ArtifactStatus, CommentKind, CommentPatch, ComplexityHint, Document, DocumentKind, DraftPatch,
-    NewArtifact, NewComment, NewDocument, NewPlan, Plan, PlanPatch, PlanStatus, RoleArtifactStatus,
-    RunOutcome, SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState, Verb,
-    WorkUnitStatus, DRAFT_PATCH_KIND,
+    slugify_title, Actor, AgentAction, AgentActionKind, AgentSession, AgentSessionPlanStep,
+    AnchorMismatch, ArtifactRelationKind, ArtifactStatus, CommentKind, CommentPatch,
+    ComplexityHint, Document, DocumentKind, DraftPatch, NewArtifact, NewComment, NewDocument,
+    NewPlan, Plan, PlanPatch, PlanStatus, RoleArtifactStatus, RuleScope, RunOutcome,
+    SessionArtifactKind, SignalKind, Status, Task, TaskPatch, TriageState, Verb, WorkUnitStatus,
+    DRAFT_PATCH_KIND,
 };
 use daruma_events::{Event, EventEnvelope};
 use daruma_mcp::{
@@ -4866,15 +4867,40 @@ async fn load_project_events(
         let Some(last) = batch.last() else { break };
         since = last.seq;
         for event in batch.into_iter().take_while(|event| event.seq <= head) {
-            let event_project = match &event.payload {
-                Event::RuleFired {
-                    project_id: Some(project_id),
-                    ..
-                } => Some(*project_id),
-                Event::GraphNodeUpserted { project_id, .. } => {
-                    project_id.as_deref().and_then(|id| id.parse().ok())
+            // A recorded move to the inbox is Some(None); only an absent field may fall back.
+            let recorded_project = match &event.payload {
+                Event::PlanTaskAmended { patch, .. } | Event::TaskUpdated { patch, .. } => {
+                    patch.project_id
                 }
-                _ => crate::ws::resolve_project(&event.payload, &state.tasks)
+                Event::RuleCreated { rule } | Event::RuleUpdated { rule } => match rule.scope {
+                    RuleScope::Project { id } => Some(Some(id)),
+                    _ => None,
+                },
+                Event::EvidenceRecorded { evidence } => match evidence.scope {
+                    RuleScope::Project { id } => Some(Some(id)),
+                    _ => evidence.project_id.map(Some),
+                },
+                Event::RuleFired { project_id, .. } => project_id.map(Some),
+                Event::GraphNodeUpserted { project_id, .. } => project_id
+                    .as_deref()
+                    .and_then(|id| id.parse().ok())
+                    .map(Some),
+                Event::ArtifactRegistered { artifact } => artifact.project_id.map(Some),
+                Event::FilesReserved { leases } => {
+                    leases.first().and_then(|lease| lease.project_id).map(Some)
+                }
+                Event::AgentActionRecorded {
+                    action:
+                        AgentAction {
+                            kind: AgentActionKind::SummarizeProject { project_id, .. },
+                            ..
+                        },
+                } => Some(Some(*project_id)),
+                _ => None,
+            };
+            let event_project = match recorded_project {
+                Some(project_id) => project_id,
+                None => crate::ws::resolve_project(&event.payload, &state.tasks)
                     .await
                     .map_err(ApiError::from)?,
             };

@@ -481,7 +481,7 @@ async fn hosted_mcp_attributes_task_events_to_the_named_client() {
 
 #[tokio::test]
 async fn project_snapshot_pages_corporate_game_events_over_mcp() {
-    use daruma_domain::Actor;
+    use daruma_domain::{Actor, AgentAction, AgentActionKind};
     use daruma_events::{Event, EventEnvelope};
     use daruma_shared::ProjectId;
     use serde_json::Value;
@@ -691,7 +691,7 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
         global[0]["seq"]
     );
 
-    call(
+    let rule = call(
         admin.clone(),
         "daruma_rule_create",
         json!({"rule": {
@@ -719,18 +719,21 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
     .await
     .unwrap();
     let moved_task = &event(&planned, "task_created")["payload"]["task"]["id"];
-    call(
-        admin.clone(),
-        "daruma_amend_plan_task",
-        json!({
-            "plan_id": event(&planned, "plan_created")["payload"]["plan"]["id"],
-            "task_id": moved_task,
-            "patch": {"project_id": other}
-        }),
-    )
-    .await
-    .unwrap();
-    let moved = call(admin, "daruma_get", json!({"id": moved_task}))
+    let move_task = |project_id: Option<ProjectId>| {
+        call(
+            admin.clone(),
+            "daruma_amend_plan_task",
+            json!({
+                "plan_id": event(&planned, "plan_created")["payload"]["plan"]["id"],
+                "task_id": moved_task,
+                "patch": {"project_id": project_id}
+            }),
+        )
+    };
+    let before_first_move = store.latest_seq().await.unwrap();
+    move_task(Some(other)).await.unwrap();
+    let first_move = store.load_since(before_first_move, 2).await.unwrap();
+    let moved = call(admin.clone(), "daruma_get", json!({"id": moved_task}))
         .await
         .unwrap();
     assert_eq!(moved["project_id"], json!(other), "{moved}");
@@ -742,7 +745,9 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
         .find(|env| env.payload.kind() == "rule_fired")
         .expect("the project rule fired during materialize");
     let Event::RuleFired {
-        project_id, task_id, ..
+        project_id,
+        task_id,
+        ..
     } = &warning.payload
     else {
         unreachable!()
@@ -798,6 +803,141 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
     assert!(warning_in_neighbor[0]["seq"].as_u64().unwrap() > warning.seq);
     assert_eq!(graph_in_original[0]["id"], json!(graph.id));
     assert_eq!(graph_in_neighbor, json!([]));
+    assert_eq!(store.latest_seq().await.unwrap(), head);
+
+    let agent = call(admin.clone(), "daruma_workspace_info", json!({}))
+        .await
+        .unwrap();
+    let reservation = call(
+        admin.clone(),
+        "daruma_reserve_files",
+        json!({"agent_id": agent["mcp_agent_id"], "task_id": moved_task, "project_id": other, "paths": ["venue.md"]}),
+    )
+    .await
+    .unwrap();
+    let reserved_seq = reservation["event_seq"].as_u64().unwrap();
+    move_task(Some(project)).await.unwrap();
+    let moved_back = call(admin.clone(), "daruma_get", json!({"id": moved_task}))
+        .await
+        .unwrap();
+    assert_eq!(moved_back["project_id"], json!(project), "{moved_back}");
+    let head = store.latest_seq().await.unwrap();
+
+    let rule_in_original = page(project, before).await.unwrap();
+    let rule_in_neighbor = page(other, before).await.unwrap();
+    println!(
+        "TRACE corporate-game rule_id={} rule_seq={before_warning} original_seq={} neighbor_seq={}",
+        rule["event_id"], rule_in_original[0]["seq"], rule_in_neighbor[0]["seq"],
+    );
+    assert_eq!(first_move.len(), 2);
+    let mut move_pages = Vec::new();
+    for (event, kind) in first_move.iter().zip(["plan_task_amended", "task_updated"]) {
+        assert_eq!(event.payload.kind(), kind);
+        assert_eq!(
+            serde_json::to_value(&event.payload).unwrap()["patch"]["project_id"],
+            json!(other)
+        );
+        let in_destination = page(other, event.seq - 1).await.unwrap();
+        let in_original = page(project, event.seq - 1).await.unwrap();
+        println!(
+            "TRACE corporate-game {kind} id={} seq={} original_seq={} destination_seq={}",
+            event.id, event.seq, in_original[0]["seq"], in_destination[0]["seq"],
+        );
+        move_pages.push((event, in_destination, in_original));
+    }
+    assert_eq!(rule_in_original[0]["payload"]["type"], "rule_created");
+    assert_eq!(rule_in_original[0]["seq"], rule["event_seq"]);
+    assert!(rule_in_neighbor[0]["seq"].as_u64().unwrap() > before_warning);
+    for (event, in_destination, in_original) in move_pages {
+        assert_eq!(in_destination[0]["id"], json!(event.id));
+        assert!(in_original[0]["seq"].as_u64().unwrap() > event.seq);
+    }
+    let reserved = page(other, reserved_seq - 1).await.unwrap();
+    assert_eq!(reserved[0]["payload"]["type"], "files_reserved");
+    assert_eq!(reserved[0]["seq"], reserved_seq);
+    assert!(
+        page(project, reserved_seq - 1).await.unwrap()[0]["seq"]
+            .as_u64()
+            .unwrap()
+            > reserved_seq
+    );
+    assert_eq!(store.latest_seq().await.unwrap(), head);
+
+    for (tool, payload, kind) in [
+        (
+            "daruma_rule_update",
+            json!({"id": rule["data"]["rule"]["id"], "title": "Record the venue decision"}),
+            "rule_updated",
+        ),
+        (
+            "daruma_evidence_submit",
+            json!({"evidence": {
+                "scope": {"kind": "project", "id": project},
+                "kind": "decision_record",
+                "reason": "The team approved the venue"
+            }}),
+            "evidence_recorded",
+        ),
+        (
+            "daruma_artifact_register",
+            json!({"uri": "artifact://corporate-game/venue", "title": "Venue brief", "project_id": project}),
+            "artifact_registered",
+        ),
+    ] {
+        let before = store.latest_seq().await.unwrap();
+        let written = call(admin.clone(), tool, payload).await.unwrap();
+        let matching = page(project, before).await.unwrap();
+        assert_eq!(matching[0]["payload"]["type"], kind, "{matching}");
+        assert_eq!(matching[0]["seq"], written["event_seq"]);
+        assert_eq!(page(other, before).await.unwrap(), json!([]));
+        assert_eq!(
+            store.latest_seq().await.unwrap(),
+            written["event_seq"].as_u64().unwrap()
+        );
+        println!(
+            "TRACE corporate-game {kind} project={project} seq={}",
+            matching[0]["seq"]
+        );
+    }
+
+    let summary = store
+        .append(EventEnvelope::new(
+            Actor::user(),
+            Event::AgentActionRecorded {
+                action: AgentAction::new(
+                    "corporate-game",
+                    AgentActionKind::SummarizeProject {
+                        project_id: project,
+                        summary: "The venue is booked".into(),
+                    },
+                ),
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        page(project, summary.seq - 1).await.unwrap()[0]["id"],
+        json!(summary.id)
+    );
+    assert_eq!(page(other, summary.seq - 1).await.unwrap(), json!([]));
+    assert_eq!(store.latest_seq().await.unwrap(), summary.seq);
+
+    move_task(None).await.unwrap();
+    let in_inbox = call(admin.clone(), "daruma_get", json!({"id": moved_task}))
+        .await
+        .unwrap();
+    assert!(in_inbox["project_id"].is_null(), "{in_inbox}");
+    let cleared = store.load_since(summary.seq, 2).await.unwrap();
+    assert_eq!(cleared.len(), 2);
+    for event in &cleared {
+        let payload = serde_json::to_value(&event.payload).unwrap();
+        assert_eq!(payload["patch"].get("project_id"), Some(&Value::Null));
+    }
+    move_task(Some(project)).await.unwrap();
+    let head = store.latest_seq().await.unwrap();
+    let after_clear = page(project, summary.seq).await.unwrap();
+    assert!(after_clear[0]["seq"].as_u64().unwrap() > cleared[1].seq);
+    assert_eq!(page(other, summary.seq).await.unwrap(), json!([]));
     assert_eq!(store.latest_seq().await.unwrap(), head);
 }
 

@@ -5,7 +5,7 @@ intent: "reference"
 owner: "Daruma maintainers"
 status: "active"
 source_of_truth: "docs/mcp/PROFILES.md"
-last_verified: "2026-11-19"
+last_verified: "2026-11-20"
 ---
 
 # MCP tool-surface profiles
@@ -103,11 +103,12 @@ Why each excluded group is `full`-only:
 `daruma_subscribe_project` reads one page for an existing project. Supply
 `project_id` as a UUID with an optional `prj_` prefix. A missing or malformed
 selector returns a tool error, and an unknown project returns a not-found error.
-The snapshot uses the project recorded in the event, including rule firings
-and graph node upserts that carry a project ID. A rule firing with a recorded
-project stays in that project's history after its task moves. For events that
-only identify a task, the snapshot looks up the task's current project.
-Events without a resolved project are omitted.
+The snapshot uses the project recorded in the event. Project-scoped rules
+appear in their project's history. Task moves appear in the destination
+project's history, and moving a task again leaves those earlier events in the
+recorded project. A move to the inbox appears only in workspace history.
+For task events without a recorded project, the snapshot looks up the task's
+current project. Events without a resolved project are omitted.
 
 The page is ordered by ascending event sequence. `since_seq` is exclusive
 (default 0), and `limit` counts matching events (default 100, maximum 1000).
