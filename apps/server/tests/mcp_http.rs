@@ -488,6 +488,7 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
 
     let app = common::TestAppBuilder::default()
         .plan_only_intake(true)
+        .rule_engine_gate()
         .build()
         .await;
     let addr = spawn_server(&app).await;
@@ -644,7 +645,7 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
     .unwrap();
     assert_eq!(tail, json!([]));
 
-    let global = call(reader, history, json!({"seq": since, "limit": 1}))
+    let global = call(reader.clone(), history, json!({"seq": since, "limit": 1}))
         .await
         .unwrap();
     assert_eq!(global.as_array().unwrap().len(), 1);
@@ -689,6 +690,115 @@ async fn project_snapshot_pages_corporate_game_events_over_mcp() {
         "TRACE corporate-game project={project} event_seqs={sequences:?} global_seq={} head={before}",
         global[0]["seq"]
     );
+
+    call(
+        admin.clone(),
+        "daruma_rule_create",
+        json!({"rule": {
+            "rule_key": "game-task-decision",
+            "title": "Record the game decision",
+            "scope": {"kind": "project", "id": project},
+            "trigger": "task.created",
+            "requirement": {"type": "decision_record"},
+            "mode": "recommendation",
+            "message": "Record a decision before preparing the next game",
+            "override_allowed": false
+        }}),
+    )
+    .await
+    .unwrap();
+    let before_warning = store.latest_seq().await.unwrap();
+    let planned = call(
+        admin.clone(),
+        "daruma_plan_materialize",
+        json!({
+            "plan": {"title": "Next corporate game", "project_id": project},
+            "tasks": [{"title": "Book the venue"}]
+        }),
+    )
+    .await
+    .unwrap();
+    let moved_task = &event(&planned, "task_created")["payload"]["task"]["id"];
+    call(
+        admin.clone(),
+        "daruma_amend_plan_task",
+        json!({
+            "plan_id": event(&planned, "plan_created")["payload"]["plan"]["id"],
+            "task_id": moved_task,
+            "patch": {"project_id": other}
+        }),
+    )
+    .await
+    .unwrap();
+    let moved = call(admin, "daruma_get", json!({"id": moved_task}))
+        .await
+        .unwrap();
+    assert_eq!(moved["project_id"], json!(other), "{moved}");
+    let warning = store
+        .load_since(before_warning, 20)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|env| env.payload.kind() == "rule_fired")
+        .expect("the project rule fired during materialize");
+    let Event::RuleFired {
+        project_id, task_id, ..
+    } = &warning.payload
+    else {
+        unreachable!()
+    };
+    assert_eq!(*project_id, Some(project));
+    assert_eq!(json!(task_id), *moved_task);
+
+    let before_graph = store.latest_seq().await.unwrap();
+    let graph = store
+        .append(EventEnvelope::new(
+            Actor::user(),
+            Event::GraphNodeUpserted {
+                node_id: "next-game-brief".into(),
+                kind: "PlanBrief".into(),
+                source_id: "next-game-brief".into(),
+                project_id: Some(project.as_uuid().to_string()),
+                title: "Next game brief".into(),
+                text: String::new(),
+                metadata_json: json!({}),
+                edges: Vec::new(),
+                at: daruma_shared::time::now(),
+            },
+        ))
+        .await
+        .unwrap();
+    let page = |project_id: ProjectId, since_seq| {
+        call(
+            reader.clone(),
+            snapshot,
+            json!({"project_id": project_id, "since_seq": since_seq, "limit": 1}),
+        )
+    };
+    let head = store.latest_seq().await.unwrap();
+    let warning_in_original = page(project, warning.seq - 1).await.unwrap();
+    let warning_in_neighbor = page(other, warning.seq - 1).await.unwrap();
+    let graph_in_original = page(project, before_graph).await.unwrap();
+    let graph_in_neighbor = page(other, before_graph).await.unwrap();
+    println!(
+        "TRACE corporate-game original={project} neighbor={other} moved_task={moved_task} \
+         warning_id={} warning_seq={} graph_id={} graph_seq={} pages={:?} head={head}",
+        warning.id,
+        warning.seq,
+        graph.id,
+        graph.seq,
+        [
+            &warning_in_original[0]["seq"],
+            &warning_in_neighbor[0]["seq"],
+            &graph_in_original[0]["seq"],
+            &graph_in_neighbor[0]["seq"],
+        ],
+    );
+    assert_eq!(warning_in_original[0]["id"], json!(warning.id));
+    assert!(warning_in_neighbor[0]["seq"].as_u64().unwrap() > warning.seq);
+    assert_eq!(graph_in_original[0]["id"], json!(graph.id));
+    assert_eq!(graph_in_neighbor, json!([]));
+    assert_eq!(store.latest_seq().await.unwrap(), head);
 }
 
 #[tokio::test]

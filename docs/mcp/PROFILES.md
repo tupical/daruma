@@ -103,8 +103,10 @@ Why each excluded group is `full`-only:
 `daruma_subscribe_project` reads one page for an existing project. Supply
 `project_id` as a UUID with an optional `prj_` prefix. A missing or malformed
 selector returns a tool error, and an unknown project returns a not-found error.
-The snapshot uses the same project association as WebSocket subscriptions,
-including lookup of the current project for events that only identify a task.
+The snapshot uses the project recorded in the event, including rule firings
+and graph node upserts that carry a project ID. A rule firing with a recorded
+project stays in that project's history after its task moves. For events that
+only identify a task, the snapshot looks up the task's current project.
 Events without a resolved project are omitted.
 
 The page is ordered by ascending event sequence. `since_seq` is exclusive

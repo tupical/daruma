@@ -4866,11 +4866,19 @@ async fn load_project_events(
         let Some(last) = batch.last() else { break };
         since = last.seq;
         for event in batch.into_iter().take_while(|event| event.seq <= head) {
-            if crate::ws::resolve_project(&event.payload, &state.tasks)
-                .await
-                .map_err(ApiError::from)?
-                == Some(project)
-            {
+            let event_project = match &event.payload {
+                Event::RuleFired {
+                    project_id: Some(project_id),
+                    ..
+                } => Some(*project_id),
+                Event::GraphNodeUpserted { project_id, .. } => {
+                    project_id.as_deref().and_then(|id| id.parse().ok())
+                }
+                _ => crate::ws::resolve_project(&event.payload, &state.tasks)
+                    .await
+                    .map_err(ApiError::from)?,
+            };
+            if event_project == Some(project) {
                 events.push(event);
                 if events.len() == limit {
                     break;
