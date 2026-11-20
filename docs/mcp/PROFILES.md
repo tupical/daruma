@@ -1,3 +1,13 @@
+---
+title: "MCP tool-surface profiles"
+audience: "developer"
+intent: "reference"
+owner: "Daruma maintainers"
+status: "active"
+source_of_truth: "docs/mcp/PROFILES.md"
+last_verified: "2026-11-19"
+---
+
 # MCP tool-surface profiles
 
 Daruma's MCP catalogue grew API-first to 125 tools. Most agent sessions
@@ -49,12 +59,10 @@ export DARUMA_MCP_PROFILE=full
 url: http://localhost:8080/v1/mcp?profile=full
 ```
 
-Guarantees:
+The profile split preserved the existing tool names, input schemas, and
+response shapes in `full`. Each tool remains individually addressable. A
+generic `daruma_call` wrapper is outside the scope of the tool profiles.
 
-- `full` keeps every tool name, input schema, and response shape unchanged.
-- No tool was renamed or removed as part of profiles.
-- There is no single generic `daruma_call` wrapper and none is planned —
-  tools stay individually addressable (non-goal).
 
 ## Default profile composition
 
@@ -104,6 +112,7 @@ The page is ordered by ascending event sequence. `since_seq` is exclusive
 Continue with the last returned sequence. An empty page leaves your cursor
 unchanged. Both history tools require workspace-wide access and the task-read
 capability. Use `daruma_events_since` for the workspace-wide event log.
+The project snapshot requires a server version that supports project filtering.
 
 ## Annotations
 
