@@ -4806,6 +4806,9 @@ struct EventsQuery {
     /// Maximum events to return (default: 100, cap: 1000).
     #[serde(default = "default_limit")]
     limit: usize,
+    /// Internal selector used by the MCP project snapshot.
+    #[serde(rename = "_project_snapshot")]
+    snapshot_project: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -4816,16 +4819,66 @@ async fn list_events(
     auth: axum::Extension<AuthContext>,
     State(state): State<AppState>,
     Query(q): Query<EventsQuery>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
     let limit = q.limit.min(1000);
+    if let Some(project) = q.snapshot_project {
+        let project_id = parse_project_id(&project)?;
+        state
+            .projects
+            .get(project_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::from(CoreError::not_found(format!("project {project_id}"))))?;
+        let events = load_project_events(&state, project_id, q.since, limit).await?;
+        return Ok(Json(ProjectEventsSnapshot { project_id, events }).into_response());
+    }
     let events = state
         .store
         .load_since(q.since, limit)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(events))
+    Ok(Json(events).into_response())
+}
+
+#[derive(Serialize)]
+struct ProjectEventsSnapshot {
+    project_id: ProjectId,
+    events: Vec<EventEnvelope>,
+}
+
+async fn load_project_events(
+    state: &AppState,
+    project: ProjectId,
+    mut since: u64,
+    limit: usize,
+) -> Result<Vec<EventEnvelope>, ApiError> {
+    // shortcut: scans journal pages, add indexed project attribution if sparse snapshots become costly.
+    let head = state.store.latest_seq().await.map_err(ApiError::from)?;
+    let mut events = Vec::new();
+    while since < head && events.len() < limit {
+        let batch = state
+            .store
+            .load_since(since, 100)
+            .await
+            .map_err(ApiError::from)?;
+        let Some(last) = batch.last() else { break };
+        since = last.seq;
+        for event in batch.into_iter().take_while(|event| event.seq <= head) {
+            if crate::ws::resolve_project(&event.payload, &state.tasks)
+                .await
+                .map_err(ApiError::from)?
+                == Some(project)
+            {
+                events.push(event);
+                if events.len() == limit {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(events)
 }
 
 /// Identity of this server's event log. A device reads it before it sends or

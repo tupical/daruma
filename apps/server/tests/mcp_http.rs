@@ -478,3 +478,240 @@ async fn hosted_mcp_attributes_task_events_to_the_named_client() {
     assert_eq!(clients("task_status_changed"), vec![codex.clone()]);
     assert_eq!(clients("comment_added"), vec![codex, None]);
 }
+
+#[tokio::test]
+async fn project_snapshot_pages_corporate_game_events_over_mcp() {
+    use daruma_domain::Actor;
+    use daruma_events::{Event, EventEnvelope};
+    use daruma_shared::ProjectId;
+    use serde_json::Value;
+
+    let app = common::TestAppBuilder::default()
+        .plan_only_intake(true)
+        .build()
+        .await;
+    let addr = spawn_server(&app).await;
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let url = format!("http://{addr}/v1/mcp?profile=full");
+    let call = |token: String, name: &'static str, args: Value| {
+        let client = &client;
+        let url = &url;
+        async move {
+            let response = client
+                .post(url)
+                .bearer_auth(token)
+                .json(&json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": name, "arguments": args}
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let trace = response.headers()["x-request-id"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let body: Value = response.json().await.unwrap();
+            assert!(body["error"].is_null(), "{body}");
+            let result = &body["result"];
+            let text = result["content"][0]["text"].as_str().unwrap();
+            if result["isError"] == true {
+                println!("TRACE {name} request_id={trace} error={text}");
+                return Err(text.to_owned());
+            }
+            println!("TRACE {name} request_id={trace} ok");
+            Ok(serde_json::from_str::<Value>(text).unwrap())
+        }
+    };
+    let admin = app.admin_token.clone();
+    let create = |title| {
+        call(
+            admin.clone(),
+            "daruma_project_create",
+            json!({"title": title}),
+        )
+    };
+    let other: ProjectId =
+        serde_json::from_value(create("Other project").await.unwrap()["project_id"].clone())
+            .unwrap();
+    let project: ProjectId =
+        serde_json::from_value(create("corporate-game").await.unwrap()["project_id"].clone())
+            .unwrap();
+    let store = app.event_store();
+    let since = store.latest_seq().await.unwrap();
+    let unrelated = store
+        .append_batch(
+            (0..1001)
+                .map(|_| {
+                    EventEnvelope::new(
+                        Actor::user(),
+                        Event::ProjectUpdated {
+                            project_id: other,
+                            title: None,
+                            description: None,
+                        },
+                    )
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let plan = call(
+        admin.clone(),
+        "daruma_plan_materialize",
+        json!({
+            "plan": {"title": "Delivery", "project_id": project},
+            "tasks": [{"title": "Verify the corporate-game release"}]
+        }),
+    )
+    .await
+    .unwrap();
+    fn event<'a>(data: &'a Value, kind: &str) -> &'a Value {
+        data["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["payload"]["type"] == kind)
+            .unwrap()
+    }
+    let task_event = event(&plan, "task_created");
+    let task = &task_event["payload"]["task"]["id"];
+    store
+        .append(EventEnvelope::new(
+            Actor::user(),
+            Event::ProjectUpdated {
+                project_id: other,
+                title: None,
+                description: None,
+            },
+        ))
+        .await
+        .unwrap();
+    let status = call(
+        admin.clone(),
+        "daruma_set_status",
+        json!({
+            "id": task, "status": "in_progress"
+        }),
+    )
+    .await
+    .unwrap();
+    let before = store.latest_seq().await.unwrap();
+    let snapshot = "daruma_subscribe_project";
+    let history = "daruma_events_since";
+    let args = json!({"project_id": project, "since_seq": since, "limit": 1});
+    let (reader, _) = mint_pat(
+        &app.auth_store(),
+        [Capability::TaskRead].into(),
+        ProjectFilter::All,
+    )
+    .await;
+    let expected = [
+        event(&plan, "plan_created"),
+        task_event,
+        event(&plan, "plan_task_added"),
+        event(&status, "task_status_changed"),
+    ];
+    let mut cursor = json!(since);
+    let mut selector = json!(project);
+    let mut sequences = Vec::new();
+    for expected in expected {
+        let page = call(
+            reader.clone(),
+            snapshot,
+            json!({
+                "project_id": selector, "since_seq": cursor, "limit": 1
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.as_array().unwrap().len(), 1, "{page}");
+        assert_eq!(page[0]["payload"]["type"], expected["payload"]["type"]);
+        assert_eq!(page[0]["seq"], expected["seq"]);
+        cursor = page[0]["seq"].clone();
+        sequences.push(cursor.as_u64().unwrap());
+        selector = json!(project.to_string());
+    }
+    let tail = call(
+        reader.clone(),
+        snapshot,
+        json!({
+            "project_id": project, "since_seq": cursor
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(tail, json!([]));
+
+    let global = call(reader, history, json!({"seq": since, "limit": 1}))
+        .await
+        .unwrap();
+    assert_eq!(global.as_array().unwrap().len(), 1);
+    assert_eq!(global[0]["seq"], unrelated[0].seq);
+    assert_eq!(global[0]["payload"]["project_id"], json!(other));
+    for (selector, error) in [
+        (json!({}), "project_id"),
+        (json!({"project_id": 123}), "project_id"),
+        (json!({"project_id": "all"}), "invalid project_id"),
+        (json!({"project_id": ProjectId::new()}), "404"),
+    ] {
+        let actual = call(admin.clone(), snapshot, selector).await.unwrap_err();
+        assert!(actual.contains(error), "{actual}");
+    }
+
+    let (scoped, _) = mint_pat(
+        &app.auth_store(),
+        [Capability::TaskRead].into(),
+        ProjectFilter::Only {
+            projects: vec![project],
+        },
+    )
+    .await;
+    let (no_task_read, _) = mint_pat(
+        &app.auth_store(),
+        [Capability::ProjectRead].into(),
+        ProjectFilter::All,
+    )
+    .await;
+    for token in [scoped, no_task_read] {
+        assert!(call(token.clone(), snapshot, args.clone())
+            .await
+            .unwrap_err()
+            .contains("403"));
+        assert!(call(token, history, json!({"seq": since, "limit": 1}))
+            .await
+            .unwrap_err()
+            .contains("403"));
+    }
+    assert_eq!(store.latest_seq().await.unwrap(), before);
+    println!(
+        "TRACE corporate-game project={project} event_seqs={sequences:?} global_seq={} head={before}",
+        global[0]["seq"]
+    );
+}
+
+#[tokio::test]
+async fn project_snapshot_rejects_a_legacy_workspace_log() {
+    use axum::{routing::get, Json, Router};
+    use daruma_shared::ProjectId;
+
+    let app = test_app().await;
+    let legacy = common::TestApp {
+        router: Router::new().route("/v1/events", get(|| async { Json(json!([{"seq": 1}])) })),
+        ..app
+    };
+    let addr = spawn_server(&legacy).await;
+    let api = ApiClient::new(format!("http://{addr}"), legacy.admin_token.clone());
+    let result = call_tool(
+        &api,
+        "daruma_subscribe_project",
+        json!({"project_id": ProjectId::new()}),
+    )
+    .await;
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("server did not provide a project snapshot"),
+        "{error}"
+    );
+}

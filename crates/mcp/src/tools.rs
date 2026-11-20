@@ -558,7 +558,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "daruma_subscribe_project",
             "Snapshot project events",
-            "One-shot snapshot of events for a project (the streaming form lives on /v1/ws).",
+            "Load one page of events for an existing project. Pass the last returned seq as since_seq to continue. Requires workspace-wide access.",
             schema_subscribe_project(),
             Dom::Events, F, E, Ann::Read,
         ),
@@ -2323,15 +2323,24 @@ async fn dispatch_tool(client: &ApiClient, name: &str, arguments: Value) -> anyh
                 .await
         }
         "daruma_subscribe_project" => {
-            // One-shot polling form: deliver any events whose target_project
-            // matches the requested project. The streaming form lives on
-            // `/v1/ws` (subscribe with `projects: [...]`). For MVP, we just
-            // return the snapshot of recent events.
+            let project = required_string(&args, "project_id")?
+                .parse::<daruma_shared::ProjectId>()
+                .map_err(|_| anyhow::anyhow!("invalid project_id: expected a project UUID"))?;
+            let project = project.as_uuid().to_string();
             let since = args.get("since_seq").and_then(|v| v.as_u64()).unwrap_or(0);
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
-            client
-                .get_json(&format!("/v1/events?since={since}&limit={limit}"))
-                .await
+            let mut snapshot = client
+                .get_json(&format!(
+                    "/v1/events?since={since}&limit={limit}&_project_snapshot={project}"
+                ))
+                .await?;
+            // Older servers ignore extra query parameters and return a workspace log array.
+            anyhow::ensure!(
+                snapshot["project_id"].as_str() == Some(project.as_str())
+                    && snapshot["events"].is_array(),
+                "server did not provide a project snapshot; use daruma_events_since for workspace history"
+            );
+            Ok(snapshot["events"].take())
         }
         "daruma_events_since" => client.get_json(&events_since_path(&args)).await,
         "daruma_healthz" => client.get_json("/v1/healthz").await,
@@ -4170,10 +4179,11 @@ fn schema_subscribe_project() -> Value {
     json!({
         "type":"object",
         "properties": {
-            "project_id": {"type":"string"},
-            "since_seq": {"type":"integer","minimum":0},
-            "limit": {"type":"integer","minimum":1,"maximum":1000}
-        }
+            "project_id": {"type":"string","description":"Existing project UUID, optionally prefixed with prj_."},
+            "since_seq": {"type":"integer","minimum":0,"default":0},
+            "limit": {"type":"integer","minimum":1,"maximum":1000,"default":100}
+        },
+        "required":["project_id"]
     })
 }
 

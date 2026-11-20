@@ -937,7 +937,7 @@ async fn event_passes(
     if !channel_filter.allows(ch) {
         return false;
     }
-    let project_id = resolve_project(&env.payload, tasks).await;
+    let project_id = resolve_project(&env.payload, tasks).await.ok().flatten();
     project_filter.allows(project_id)
 }
 
@@ -946,13 +946,17 @@ async fn event_passes(
 /// just `Event::target_project`. For task-targeting events without an
 /// inline project id (`TaskStatusChanged`, `CommentAdded`, ...) we look
 /// up the task → project mapping.
-async fn resolve_project(ev: &Event, tasks: &Arc<TaskRepo>) -> Option<ProjectId> {
+pub(crate) async fn resolve_project(
+    ev: &Event,
+    tasks: &TaskRepo,
+) -> daruma_shared::Result<Option<ProjectId>> {
     if let Some(pid) = ev.target_project() {
-        return Some(pid);
+        return Ok(Some(pid));
     }
-    let task_id: TaskId = ev.target_task()?;
-    let task = tasks.get(task_id).await.ok().flatten()?;
-    task.project_id
+    match ev.target_task() {
+        Some(task_id) => Ok(tasks.get(task_id).await?.and_then(|task| task.project_id)),
+        None => Ok(None),
+    }
 }
 
 // ── §3.7.6 (LIN B.6) subscription filters ─────────────────────────────────────

@@ -90,6 +90,21 @@ Why each excluded group is `full`-only:
 - **Multi-agent coordination** (leases, ready pool, doctor) — only
   meaningful in parallel-agent setups, which are configured deliberately.
 
+## Event history in the full profile
+
+`daruma_subscribe_project` reads one page for an existing project. Supply
+`project_id` as a UUID with an optional `prj_` prefix. A missing or malformed
+selector returns a tool error, and an unknown project returns a not-found error.
+The snapshot uses the same project association as WebSocket subscriptions,
+including lookup of the current project for events that only identify a task.
+Events without a resolved project are omitted.
+
+The page is ordered by ascending event sequence. `since_seq` is exclusive
+(default 0), and `limit` counts matching events (default 100, maximum 1000).
+Continue with the last returned sequence. An empty page leaves your cursor
+unchanged. Both history tools require workspace-wide access and the task-read
+capability. Use `daruma_events_since` for the workspace-wide event log.
+
 ## Annotations
 
 Every advertised tool carries a human-readable `title` plus MCP
