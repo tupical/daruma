@@ -1,3 +1,13 @@
+---
+title: "Local Daruma development data layout"
+audience: "operator"
+intent: "reference"
+owner: "Daruma maintainers"
+status: "active"
+source_of_truth: "docs/guides/local-dev-data.md"
+last_verified: "2026-11-21"
+---
+
 # Local development data layout
 
 All local server state lives under **`~/.agents/daruma/data/`** (override with
@@ -188,6 +198,10 @@ was written further after the backup), the server logs
 `workspace graph is ahead of or diverged from the event log; rebuilding`,
 clears the index and replays it from the start. Deleting the file before
 starting the server forces the same full rebuild and stays a safe manual fallback.
+
+If a graph write fails during replay, the cursor stays on the last successfully
+applied event. The next event notification resumes replay from that cursor,
+including any earlier events that are still waiting in the journal.
 
 ### Self-host in a repo
 

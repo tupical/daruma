@@ -234,7 +234,7 @@ impl TestAppBuilder {
         workspace_graph::catch_up_from_events(&workspace_graph, &*store)
             .await
             .unwrap();
-        workspace_graph::spawn_subscriber(workspace_graph.clone(), bus.clone());
+        workspace_graph::spawn_subscriber(workspace_graph.clone(), bus.clone(), store.clone());
 
         let state = AppState {
             store,

@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("workspace graph catch-up failed: {e}"))?;
     tracing::info!(
         events = graph_caught_up,
-        "workspace graph catch-up complete"
+        "workspace graph startup replay applied events"
     );
 
     // ── Core layer ────────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
     // keeps the JoinHandle alive (Drop aborts the task).
     std::mem::forget(_dispatcher);
 
-    workspace_graph::spawn_subscriber(workspace_graph.clone(), bus.clone());
+    workspace_graph::spawn_subscriber(workspace_graph.clone(), bus.clone(), store.clone());
 
     // ── AI (optional) ─────────────────────────────────────────────────────────
     let ai: Option<OpenAiClient> = match AiConfig::from_env() {
