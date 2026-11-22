@@ -16,6 +16,7 @@ pub const CATCHUP_BATCH_SIZE: usize = 500;
 /// no longer matches the store — the primary DB was restored from an older
 /// backup — the index is reset and rebuilt from seq 0 instead, because
 /// resuming would skip every event re-assigned to the rolled-back seqs.
+/// A projection error stops replay at the last successful envelope.
 pub async fn catch_up_from_events(
     graph: &WorkspaceGraphRepo,
     store: &dyn EventStore,
@@ -46,9 +47,9 @@ pub async fn catch_up_from_events(
                     seq = env.seq,
                     "workspace graph apply_event failed during catch-up"
                 );
-            } else {
-                count += 1;
+                return Ok(count);
             }
+            count += 1;
         }
         // SAFETY: batch is non-empty; unwrap cannot panic.
         last = batch.last().unwrap().seq;
