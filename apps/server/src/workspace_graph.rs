@@ -16,6 +16,7 @@ pub const CATCHUP_BATCH_SIZE: usize = 500;
 /// no longer matches the store — the primary DB was restored from an older
 /// backup — the index is reset and rebuilt from seq 0 instead, because
 /// resuming would skip every event re-assigned to the rolled-back seqs.
+/// A projection error stops replay at the last successful envelope.
 pub async fn catch_up_from_events(
     graph: &WorkspaceGraphRepo,
     store: &dyn EventStore,
@@ -46,9 +47,9 @@ pub async fn catch_up_from_events(
                     seq = env.seq,
                     "workspace graph apply_event failed during catch-up"
                 );
-            } else {
-                count += 1;
+                return Ok(count);
             }
+            count += 1;
         }
         // SAFETY: batch is non-empty; unwrap cannot panic.
         last = batch.last().unwrap().seq;
@@ -84,21 +85,13 @@ async fn rollback_reason(
     }
 }
 
-/// Subscribe to the in-process event bus and incrementally update the graph.
-pub fn spawn_subscriber(graph: Arc<WorkspaceGraphRepo>, bus: EventBus) {
+/// Resume replay from the saved cursor when the event bus signals new writes.
+pub fn spawn_subscriber(graph: Arc<WorkspaceGraphRepo>, bus: EventBus, store: Arc<dyn EventStore>) {
+    let mut rx = bus.subscribe();
     tokio::spawn(async move {
-        let mut rx = bus.subscribe();
         loop {
             match rx.recv().await {
-                Ok(env) => {
-                    if let Err(e) = graph.apply_event(&env).await {
-                        tracing::warn!(
-                            err = %e,
-                            seq = env.seq,
-                            "workspace graph apply_event failed"
-                        );
-                    }
-                }
+                Ok(_) => {}
                 Err(RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "workspace graph subscriber lagged");
                 }
@@ -106,6 +99,9 @@ pub fn spawn_subscriber(graph: Arc<WorkspaceGraphRepo>, bus: EventBus) {
                     tracing::info!("workspace graph subscriber: bus closed, exiting");
                     return;
                 }
+            }
+            if let Err(e) = catch_up_from_events(&graph, store.as_ref()).await {
+                tracing::warn!(err = %e, "workspace graph subscriber catch-up failed");
             }
         }
     });
@@ -175,6 +171,56 @@ mod tests {
         live.append(task_event("beta")).await.unwrap();
         assert_eq!(catch_up_from_events(&graph, &live).await.unwrap(), 1);
         assert_eq!(titles(&graph, &WORDS).await, ["alpha", "beta"]);
+    }
+
+    #[tokio::test]
+    async fn subscriber_recovers_backlog_after_startup_projection_error() {
+        use tokio::time::{sleep, timeout, Duration};
+
+        let (_live_db, live) = store().await;
+        let live = Arc::new(live);
+        for word in ["alpha", "beta", "gamma"] {
+            live.append(task_event(word)).await.unwrap();
+        }
+        let (graph_db, graph_repo) = graph().await;
+        let graph = Arc::new(graph_repo);
+        sqlx::query(
+            "CREATE TRIGGER reject_beta BEFORE INSERT ON workspacegraph_nodes
+             WHEN NEW.title = 'beta' BEGIN SELECT RAISE(ABORT, 'test projection failure'); END",
+        )
+        .execute(graph_db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            catch_up_from_events(&graph, live.as_ref()).await.unwrap(),
+            1
+        );
+        assert_eq!(graph.cursor().await.unwrap().unwrap().seq, 1);
+        sqlx::query("DROP TRIGGER reject_beta")
+            .execute(graph_db.pool())
+            .await
+            .unwrap();
+
+        let bus = EventBus::new(16);
+        spawn_subscriber(graph.clone(), bus.clone(), live.clone());
+        let delta = live.append(task_event("delta")).await.unwrap();
+        assert_eq!(bus.publish(delta), 1);
+        timeout(Duration::from_secs(5), async {
+            while graph.cursor().await.unwrap().unwrap().seq < 4 {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("subscriber should project through sequence 4");
+
+        assert_eq!(
+            catch_up_from_events(&graph, live.as_ref()).await.unwrap(),
+            0
+        );
+        assert_eq!(
+            titles(&graph, &WORDS).await,
+            ["alpha", "beta", "gamma", "delta"]
+        );
     }
 
     #[tokio::test]
