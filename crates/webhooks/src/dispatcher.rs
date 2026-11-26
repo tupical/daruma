@@ -36,18 +36,25 @@ use crate::store::WebhookStore;
 
 /// Lifetime handle for the spawned dispatcher task. Drop to abort.
 pub struct DispatcherHandle {
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl DispatcherHandle {
     pub fn abort(&self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+
+    /// Run until the last event sender drops and the receiver drains.
+    pub fn detach(mut self) {
+        drop(self.task.take());
     }
 }
 
 impl Drop for DispatcherHandle {
     fn drop(&mut self) {
-        self.task.abort();
+        self.abort();
     }
 }
 
@@ -81,7 +88,7 @@ pub fn spawn_dispatcher(
         }
     });
 
-    DispatcherHandle { task }
+    DispatcherHandle { task: Some(task) }
 }
 
 async fn dispatch_one(

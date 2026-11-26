@@ -21,11 +21,24 @@ pub async fn catch_up_from_events(
     graph: &WorkspaceGraphRepo,
     store: &dyn EventStore,
 ) -> Result<u64> {
+    replay(graph, store, true).await
+}
+
+async fn replay(
+    graph: &WorkspaceGraphRepo,
+    store: &dyn EventStore,
+    reset_if_diverged: bool,
+) -> Result<u64> {
     // Read the cursor before the store head: events are appended before they
     // are published, so a live subscriber can never push the cursor past it.
     let cursor = graph.cursor().await?;
     let mut last = cursor.as_ref().map_or(0, |c| c.seq);
     if let Some(reason) = rollback_reason(cursor.as_ref(), store).await? {
+        if !reset_if_diverged {
+            return Err(daruma_shared::CoreError::storage(format!(
+                "workspace graph diverged from the journal: {reason}"
+            )));
+        }
         tracing::warn!(
             graph_seq = last,
             reason,
@@ -55,6 +68,27 @@ pub async fn catch_up_from_events(
         last = batch.last().unwrap().seq;
     }
     Ok(count)
+}
+
+/// Replay a derived graph and fail if it still cannot serve current data.
+pub async fn catch_up_current(graph: &WorkspaceGraphRepo, store: &dyn EventStore) -> Result<()> {
+    graph.require_schema().await?;
+    replay(graph, store, false).await?;
+    require_current(graph, store).await
+}
+
+/// Verify a projection against its journal before using it for reads or decisions.
+pub async fn require_current(graph: &WorkspaceGraphRepo, store: &dyn EventStore) -> Result<()> {
+    graph.require_schema().await?;
+    let head = store.latest_seq().await?;
+    let cursor = graph.cursor().await?;
+    let projected = cursor.as_ref().map_or(0, |cursor| cursor.seq);
+    if projected < head || rollback_reason(cursor.as_ref(), store).await?.is_some() {
+        return Err(daruma_shared::CoreError::storage(format!(
+            "workspace graph cursor {projected} is not current with journal head {head}"
+        )));
+    }
+    Ok(())
 }
 
 /// Why the saved cursor cannot be resumed from, or `None` when it can.

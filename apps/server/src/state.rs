@@ -110,6 +110,8 @@ pub struct AppState {
     pub complexity_hints: Arc<TaskComplexityRepo>,
     /// WorkspaceGraph sidecar projection (derived read model).
     pub workspace_graph: Arc<WorkspaceGraphRepo>,
+    /// Shared replay lock when the server is hosted by the cloud runtime.
+    pub graph_replay_lock: Option<Arc<tokio::sync::Mutex<()>>>,
     /// Bundled `daruma-mcp` binaries for authenticated download.
     pub mcp_downloads: crate::mcp_downloads::McpDownloads,
     /// In-memory per-workspace/per-token HTTP rate limiter.
@@ -217,6 +219,7 @@ impl AppState {
             entity_versions,
             complexity_hints,
             workspace_graph,
+            graph_replay_lock: None,
             mcp_downloads,
             rate_limiter: RateLimiter::default(),
             pairing,
@@ -224,5 +227,28 @@ impl AppState {
             tls_fingerprint,
             auto_provision_repo_project: env_auto_provision_repo_project(),
         }
+    }
+    pub fn with_strict_workspace_graph(mut self, lock: Arc<tokio::sync::Mutex<()>>) -> Self {
+        self.graph_replay_lock = Some(lock);
+        self
+    }
+
+    pub(crate) async fn current_workspace_graph(
+        &self,
+    ) -> daruma_shared::Result<Option<tokio::sync::MutexGuard<'_, ()>>> {
+        let Some(lock) = &self.graph_replay_lock else {
+            return Ok(None);
+        };
+        let guard = lock.lock().await;
+        let graph = &self.workspace_graph;
+        let store = self.store.as_ref();
+        if crate::workspace_graph::require_current(graph, store)
+            .await
+            .is_err()
+        {
+            // A durable event can arrive without a live bus notification.
+            crate::workspace_graph::catch_up_current(graph, store).await?;
+        }
+        Ok(Some(guard))
     }
 }
