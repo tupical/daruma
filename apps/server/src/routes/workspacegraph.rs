@@ -121,6 +121,9 @@ pub async fn status(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require(Capability::TaskRead)
         .map_err(ApiError::from_missing_cap)?;
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let status = state
         .workspace_graph
         .status()
@@ -138,6 +141,9 @@ pub async fn context(
         .map_err(ApiError::from_missing_cap)?;
     let node_id = resolve_node_id(&q.node)?;
     let limit = default_limit(q.limit);
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let items = state
         .workspace_graph
         .context(&node_id, limit)
@@ -156,6 +162,9 @@ pub async fn related(
     let node_id = resolve_node_id(&q.node)?;
     let depth = q.depth.unwrap_or(1).clamp(1, 5);
     let limit = default_limit(q.limit);
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let neighborhood = state
         .workspace_graph
         .related(&node_id, depth, limit)
@@ -184,6 +193,9 @@ pub async fn search(
     }
     let limit = default_limit(q.limit);
     let project_id = parse_project_id(q.project_id.as_deref())?;
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let hits = state
         .workspace_graph
         .search(query, limit, project_id.as_deref())
@@ -203,6 +215,9 @@ pub async fn impact(
         .map_err(ApiError::from_missing_cap)?;
     let node_id = resolve_node_id(&q.node)?;
     let limit = default_limit(q.limit);
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let neighborhood = state
         .workspace_graph
         .impact(&node_id, limit)

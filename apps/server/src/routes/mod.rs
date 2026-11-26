@@ -3284,6 +3284,9 @@ async fn artifact_impact(
         ))));
     }
 
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let node_id = format!("artifact:{id}");
     let limit = q.limit.unwrap_or(20).clamp(1, 200);
     let neighborhood = state
@@ -3657,6 +3660,9 @@ async fn audit_duplicate_tasks(
     let project_id = parse_project_id(&q.project_id)?;
     let threshold = q.threshold.unwrap_or(-1.0);
     let limit = q.limit.unwrap_or(20).clamp(1, 200);
+    let _graph_guard = state.current_workspace_graph()
+        .await
+        .map_err(ApiError::from)?;
     let pairs = state
         .workspace_graph
         .duplicate_task_candidates(&project_id.to_string(), threshold, limit)

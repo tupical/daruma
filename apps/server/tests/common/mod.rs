@@ -274,6 +274,7 @@ impl TestAppBuilder {
             entity_versions,
             complexity_hints,
             workspace_graph,
+            graph_replay_lock: None,
             snapshots,
             mcp_downloads: daruma_server::mcp_downloads::McpDownloads::default(),
             rate_limiter: daruma_server::middleware::rate_limit::RateLimiter::default(),

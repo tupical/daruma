@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Row, SqlitePool};
 
+const SCHEMA_VERSION: &str = "2";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GraphNode {
     pub id: String,
@@ -96,7 +98,106 @@ impl WorkspaceGraphRepo {
         Self { pool }
     }
 
+    async fn schema_table_count(conn: &mut sqlx::SqliteConnection) -> Result<i64> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
+             ('workspacegraph_nodes', 'workspacegraph_edges', 'workspacegraph_meta', 'workspacegraph_fts')",
+        )
+        .fetch_one(conn)
+        .await
+        .map_err(storage_err)
+    }
+
+    pub async fn require_schema(&self) -> Result<()> {
+        if Self::schema_table_count(&mut *self.pool.acquire().await.map_err(storage_err)?).await?
+            != 4
+        {
+            return Err(storage_err("workspace graph schema is incomplete"));
+        }
+        Ok(())
+    }
+
     pub async fn ensure_schema(&self) -> Result<()> {
+        {
+            let mut conn = self.pool.acquire().await.map_err(storage_err)?;
+            if Self::schema_table_count(&mut conn).await? == 4
+                && sqlx::query_scalar::<_, bool>(
+                    "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN
+                        ('idx_workspacegraph_nodes_kind_source', 'idx_workspacegraph_nodes_project',
+                         'idx_workspacegraph_edges_to', 'idx_workspacegraph_edges_kind')) = 4
+                     AND EXISTS (SELECT 1 FROM workspacegraph_meta WHERE key = 'schema_version' AND value = ?)",
+                )
+                .bind(SCHEMA_VERSION)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(storage_err)?
+            {
+                return Ok(());
+            }
+        }
+        // Recheck after taking the writer lock so concurrent setup cannot treat
+        // a partially created schema as an intact projection.
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_err)?;
+        Self::ensure_schema_in(&mut tx).await?;
+        tx.commit().await.map_err(storage_err)
+    }
+
+    async fn has_journal_owner(conn: &mut sqlx::SqliteConnection) -> Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'workspacegraph_journal_owner')",
+        )
+        .fetch_one(conn)
+        .await
+        .map_err(storage_err)
+    }
+
+    /// Initialize a fresh sidecar and record its journal in one transaction.
+    pub async fn bind_journal(pool: &SqlitePool, journal: &str) -> Result<bool> {
+        let mut tx = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_err)?;
+        if !Self::has_journal_owner(&mut tx).await? {
+            // Adopt existing tables in place. Only an empty, unowned file can initialize.
+            if Self::schema_table_count(&mut tx).await? == 0 {
+                Self::ensure_schema_in(&mut tx).await?;
+            }
+            sqlx::query(
+                "CREATE TABLE workspacegraph_journal_owner (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     journal_path TEXT NOT NULL
+                 )",
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_err)?;
+            sqlx::query("INSERT INTO workspacegraph_journal_owner(id, journal_path) VALUES (1, ?)")
+                .bind(journal)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_err)?;
+        }
+        let owner: String = sqlx::query_scalar(
+            "SELECT journal_path FROM workspacegraph_journal_owner WHERE id = 1",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage_err)?;
+        tx.commit().await.map_err(storage_err)?;
+        Ok(owner == journal)
+    }
+
+    async fn ensure_schema_in(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+        let count = Self::schema_table_count(tx).await?;
+        if count != 4 && (count != 0 || Self::has_journal_owner(tx).await?) {
+            return Err(storage_err("workspace graph schema is incomplete"));
+        }
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS workspacegraph_nodes (
                 id TEXT PRIMARY KEY,
@@ -109,7 +210,7 @@ impl WorkspaceGraphRepo {
                 metadata_json TEXT NOT NULL DEFAULT '{}'
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -117,7 +218,7 @@ impl WorkspaceGraphRepo {
             "CREATE INDEX IF NOT EXISTS idx_workspacegraph_nodes_kind_source
              ON workspacegraph_nodes(kind, source_id)",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -125,7 +226,7 @@ impl WorkspaceGraphRepo {
             "CREATE INDEX IF NOT EXISTS idx_workspacegraph_nodes_project
              ON workspacegraph_nodes(project_id)",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -139,7 +240,7 @@ impl WorkspaceGraphRepo {
                 PRIMARY KEY (from_id, to_id, kind)
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -147,7 +248,7 @@ impl WorkspaceGraphRepo {
             "CREATE INDEX IF NOT EXISTS idx_workspacegraph_edges_to
              ON workspacegraph_edges(to_id)",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -155,7 +256,7 @@ impl WorkspaceGraphRepo {
             "CREATE INDEX IF NOT EXISTS idx_workspacegraph_edges_kind
              ON workspacegraph_edges(kind)",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -165,7 +266,7 @@ impl WorkspaceGraphRepo {
                 value TEXT NOT NULL
             )",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
@@ -179,11 +280,19 @@ impl WorkspaceGraphRepo {
                 text
              )",
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(storage_err)?;
 
-        self.set_meta("schema_version", "2").await?;
+        sqlx::query(
+            "INSERT INTO workspacegraph_meta(key, value) VALUES ('schema_version', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value
+             WHERE workspacegraph_meta.value <> excluded.value",
+        )
+        .bind(SCHEMA_VERSION)
+        .execute(&mut **tx)
+        .await
+        .map_err(storage_err)?;
         Ok(())
     }
 
@@ -1774,6 +1883,172 @@ mod tests {
         let status = repo.status().await.unwrap();
         assert_eq!(status.node_count, 6);
         assert_eq!(status.last_event_seq, Some(8));
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_initializes_fresh_files_and_refuses_missing_owned_tables() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let repo = WorkspaceGraphRepo::new(pool);
+        assert!(
+            WorkspaceGraphRepo::bind_journal(&repo.pool, "tenant.sqlite")
+                .await
+                .unwrap()
+        );
+        repo.require_schema().await.unwrap();
+
+        for table in [
+            "workspacegraph_nodes",
+            "workspacegraph_edges",
+            "workspacegraph_meta",
+            "workspacegraph_fts",
+        ] {
+            sqlx::query(&format!("DROP TABLE {table}"))
+                .execute(&repo.pool)
+                .await
+                .unwrap();
+        }
+        assert!(
+            WorkspaceGraphRepo::bind_journal(&repo.pool, "tenant.sqlite")
+                .await
+                .unwrap()
+        );
+        assert!(repo.ensure_schema().await.is_err());
+        assert!(repo.require_schema().await.is_err());
+        let mut conn = repo.pool.acquire().await.unwrap();
+        assert_eq!(
+            WorkspaceGraphRepo::schema_table_count(&mut conn)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_repairs_indexes_and_version_without_changing_graph_data() {
+        use daruma_events::event::GraphEdgeSpec;
+
+        let repo = repo().await;
+        let now = Utc::now();
+        let raw = env(
+            1,
+            Event::GraphNodeUpserted {
+                node_id: "raw:fixture".into(),
+                source_id: "fixture".into(),
+                kind: "RawItem".into(),
+                project_id: Some("project:fixture".into()),
+                title: "Retention fixture".into(),
+                text: "Retained journal body".into(),
+                metadata_json: serde_json::json!({"preserve":"content"}),
+                edges: vec![],
+                at: now,
+            },
+        );
+        let adr = env(
+            2,
+            Event::GraphNodeUpserted {
+                node_id: "lineage:ADR:fixture".into(),
+                source_id: "fixture.md".into(),
+                kind: "ADR".into(),
+                project_id: Some("project:fixture".into()),
+                title: "Retention decision".into(),
+                text: "Retained decision body".into(),
+                metadata_json: serde_json::json!({"preserve":"lineage"}),
+                edges: vec![GraphEdgeSpec {
+                    from_id: "lineage:ADR:fixture".into(),
+                    to_id: "raw:fixture".into(),
+                    kind: "derived_from".into(),
+                }],
+                at: now,
+            },
+        );
+        repo.apply_event(&raw).await.unwrap();
+        repo.apply_event(&adr).await.unwrap();
+
+        let cursor = repo.cursor().await.unwrap();
+        let snapshot = || async {
+            let nodes: Vec<(
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                String,
+                String,
+            )> = sqlx::query_as("SELECT * FROM workspacegraph_nodes ORDER BY id")
+                .fetch_all(&repo.pool)
+                .await
+                .unwrap();
+            let edges: Vec<(String, String, String, Option<i64>, String)> =
+                sqlx::query_as("SELECT * FROM workspacegraph_edges ORDER BY from_id, to_id, kind")
+                    .fetch_all(&repo.pool)
+                    .await
+                    .unwrap();
+            (nodes, edges)
+        };
+        let original = snapshot().await;
+        assert_eq!((original.0.len(), original.1.len()), (2, 1));
+
+        for (remove_indexes, version) in [(true, Some("2")), (false, None), (false, Some("1"))] {
+            if remove_indexes {
+                for sql in [
+                    "DROP INDEX idx_workspacegraph_nodes_kind_source",
+                    "DROP INDEX idx_workspacegraph_nodes_project",
+                    "DROP INDEX idx_workspacegraph_edges_to",
+                    "DROP INDEX idx_workspacegraph_edges_kind",
+                ] {
+                    sqlx::query(sql).execute(&repo.pool).await.unwrap();
+                }
+            }
+            sqlx::query("DELETE FROM workspacegraph_meta WHERE key = 'schema_version'")
+                .execute(&repo.pool)
+                .await
+                .unwrap();
+            if let Some(version) = version {
+                repo.set_meta("schema_version", version).await.unwrap();
+            }
+
+            repo.ensure_schema().await.unwrap();
+
+            let indexes: Vec<String> = sqlx::query_scalar(
+                "SELECT name FROM sqlite_master WHERE type = 'index'
+                 AND (name GLOB 'idx_workspacegraph_nodes_*'
+                      OR name GLOB 'idx_workspacegraph_edges_*') ORDER BY name",
+            )
+            .fetch_all(&repo.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                (indexes, repo.get_meta("schema_version").await.unwrap()),
+                (
+                    vec![
+                        "idx_workspacegraph_edges_kind".to_owned(),
+                        "idx_workspacegraph_edges_to".to_owned(),
+                        "idx_workspacegraph_nodes_kind_source".to_owned(),
+                        "idx_workspacegraph_nodes_project".to_owned(),
+                    ],
+                    Some("2".to_owned())
+                ),
+                "the complete table set still needs index and version repair",
+            );
+            assert_eq!(snapshot().await, original);
+            assert_eq!(repo.cursor().await.unwrap(), cursor);
+            assert!(!repo.search("retention", 10, None).await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_reads_a_complete_schema_without_taking_the_writer_lock() {
+        let repo = repo().await;
+        sqlx::query("PRAGMA query_only = ON")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        repo.ensure_schema().await.unwrap();
     }
 
     #[tokio::test]

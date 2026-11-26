@@ -309,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
         entity_versions,
         complexity_hints,
         workspace_graph,
+        graph_replay_lock: None,
         snapshots,
         mcp_downloads,
         rate_limiter: RateLimiter::default(),
