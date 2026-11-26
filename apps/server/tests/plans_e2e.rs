@@ -18,6 +18,40 @@ use tower::ServiceExt;
 mod common;
 use common::{mint_pat, test_app};
 
+fn timestamp(value: &str) -> chrono::DateTime<chrono::FixedOffset> {
+    chrono::DateTime::parse_from_rfc3339(value).expect("expected RFC3339 timestamp")
+}
+
+fn activity_advances(before: &str, after: &str) -> bool {
+    timestamp(after) > timestamp(before)
+}
+
+#[test]
+fn activity_advances_compares_instants_not_timestamp_text() {
+    assert!(activity_advances(
+        "2026-11-26T16:54:23.505Z",
+        "2026-11-26T16:54:23.505687Z"
+    ));
+    assert!(!activity_advances(
+        "2026-11-26T16:54:23.505Z",
+        "2026-11-26T16:54:23.505000Z"
+    ));
+    assert!(!activity_advances(
+        "2026-11-26T16:54:23.505687Z",
+        "2026-11-26T16:54:23.505Z"
+    ));
+    assert!(!activity_advances(
+        "2026-11-26T16:54:23.505Z",
+        "2026-11-26T17:54:23.505+01:00"
+    ));
+}
+
+#[test]
+#[should_panic(expected = "expected RFC3339 timestamp")]
+fn activity_advances_rejects_invalid_timestamp() {
+    activity_advances("invalid", "2026-11-26T16:54:23.505Z");
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 async fn post_json(app: &axum::Router, token: &str, uri: &str, body: &str) -> (StatusCode, Value) {
@@ -230,7 +264,7 @@ async fn plans_get_latest_activity_follows_attach_without_task_update() {
     let (_, plan) = get_json(&h.router, &h.admin_token, &format!("/v1/plans/{plan_id}")).await;
 
     assert!(
-        plan["latest_activity_at"].as_str().unwrap() > task["updated_at"].as_str().unwrap(),
+        activity_advances(task["updated_at"].as_str().unwrap(), plan["latest_activity_at"].as_str().unwrap()),
         "attach-only event must advance plan activity beyond the unchanged task: {plan} task={task}"
     );
 }
@@ -289,8 +323,8 @@ async fn plans_get_latest_activity_does_not_move_backward_after_removal() {
     let (_, after) = get_json(&h.router, &h.admin_token, &format!("/v1/plans/{plan_id}")).await;
 
     assert!(
-        after["latest_activity_at"].as_str().unwrap()
-            >= before["latest_activity_at"].as_str().unwrap(),
+        timestamp(after["latest_activity_at"].as_str().unwrap())
+            >= timestamp(before["latest_activity_at"].as_str().unwrap()),
         "removing the latest task must not move plan activity backward: before={before} after={after}"
     );
 }
@@ -336,8 +370,10 @@ async fn plans_get_latest_activity_follows_reorder() {
     let (_, after) = get_json(&h.router, &h.admin_token, &format!("/v1/plans/{plan_id}")).await;
 
     assert!(
-        after["latest_activity_at"].as_str().unwrap()
-            > before["latest_activity_at"].as_str().unwrap(),
+        activity_advances(
+            before["latest_activity_at"].as_str().unwrap(),
+            after["latest_activity_at"].as_str().unwrap(),
+        ),
         "reordering tasks must advance plan activity: before={before} after={after}"
     );
 }
@@ -372,8 +408,10 @@ async fn plans_get_latest_activity_follows_direct_child_plan_activity() {
     let (_, after) = get_json(&h.router, &h.admin_token, &format!("/v1/plans/{parent_id}")).await;
 
     assert!(
-        after["latest_activity_at"].as_str().unwrap()
-            > before["latest_activity_at"].as_str().unwrap(),
+        activity_advances(
+            before["latest_activity_at"].as_str().unwrap(),
+            after["latest_activity_at"].as_str().unwrap(),
+        ),
         "direct child plan creation must advance parent activity: before={before} after={after}"
     );
 }
@@ -424,8 +462,10 @@ async fn plans_get_latest_activity_advances_when_direct_child_is_deleted() {
     let (_, after) = get_json(&h.router, &h.admin_token, &format!("/v1/plans/{parent_id}")).await;
 
     assert!(
-        after["latest_activity_at"].as_str().unwrap()
-            > before["latest_activity_at"].as_str().unwrap(),
+        activity_advances(
+            before["latest_activity_at"].as_str().unwrap(),
+            after["latest_activity_at"].as_str().unwrap(),
+        ),
         "deleting a direct child must advance former parent activity: before={before} after={after}"
     );
 }
@@ -532,13 +572,17 @@ async fn plans_get_latest_activity_advances_both_parents_when_child_is_reparente
     .await;
 
     assert!(
-        former_after["latest_activity_at"].as_str().unwrap()
-            > former_before["latest_activity_at"].as_str().unwrap(),
+        activity_advances(
+            former_before["latest_activity_at"].as_str().unwrap(),
+            former_after["latest_activity_at"].as_str().unwrap(),
+        ),
         "reparenting away must advance former parent activity: before={former_before} after={former_after}"
     );
     assert!(
-        new_after["latest_activity_at"].as_str().unwrap()
-            > new_before["latest_activity_at"].as_str().unwrap(),
+        activity_advances(
+            new_before["latest_activity_at"].as_str().unwrap(),
+            new_after["latest_activity_at"].as_str().unwrap(),
+        ),
         "reparenting must advance new parent activity: before={new_before} after={new_after}"
     );
 }
@@ -588,8 +632,10 @@ async fn plans_get_latest_activity_follows_attached_task_update() {
     let (_, after) = get_json(&h.router, &h.admin_token, &format!("/v1/plans/{plan_id}")).await;
 
     assert!(
-        after["latest_activity_at"].as_str().unwrap()
-            > before["latest_activity_at"].as_str().unwrap(),
+        activity_advances(
+            before["latest_activity_at"].as_str().unwrap(),
+            after["latest_activity_at"].as_str().unwrap(),
+        ),
         "ordinary attached task update must advance plan activity: before={before} after={after}"
     );
 }
